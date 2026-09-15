@@ -1,0 +1,15 @@
+/* Welcome screen additions — the base grid/card styles live in styles/shell.css (UI_SPEC §11). */
+
+.welcome[data-dragover] .dropzone {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.recent-grid > li { list-style: none; }
+
+.recent-dir {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

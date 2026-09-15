@@ -1,19 +1,38 @@
-import { useEffect, useMemo } from "react";
+import { Suspense, lazy, useEffect, useMemo } from "react";
 import { TitleBar } from "./app/TitleBar";
 import { ToolStrip } from "./app/ToolStrip";
 import { SidebarFrame } from "./app/SidebarFrame";
 import { CanvasStub } from "./app/CanvasStub";
 import { Inspector } from "./app/Inspector";
 import { StatusBar } from "./app/StatusBar";
-import { WelcomeStub } from "./app/WelcomeStub";
 import { useCommands } from "./app/useCommands";
 import { useKeymap } from "./keys/useKeymap";
 import { MENU_IDS, type KeyContext } from "./keys/keymap";
 import { onDocChanged, onFileDrop, onMenuCommand, onOpenFile, onRecentsChanged } from "./ipc/events";
 import * as api from "./ipc/api";
+import { useMock } from "./ipc/env";
 import { useAppStore } from "./store/appStore";
 import { useDocStore } from "./store/docStore";
+import { useDialogStore } from "./dialogs/dialogState";
+import { useOcrDialogOpen } from "./ocr/dialogState";
+import { useToastStore } from "./app/toastStore";
+import { useContextMenuStore } from "./app/contextMenuStore";
 import { useT } from "./i18n/useT";
+
+// Everything below the fold is code-split: the welcome screen, the page organizer, the dialog host
+// (which lazily carries the OCR sheet), the toast layer and the context menu. The entry chunk is
+// gated at 120 kB gz by `scripts/check-bundle-size.mjs`.
+const Welcome = lazy(() => import("./welcome"));
+const Organizer = lazy(() => import("./organize"));
+const DialogHost = lazy(() => import("./dialogs/DialogHost"));
+const Toasts = lazy(() => import("./app/Toasts"));
+const ContextMenu = lazy(() => import("./app/ContextMenu"));
+
+/** Cheap synchronous test so the default menu is only suppressed over a page (the import is async). */
+function pageLike(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return Boolean(el?.closest?.(".page-shell, .thumb")) && !el?.closest?.("[data-context-menu]");
+}
 
 export default function App() {
   const t = useT();
@@ -27,25 +46,82 @@ export default function App() {
   const refreshRecents = useAppStore((s) => s.refreshRecents);
   const releaseMomentary = useAppStore((s) => s.releaseMomentary);
   const info = useDocStore((s) => s.info);
-  const openDoc = useDocStore((s) => s.open);
   const applyDocChanged = useDocStore((s) => s.applyDocChanged);
+  const dialogOpen = useDialogStore((s) => s.stack.length > 0);
+  const ocrOpen = useOcrDialogOpen();
+  const hasToasts = useToastStore((s) => s.toasts.length > 0);
+  const menuOpen = useContextMenuStore((s) => s.menu !== null);
 
   // 1. settings + recents + theme + locale, then drain anything the OS handed us before mount
   useEffect(() => {
     void bootstrap().then(async () => {
       const pending = await api.takePendingOpens().catch(() => []);
-      if (pending.length) await openDoc(pending[0].path);
+      if (pending.length) {
+        const { openPaths } = await import("./dialogs/flows");
+        await openPaths(pending.map((p) => p.path));
+      }
     });
-  }, [bootstrap, openDoc]);
+  }, [bootstrap]);
 
   // 2. app-wide broadcasts
   useEffect(() => onDocChanged(applyDocChanged), [applyDocChanged]);
-  useEffect(() => onOpenFile((e) => void openDoc(e.path)), [openDoc]);
+  useEffect(() => onOpenFile((e) => void import("./dialogs/flows").then((m) => m.openPaths([e.path]))), []);
   useEffect(() => onRecentsChanged(() => void refreshRecents()), [refreshRecents]);
-  useEffect(() => onFileDrop((e) => e.paths[0] && void openDoc(e.paths[0])), [openDoc]);
+  useEffect(
+    () => onFileDrop((e) => e.paths.length && void import("./dialogs/flows").then((m) => m.openPaths(e.paths))),
+    [],
+  );
   useEffect(() => onMenuCommand((id) => run(id), MENU_IDS), [run]);
 
-  // 3. window title follows the document and its dirty state (UI_SPEC §15.1)
+  // 3. closing the window with unsaved changes asks 저장 / 저장 안 함 / 취소 (F-23)
+  useEffect(() => {
+    if (useMock()) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        const win = getCurrentWindow();
+        return win.onCloseRequested(async (event) => {
+          const current = useDocStore.getState().info;
+          const flows = await import("./dialogs/flows");
+          if (current?.dirty) {
+            event.preventDefault();
+            if (await flows.confirmUnsaved()) {
+              if (current) await flows.touchRecent(useDocStore.getState().info ?? current).catch(() => undefined);
+              await win.destroy();
+            }
+            return;
+          }
+          if (current) await flows.touchRecent(current).catch(() => undefined);
+        });
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // 4. the canvas and 축소판 context menus (UI_SPEC §12) — one listener, no edits in (c)'s files
+  useEffect(() => {
+    const onMenu = (e: MouseEvent) => {
+      void import("./app/pageMenus").then(({ openPageContextMenu, pageFromEvent }) => {
+        const hit = pageFromEvent(e.target);
+        if (hit) openPageContextMenu(hit.page, hit.source, e.clientX, e.clientY);
+      });
+      if (pageLike(e.target)) e.preventDefault();
+    };
+    // capture: (d)'s pointer surface stops contextmenu propagation, and a layer that wants to own
+    // the menu opts out with [data-context-menu] rather than by swallowing the event
+    document.addEventListener("contextmenu", onMenu, true);
+    return () => document.removeEventListener("contextmenu", onMenu, true);
+  }, []);
+
+  // 5. window title follows the document and its dirty state (UI_SPEC §15.1)
   useEffect(() => {
     document.title = info ? t("app.window.document", { name: `${info.dirty ? "• " : ""}${info.name}` }) : t("app.name");
   }, [info, t]);
@@ -53,8 +129,8 @@ export default function App() {
   const contexts = useMemo<KeyContext[]>(() => {
     const list: KeyContext[] = ["always"];
     if (info) {
-      list.push("doc", "canvas");
-      if (mode === "pages") list.push("pages");
+      // 페이지 mode owns the arrow keys, ⌫ and the tool letters: the grid is not the canvas
+      list.push("doc", mode === "pages" ? "pages" : "canvas");
     }
     return list;
   }, [info, mode]);
@@ -66,24 +142,49 @@ export default function App() {
     onRelease: () => releaseMomentary(),
   });
 
+  const organizing = mode === "pages";
+
   return (
     <div className="app-shell" data-ready={ready || undefined}>
       <TitleBar run={run} />
       <div className="app-body">
-        {info && sidebarOpen && <SidebarFrame />}
+        {info && sidebarOpen && !organizing && <SidebarFrame />}
         <main className="app-main">
           {info ? (
-            <>
-              <ToolStrip />
-              <CanvasStub />
-            </>
+            organizing ? (
+              <Suspense fallback={null}>
+                <Organizer />
+              </Suspense>
+            ) : (
+              <>
+                <ToolStrip />
+                <CanvasStub />
+              </>
+            )
           ) : (
-            <WelcomeStub />
+            <Suspense fallback={null}>
+              <Welcome />
+            </Suspense>
           )}
         </main>
-        {info && inspectorOpen && mode !== "read" && <Inspector />}
+        {info && inspectorOpen && mode !== "read" && !organizing && <Inspector />}
       </div>
       <StatusBar />
+      {(dialogOpen || ocrOpen) && (
+        <Suspense fallback={null}>
+          <DialogHost />
+        </Suspense>
+      )}
+      {hasToasts && (
+        <Suspense fallback={null}>
+          <Toasts />
+        </Suspense>
+      )}
+      {menuOpen && (
+        <Suspense fallback={null}>
+          <ContextMenu />
+        </Suspense>
+      )}
     </div>
   );
 }

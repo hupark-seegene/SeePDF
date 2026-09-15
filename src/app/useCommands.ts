@@ -1,16 +1,23 @@
 /**
  * One dispatcher for every command id: the keymap, the native menu (`menu:<id>`) and every toolbar
- * button call exactly this. Ids that belong to a Stage 1 module are logged as `todo` until their
- * owner lands — that list is the integration checklist in STAGE0_FRONTEND_NOTES.md.
+ * button call exactly this.
+ *
+ * Stage 1 (e) filled in the file / export / print / settings / 페이지 ids. Everything that needs
+ * more than one command lives in `src/dialogs/flows.ts` and is reached with a dynamic import, so
+ * the dispatcher itself stays in the entry chunk while the flows and dialogs do not.
+ * Annotation, object and undo ids stay with (c)/(d).
  */
 import { useCallback } from "react";
 import * as api from "../ipc/api";
 import { useAppStore, type Mode, type ToolId } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
-import { useJobStore } from "../store/jobStore";
 import { usePagesStore } from "../store/pagesStore";
+import { openDialog } from "../dialogs/dialogState";
+import { openContextMenu, type MenuEntry } from "./contextMenuStore";
 import { toolController } from "../tools/ToolController";
+import { runAnnotCommand } from "../tools/commands";
+import type { PageOp } from "../ipc/types";
 
 export type CommandId = string;
 
@@ -22,16 +29,31 @@ const MODE_OF: Record<string, Mode> = {
   "mode.form": "form",
 };
 
+/** The ids 주석 mode may claim before the shell's own handling (see `src/tools/commands.ts`). */
+const ANNOT_IDS = new Set(["edit.delete", "edit.duplicate", "edit.copy", "edit.cut", "edit.paste"]);
+
+/** `import("../dialogs/flows")` — kept in one place so every call site is obviously code-split. */
+const flows = () => import("../dialogs/flows");
+
+function runPages(ops: PageOp[]): void {
+  void flows().then((m) => m.runPageOps(ops));
+}
+
 export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) => void {
   return useCallback((id: CommandId, opts?: { momentary?: boolean }) => {
     const app = useAppStore.getState();
     const docs = useDocStore.getState();
     const view = useViewStore.getState();
-    const jobs = useJobStore.getState();
     const pages = usePagesStore.getState();
     const info = docs.info;
+    const target = pages.selected.length ? pages.selected : pages.focus !== null ? [pages.focus] : [];
 
     if (id in MODE_OF) return app.setMode(MODE_OF[id]);
+
+    // (d): 주석 mode claims ⌫ / ⌘D / ⌘C / ⌘X / ⌘V while an annotation is selected. The bus answers
+    // `false` when the annotation chunk is not loaded or nothing is selected, and the switch below
+    // keeps doing whatever it did before (페이지 mode owns the same ids).
+    if (ANNOT_IDS.has(id) && runAnnotCommand(id)) return;
 
     if (id.startsWith("tool.")) {
       const tool = id.slice("tool.".length) as ToolId;
@@ -48,32 +70,29 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
     switch (id) {
       // File -----------------------------------------------------------------
       case "file.open":
-        void api.openFileDialog().then((picked) => {
-          if (picked?.length) void docs.open(picked[0]);
-        });
+        void flows().then((m) => m.openFileFlow());
+        return;
+      case "file.openRecent":
+        openRecentMenu();
         return;
       case "file.close":
-        void docs.close();
+        void flows().then((m) => m.closeDocumentFlow());
         return;
-      case "file.save": {
-        if (!info) return;
-        const labelKey = "status.saving";
-        void api
-          .saveDocument({ docId: info.docId }, (e) => jobs.apply("save", labelKey, e))
-          .then(() => docs.refresh())
-          .catch(() => undefined);
+      case "file.save":
+        void flows().then((m) => m.saveFlow());
         return;
-      }
-      case "file.saveAs": {
-        if (!info) return;
-        void api.saveFileDialog({ defaultPath: info.name }).then((path) => {
-          if (!path) return;
-          return api
-            .saveDocumentAs({ docId: info.docId, path }, (e) => jobs.apply("save", "status.saving", e))
-            .then(() => docs.refresh());
-        });
+      case "file.saveAs":
+        void flows().then((m) => m.saveAsFlow());
         return;
-      }
+      case "file.export":
+        if (info) openDialog("export");
+        return;
+      case "file.print":
+        if (info) openDialog("print");
+        return;
+      case "file.docInfo":
+        if (info) openDialog("docInfo");
+        return;
       case "file.reveal":
         if (info?.path) void api.revealInFileManager({ path: info.path });
         return;
@@ -83,18 +102,48 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         }
         return;
 
+      // App ------------------------------------------------------------------
+      case "app.settings":
+        openDialog("settings");
+        return;
+      case "app.overflow":
+        openOverflowMenu();
+        return;
+      case "tools.ocr":
+        void import("../ocr").then((m) =>
+          m.openOcrDialog({ selectedPages: pages.selected.length ? pages.selected : undefined }),
+        );
+        return;
+      case "tools.merge":
+        openDialog("merge");
+        return;
+      case "tools.split":
+        if (info) openDialog("split");
+        return;
+
       // Edit -----------------------------------------------------------------
+      // A coalesced annotation patch must reach the engine before the snapshot is popped, or undo
+      // would skip an edit the user has already seen (IPC_CONTRACT §7.8).
       case "edit.undo":
-        void docs.undo();
+        void import("../annot/sync").then((m) => m.undoWithAnnots());
         return;
       case "edit.redo":
-        void docs.redo();
+        void import("../annot/sync").then((m) => m.redoWithAnnots());
         return;
       case "edit.find":
         app.setSidebarTab("search");
         return;
       case "edit.selectAll":
         if (app.mode === "pages" && info) pages.selectAll(info.pageCount);
+        return;
+      case "edit.delete":
+        if (app.mode === "pages" && info && target.length) {
+          pages.clear();
+          runPages([{ kind: "delete", pages: target }]);
+        }
+        return;
+      case "edit.duplicate":
+        if (app.mode === "pages" && info && target.length) runPages([{ kind: "duplicate", pages: target }]);
         return;
 
       // View -----------------------------------------------------------------
@@ -141,9 +190,11 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         view.setLayout("two");
         return;
       case "view.rotateLeft":
+        if (app.mode === "pages" && target.length) return runPages([{ kind: "rotate", pages: target, delta: 270 }]);
         view.rotate(-90);
         return;
       case "view.rotateRight":
+        if (app.mode === "pages" && target.length) return runPages([{ kind: "rotate", pages: target, delta: 90 }]);
         view.rotate(90);
         return;
       case "view.night":
@@ -163,33 +214,95 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "go.lastPage":
         if (info) view.goToPage(info.pageCount - 1);
         return;
+      case "go.goToPage": {
+        const field = document.querySelector<HTMLInputElement>(".page-input");
+        field?.focus();
+        field?.select();
+        return;
+      }
 
       // 페이지 mode ----------------------------------------------------------
       case "pages.rotateLeft":
-      case "pages.rotateRight": {
-        if (!info || pages.selected.length === 0) return;
-        const delta = id === "pages.rotateLeft" ? 270 : 90;
-        void api
-          .pageOps({ docId: info.docId, ops: [{ kind: "rotate", pages: pages.selected, delta }] })
-          .then(() => docs.refresh());
+        if (target.length) runPages([{ kind: "rotate", pages: target, delta: 270 }]);
         return;
-      }
-      case "pages.delete": {
-        if (!info || pages.selected.length === 0) return;
-        void api
-          .pageOps({ docId: info.docId, ops: [{ kind: "delete", pages: pages.selected }] })
-          .then(() => {
-            pages.clear();
-            return docs.refresh();
-          });
+      case "pages.rotateRight":
+        if (target.length) runPages([{ kind: "rotate", pages: target, delta: 90 }]);
         return;
-      }
+      case "pages.delete":
+        if (target.length) {
+          pages.clear();
+          runPages([{ kind: "delete", pages: target }]);
+        }
+        return;
+      case "pages.duplicate":
+        if (target.length) runPages([{ kind: "duplicate", pages: target }]);
+        return;
+      case "pages.reverse":
+        if (info) runPages([{ kind: "reverse" }]);
+        return;
+      case "pages.extract":
+        if (target.length) openDialog("extract", { pages: target });
+        return;
+      case "pages.insert":
+        if (info) {
+          const at = target.length ? Math.max(...target) + 1 : info.pageCount;
+          runPages([{ kind: "insertBlank", at, size: "sameAs" }]);
+        }
+        return;
+      case "pages.insertFrom":
+        if (info) {
+          const at = target.length ? Math.max(...target) + 1 : info.pageCount;
+          void flows().then((m) => m.insertFromFileFlow(at));
+        }
+        return;
       case "pages.selectAll":
         if (info) pages.selectAll(info.pageCount);
         return;
 
       default:
-        if (import.meta.env.DEV) console.info(`[command] ${id} — not implemented in Stage 0`);
+        if (import.meta.env.DEV) console.info(`[command] ${id} — not implemented`);
     }
   }, []);
+}
+
+/** ⇧⌘O — the recents list as a menu, plus 메뉴 지우기 (UI_SPEC §2). */
+function openRecentMenu(): void {
+  const { recents } = useAppStore.getState();
+  const items: MenuEntry[] = recents.slice(0, 10).map((entry) => ({
+    id: entry.path,
+    labelKey: "welcome.recent",
+    label: entry.name,
+    onSelect: () => void import("../dialogs/flows").then((m) => m.openPath(entry.path)),
+  }));
+  if (items.length) items.push({ id: "sep", separator: true });
+  items.push({
+    id: "clear",
+    labelKey: "menu.file.clearRecent",
+    onSelect: () => void api.clearRecent().then(() => useAppStore.getState().refreshRecents()),
+  });
+  openContextMenu({ x: 96, y: 52, labelKey: "menu.file.openRecent", items });
+}
+
+/** ⋯ — 인쇄, OCR, 문서 정보, 설정 (UI_SPEC §2). */
+function openOverflowMenu(): void {
+  const info = useDocStore.getState().info;
+  openContextMenu({
+    x: typeof window === "undefined" ? 0 : window.innerWidth - 16,
+    y: 52,
+    labelKey: "common.more",
+    items: [
+      { id: "print", labelKey: "menu.file.print", disabled: !info, onSelect: () => openDialog("print") },
+      {
+        id: "ocr",
+        labelKey: "menu.tools.ocr",
+        disabled: !info,
+        onSelect: () => void import("../ocr").then((m) => m.openOcrDialog()),
+      },
+      { id: "merge", labelKey: "menu.tools.merge", onSelect: () => openDialog("merge") },
+      { id: "split", labelKey: "pages.split", disabled: !info, onSelect: () => openDialog("split") },
+      { id: "sep", separator: true },
+      { id: "docInfo", labelKey: "menu.file.docInfo", disabled: !info, onSelect: () => openDialog("docInfo") },
+      { id: "settings", labelKey: "menu.settings", onSelect: () => openDialog("settings") },
+    ],
+  });
 }

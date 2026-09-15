@@ -1,0 +1,267 @@
+/* Dialogs — UI_SPEC §10. Tokens only; radius 14 (sheets), elevation 3 (floating). */
+
+.dlg-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  background: rgb(0 0 0 / 0.28);
+  animation: dlg-fade var(--dur-fast) var(--ease-out);
+}
+
+.dlg {
+  display: flex;
+  flex-direction: column;
+  max-height: min(84vh, 720px);
+  width: 480px;
+  background: var(--bg-panel);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elevation-3);
+  overflow: hidden;
+}
+
+.dlg[data-size="sm"] { width: 380px; }
+.dlg[data-size="lg"] { width: 640px; }
+.dlg[data-size="xl"] { width: 760px; }
+
+.dlg-head {
+  padding: var(--space-4) var(--space-5) var(--space-2);
+}
+
+.dlg-head h2 {
+  margin: 0;
+  font-weight: var(--weight-lg);
+}
+
+.dlg-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-5) var(--space-4);
+  overflow: auto;
+}
+
+.dlg-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-block-start: 1px solid var(--border-subtle);
+  background: var(--bg-chrome);
+}
+
+.dlg-spacer { flex: 1; }
+
+.dlg-primary {
+  height: var(--control-dialog);
+  padding-inline: var(--space-5);
+}
+
+.dlg-primary[data-danger] { background: var(--danger); }
+
+.dlg .btn:disabled {
+  background: var(--bg-active);
+  border-color: transparent;
+  color: var(--text-disabled);
+}
+
+.dlg-row {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.dlg-label {
+  padding-block-start: 6px;
+  color: var(--text-secondary);
+}
+
+.dlg-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.dlg-hint {
+  margin: 0;
+  color: var(--text-tertiary);
+}
+
+.dlg-hint.danger { color: var(--danger); }
+
+.dlg-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dlg-radio,
+.dlg-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.range-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.inline-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.inline-row > .mono,
+.inline-row > .text-sm {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.inline-row .grow,
+.field.grow { flex: 1; }
+.field.num { width: 88px; }
+.field.area { height: auto; padding: var(--space-2); font-family: var(--font-mono); }
+
+/* 내보내기 */
+.export-grid {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.format-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.format-list button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: var(--control-default);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  text-align: start;
+}
+
+.format-list button:hover { background: var(--bg-hover); }
+
+.format-list button[data-active] {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.export-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.export-estimate {
+  min-height: 17px;
+  color: var(--text-secondary);
+}
+
+/* 파일 합치기 */
+.merge-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 320px;
+  overflow: auto;
+}
+
+.merge-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+
+.merge-item[data-dragging] { opacity: 0.5; }
+.merge-index { color: var(--text-tertiary); width: 18px; }
+.merge-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.merge-range { width: 96px; }
+
+.drop-list {
+  margin: 0;
+  padding-inline-start: var(--space-4);
+  color: var(--text-secondary);
+}
+
+/* 설정 */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: var(--space-4);
+  min-height: 260px;
+}
+
+.settings-tabs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.settings-tabs button {
+  width: 100%;
+  height: var(--control-default);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  text-align: start;
+}
+
+.settings-tabs button:hover { background: var(--bg-hover); }
+
+.settings-tabs button[data-active] {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* 문서 정보 */
+.info-list { margin: 0; }
+
+.info-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: var(--space-3);
+  padding-block: var(--space-1);
+}
+
+.info-row dd { margin: 0; overflow-wrap: anywhere; }
+
+@keyframes dlg-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

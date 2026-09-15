@@ -1,9 +1,14 @@
 /**
- * 페이지 organizer state (UI_SPEC §9). Owner from Stage 1: (e).
+ * 페이지 organizer state (UI_SPEC §9). Owner: Stage 1 (e).
  * Page geometry itself lives in `docStore.info.pages` — this slice only holds the grid's own state.
+ *
+ * `pendingOrder` is the optimistic drag-reorder: the grid paints it immediately, the `page_ops`
+ * response (and the `doc-changed` refresh it triggers) reconciles it away. Nothing else in the app
+ * reads it, so a failed move simply snaps back.
  */
 import { create } from "zustand";
 import type { PageIndex } from "../ipc/types";
+import { clickSelect, normalizeSelection, rangeBetween, type SelectionState } from "../organize/selection";
 
 export const THUMB_SIZES = [80, 120, 160, 220] as const;
 export type ThumbSize = (typeof THUMB_SIZES)[number];
@@ -14,14 +19,24 @@ export interface PagesState {
   thumbSize: ThumbSize;
   /** insertion caret between cells while dragging, or null */
   dropAt: number | null;
+  /** optimistic display order (page indices) while a reorder is in flight */
+  pendingOrder: PageIndex[] | null;
+  /** roving keyboard focus */
+  focus: PageIndex | null;
 
   setSelected(pages: PageIndex[]): void;
   toggle(page: PageIndex, additive: boolean): void;
+  /** click / ⇧click / ⌘click in one call (UI_SPEC §9) */
+  click(page: PageIndex, mods?: { shift?: boolean; meta?: boolean }): void;
   selectRange(to: PageIndex): void;
   selectAll(count: number): void;
   clear(): void;
   setThumbSize(size: ThumbSize): void;
   setDropAt(at: number | null): void;
+  setPendingOrder(order: PageIndex[] | null): void;
+  setFocus(page: PageIndex | null): void;
+  /** a new document, or a structural change: forget everything transient */
+  reset(): void;
 }
 
 export const usePagesStore = create<PagesState>((set, get) => ({
@@ -29,25 +44,27 @@ export const usePagesStore = create<PagesState>((set, get) => ({
   lastAnchor: null,
   thumbSize: 120,
   dropAt: null,
+  pendingOrder: null,
+  focus: null,
 
   setSelected(selected) {
-    set({ selected, lastAnchor: selected[selected.length - 1] ?? null });
+    const next = normalizeSelection(selected);
+    set({ selected: next, lastAnchor: next[next.length - 1] ?? null, focus: next[next.length - 1] ?? get().focus });
   },
   toggle(page, additive) {
-    const { selected } = get();
-    if (!additive) return set({ selected: [page], lastAnchor: page });
-    const next = selected.includes(page) ? selected.filter((p) => p !== page) : [...selected, page];
-    set({ selected: next, lastAnchor: page });
+    get().click(page, { meta: additive });
+  },
+  click(page, mods = {}) {
+    const state: SelectionState = { selected: get().selected, anchor: get().lastAnchor };
+    const next = clickSelect(state, page, mods);
+    set({ selected: next.selected, lastAnchor: next.anchor, focus: page });
   },
   selectRange(to) {
     const anchor = get().lastAnchor ?? to;
-    const [from, until] = anchor <= to ? [anchor, to] : [to, anchor];
-    const range: PageIndex[] = [];
-    for (let p = from; p <= until; p++) range.push(p);
-    set({ selected: range });
+    set({ selected: rangeBetween(anchor, to), focus: to });
   },
   selectAll(count) {
-    set({ selected: Array.from({ length: count }, (_, i) => i) });
+    set({ selected: Array.from({ length: count }, (_, i) => i), lastAnchor: count > 0 ? count - 1 : null });
   },
   clear() {
     set({ selected: [], lastAnchor: null });
@@ -57,5 +74,14 @@ export const usePagesStore = create<PagesState>((set, get) => ({
   },
   setDropAt(dropAt) {
     set({ dropAt });
+  },
+  setPendingOrder(pendingOrder) {
+    set({ pendingOrder });
+  },
+  setFocus(focus) {
+    set({ focus });
+  },
+  reset() {
+    set({ selected: [], lastAnchor: null, dropAt: null, pendingOrder: null, focus: null });
   },
 }));
