@@ -54,7 +54,7 @@ export function onEnginePressure(handler: (e: EnginePressureEvent) => void): Uns
 
 /** Native macOS menu item -> the focused window. `id` matches a keymap id (`src/keys/keymap.ts`). */
 export function onMenuCommand(handler: (id: string) => void, ids: readonly string[]): Unsubscribe {
-  const offs = ids.map((id) => subscribe(`menu:${id}`, () => handler(id)));
+  const offs = ids.map((id) => subscribe(`menu:${id.replace(/\./g, "/")}`, () => handler(id)));
   return () => offs.forEach((off) => off());
 }
 

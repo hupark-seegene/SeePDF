@@ -198,7 +198,8 @@ pub fn on_menu_event(app: &AppHandle<Wry>, event: MenuEvent) {
     if !MENU_IDS.contains(&id.as_str()) {
         return; // A predefined item (Cut/Copy/Quit/…) the OS already handled.
     }
-    let topic = format!("menu:{id}");
+    // Tauri event names allow only [A-Za-z0-9-/:_]; keymap ids use dots (file.open) -> menu:file/open
+    let topic = format!("menu:{}", id.replace('.', "/"));
     let focused = app
         .webview_windows()
         .into_iter()
