@@ -1,0 +1,321 @@
+/* Annotation overlay, tool surface and form inputs. Tokens only (UI_SPEC §14, F-27). */
+
+/* Everything in these layers sits **on the page**, which is paper — not on app chrome. Following
+   the app theme here would paint black handles and light-grey form text onto white paper in dark
+   mode. `--page-paper` is the token `.page-shell` already references (STAGE1C_NOTES §8 asks for
+   it in tokens.css); `--page-ink` is its counterpart and is requested in STAGE1D_NOTES §7. */
+.viewer .page-shell {
+  --page-ink: #1a1c1f;
+  /* the 필드 강조 표시 wash: the accent at 10 %, mixed over paper rather than over app chrome */
+  --page-field: rgb(47 111 235 / 0.1);
+}
+
+/* The two HTML layer containers are transparent to the pointer; their children are not. An empty
+   `.page-surface` must never eat the drag that makes a text selection (STAGE1D_NOTES §3). */
+.viewer .page-surface,
+.viewer .page-forms {
+  pointer-events: none;
+}
+
+.viewer .page-surface > *,
+.viewer .page-forms > * {
+  pointer-events: auto;
+}
+
+.annot-surface {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+
+/* ---------------------------------------------------------------- SVG chrome */
+
+.annot-outline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  opacity: 0.75;
+}
+
+.annot-outline[data-state="selected"] {
+  stroke-dasharray: none;
+  stroke-width: 1.5;
+  opacity: 1;
+}
+
+/* Handles always sit over the page, which is paper white whatever the app theme is — filling
+   them with `--bg-panel` would make them black squares in dark mode. */
+.annot-handles rect {
+  fill: var(--page-paper, #fff);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.annot-marquee {
+  fill: var(--accent);
+  fill-opacity: 0.12;
+  stroke: var(--accent);
+  stroke-dasharray: 4 3;
+}
+
+.annot-eraser {
+  fill: var(--page-paper, #fff);
+  fill-opacity: 0.35;
+  stroke: var(--accent);
+  stroke-dasharray: 3 2;
+}
+
+.annot-placing {
+  fill: var(--accent);
+  fill-opacity: 0.08;
+  stroke: var(--accent);
+}
+
+.annot-ghost {
+  /* an optimistic shape is the real thing, not a hint: no extra styling, only a fade-in */
+  animation: annot-pop var(--dur-instant) var(--ease-out);
+}
+
+@keyframes annot-pop {
+  from {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .annot-ghost {
+    animation: none;
+  }
+}
+
+.annot-probe {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- popover + editors */
+
+.annot-popover {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--elevation-2);
+  color: var(--text-primary);
+}
+
+.annot-popover-head .swatches {
+  flex: 1;
+  min-width: 0;
+}
+
+.annot-popover-head,
+.annot-popover-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.annot-popover-foot {
+  color: var(--text-tertiary);
+}
+
+.annot-note-text {
+  min-height: 64px;
+  resize: vertical;
+  font: inherit;
+}
+
+.annot-text-editor {
+  position: absolute;
+  z-index: 3;
+  margin: 0;
+  padding: 1px 2px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--page-paper, #fff);
+  font-family: var(--font-ui);
+  resize: none;
+  overflow: hidden;
+}
+
+.annot-text-editor:focus-visible {
+  outline: var(--focus-ring);
+}
+
+/* ---------------------------------------------------------------- forms (F-20) */
+
+.form-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.form-field {
+  position: absolute;
+  margin: 0;
+  padding: 0 2px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--page-ink, #1a1c1f);
+  font-family: var(--font-ui);
+  line-height: 1.1;
+}
+
+/* 필드 강조 표시 (UI_SPEC §3). The spec puts this in the tile URL's `hl=1`, which the viewer does
+   not pass yet (STAGE1D_NOTES §7, integration request 2) — and even when it does, an overlay tint
+   is what makes an *empty* field discoverable at any zoom. */
+.form-field[data-highlight]:not(:focus) {
+  border-color: var(--accent);
+  background: var(--page-field);
+}
+
+.form-field:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.form-field:focus,
+.form-field:focus-visible {
+  outline: var(--focus-ring);
+  background: var(--page-paper, #fff);
+}
+
+.form-field:disabled {
+  color: var(--text-disabled);
+}
+
+.form-check {
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.form-check[data-highlight] {
+  outline: 1px solid var(--accent);
+}
+
+.form-readonly {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-style: dashed;
+  border-color: var(--border-default);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 주석 sidebar list */
+
+.annot-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  overflow-y: auto;
+}
+
+.annot-list-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding-block-end: var(--space-2);
+}
+
+.annot-group-label {
+  padding: var(--space-2) var(--space-1) var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-xs);
+}
+
+.annot-row {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  align-items: start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  color: inherit;
+  text-align: start;
+  cursor: default;
+}
+
+.annot-row:hover {
+  background: var(--bg-hover);
+}
+
+.annot-row[data-selected] {
+  border-color: var(--accent);
+  background: var(--bg-selected);
+}
+
+.annot-row .dot {
+  width: 12px;
+  height: 12px;
+  margin-block-start: 3px;
+  border: 1px solid rgb(0 0 0 / 0.15);
+  border-radius: 3px;
+}
+
+.annot-row .meta {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.annot-row .excerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* ---------------------------------------------------------------- inspector extras */
+
+.inspector-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.inspector-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.inspector-note {
+  min-height: 72px;
+  resize: vertical;
+  font: inherit;
+}
+
+.swatch-custom {
+  position: relative;
+  overflow: hidden;
+  background: conic-gradient(#f5533d, #ffd84d, #7bd64a, #4db8ff, #b07bff, #f5533d);
+}
+
+.swatch-custom input {
+  position: absolute;
+  inset: -4px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}

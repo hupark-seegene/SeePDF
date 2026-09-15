@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef } from "react";
 import { ListTree, MessageSquare, RectangleVertical, Search } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { useT } from "../i18n/useT";
@@ -7,6 +7,9 @@ import { shortcutFor } from "../keys/keymap";
 import { Thumbnails } from "../sidebar/Thumbnails";
 import { Outline } from "../sidebar/Outline";
 import { SearchPanel } from "../sidebar/SearchPanel";
+
+// (d): the 주석 list pulls in the annotation actions, so it is code-split like every Stage 1 panel.
+const AnnotationList = lazy(() => import("../sidebar/AnnotationList"));
 import type { IconProps } from "./IconButton";
 import type { ComponentType } from "react";
 
@@ -69,7 +72,11 @@ export function SidebarFrame() {
         {/* 축소판 · 목차 · 검색 are (c)'s panels; 주석 is (d)'s `src/sidebar/AnnotationList.tsx`. */}
         {tab === "thumbnails" && <Thumbnails />}
         {tab === "outline" && <Outline />}
-        {tab === "annotations" && <p className="empty">{t("sidebar.annotations.empty")}</p>}
+        {tab === "annotations" && (
+          <Suspense fallback={<p className="empty">{t("common.loading")}</p>}>
+            <AnnotationList />
+          </Suspense>
+        )}
         {tab === "search" && <SearchPanel />}
       </div>
 

@@ -1,0 +1,328 @@
+/**
+ * Everything that turns a gesture or a panel change into an IPC call, plus the optimism around it
+ * (ARCHITECTURE §10, IPC_CONTRACT §7.1).
+ *
+ * Two behaviours are worth reading before changing anything here:
+ *
+ * * **Ghosts.** `create` pushes a locally-built `Annot` into `annotStore.ghosts` *before* the
+ *   command runs, so the shape is on screen within a frame. When the command resolves we learn the
+ *   generation that contains it (`settleGhost`); the ghost is only dropped once the page has been
+ *   re-rendered at that generation (`annotStore.pageRendered`, fed by the bitmap `onload` in
+ *   `AnnotOverlay`). Dropping it earlier flashes; never dropping it double-draws.
+ * * **Coalescing.** Dragging a slider or an annotation produces one patch per pointer move. They
+ *   are merged per (page, id) and sent once the drag idles for `PATCH_COALESCE_MS` or ends, which
+ *   keeps the engine at one `update_annotation` — and therefore one undo step — per gesture.
+ */
+import * as api from "../ipc/api";
+import type { Annot, AnnotId, AnnotPatch, AnnotSpec, DocId, PageIndex, Rect } from "../ipc/types";
+import { useAnnotStore } from "../store/annotStore";
+import { useAppStore } from "../store/appStore";
+import { useDocStore } from "../store/docStore";
+import { boundsOfPaths, boundsOfRects } from "../tools/geometry";
+import { NOTE_SIZE_PT } from "../tools/note";
+
+/** A drag idling this long flushes its coalesced patch. 140 ms ≈ the panel's own repaint budget. */
+export const PATCH_COALESCE_MS = 140;
+
+let ghostSeq = 0;
+
+function docId(): DocId | null {
+  return useDocStore.getState().info?.docId ?? null;
+}
+
+/** A locally-built `Annot` for the optimistic overlay — the engine's version replaces it later. */
+export function ghostFromSpec(page: PageIndex, spec: AnnotSpec, author: string | null): Annot {
+  const now = new Date().toISOString();
+  const base: Annot = {
+    id: `ghost-${++ghostSeq}`,
+    page,
+    kind: spec.kind === "signature" ? "signature" : (spec.kind as Annot["kind"]),
+    subtype: "Square",
+    rect: { l: 0, b: 0, r: 0, t: 0 },
+    color: [0, 0, 0],
+    fillColor: null,
+    opacity: 1,
+    borderWidth: 1,
+    contents: "",
+    author,
+    created: now,
+    modified: now,
+    hidden: false,
+    printed: true,
+    locked: false,
+    editable: "full",
+  };
+  switch (spec.kind) {
+    case "highlight":
+    case "underline":
+    case "strikeout":
+    case "squiggly":
+      return { ...base, subtype: cap(spec.kind), quads: spec.rects, rect: boundsOfRects(spec.rects), color: spec.color, opacity: spec.opacity, contents: spec.contents ?? "" };
+    case "note":
+      return {
+        ...base,
+        subtype: "Text",
+        color: spec.color,
+        contents: spec.contents,
+        rect: { l: spec.at[0], t: spec.at[1], r: spec.at[0] + NOTE_SIZE_PT, b: spec.at[1] - NOTE_SIZE_PT },
+      };
+    case "ink":
+    case "signature":
+      return { ...base, subtype: "Ink", inkPaths: spec.paths, rect: boundsOfPaths(spec.paths), color: spec.color, borderWidth: spec.width, opacity: spec.opacity };
+    case "square":
+    case "circle":
+      return { ...base, subtype: spec.kind === "square" ? "Square" : "Circle", rect: spec.rect, color: spec.color, fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity };
+    case "line":
+    case "arrow":
+      return {
+        ...base,
+        subtype: "Ink",
+        linePoints: [spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]],
+        inkPaths: [[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]],
+        rect: boundsOfPaths([[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]]),
+        color: spec.color,
+        borderWidth: spec.width,
+        opacity: spec.opacity,
+      };
+    case "textbox":
+      return { ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, contents: spec.text, fontSize: spec.fontSize, color: spec.color, fillColor: spec.fillColor };
+    case "stamp":
+      return { ...base, subtype: "Stamp", rect: spec.rect, stampKind: "builtin" in spec.image ? spec.image.builtin : "image" };
+  }
+}
+
+function cap(s: string): string {
+  return s[0].toUpperCase() + s.slice(1);
+}
+
+export interface CreateOptions {
+  /** redo re-creates an annotation with the same `/NM` (IPC_CONTRACT §7.1) */
+  id?: AnnotId;
+  /** select the result once it exists (everything except a markup drag does) */
+  select?: boolean;
+  /** open the note popover / text editor on the result */
+  edit?: boolean;
+}
+
+/** Create an annotation optimistically. Resolves with the engine's version, or `null` on failure. */
+export async function createAnnotation(page: PageIndex, spec: AnnotSpec, opts: CreateOptions = {}): Promise<Annot | null> {
+  const id = docId();
+  if (!id) return null;
+  const store = useAnnotStore.getState();
+  const author = useAppStore.getState().settings?.author ?? null;
+  const ghost = ghostFromSpec(page, spec, author);
+  store.addGhost(ghost);
+  try {
+    const result = await api.createAnnotation({ docId: id, page, spec, id: opts.id });
+    const annot = result.annot;
+    const generation = result.list.docGeneration;
+    useAnnotStore.getState().setPage(page, result.list.annots, generation);
+    if (annot) {
+      // Keep the ghost until the page bitmap of `generation` has painted it, but re-key it to the
+      // real /NM so a selection or an edit made in the meantime points at the right annotation.
+      useAnnotStore.setState((s) => ({
+        ghosts: s.ghosts.map((g) => (g.annot.id === ghost.id ? { annot: { ...annot }, generation } : g)),
+      }));
+      if (opts.select !== false) useAnnotStore.getState().select([annot.id]);
+      if (opts.edit) useAnnotStore.getState().setEditing({ page, id: annot.id });
+    } else {
+      useAnnotStore.getState().clearGhostById(ghost.id);
+    }
+    return annot;
+  } catch {
+    useAnnotStore.getState().clearGhostById(ghost.id);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------- coalescing
+
+interface PendingPatch {
+  page: PageIndex;
+  id: AnnotId;
+  patch: AnnotPatch;
+}
+
+const pending = new Map<string, PendingPatch>();
+let timer: ReturnType<typeof setTimeout> | null = null;
+let inFlight: Promise<void> = Promise.resolve();
+
+function keyOf(page: PageIndex, id: AnnotId): string {
+  return `${page}:${id}`;
+}
+
+/** Apply a patch to the local copy so the overlay follows the drag without waiting for the engine. */
+function applyLocally(page: PageIndex, id: AnnotId, patch: AnnotPatch): void {
+  const store = useAnnotStore.getState();
+  const found = (store.byPage[page] ?? []).find((a) => a.id === id);
+  const ghost = store.ghosts.find((g) => g.annot.id === id);
+  const source = found ?? ghost?.annot;
+  if (!source) return;
+  const next: Annot = { ...source };
+  if (patch.rect) next.rect = patch.rect;
+  if (patch.rects) next.quads = patch.rects;
+  if (patch.paths) next.inkPaths = patch.paths;
+  if (patch.p1 && patch.p2) next.linePoints = [patch.p1[0], patch.p1[1], patch.p2[0], patch.p2[1]];
+  if (patch.color) next.color = patch.color;
+  if (patch.fillColor !== undefined) next.fillColor = patch.fillColor;
+  if (patch.opacity !== undefined) next.opacity = patch.opacity;
+  if (patch.borderWidth !== undefined) next.borderWidth = patch.borderWidth;
+  if (patch.contents !== undefined) next.contents = patch.contents;
+  if (patch.author !== undefined) next.author = patch.author;
+  if (patch.text !== undefined) next.text = patch.text;
+  if (patch.fontSize !== undefined) next.fontSize = patch.fontSize;
+  if (patch.locked !== undefined) next.locked = patch.locked;
+  if (found) useAnnotStore.getState().upsert(next);
+  if (ghost) {
+    useAnnotStore.setState((s) => ({
+      ghosts: s.ghosts.map((g) => (g.annot.id === id ? { ...g, annot: next } : g)),
+    }));
+  }
+}
+
+/**
+ * Queue a patch. `live` (a slider being dragged, an annotation being moved) coalesces; the final
+ * call of a gesture passes `live: false` and flushes immediately.
+ */
+export function patchAnnotation(page: PageIndex, id: AnnotId, patch: AnnotPatch, live = false): void {
+  const key = keyOf(page, id);
+  const merged = { page, id, patch: { ...(pending.get(key)?.patch ?? {}), ...patch } };
+  pending.set(key, merged);
+  applyLocally(page, id, patch);
+  if (timer) clearTimeout(timer);
+  if (live) {
+    timer = setTimeout(() => void flushPatches(), PATCH_COALESCE_MS);
+  } else {
+    timer = null;
+    void flushPatches();
+  }
+}
+
+/** Send everything queued. Awaited by undo/redo and by save, so nothing is lost on a generation bump. */
+export function flushPatches(): Promise<void> {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  if (pending.size === 0) return inFlight;
+  const batch = [...pending.values()];
+  pending.clear();
+  const id = docId();
+  if (!id) return inFlight;
+  inFlight = inFlight.then(async () => {
+    for (const item of batch) {
+      try {
+        const result = await api.updateAnnotation({ docId: id, page: item.page, id: item.id, patch: item.patch });
+        useAnnotStore.getState().setPage(item.page, result.list.annots, result.list.docGeneration);
+      } catch {
+        // The engine refused (unsupported, stale, locked): re-list so the overlay stops lying.
+        void reloadPage(item.page);
+      }
+    }
+  });
+  return inFlight;
+}
+
+/** `true` while a coalesced patch is still queued — the tests and `undo` both wait on this. */
+export function hasPendingPatches(): boolean {
+  return pending.size > 0;
+}
+
+export function resetPatchQueue(): void {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  pending.clear();
+  inFlight = Promise.resolve();
+}
+
+// ---------------------------------------------------------------- delete / duplicate / list
+
+export async function deleteAnnotations(page: PageIndex, ids: AnnotId[]): Promise<void> {
+  const id = docId();
+  if (!id || ids.length === 0) return;
+  useAnnotStore.getState().remove(page, ids); // optimistic: the shape goes now
+  try {
+    const result = await api.deleteAnnotations({ docId: id, page, ids });
+    useAnnotStore.getState().setPage(page, result.list.annots, result.list.docGeneration);
+  } catch {
+    void reloadPage(page);
+  }
+}
+
+/** ⌘D on a selection: the same annotation, offset by 12 pt so it is visibly a copy. */
+export async function duplicateAnnotations(page: PageIndex, ids: AnnotId[], offset = 12): Promise<void> {
+  const store = useAnnotStore.getState();
+  const annots = (store.byPage[page] ?? []).filter((a) => ids.includes(a.id));
+  const created: AnnotId[] = [];
+  for (const a of annots) {
+    const spec = specFromAnnot(a, offset, offset);
+    if (!spec) continue;
+    const made = await createAnnotation(page, spec, { select: false });
+    if (made) created.push(made.id);
+  }
+  if (created.length) useAnnotStore.getState().select(created);
+}
+
+/** The inverse of `ghostFromSpec` — used by 복제 and by the annotation clipboard. */
+export function specFromAnnot(a: Annot, dx = 0, dy = 0): AnnotSpec | null {
+  const move = (r: Rect): Rect => ({ l: r.l + dx, r: r.r + dx, b: r.b - dy, t: r.t - dy });
+  switch (a.kind) {
+    case "highlight":
+    case "underline":
+    case "strikeout":
+    case "squiggly":
+      return { kind: a.kind, rects: (a.quads ?? [a.rect]).map(move), color: a.color, opacity: a.opacity, contents: a.contents };
+    case "note":
+      return { kind: "note", at: [a.rect.l + dx, a.rect.t - dy], color: a.color, contents: a.contents };
+    case "ink":
+    case "signature":
+      return {
+        kind: "ink",
+        paths: (a.inkPaths ?? []).map((p) => p.map((v, i) => (i % 2 === 0 ? v + dx : v - dy))),
+        color: a.color,
+        width: a.borderWidth,
+        opacity: a.opacity,
+      };
+    case "square":
+    case "circle":
+      return { kind: a.kind, rect: move(a.rect), color: a.color, fillColor: a.fillColor, width: a.borderWidth, opacity: a.opacity };
+    case "line":
+    case "arrow": {
+      const p = a.linePoints ?? [a.rect.l, a.rect.b, a.rect.r, a.rect.t];
+      return { kind: a.kind, p1: [p[0] + dx, p[1] - dy], p2: [p[2] + dx, p[3] - dy], color: a.color, width: a.borderWidth, opacity: a.opacity };
+    }
+    case "textbox":
+      return { kind: "textbox", rect: move(a.rect), text: a.text ?? a.contents, fontSize: a.fontSize ?? 12, color: a.color, align: "left", fillColor: a.fillColor };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The annotations of a page as the UI sees them: the listed ones, with a ghost of the same id
+ * taking precedence, plus the ghosts the engine has not confirmed yet. This is what hit-testing
+ * and the sidebar read, so a freshly drawn shape is selectable before its command resolves.
+ */
+export function annotsOnPage(page: PageIndex): Annot[] {
+  const s = useAnnotStore.getState();
+  const base = s.byPage[page] ?? [];
+  const ghosts = s.ghosts.filter((g) => g.annot.page === page);
+  if (ghosts.length === 0) return base;
+  const known = new Set(base.map((a) => a.id));
+  return [
+    ...base.map((a) => ghosts.find((g) => g.annot.id === a.id)?.annot ?? a),
+    ...ghosts.filter((g) => !known.has(g.annot.id)).map((g) => g.annot),
+  ];
+}
+
+/** Re-list one page (after a doc-changed, or after a command we could not apply optimistically). */
+export async function reloadPage(page: PageIndex): Promise<void> {
+  const id = docId();
+  if (!id) return;
+  try {
+    const list = await api.listAnnotations({ docId: id, page });
+    useAnnotStore.getState().setPage(page, list.annots, list.docGeneration);
+  } catch {
+    // `unsupported` while (a) is still landing: leave whatever we have rather than blanking it.
+  }
+}
