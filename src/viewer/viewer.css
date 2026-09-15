@@ -1,0 +1,132 @@
+/* The viewer canvas — UI_SPEC §5, ARCHITECTURE §10. Every colour is a token (F-27). */
+
+.canvas.viewer {
+  position: relative;
+  padding: 0;
+  overscroll-behavior: contain;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-x pan-y;
+}
+
+.canvas.viewer[data-tool="select"] {
+  cursor: text;
+}
+
+.canvas.viewer[data-tool="hand"] {
+  cursor: grab;
+}
+
+.canvas.viewer[data-panning] {
+  cursor: grabbing;
+}
+
+.viewer-content {
+  position: relative;
+  /* the sizer for the virtualised pages; children are absolutely positioned */
+}
+
+.viewer .page-shell {
+  position: absolute;
+  background: var(--page-paper, #fff);
+  box-shadow: var(--page-shadow);
+  contain: layout paint;
+}
+
+.viewer .page-bitmaps {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  transform-origin: 0 0;
+  overflow: hidden;
+}
+
+/* Night mode filters the bitmap layer only — never the overlays (ARCHITECTURE §3.4). */
+.viewer .page-bitmaps[data-night="dark"] {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+.viewer .page-bitmaps[data-night="sepia"] {
+  filter: sepia(0.45) saturate(0.85) brightness(0.96);
+}
+
+.viewer .page-bitmaps img {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+/* The low-resolution whole-page placeholder: always mounted, so a page is never blank. */
+.viewer .page-bitmaps .ph {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.viewer .page-bitmaps .page-bitmap {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  opacity: 0;
+  transition: opacity var(--dur-instant) var(--ease-out);
+}
+
+.viewer .page-bitmaps .page-tile {
+  opacity: 0;
+  transition: opacity var(--dur-instant) var(--ease-out);
+}
+
+.viewer .page-bitmaps img[data-loaded] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewer .page-bitmaps img {
+    transition: none;
+  }
+}
+
+/* ------------------------------------------------------------ marks layer */
+
+.viewer .page-marks,
+.viewer .page-annots,
+.viewer .page-forms,
+.viewer .page-surface {
+  position: absolute;
+  inset: 0;
+}
+
+.viewer .page-marks,
+.viewer .page-annots {
+  pointer-events: none;
+}
+
+.viewer .mark {
+  position: absolute;
+  border-radius: 1px;
+  mix-blend-mode: multiply;
+}
+
+.viewer .mark.sel {
+  background: var(--accent);
+  opacity: 0.32;
+}
+
+.viewer .mark.hit {
+  background: var(--swatch-yellow);
+  opacity: 0.55;
+}
+
+.viewer .mark.hit[data-current] {
+  background: var(--swatch-orange);
+  opacity: 0.85;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* An inverted page needs the marks inverted too, or a multiply turns them black. */
+.viewer[data-night] .mark {
+  mix-blend-mode: screen;
+}

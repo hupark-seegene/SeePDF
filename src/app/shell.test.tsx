@@ -28,7 +28,10 @@ describe("app shell", () => {
 
     expect(await screen.findByRole("tab", { name: "주석" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "문서 보기 영역" })).toBeInTheDocument();
-    await waitFor(() => expect(document.querySelectorAll(".page-shell")).toHaveLength(3));
+    // The Stage 1 viewer is virtualised: only the rows inside the ±1.5/2.5-screen window are
+    // mounted, so the assertion is "the canvas painted pages", not "it painted all of them".
+    await waitFor(() => expect(document.querySelectorAll(".page-shell").length).toBeGreaterThan(0));
+    expect(document.querySelector('.page-shell[data-page="0"]')).toBeInTheDocument();
     expect(screen.getByLabelText("페이지 번호")).toHaveValue("1");
     expect(screen.getByText("저장됨")).toBeInTheDocument();
   });

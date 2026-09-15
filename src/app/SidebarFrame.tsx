@@ -3,11 +3,10 @@ import { ListTree, MessageSquare, RectangleVertical, Search } from "lucide-react
 import { IconButton } from "./IconButton";
 import { useT } from "../i18n/useT";
 import { useAppStore, type SidebarTab } from "../store/appStore";
-import { useDocStore } from "../store/docStore";
-import { useViewStore } from "../store/viewStore";
 import { shortcutFor } from "../keys/keymap";
-import { thumbUrl } from "../ipc/protocol";
-import type { OutlineNode } from "../ipc/types";
+import { Thumbnails } from "../sidebar/Thumbnails";
+import { Outline } from "../sidebar/Outline";
+import { SearchPanel } from "../sidebar/SearchPanel";
 import type { IconProps } from "./IconButton";
 import type { ComponentType } from "react";
 
@@ -29,8 +28,6 @@ export function SidebarFrame() {
   const width = useAppStore((s) => s.sidebarWidth);
   const setTab = useAppStore((s) => s.setSidebarTab);
   const setWidth = useAppStore((s) => s.setSidebarWidth);
-  const outline = useDocStore((s) => s.outline);
-  const info = useDocStore((s) => s.info);
   const dragging = useRef(false);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
@@ -69,30 +66,11 @@ export function SidebarFrame() {
       </div>
 
       <div className="sidebar-body" role="tabpanel" aria-label={t(`sidebar.tab.${tab}`)}>
-        {tab === "thumbnails" && (
-          <ol className="thumb-rail">
-            {(info?.pages ?? []).map((page) => (
-              <li key={page.index}>
-                <ThumbPlaceholder index={page.index} ratio={page.heightPt / page.widthPt} />
-              </li>
-            ))}
-          </ol>
-        )}
-
-        {tab === "outline" && (
-          outline.length === 0
-            ? <p className="empty">{t("sidebar.outline.empty")}</p>
-            : <OutlineTree nodes={outline} />
-        )}
-
+        {/* 축소판 · 목차 · 검색 are (c)'s panels; 주석 is (d)'s `src/sidebar/AnnotationList.tsx`. */}
+        {tab === "thumbnails" && <Thumbnails />}
+        {tab === "outline" && <Outline />}
         {tab === "annotations" && <p className="empty">{t("sidebar.annotations.empty")}</p>}
-
-        {tab === "search" && (
-          <div className="search-panel">
-            <input className="field" type="search" placeholder={t("sidebar.search.placeholder")} />
-            <p className="empty">{t("sidebar.search.empty")}</p>
-          </div>
-        )}
+        {tab === "search" && <SearchPanel />}
       </div>
 
       <div
@@ -102,48 +80,5 @@ export function SidebarFrame() {
         onPointerDown={onPointerDown}
       />
     </aside>
-  );
-}
-
-function ThumbPlaceholder({ index, ratio }: { index: number; ratio: number }) {
-  const t = useT();
-  const info = useDocStore((s) => s.info);
-  const currentPage = useViewStore((s) => s.currentPage);
-  const goToPage = useViewStore((s) => s.goToPage);
-  const src = info ? thumbUrl({ doc: info.docId, gen: info.docGeneration, page: index, w: 120 }) : undefined;
-  return (
-    <button
-      type="button"
-      className="thumb"
-      data-current={index === currentPage || undefined}
-      aria-label={t("a11y.pageThumbnail", { n: index + 1 })}
-      aria-current={index === currentPage ? "page" : undefined}
-      onClick={() => goToPage(index)}
-    >
-      <span className="thumb-page" style={{ aspectRatio: `1 / ${ratio}` }}>
-        {src && <img src={src} alt="" draggable={false} />}
-      </span>
-      <span className="thumb-num text-xs">{index + 1}</span>
-    </button>
-  );
-}
-
-function OutlineTree({ nodes, depth = 0 }: { nodes: OutlineNode[]; depth?: number }) {
-  const goToPage = useViewStore((s) => s.goToPage);
-  return (
-    <ul className="outline" style={{ paddingInlineStart: depth === 0 ? 0 : 12 }}>
-      {nodes.map((node, i) => (
-        <li key={`${depth}-${i}-${node.title}`}>
-          <button
-            type="button"
-            className="outline-item"
-            onClick={() => node.page !== null && goToPage(node.page)}
-          >
-            {node.title}
-          </button>
-          {node.children.length > 0 && <OutlineTree nodes={node.children} depth={depth + 1} />}
-        </li>
-      ))}
-    </ul>
   );
 }

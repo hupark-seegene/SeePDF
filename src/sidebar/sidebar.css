@@ -1,0 +1,217 @@
+/* Sidebar panels owned by (c): 축소판 · 목차 · 검색 (UI_SPEC §4). Tokens only (F-27). */
+
+/* ------------------------------------------------------------- thumbnails */
+
+.thumb-list {
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.thumb-sizer {
+  position: relative;
+  width: 100%;
+}
+
+.thumb-list .thumb {
+  position: absolute;
+  inset-inline: 0;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: var(--space-1);
+  padding: 0;
+  border-radius: var(--radius-md);
+}
+
+.thumb-list .thumb:hover {
+  background: var(--bg-hover);
+}
+
+.thumb-list .thumb-page {
+  display: block;
+  background: #fff;
+  border-radius: 2px;
+  box-shadow: var(--page-shadow);
+  overflow: hidden;
+}
+
+.thumb-list .thumb-page img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  display: block;
+}
+
+.thumb-list .thumb[data-current] .thumb-page {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---------------------------------------------------------------- outline */
+
+.outline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.outline li {
+  list-style: none;
+}
+
+.outline-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0\.5);
+  min-width: 0;
+}
+
+.outline-twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+}
+
+button.outline-twisty:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+/* Two classes, because `shell.css` also styles `.outline-item` (as a block) and load order
+   between a component-imported stylesheet and the shell's is not guaranteed. */
+.outline .outline-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  text-align: start;
+  padding: 5px var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+.outline .outline-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.outline .outline-item[data-active] {
+  color: var(--text-primary);
+  background: var(--bg-selected);
+}
+
+.outline .outline-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outline .outline-page {
+  flex: none;
+  margin-inline-start: auto;
+  padding-inline-start: var(--space-2);
+}
+
+/* ----------------------------------------------------------------- search */
+
+.search-panel {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+}
+
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.search-field .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.search-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.search-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+}
+
+.search-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 24px;
+}
+
+.search-nav {
+  display: inline-flex;
+  gap: var(--space-0\.5);
+}
+
+.search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.search-results ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.search-page {
+  margin: 0 0 var(--space-1);
+  text-transform: none;
+}
+
+.search-result {
+  display: block;
+  width: 100%;
+  text-align: start;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-sm);
+}
+
+.search-result:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.search-result[data-current] {
+  background: var(--bg-selected);
+  color: var(--text-primary);
+}
+
+.search-result mark {
+  background: transparent;
+  color: var(--text-primary);
+  font-weight: 600;
+}
