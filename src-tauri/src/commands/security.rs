@@ -7,7 +7,8 @@
 //! (**not** 3, the deprecated value); `set_password`, `remove_metadata` and `set_metadata`
 //! need `lopdf`, which is a P1 dependency.
 
-use crate::engine::EngineHandle;
+use crate::engine::redact;
+use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
     BytesWritten, DocInfo, DocMeta, PageIndex, Permissions, RedactOptions, RedactPreview,
     RedactResult, Rect,
@@ -17,23 +18,41 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn redact_preview(
-    _engine: State<'_, EngineHandle>,
-    _doc_id: String,
-    _page: PageIndex,
-    _rects: Vec<Rect>,
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    rects: Vec<Rect>,
 ) -> Result<RedactPreview, EngineError> {
-    Err(EngineError::unsupported("redact_preview"))
+    engine
+        .call(Lane::Interactive, "redact_preview", move |st| {
+            let doc = st.doc_mut(&doc_id)?;
+            redact::preview(doc, page, &rects)
+        })
+        .await
 }
 
 #[tauri::command]
 pub async fn apply_redactions(
-    _engine: State<'_, EngineHandle>,
-    _doc_id: String,
-    _page: PageIndex,
-    _rects: Vec<Rect>,
-    _options: RedactOptions,
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    rects: Vec<Rect>,
+    options: RedactOptions,
 ) -> Result<RedactResult, EngineError> {
-    Err(EngineError::unsupported("apply_redactions"))
+    engine
+        .call(Lane::Edit, "apply_redactions", move |st| {
+            // `apply_verified` owns the whole contract: pre-flight refusal, one
+            // `registry::mutate` (= one undo step), post-condition, and the byte-snapshot
+            // rollback if either verification point fires.
+            let removed = redact::apply_verified(st, &doc_id, page, &rects, &options)?;
+            Ok(RedactResult {
+                removed_objects: removed,
+                // `apply` only returns `Ok` when the post-condition held.
+                verified: true,
+                doc_generation: st.doc(&doc_id)?.generation,
+            })
+        })
+        .await
 }
 
 /// P1.

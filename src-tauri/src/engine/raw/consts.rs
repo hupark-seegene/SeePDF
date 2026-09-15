@@ -77,6 +77,33 @@ pub const FPDF_REMOVE_SECURITY_DEPRECATED: u32 = 3;
 /// The value that actually removes security in build 8057 (pages spike §8).
 pub const FPDF_REMOVE_SECURITY: u32 = 4;
 
+// --- form field types (FPDFAnnot_GetFormFieldType) ---
+pub const FPDF_FORMFIELD_UNKNOWN: c_int = 0;
+pub const FPDF_FORMFIELD_PUSHBUTTON: c_int = 1;
+pub const FPDF_FORMFIELD_CHECKBOX: c_int = 2;
+pub const FPDF_FORMFIELD_RADIOBUTTON: c_int = 3;
+pub const FPDF_FORMFIELD_COMBOBOX: c_int = 4;
+pub const FPDF_FORMFIELD_LISTBOX: c_int = 5;
+pub const FPDF_FORMFIELD_TEXTFIELD: c_int = 6;
+pub const FPDF_FORMFIELD_SIGNATURE: c_int = 7;
+pub const FPDF_FORMFIELD_XFA: c_int = 8;
+
+// --- form field flags (/Ff), PDF 32000-1 table 227/228/229 ---
+/// Bit 1: the field may not be changed by the user.
+pub const FPDF_FORMFLAG_READONLY: c_int = 1 << 0;
+/// Bit 2: the field must have a value when the form is submitted.
+pub const FPDF_FORMFLAG_REQUIRED: c_int = 1 << 1;
+/// Text fields, bit 13: multi-line.
+pub const FPDF_FORMFLAG_TEXT_MULTILINE: c_int = 1 << 12;
+/// Text fields, bit 14: password.
+pub const FPDF_FORMFLAG_TEXT_PASSWORD: c_int = 1 << 13;
+/// Text fields, bit 25: comb (fixed-pitch cells; needs /MaxLen).
+pub const FPDF_FORMFLAG_TEXT_COMB: c_int = 1 << 24;
+/// Choice fields, bit 18: combo box (rather than list box).
+pub const FPDF_FORMFLAG_CHOICE_COMBO: c_int = 1 << 17;
+/// Choice fields, bit 22: multiple selection allowed.
+pub const FPDF_FORMFLAG_CHOICE_MULTISELECT: c_int = 1 << 21;
+
 // --- bitmap formats ---
 pub const FPDFBITMAP_GRAY: c_int = 1;
 pub const FPDFBITMAP_BGR: c_int = 2;
@@ -104,5 +131,9 @@ mod tests {
         assert_eq!(FPDFBITMAP_BGRA, 4);
         // 3 is FPDF_REMOVE_SECURITY_DEPRECATED; 4 is the one that works on build 8057.
         assert_eq!(FPDF_REMOVE_SECURITY, 4);
+        assert_eq!(FPDF_FORMFIELD_TEXTFIELD, 6);
+        assert_eq!(FPDF_FORMFIELD_RADIOBUTTON, 3);
+        assert_eq!(FPDF_FORMFLAG_TEXT_MULTILINE, 4096);
+        assert_eq!(FPDF_FORMFLAG_TEXT_COMB, 16_777_216);
     }
 }

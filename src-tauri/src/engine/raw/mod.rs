@@ -15,9 +15,12 @@
 //! * stay on the engine thread — PDFium has no thread safety of its own;
 //! * keep `unsafe` to the single FFI line and return `Result<_, EngineError>`.
 
+pub mod annot;
 pub mod consts;
 pub mod doc;
 pub mod form;
+pub mod page;
+pub mod save;
 
 use pdfium_render::prelude::{Pdfium, PdfiumLibraryBindings};
 

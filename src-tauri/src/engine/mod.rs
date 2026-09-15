@@ -8,10 +8,13 @@
 //!   regeneration strategy applied);
 //! * [`raw`] — the only `unsafe` in the tree.
 
+pub mod annot;
+pub mod form;
 pub mod history;
 pub mod jobs;
 pub mod page_lru;
 pub mod raw;
+pub mod redact;
 pub mod registry;
 pub mod render;
 pub mod stats;
