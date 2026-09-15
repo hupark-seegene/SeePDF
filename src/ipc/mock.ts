@@ -106,6 +106,8 @@ function mutate<T>(
     structure: opts.structure ?? false,
     dirty: d.info.dirty,
     reason: opts.reason,
+    canUndo: d.info.canUndo,
+    canRedo: d.info.canRedo,
   });
   return out;
 }
@@ -722,6 +724,7 @@ export const mock = {
     mockEvents.emit("doc-changed", {
       docId: d.info.docId, docGeneration: d.info.docGeneration, changedPages: "all",
       structure: false, dirty: false, reason: "save",
+      canUndo: d.info.canUndo, canRedo: d.info.canRedo,
     });
     mockEvents.emit("doc-saved", { docId: d.info.docId, path: a.path, docGeneration: d.info.docGeneration });
     return { docId: d.info.docId, path: a.path, bytes: d.info.bytes, docGeneration: d.info.docGeneration, elapsedMs: 120 };
@@ -767,6 +770,7 @@ export const mock = {
     mockEvents.emit("doc-changed", {
       docId: d.info.docId, docGeneration: d.info.docGeneration, changedPages: "all",
       structure: true, dirty: d.info.dirty, reason: "undo",
+      canUndo: d.info.canUndo, canRedo: d.info.canRedo,
     });
     return structuredClone(d.info);
   },
@@ -782,6 +786,7 @@ export const mock = {
     mockEvents.emit("doc-changed", {
       docId: d.info.docId, docGeneration: d.info.docGeneration, changedPages: "all",
       structure: true, dirty: d.info.dirty, reason: "redo",
+      canUndo: d.info.canUndo, canRedo: d.info.canRedo,
     });
     return structuredClone(d.info);
   },
@@ -918,9 +923,18 @@ function applyPageOp(d: MockDoc, op: PageOp): void {
       d.info.pages = pages.filter((p) => !op.pages.includes(p.index));
       break;
     case "rotate":
-      d.info.pages = pages.map((p) =>
-        op.pages.includes(p.index) ? { ...p, rotation: (((p.rotation + op.delta) % 360) as PageGeom["rotation"]) } : p,
-      );
+      // `PageGeom.widthPt/heightPt` are the **display** size (IPC_CONTRACT §4), so a quarter turn
+      // swaps them — the organizer's cells re-aspect off exactly this (STAGE1E_NOTES §3, §5.5).
+      d.info.pages = pages.map((p) => {
+        if (!op.pages.includes(p.index)) return p;
+        const quarter = op.delta % 180 !== 0;
+        return {
+          ...p,
+          rotation: (((p.rotation + op.delta) % 360) as PageGeom["rotation"]),
+          widthPt: quarter ? p.heightPt : p.widthPt,
+          heightPt: quarter ? p.widthPt : p.heightPt,
+        };
+      });
       break;
     case "insertBlank": {
       const size = typeof op.size === "string"

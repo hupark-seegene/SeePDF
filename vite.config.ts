@@ -2,12 +2,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import process from "node:process";
+// Dev-server-only: the Stage 2 smoke drives the real app through this (never in a build).
+import { devBridge } from "./scripts/dev-bridge.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [react()],
+  plugins: [react(), devBridge()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

@@ -81,7 +81,7 @@ describe("docStore", () => {
       changedPages: [0],
       structure: false,
       dirty: true,
-      reason: "edit",
+      reason: "edit", canUndo: true, canRedo: false,
     });
     expect(useDocStore.getState().info?.docGeneration).toBe(9);
     expect(useDocStore.getState().info?.dirty).toBe(true);

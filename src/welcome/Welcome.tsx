@@ -18,7 +18,7 @@ import { shortcutFor } from "../keys/keymap";
 import { openContextMenu } from "../app/contextMenuStore";
 import { openDialog } from "../dialogs/dialogState";
 import * as api from "../ipc/api";
-import type { RecentEntry } from "../ipc/types";
+import type { RecentEntry, Settings as AppSettings } from "../ipc/types";
 import "./welcome.css";
 
 /** A password prompt is already on screen for these — the welcome screen stays quiet. */
@@ -26,10 +26,16 @@ function isPasswordError(code: string): boolean {
   return code === "passwordRequired" || code === "passwordWrong";
 }
 
-/** Recents count rides in `Settings.toolDefaults` — the frozen `Settings` has no field for it. */
-function recentsLimit(toolDefaults: Record<string, unknown> | undefined): number {
-  const raw = toolDefaults?.recentsCount;
-  return typeof raw === "number" && raw > 0 ? raw : 20;
+
+/**
+ * `Settings.recentsCount` (Stage 2) with the pre-Stage-2 `toolDefaults.recentsCount` as a
+ * fallback. Three lines rather than an import from `dialogs/SettingsDialog`, which would pull
+ * the whole settings sheet into the welcome chunk.
+ */
+function recentsLimit(settings: AppSettings | null): number {
+  if (typeof settings?.recentsCount === "number" && settings.recentsCount >= 0) return settings.recentsCount;
+  const legacy = settings?.toolDefaults?.recentsCount;
+  return typeof legacy === "number" && legacy > 0 ? legacy : 20;
 }
 
 export function Welcome() {
@@ -54,7 +60,7 @@ export function Welcome() {
       : recents;
     return [...matched]
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.lastOpened.localeCompare(a.lastOpened))
-      .slice(0, recentsLimit(settings?.toolDefaults));
+      .slice(0, recentsLimit(settings));
   }, [recents, filter, settings]);
 
   const open = async (path: string) => {

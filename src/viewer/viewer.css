@@ -28,7 +28,7 @@
 
 .viewer .page-shell {
   position: absolute;
-  background: var(--page-paper, #fff);
+  background: var(--page-paper);
   box-shadow: var(--page-shadow);
   contain: layout paint;
 }

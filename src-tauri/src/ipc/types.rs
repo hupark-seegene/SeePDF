@@ -187,7 +187,26 @@ pub struct DocInfo {
 pub struct OutlineNode {
     pub title: String,
     pub page: Option<PageIndex>,
+    /// Stage 2 (`STAGE1C_NOTES.md` §7.1): where on the page the heading is, in PDF user space,
+    /// so 목차 scrolls to the heading rather than to the top of the page. `None` when the
+    /// destination is a plain page reference or a fit-to-window view, which is the common case.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub dest: Option<OutlineDest>,
     pub children: Vec<OutlineNode>,
+}
+
+/// A `/Dest` reduced to what a scroller can use. All three are optional because the PDF
+/// "retain the current value" convention writes them as null.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlineDest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub x: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub y: Option<f32>,
+    /// Zoom **factor** (1.0 == 100 %), as the PDF stores it; 0 means "retain".
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub zoom: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1045,6 +1064,10 @@ pub struct DocChangedPayload {
     pub structure: bool,
     pub dirty: bool,
     pub reason: ChangeReason,
+    /// Stage 2: the history state travels with the event so the title bar's ↶ / ↷ stay honest
+    /// without a `get_document` round trip per edit (`STAGE1D_NOTES.md` §7.4).
+    pub can_undo: bool,
+    pub can_redo: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1158,10 +1181,19 @@ pub struct Settings {
     pub author: String,
     pub render_quality: RenderQuality,
     pub tile_cache_mb: u32,
+    /// How many entries the welcome screen and ⇧⌘O show (0 = do not keep recents).
+    /// Stage 2: a first-class field, so it no longer rides in `tool_defaults`
+    /// (`STAGE1E_NOTES.md` §5.3). `serde(default)` keeps settings written before it readable.
+    #[serde(default = "default_recents_count")]
+    pub recents_count: u32,
     pub backups_enabled: bool,
     pub ocr_languages: Vec<String>,
     pub ocr_dpi: OcrDpi,
     pub tool_defaults: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_recents_count() -> u32 {
+    20
 }
 
 impl Default for Settings {
@@ -1175,6 +1207,7 @@ impl Default for Settings {
             author: String::new(),
             render_quality: RenderQuality::Balanced,
             tile_cache_mb: 64,
+            recents_count: default_recents_count(),
             backups_enabled: true,
             ocr_languages: vec!["kor".into(), "eng".into()],
             ocr_dpi: OcrDpi::Auto(OcrDpiAuto::Auto),

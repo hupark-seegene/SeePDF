@@ -71,7 +71,13 @@ export interface DocInfo {
   encrypted: boolean; permissions: Permissions; hasForm: boolean; xfa: boolean;
   hasOutline: boolean; meta: DocMeta; pdfVersion: string; tagged: boolean;
 }
-export interface OutlineNode { title: string; page: PageIndex | null; children: OutlineNode[] }
+/** Where on the page a `/Dest` points, PDF user space. Absent for a plain page reference. */
+export interface OutlineDest { x?: number; y?: number; zoom?: number }
+export interface OutlineNode {
+  title: string; page: PageIndex | null;
+  dest?: OutlineDest;                     // Stage 2: scroll to the heading, not to the page top
+  children: OutlineNode[];
+}
 export interface OpenRequest { path: string; source: 'argv' | 'macos-opened' | 'drop' | 'dialog' | 'recent' }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +261,8 @@ export interface OpenFileEvent { path: string; source: OpenRequest['source'] }
 export interface DocChangedEvent {
   docId: DocId; docGeneration: DocGeneration; changedPages: PageIndex[] | 'all';
   structure: boolean; dirty: boolean; reason: 'edit' | 'undo' | 'redo' | 'save' | 'pages' | 'ocr' | 'redact';
+  /** Stage 2: history state rides along, so ⌘Z/⇧⌘Z need no `get_document` per edit. */
+  canUndo: boolean; canRedo: boolean;
 }
 export interface DocSavedEvent { docId: DocId; path: string; docGeneration: DocGeneration }
 export interface RecentsChangedEvent {}
@@ -281,7 +289,8 @@ export interface Settings {
   locale: 'ko' | 'en'; theme: 'system' | 'light' | 'dark';
   defaultLayout: 'single' | 'continuous' | 'two'; defaultZoom: 'fit-width' | 'fit-page' | 'actual' | number;
   restorePosition: boolean; author: string; renderQuality: 'balanced' | 'high';
-  tileCacheMb: number; backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
+  tileCacheMb: number; recentsCount: number;   // Stage 2: no longer inside `toolDefaults`
+  backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
   toolDefaults: Record<string, unknown>;
 }
 

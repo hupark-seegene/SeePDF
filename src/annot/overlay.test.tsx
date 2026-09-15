@@ -13,7 +13,7 @@ import { makePageLayerContext } from "../viewer";
 import { useAnnotStore } from "../store/annotStore";
 import { useDocStore } from "../store/docStore";
 import { createAnnotation, resetPatchQueue } from "./actions";
-import { RenderProbe } from "./RenderProbe";
+import { PageShell } from "../viewer/PageShell";
 import { AnnotOverlay } from "./AnnotOverlay";
 
 const SQUARE: AnnotSpec = { kind: "square", rect: { l: 10, b: 10, r: 60, t: 60 }, color: [245, 83, 61], fillColor: null, width: 2, opacity: 1 };
@@ -44,23 +44,61 @@ describe("annot overlay", () => {
     const annot = await createAnnotation(0, SQUARE);
     expect(annot).not.toBeNull();
     expect(useAnnotStore.getState().ghosts).toHaveLength(1);
+    const ghostGeneration = useAnnotStore.getState().ghosts[0].generation;
+    expect(ghostGeneration).not.toBeNull();
 
-    const { container } = render(<RenderProbe ctx={ctx} />);
-    const img = container.querySelector("img.annot-probe");
+    // Stage 2: the ghost settles on `PageShell`'s own bitmap `onload`, at the generation the
+    // shell is rendering (ARCHITECTURE §10) — no probe `<img>` of its own any more.
+    const { container } = render(
+      <PageShell
+        ctx={{ ...ctx, docGeneration: ghostGeneration as number }}
+        left={0}
+        top={0}
+        bitmapScale={1}
+        bitmapWidth={ctx.width}
+        bitmapHeight={ctx.height}
+        placeholderUrl="data:image/png;base64,iVBORw0KGgo="
+        bitmapUrl={null}
+        tiles={[]}
+        night="off"
+        current
+        label="page 1"
+        onTileLoad={() => undefined}
+        onTileError={() => undefined}
+        onPageRendered={(page, generation) => useAnnotStore.getState().pageRendered(page, generation)}
+      />,
+    );
+    const img = container.querySelector("img.ph");
     expect(img).not.toBeNull();
-    // The probe asks for the very bitmap `PageShell` is loading for this generation, so it is a
-    // cache hit rather than a second render (IPC_CONTRACT §9). The mock answers with a data: URL,
-    // so only its presence is asserted here; the generation logic is covered in `sync.test.ts`.
-    expect(img?.getAttribute("src")).toBeTruthy();
-
     fireEvent.load(img as Element);
     expect(useAnnotStore.getState().ghosts).toHaveLength(0);
   });
 
-  it("mounts no probe while there is nothing optimistic on the page", async () => {
+  it("a bitmap for an older generation leaves the ghost alone", async () => {
     const { ctx } = await openAndContext();
-    const { container } = render(<RenderProbe ctx={ctx} />);
-    expect(container.querySelector("img.annot-probe")).toBeNull();
+    await createAnnotation(0, SQUARE);
+    expect(useAnnotStore.getState().ghosts).toHaveLength(1);
+    const { container } = render(
+      <PageShell
+        ctx={{ ...ctx, docGeneration: 1 }}
+        left={0}
+        top={0}
+        bitmapScale={1}
+        bitmapWidth={ctx.width}
+        bitmapHeight={ctx.height}
+        placeholderUrl="data:image/png;base64,iVBORw0KGgo="
+        bitmapUrl={null}
+        tiles={[]}
+        night="off"
+        current
+        label="page 1"
+        onTileLoad={() => undefined}
+        onTileError={() => undefined}
+        onPageRendered={(page, generation) => useAnnotStore.getState().pageRendered(page, generation)}
+      />,
+    );
+    fireEvent.load(container.querySelector("img.ph") as Element);
+    expect(useAnnotStore.getState().ghosts).toHaveLength(1);
   });
 
   it("outlines a listed annotation instead of repainting it, and paints a ghost in full", async () => {

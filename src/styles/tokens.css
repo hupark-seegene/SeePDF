@@ -83,6 +83,15 @@
   --swatch-red: #f5533d;
   --swatch-black: #2b2f33;
 
+  /* 14.3b the page itself — paper, ink and the form-field wash.
+     Defined **once** and deliberately NOT redefined per theme: these are the colours of paper,
+     not of chrome, and a dark-mode swap would paint black handles and light-grey form text onto
+     a white page. Night mode is a filter on `.page-bitmaps`, not a token change.
+     (STAGE1C_NOTES §8, STAGE1D_NOTES §7.3.) */
+  --page-paper: #ffffff;
+  --page-ink: #1a1c1f;
+  --page-field: rgb(47 111 235 / 0.1);
+
   color-scheme: light;
 }
 

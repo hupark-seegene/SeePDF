@@ -96,7 +96,7 @@ export function Outline() {
                 className="outline-item"
                 data-active={row.key === activeKey || undefined}
                 disabled={row.node.page === null}
-                onClick={() => row.node.page !== null && goToPage(row.node.page)}
+                onClick={() => row.node.page !== null && goToPage(row.node.page, row.node.dest?.y)}
               >
                 <span className="outline-title">{row.node.title}</span>
                 {row.node.page !== null && <span className="outline-page text-xs mono dim">{row.node.page + 1}</span>}

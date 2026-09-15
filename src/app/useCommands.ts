@@ -16,6 +16,7 @@ import { usePagesStore } from "../store/pagesStore";
 import { openDialog } from "../dialogs/dialogState";
 import { openContextMenu, type MenuEntry } from "./contextMenuStore";
 import { toolController } from "../tools/ToolController";
+import { clearTextSelection, findStep, selectAllOnCurrentPage } from "../viewer/viewerCommands";
 import { runAnnotCommand } from "../tools/commands";
 import type { PageOp } from "../ipc/types";
 
@@ -133,9 +134,39 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "edit.find":
         app.setSidebarTab("search");
         return;
-      case "edit.selectAll":
-        if (app.mode === "pages" && info) pages.selectAll(info.pageCount);
+      // The native Edit menu owns ⌘G / ⇧⌘G / ⌘A and emits `menu:<id>`, so these three are
+      // dispatched here and nowhere else (the duplicate listener inside the viewer is gone,
+      // STAGE1C_NOTES §7.2). The viewer exports the three primitives.
+      case "edit.findNext":
+        findStep(1);
         return;
+      case "edit.findPrevious":
+        findStep(-1);
+        return;
+      case "edit.deselect":
+        clearTextSelection();
+        return;
+      case "edit.selectAll": {
+        // An input / textarea / contenteditable selects its own value first: Select All is a
+        // custom menu item now, so WebKit no longer does this for us.
+        const el = typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null);
+        const tag = el?.tagName?.toLowerCase();
+        if (tag === "input" || tag === "textarea") {
+          (el as HTMLInputElement).select();
+          return;
+        }
+        if (el?.isContentEditable) {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const selection = document.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+          return;
+        }
+        if (app.mode === "pages" && info) return pages.selectAll(info.pageCount);
+        selectAllOnCurrentPage();
+        return;
+      }
       case "edit.delete":
         if (app.mode === "pages" && info && target.length) {
           pages.clear();

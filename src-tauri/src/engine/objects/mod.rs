@@ -431,8 +431,10 @@ pub fn edit_text(
                         )
                         .with_page(page_index));
                     }
-                    let mut hangul = fonts::embedded_token(&scratch.page);
-                    let (token, _) = fonts::token_for(doc.pdf_mut(), new_text, &mut hangul)?;
+                    // Prefer a copy already embedded in this page, then the document-level
+                    // token (`OpenDoc::hangul_font`) — one embed per document, not per page.
+                    doc.adopt_hangul_token(&scratch.page);
+                    let (token, _) = doc.hangul_token_for(new_text)?;
                     replace_object(doc.pdf(), &mut scratch.page, object_id, new_text, token, &patch)?;
                     replaced = true;
                 }
@@ -578,11 +580,11 @@ pub fn add_text(
             // `doc`, so the document is still available for `fonts_mut()` afterwards — and the
             // page is what tells us whether the bundled font is already embedded here.
             let mut scratch = ScratchPage::open(doc, page_index)?;
-            let mut hangul = fonts::embedded_token(&scratch.page);
+            doc.adopt_hangul_token(&scratch.page);
             let mut tokens: Vec<PdfFontToken> = Vec::with_capacity(lines.len());
             for line in &lines {
                 let probe = if line.trim().is_empty() { "A" } else { line };
-                let (token, _) = fonts::token_for(doc.pdf_mut(), probe, &mut hangul)?;
+                let (token, _) = doc.hangul_token_for(probe)?;
                 tokens.push(token);
             }
             let document = doc.pdf();

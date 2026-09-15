@@ -126,7 +126,11 @@ export function ToolSurface({ ctx, tool }: ToolSurfaceProps) {
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       onPointerLeave={onPointerLeave}
-      onContextMenu={(e) => e.stopPropagation()}
+      /* No `stopPropagation` on contextmenu: swallowing it hid the canvas menu from every
+         bubble-phase listener (STAGE1E_NOTES §5.2). A layer that wants to own the menu marks
+         itself `data-context-menu` instead — both `App.tsx` and `pageMenus.ts` skip those
+         subtrees — and `App.tsx` still calls `preventDefault()` over a page, so the webview's
+         own menu never appears. */
     />
   );
 }

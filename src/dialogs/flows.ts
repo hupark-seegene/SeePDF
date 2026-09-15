@@ -129,15 +129,7 @@ export async function mergePaths(inputs: { path: string; range?: string }[]): Pr
   try {
     const { info, warnings } = await api.mergeDocuments({ inputs });
     usePagesStore.getState().reset();
-    useDocStore.setState({
-      docId: info.docId,
-      info,
-      outline: [],
-      status: "ready",
-      error: null,
-      changeNonce: useDocStore.getState().changeNonce + 1,
-      changedPages: "all",
-    });
+    useDocStore.getState().adopt(info);
     for (const w of warnings) {
       if (w === "formsDropped") toast("pages.merge.formWarning", undefined, { tone: "info" });
       if (w === "outlineDropped") toast("pages.merge.outlineWarning", undefined, { tone: "info" });
@@ -283,8 +275,16 @@ export async function insertFromFileFlow(at: PageIndex): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * `print_prepare` writes a flattened temp file; the OS handler opens it. Webview printing
- * (`getCurrentWebview().print()`) is the primary path when it is available (WORKPLAN §6).
+ * `print_prepare` writes a flattened temp file (the chosen pages, annotations and filled form
+ * values baked in) and the OS handler opens it, which is what actually reaches paper.
+ *
+ * Webview printing is **deliberately the fallback**, not the primary path: it is available —
+ * `core:webview:allow-print` is in `capabilities/default.json` and the `plugin:webview|print`
+ * command opens the macOS print panel — but what it prints is the webview's **DOM**, i.e. the
+ * SeePDF toolbar, sidebar and canvas element, on one sheet. F-26 wants the rendered pages, so
+ * that path only makes sense once there is a print-only DOM (STAGE1E_NOTES §7.4, P1). Verified
+ * in the Stage 2 smoke: the panel's preview showed the app chrome, "Page 1 of 1"
+ * (`docs/STAGE2_INTEGRATION.md`).
  */
 export async function runPrint(pages: PageIndex[] | undefined): Promise<void> {
   const info = useDocStore.getState().info;
@@ -292,31 +292,46 @@ export async function runPrint(pages: PageIndex[] | undefined): Promise<void> {
   toast("print.preparing", undefined, { timeoutMs: 1800 });
   try {
     const { tempPath } = await api.printPrepare({ docId: info.docId, pages });
-    const printed = await webviewPrint();
-    if (!printed) await openWithOs(tempPath);
+    if (await openWithOs(tempPath)) return;
+    // No OS handler for PDFs: the webview panel at least gets the user to a printer.
+    if (!(await webviewPrint())) toast("print.title", undefined, { tone: "info", detail: tempPath });
   } catch (e) {
     toast("error.generic", undefined, { tone: "danger", detail: message(e) });
   }
 }
 
+/**
+ * The primary print path: ask the webview to print itself, which opens the OS print panel.
+ *
+ * `@tauri-apps/api` 2.11 has no `Webview.print()` binding yet, but the Rust side does have the
+ * `print` core command (`core:webview:allow-print`, in `capabilities/default.json`), so the raw
+ * `invoke` is tried as well. Either way a failure is not an error — `runPrint` falls through to
+ * the flattened temp file plus the OS handler, which is the path WORKPLAN §6 specifies.
+ */
 async function webviewPrint(): Promise<boolean> {
   try {
     const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-    const webview = getCurrentWebview() as unknown as { print?: () => Promise<void> };
-    if (typeof webview.print !== "function") return false;
-    await webview.print();
+    const webview = getCurrentWebview() as unknown as { print?: () => Promise<void>; label?: string };
+    if (typeof webview.print === "function") {
+      await webview.print();
+      return true;
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("plugin:webview|print", { label: webview.label });
     return true;
   } catch {
     return false;
   }
 }
 
-async function openWithOs(path: string): Promise<void> {
+/** Hand the flattened temp file to the OS PDF handler (Preview / Edge / Acrobat). */
+async function openWithOs(path: string): Promise<boolean> {
   try {
     const { openPath: opener } = await import("@tauri-apps/plugin-opener");
     await opener(path);
+    return true;
   } catch {
-    toast("print.title", undefined, { tone: "info", detail: path });
+    return false;
   }
 }
 

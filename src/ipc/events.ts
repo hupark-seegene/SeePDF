@@ -15,17 +15,46 @@ import type {
 
 export type Unsubscribe = () => void;
 
+/**
+ * Calls an unlisten function **at most once**, and never lets it reject.
+ *
+ * React 19 StrictMode mounts every effect twice, and Tauri's own `unlisten` deletes its row in
+ * `window.__TAURI_INTERNALS__.listeners` — a second call then throws
+ * `undefined is not an object (evaluating 'listeners[eventId].handlerId')` as an *unhandled
+ * rejection* (STAGE1C_NOTES §7.3). Nulling the slot before calling makes the second call a
+ * no-op, and the try/catch + `.catch` covers the case where the webview tore the listener down
+ * for us (window close, reload).
+ */
+function once(fn: UnlistenFn | null): { call(): void } {
+  let pending: UnlistenFn | null = fn;
+  return {
+    call() {
+      const f = pending;
+      pending = null;
+      if (!f) return;
+      try {
+        const r = f() as unknown;
+        if (r && typeof (r as Promise<void>).catch === "function") (r as Promise<void>).catch(() => undefined);
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+}
+
 function subscribe<T>(name: string, handler: (payload: T) => void): Unsubscribe {
   if (useMock()) return appBus.on(name, (p) => handler(p as T));
-  let unlisten: UnlistenFn | null = null;
+  let stop = once(null);
   let cancelled = false;
-  void listen<T>(name, (e: TauriEvent<T>) => handler(e.payload)).then((fn) => {
-    if (cancelled) fn();
-    else unlisten = fn;
-  });
+  void listen<T>(name, (e: TauriEvent<T>) => handler(e.payload))
+    .then((fn) => {
+      stop = once(fn);
+      if (cancelled) stop.call();
+    })
+    .catch(() => undefined);
   return () => {
     cancelled = true;
-    unlisten?.();
+    stop.call();
   };
 }
 
@@ -79,18 +108,19 @@ export function onFileDrop(handler: (e: DropPayload) => void): Unsubscribe {
       window.removeEventListener("drop", drop);
     };
   }
-  let unlisten: UnlistenFn | null = null;
+  let stop = once(null);
   let cancelled = false;
   void getCurrentWebview()
     .onDragDropEvent((e) => {
       if (e.payload.type === "drop") handler({ paths: e.payload.paths });
     })
     .then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
+      stop = once(fn);
+      if (cancelled) stop.call();
+    })
+    .catch(() => undefined);
   return () => {
     cancelled = true;
-    unlisten?.();
+    stop.call();
   };
 }

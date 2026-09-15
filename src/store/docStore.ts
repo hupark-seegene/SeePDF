@@ -22,6 +22,8 @@ export interface DocState {
   changedPages: PageIndex[] | "all";
 
   open(path: string, password?: string): Promise<DocInfo | null>;
+  /** Take a `DocInfo` the caller already has (merge, page ops, save) as the open document. */
+  adopt(info: DocInfo): void;
   close(): Promise<void>;
   refresh(): Promise<void>;
   applyDocChanged(e: DocChangedEvent): void;
@@ -52,6 +54,27 @@ export const useDocStore = create<DocState>((set, get) => ({
     }
   },
 
+  adopt(info) {
+    const outline = get().docId === info.docId ? get().outline : [];
+    set({
+      docId: info.docId,
+      info,
+      outline,
+      status: "ready",
+      error: null,
+      changedPages: "all",
+      changeNonce: get().changeNonce + 1,
+    });
+    if (info.hasOutline && outline.length === 0) {
+      void api
+        .getOutline({ docId: info.docId })
+        .then((nodes) => {
+          if (get().docId === info.docId) set({ outline: nodes });
+        })
+        .catch(() => undefined);
+    }
+  },
+
   async close() {
     const docId = get().docId;
     if (docId) await api.closeDocument({ docId }).catch(() => undefined);
@@ -68,8 +91,17 @@ export const useDocStore = create<DocState>((set, get) => ({
   applyDocChanged(e) {
     const info = get().info;
     if (!info || info.docId !== e.docId) return;
+    // Stage 2: `canUndo`/`canRedo` ride on the event (IPC_CONTRACT §8), so the title bar's
+    // ↶ / ↷ stay honest without a `get_document` per edit (STAGE1D_NOTES §7.4). The labels
+    // still come from `DocInfo`, and a structural change refreshes anyway.
     set({
-      info: { ...info, docGeneration: e.docGeneration, dirty: e.dirty },
+      info: {
+        ...info,
+        docGeneration: e.docGeneration,
+        dirty: e.dirty,
+        canUndo: e.canUndo ?? info.canUndo,
+        canRedo: e.canRedo ?? info.canRedo,
+      },
       changedPages: e.changedPages,
       changeNonce: get().changeNonce + 1,
     });

@@ -116,6 +116,8 @@ export function Thumbnails() {
             key={row.page}
             type="button"
             className="thumb"
+            /* the context menu reads the page off the DOM (STAGE1E_NOTES §5.1) */
+            data-page={row.page}
             role="option"
             aria-selected={row.page === currentPage}
             aria-label={t("a11y.pageThumbnail", { n: row.page + 1 })}

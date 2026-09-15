@@ -6,6 +6,7 @@
  * anything about the scroller), and the overlays of (d)/(e) arrive through the `layers` slot of
  * `PageShell`.
  */
+import type { DocGeneration, PageIndex } from "../ipc/types";
 import { useDocStore } from "../store/docStore";
 import { Scroller } from "./Scroller";
 import type { PageLayerRenderer } from "./PageShell";
@@ -15,16 +16,30 @@ import "./viewer.css";
 export interface ViewerProps {
   /** (d)/(e): one call per mounted page, returns the annotation / form / pointer layers. */
   layers?: PageLayerRenderer;
+  /** 필드 강조 표시 (IPC_CONTRACT §9 `hl=1`) — (d) drives it from `formStore`. */
+  fieldHighlight?: boolean;
+  /**
+   * The engine has painted `page` at `docGeneration`. (d) settles its optimistic annotation
+   * ghosts here — ARCHITECTURE §10, replacing `annot/RenderProbe.tsx`.
+   */
+  onPageRendered?(page: PageIndex, docGeneration: DocGeneration): void;
 }
 
-export function Viewer({ layers }: ViewerProps) {
+export function Viewer({ layers, fieldHighlight, onPageRendered }: ViewerProps) {
   const info = useDocStore((s) => s.info);
   // Perf probe: `__seepdfOpenAt` → `__seepdfFirstPaint` (PageShell) is the "open → first page
   // painted" number of ARCHITECTURE §13, readable from the devtools console at any time.
   if (info && window.__seepdfOpenAt === undefined) window.__seepdfOpenAt = performance.now();
   useViewerCommands(!!info);
   if (!info) return null;
-  return <Scroller info={info} layers={layers} />;
+  return (
+    <Scroller
+      info={info}
+      layers={layers}
+      fieldHighlight={fieldHighlight}
+      onPageRendered={onPageRendered}
+    />
+  );
 }
 
 export default Viewer;

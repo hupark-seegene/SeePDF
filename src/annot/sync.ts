@@ -43,10 +43,10 @@ export function pagesToReload(changed: PageIndex[] | "all", known: PageIndex[]):
 export async function applyDocChanged(e: DocChangedEvent): Promise<void> {
   const state = useAnnotStore.getState();
   if (boundDoc !== e.docId) return;
-  // `docStore.applyDocChanged` carries only the generation and the dirty flag; `canUndo` /
-  // `canRedo` / `undoLabel` live in `DocInfo` and are what the title bar's ⌘Z button reads, so an
-  // annotation edit has to pull a fresh `DocInfo`. A structural change already refreshes itself.
-  if (!e.structure) void useDocStore.getState().refresh();
+  // Stage 2: `canUndo`/`canRedo` now travel on `doc-changed` and `docStore.applyDocChanged`
+  // folds them into `DocInfo`, so there is no `get_document` per annotation edit any more
+  // (STAGE1D_NOTES §7.4). Only the undo *labels* still need a refresh, and the title bar does
+  // not show them.
   const known = Object.keys(state.byPage).map(Number);
   const pages = pagesToReload(e.changedPages, known);
   if (pages.length === 0) return;

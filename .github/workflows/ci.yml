@@ -88,6 +88,16 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --target ${{ matrix.target }} -- -D warnings
 
+      # Two invocations on purpose. Building the test binaries first and only then running
+      # them is deterministic; `cargo test --release` on its own used to fail roughly one run
+      # in three with `crate X requires panic strategy 'abort'` (STAGE1B_NOTES §5.3). Stage 2
+      # removed the root cause — `crate-type` is `["rlib"]` now, not
+      # `["staticlib", "cdylib", "rlib"]` — and the split invocation is kept because it also
+      # separates a compile failure from a test failure in the CI log.
+      - name: cargo build --release --tests
+        working-directory: src-tauri
+        run: cargo build --release --tests --target ${{ matrix.target }}
+
       - name: cargo test --release
         working-directory: src-tauri
         run: cargo test --release --target ${{ matrix.target }}

@@ -27,7 +27,8 @@ export function pageFromEvent(target: EventTarget | null): { page: PageIndex; so
   if (shell?.dataset.page !== undefined) return { page: Number(shell.dataset.page), source: "canvas" };
   const thumb = el.closest<HTMLElement>(".thumb");
   if (thumb) {
-    // the rail has no data-page yet (a one-line request to (c)); its number chip is the fallback
+    if (thumb.dataset.page !== undefined) return { page: Number(thumb.dataset.page), source: "thumbnail" };
+    // pre-Stage-2 fallback: the number chip, for any rail that has no `data-page`
     const n = Number(thumb.querySelector(".thumb-num")?.textContent);
     if (Number.isFinite(n) && n >= 1) return { page: n - 1, source: "thumbnail" };
   }

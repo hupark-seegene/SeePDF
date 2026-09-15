@@ -7,8 +7,12 @@
   "author": "박현우",
   "renderQuality": "balanced",
   "tileCacheMb": 64,
+  "recentsCount": 20,
   "backupsEnabled": true,
-  "ocrLanguages": ["kor", "eng"],
+  "ocrLanguages": [
+    "kor",
+    "eng"
+  ],
   "ocrDpi": "auto",
   "toolDefaults": {}
 }

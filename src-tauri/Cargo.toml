@@ -12,7 +12,15 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "seepdf_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# `rlib` only, on purpose. The Tauri template ships `["staticlib", "cdylib", "rlib"]` so the
+# same crate can be linked into an iOS/Android host; SeePDF is desktop-only (macOS + Windows)
+# and `src/main.rs` links the `rlib`. Keeping the other two made every build print
+#   `warning: output filename collision at .../libseepdf_lib.{a,dylib,rlib}`
+# and made `cargo test --release` fail roughly one run in three with 173 errors of
+# `crate X requires panic strategy 'abort' ... incompatible with 'unwind'` (`[profile.release]
+# panic = "abort"` applies to the cdylib/staticlib units but not to test harnesses, and the
+# colliding artifact paths let a test target link the wrong unit) — STAGE1B_NOTES §5.3.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

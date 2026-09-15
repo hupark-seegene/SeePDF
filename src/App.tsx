@@ -121,6 +121,14 @@ export default function App() {
     return () => document.removeEventListener("contextmenu", onMenu, true);
   }, []);
 
+  // 4b. dev only: the Stage 2 smoke drives the real app through `scripts/dev-bridge.mjs`.
+  // `import.meta.env.DEV` is statically false in a build, so this whole branch — and the
+  // `src/dev/**` chunk it imports — is dropped by the bundler.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    void import("./dev/testHook").then((m) => m.startDevBridge(run));
+  }, [run]);
+
   // 5. window title follows the document and its dirty state (UI_SPEC §15.1)
   useEffect(() => {
     document.title = info ? t("app.window.document", { name: `${info.dirty ? "• " : ""}${info.name}` }) : t("app.name");

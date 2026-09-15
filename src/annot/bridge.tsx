@@ -9,6 +9,10 @@
  */
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Viewer, type PageLayerContext, type PageLayers } from "../viewer";
+import { useAnnotStore } from "../store/annotStore";
+import { useAppStore } from "../store/appStore";
+import { useDocStore } from "../store/docStore";
+import { useFormStore } from "../forms/formStore";
 
 interface Host {
   renderLayers(ctx: PageLayerContext): PageLayers;
@@ -64,7 +68,29 @@ export function AnnotatedCanvas() {
     [ready],
   );
 
-  return <Viewer layers={layers} />;
+  // 필드 강조 표시: the engine tints the widgets in the bitmap (`hl=1`, IPC_CONTRACT §9) while
+  // (d)'s overlay tint keeps an *empty* field discoverable at any zoom. Only in 양식 mode, so
+  // no other mode pays a re-render for it.
+  const formMode = useAppStore((s) => s.mode) === "form";
+  const highlight = useFormStore((s) => s.highlight);
+  const hasForm = useDocStore((s) => s.info?.hasForm ?? false);
+
+  return (
+    <Viewer
+      layers={layers}
+      fieldHighlight={formMode && highlight && hasForm}
+      onPageRendered={pageRendered}
+    />
+  );
+}
+
+/**
+ * ARCHITECTURE §10: an optimistic ghost is dropped when the engine's own bitmap for that
+ * generation lands. `PageShell` calls this from the bitmap `onload` — which is what
+ * `annot/RenderProbe.tsx` used to approximate with a second `<img>` (STAGE1D_NOTES §7.1).
+ */
+function pageRendered(page: number, generation: number): void {
+  useAnnotStore.getState().pageRendered(page, generation);
 }
 
 export default AnnotatedCanvas;

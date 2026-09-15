@@ -32,7 +32,6 @@ import {
 } from "./actions";
 import { startAnnotSync } from "./sync";
 import { AnnotOverlay } from "./AnnotOverlay";
-import { RenderProbe } from "./RenderProbe";
 import { ToolSurface } from "./ToolSurface";
 import { NotePopover, TextBoxEditor, type TextDraft } from "./editors";
 import { FormLayer } from "../forms/FormLayer";
@@ -301,7 +300,6 @@ function SurfaceSlot({ ctx }: { ctx: PageLayerContext }) {
 
 function renderLayers(ctx: PageLayerContext): PageLayers {
   return {
-    under: <RenderProbe ctx={ctx} />,
     annotations: <Slots ctx={ctx} />,
     forms: <FormLayer ctx={ctx} />,
     surface: <SurfaceSlot ctx={ctx} />,
@@ -325,6 +323,30 @@ async function pickStamp(id: "stamp" | "signature"): Promise<void> {
     useAppStore.getState().setTool("select");
     toolController.arm("select");
   }
+}
+
+/**
+ * ⌘C / ⌘X / ⌘V for **annotations**, on macOS.
+ *
+ * The native Edit menu's Cut/Copy/Paste are predefined items — they are what makes ⌘C work in a
+ * text field and over the canvas (`viewerCommands.ts`'s clipboard mirror), so they stay — and
+ * macOS routes them through the responder chain into WKWebView, which raises these DOM events.
+ * That is the seam `STAGE1D_NOTES` §7.8 was missing: the key never reaches a `keydown` handler,
+ * but the clipboard event does. The annotation clipboard is in-process (an `AnnotSpec`), so
+ * nothing is written to the system pasteboard.
+ */
+function onClipboardEvent(e: ClipboardEvent): void {
+  if (useAppStore.getState().mode !== "annotate") return;
+  const target = e.target as HTMLElement | null;
+  const tag = target?.tagName?.toLowerCase();
+  if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+  const handled =
+    e.type === "copy"
+      ? copySelection(false)
+      : e.type === "cut"
+        ? copySelection(true)
+        : pasteClipboard();
+  if (handled) e.preventDefault();
 }
 
 function start(): () => void {
@@ -356,9 +378,15 @@ function start(): () => void {
   });
   window.addEventListener("keydown", onKeyDownCapture, true);
   window.addEventListener("pointerup", onPointerUpWindow);
+  document.addEventListener("copy", onClipboardEvent, true);
+  document.addEventListener("cut", onClipboardEvent, true);
+  document.addEventListener("paste", onClipboardEvent, true);
   return () => {
     window.removeEventListener("keydown", onKeyDownCapture, true);
     window.removeEventListener("pointerup", onPointerUpWindow);
+    document.removeEventListener("copy", onClipboardEvent, true);
+    document.removeEventListener("cut", onClipboardEvent, true);
+    document.removeEventListener("paste", onClipboardEvent, true);
     setAnnotCommandHandler(null);
     setStampPicker(null);
     toolController.setSink(null);

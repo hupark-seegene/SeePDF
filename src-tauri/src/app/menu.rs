@@ -32,6 +32,7 @@ pub const MENU_IDS: &[&str] = &[
     "edit.delete",
     "edit.duplicate",
     "edit.deselect",
+    "edit.selectAll",
     "edit.find",
     "edit.findNext",
     "edit.findPrevious",
@@ -114,10 +115,21 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&item("edit.undo", "Undo", Some("CmdOrCtrl+Z"))?)
         .item(&item("edit.redo", "Redo", Some("CmdOrCtrl+Shift+Z"))?)
         .separator()
+        // Cut / Copy / Paste stay **predefined**: macOS routes them through the responder
+        // chain into WKWebView, which is what makes ⌘C work in a text field, in a form widget
+        // and over the canvas (the clipboard mirror of `viewerCommands.ts`). A custom item
+        // would emit an event instead, and `document.execCommand("copy")` from a Tauri event
+        // callback has no user activation — F-06 would regress. The annotation clipboard is
+        // reached from the DOM `copy`/`cut`/`paste` events these items raise
+        // (`AnnotationHost.tsx`), which is the same seam with no such cost.
         .cut()
         .copy()
         .paste()
-        .select_all()
+        // Select All *is* custom: 페이지 mode selects cells, the canvas selects the page's
+        // text, and an input selects its own value — none of which WebKit can do for us, and
+        // all of which are reachable with no user activation.
+        .item(&item("edit.selectAll", "Select All", Some("CmdOrCtrl+A"))?)
+        // No accelerator: Esc is `tool.none` in the keymap and the menu must not shadow it.
         .item(&item("edit.deselect", "Deselect", None)?)
         .separator()
         .item(&item("edit.delete", "Delete", None)?)

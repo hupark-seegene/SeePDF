@@ -96,4 +96,7 @@ export {
   type SearchState,
 } from "./search/SearchController";
 
-export { copyToClipboard, currentSelectionText, useViewerCommands } from "./viewerCommands";
+export {
+  clearTextSelection, copyToClipboard, currentSelectionText, findStep, selectAllOnCurrentPage,
+  useViewerCommands,
+} from "./viewerCommands";

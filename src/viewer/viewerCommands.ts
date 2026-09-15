@@ -14,7 +14,6 @@
  * into `viewStore`/`appStore`, which the scroller observes.
  */
 import { useEffect } from "react";
-import { onMenuCommand } from "../ipc/events";
 import { matchesChord } from "../keys/keymap";
 import { isEditingTarget } from "../keys/useKeymap";
 import { useAppStore } from "../store/appStore";
@@ -124,6 +123,11 @@ export function copyToClipboard(text: string): boolean {
   return ok;
 }
 
+/** 선택 해제 — the canvas text selection and its clipboard mirror. */
+export function clearTextSelection(): void {
+  useSelectionStore.getState().clear();
+}
+
 /** The text the clipboard would get right now (also used by the context menu later). */
 export function currentSelectionText(): string {
   const info = useDocStore.getState().info;
@@ -132,7 +136,8 @@ export function currentSelectionText(): string {
   return selectionText(selection, info.docGeneration);
 }
 
-function selectAllOnCurrentPage(): boolean {
+/** The visible page's text as the selection. Exported: `useCommands` owns `edit.selectAll`. */
+export function selectAllOnCurrentPage(): boolean {
   const info = useDocStore.getState().info;
   if (!info) return false;
   const page = useViewStore.getState().currentPage;
@@ -146,7 +151,8 @@ function selectAllOnCurrentPage(): boolean {
   return true;
 }
 
-function findStep(direction: 1 | -1): boolean {
+/** 다음/이전 찾기. Exported: `useCommands` owns `edit.findNext` / `edit.findPrevious`. */
+export function findStep(direction: 1 | -1): boolean {
   const search = useSearchStore.getState();
   if (search.hits.length === 0) {
     useAppStore.getState().setSidebarTab("search");
@@ -274,16 +280,10 @@ export function useViewerCommands(enabled: boolean): void {
       e.preventDefault();
     };
 
-    /**
-     * The native macOS menu owns the ⌘-chords: a custom item (다음 찾기, 이전 찾기, 선택 해제)
-     * emits `menu:<id>` instead of letting the key reach the webview (IPC_CONTRACT §8), and
-     * `useCommands` leaves those three to the viewer.
-     */
-    const offMenu = onMenuCommand((id) => {
-      if (id === "edit.findNext") findStep(1);
-      else if (id === "edit.findPrevious") findStep(-1);
-      else if (id === "edit.deselect") useSelectionStore.getState().clear();
-    }, ["edit.findNext", "edit.findPrevious", "edit.deselect"]);
+    // Stage 2: 다음 찾기 / 이전 찾기 / 선택 해제 / 전체 선택 arrive as `menu:<id>` and are
+    // dispatched by `src/app/useCommands.ts`, which calls back into `findStep`,
+    // `selectAllOnCurrentPage` and `clearTextSelection`. The duplicate listener that used to
+    // live here is gone (STAGE1C_NOTES §7.2).
 
     window.addEventListener("keydown", onKeyDown, { capture: true });
     window.addEventListener("keyup", onKeyUp, { capture: true });
@@ -295,7 +295,6 @@ export function useViewerCommands(enabled: boolean): void {
       document.removeEventListener("copy", onCopy);
       document.removeEventListener("selectionchange", onSelectionChange);
       unsubscribeSelection();
-      offMenu();
       if (mirrorFrame) cancelAnimationFrame(mirrorFrame);
       window.clearTimeout(holdTimer);
       syncClipboardMirror("");

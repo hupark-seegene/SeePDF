@@ -23,8 +23,12 @@ export interface ViewState {
   rotation: Rotation;
   night: NightMode;
   currentPage: PageIndex;
-  /** bumped when something asks the scroller to jump; the scroller consumes it */
-  scrollRequest: { page: PageIndex; nonce: number } | null;
+  /**
+   * Bumped when something asks the scroller to jump; the scroller consumes it.
+   * `yPt` is an optional PDF-user-space y on that page (an outline destination), so 목차 lands
+   * on the heading rather than on the top of the page.
+   */
+  scrollRequest: { page: PageIndex; nonce: number; yPt?: number } | null;
 
   setZoom(percent: number): void;
   setZoomMode(mode: ZoomMode, percent?: number): void;
@@ -34,7 +38,7 @@ export interface ViewState {
   rotate(delta: 90 | -90): void;
   setNight(night: NightMode): void;
   setCurrentPage(page: PageIndex): void;
-  goToPage(page: PageIndex): void;
+  goToPage(page: PageIndex, yPt?: number): void;
 }
 
 function clamp(percent: number): number {
@@ -77,7 +81,10 @@ export const useViewStore = create<ViewState>((set, get) => ({
   setCurrentPage(page) {
     if (page !== get().currentPage) set({ currentPage: page });
   },
-  goToPage(page) {
-    set({ currentPage: page, scrollRequest: { page, nonce: (get().scrollRequest?.nonce ?? 0) + 1 } });
+  goToPage(page, yPt) {
+    set({
+      currentPage: page,
+      scrollRequest: { page, nonce: (get().scrollRequest?.nonce ?? 0) + 1, yPt },
+    });
   },
 }));

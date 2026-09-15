@@ -104,6 +104,24 @@ pub async fn add_image_object(
         .await
 }
 
+/// 이미지 바꾸기 — swap the bitmap of an existing image object, keeping its matrix (so the
+/// replacement lands at exactly the same place and size). `STAGE1B_NOTES.md` §5.4.
+#[tauri::command]
+pub async fn replace_image(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    object_id: ObjectId,
+    expect_generation: DocGeneration,
+    path: String,
+) -> Result<PageObjectList, EngineError> {
+    engine
+        .call(Lane::Edit, "replace_image", move |st| {
+            objects::replace_image(st, &doc_id, page, object_id, expect_generation, &path)
+        })
+        .await
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn transform_object(

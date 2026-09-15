@@ -152,7 +152,9 @@ export function windowBindDocument(a: { label: string; docId: DocId | null }): P
 // ---------------------------------------------------------------------------
 
 export function setViewport(a: ViewportHint): Promise<void> {
-  return call("set_viewport", a, (mock) => mock.setViewport(a));
+  // The Rust command takes ONE parameter named `hint`, so the payload has to be `{ hint }` —
+  // spreading the fields made every call fail with "missing required key hint" (Stage 2).
+  return call("set_viewport", { hint: a }, (mock) => mock.setViewport(a));
 }
 
 /** §10.2 "SPRX" — decoded into `{ width, height, stride, pixels }` ready for `ImageData`. */
@@ -368,7 +370,11 @@ export function saveDocumentAs(
 // ---------------------------------------------------------------------------
 
 export function exportImages(a: ExportImagesArgs, onProgress: (e: JobEvent) => void): Promise<JobId> {
-  return call("export_images", { ...a, onProgress: channel(onProgress) }, (mock) => mock.exportImages(a, onProgress));
+  // `export_images(args: ExportImagesArgs, on_progress: Channel<_>)` — one named struct, same as
+  // `set_viewport`. Spreading made it fail with "missing required key args" (Stage 2).
+  return call("export_images", { args: a, onProgress: channel(onProgress) }, (mock) =>
+    mock.exportImages(a, onProgress),
+  );
 }
 
 export function exportText(a: { docId: DocId; pages: PageIndex[]; outPath: string }): Promise<{ chars: number }> {
@@ -488,7 +494,19 @@ export interface OpenDialogOptions {
 const PDF_FILTER = [{ name: "PDF", extensions: ["pdf"] }];
 
 export async function openFileDialog(options: OpenDialogOptions = {}): Promise<string[] | null> {
-  if (useMock()) return ["/Users/veri/Documents/SeePDF-샘플.pdf"];
+  if (useMock()) {
+    // Distinct answers per shape, so 파일 합치기 can reach two inputs and 내보내기 gets a folder
+    // that is not a file path (STAGE1E_NOTES §5.5).
+    if (options.directory) return ["/Users/veri/Documents/SeePDF-내보내기"];
+    if (options.multiple) {
+      return [
+        "/Users/veri/Documents/SeePDF-샘플.pdf",
+        "/Users/veri/Documents/보고서-2024.pdf",
+        "/Users/veri/Documents/tracemonkey.pdf",
+      ];
+    }
+    return ["/Users/veri/Documents/SeePDF-샘플.pdf"];
+  }
   const picked = await invoke<string | string[] | null>("plugin:dialog|open", {
     options: { filters: PDF_FILTER, multiple: false, directory: false, ...options },
   });

@@ -18,13 +18,18 @@ const ZOOMS = ["fit-width", "fit-page", "actual", 100, 125, 150] as const;
 const OCR_LANGS = ["kor", "eng"] as const;
 const OCR_DPIS = ["auto", 200, 300, 400] as const;
 
-/** Recents count has no field in the frozen `Settings` (IPC_CONTRACT §11) — it rides in `toolDefaults`. */
+/**
+ * Stage 2: `Settings.recentsCount` is a first-class contract field (IPC_CONTRACT §11); it used
+ * to ride in `toolDefaults`, which is still read as a fallback so a settings file written before
+ * the change keeps the user's number.
+ */
 export const RECENTS_COUNT_KEY = "recentsCount";
 export const DEFAULT_RECENTS_COUNT = 20;
 
 export function recentsCountOf(settings: Settings | null): number {
-  const raw = settings?.toolDefaults?.[RECENTS_COUNT_KEY];
-  return typeof raw === "number" && raw > 0 ? raw : DEFAULT_RECENTS_COUNT;
+  if (typeof settings?.recentsCount === "number" && settings.recentsCount >= 0) return settings.recentsCount;
+  const legacy = settings?.toolDefaults?.[RECENTS_COUNT_KEY];
+  return typeof legacy === "number" && legacy > 0 ? legacy : DEFAULT_RECENTS_COUNT;
 }
 
 export function SettingsDialog({ onClose }: { onClose(): void }) {
@@ -124,11 +129,7 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                   max={50}
                   value={recentsCountOf(settings)}
                   aria-label={t("settings.recentsCount")}
-                  onChange={(e) =>
-                    void patch({
-                      toolDefaults: { ...(settings?.toolDefaults ?? {}), [RECENTS_COUNT_KEY]: Number(e.target.value) || 0 },
-                    })
-                  }
+                  onChange={(e) => void patch({ recentsCount: Math.max(0, Number(e.target.value) || 0) })}
                 />
               </Row>
             </>

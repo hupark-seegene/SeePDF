@@ -114,6 +114,15 @@ export interface PageShellProps {
   layers?: PageLayers | null;
   onTileLoad(key: string): void;
   onTileError(key: string): void;
+  /**
+   * The bitmap layer painted something for this page at `ctx.docGeneration`.
+   *
+   * ARCHITECTURE §10's "remove the optimistic ghost on the new tile's `onload`": the annotation
+   * overlay used to ask the question itself with a duplicate `<img>` (`annot/RenderProbe.tsx`,
+   * STAGE1D_NOTES §7.1). Called once per `<img>` that lands — placeholder, whole-page bitmap or
+   * tile — because any of them is proof the engine has re-rendered at that generation.
+   */
+  onPageRendered?(page: PageIndex, docGeneration: DocGeneration): void;
 }
 
 declare global {
@@ -131,6 +140,8 @@ function markLoaded(e: { currentTarget: HTMLImageElement }): void {
 
 export const PageShell = memo(function PageShell(props: PageShellProps) {
   const { ctx, tiles, layers } = props;
+  const rendered = props.onPageRendered;
+  const settle = rendered ? () => rendered(ctx.index, ctx.docGeneration) : undefined;
   return (
     <div
       className="page-shell"
@@ -148,15 +159,31 @@ export const PageShell = memo(function PageShell(props: PageShellProps) {
           transform: props.bitmapScale === 1 ? undefined : `scale(${props.bitmapScale})`,
         }}
       >
-        <img className="ph" src={props.placeholderUrl} alt="" draggable={false} onLoad={markLoaded} />
+        <img
+          className="ph"
+          src={props.placeholderUrl}
+          alt=""
+          draggable={false}
+          onLoad={(e) => {
+            markLoaded(e);
+            settle?.();
+          }}
+          onError={settle}
+        />
         {props.bitmapUrl && (
           <img
             className="page-bitmap"
             src={props.bitmapUrl}
             alt=""
             draggable={false}
-            onLoad={markLoaded}
-            onError={markLoaded}
+            onLoad={(e) => {
+              markLoaded(e);
+              settle?.();
+            }}
+            onError={(e) => {
+              markLoaded(e);
+              settle?.();
+            }}
           />
         )}
         {tiles.map((tile) => (
@@ -170,8 +197,12 @@ export const PageShell = memo(function PageShell(props: PageShellProps) {
             onLoad={(e) => {
               markLoaded(e);
               props.onTileLoad(tile.key);
+              settle?.();
             }}
-            onError={() => props.onTileError(tile.key)}
+            onError={() => {
+              props.onTileError(tile.key);
+              settle?.();
+            }}
           />
         ))}
       </div>

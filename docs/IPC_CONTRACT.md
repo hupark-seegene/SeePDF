@@ -142,7 +142,11 @@ export interface DocInfo {
   encrypted: boolean; permissions: Permissions; hasForm: boolean; xfa: boolean;
   hasOutline: boolean; meta: DocMeta; pdfVersion: string; tagged: boolean;
 }
-export interface OutlineNode { title: string; page: PageIndex | null; children: OutlineNode[] }
+/** Stage 2: where on the page the heading is (PDF user space). Absent for a plain page jump. */
+export interface OutlineDest { x?: number; y?: number; zoom?: number }
+export interface OutlineNode {
+  title: string; page: PageIndex | null; dest?: OutlineDest; children: OutlineNode[];
+}
 export interface OpenRequest { path: string; source: 'argv' | 'macos-opened' | 'drop' | 'dialog' | 'recent' }
 
 open_document(a: { path: string; password?: string }): Promise<DocInfo>
@@ -383,6 +387,9 @@ add_text_object(a: { docId: DocId; page: PageIndex; rect: Rect; text: string; fo
   color: Rgb; align: 'left' | 'center' | 'right' }): Promise<{ objects: PageObject[]; docGeneration: DocGeneration }>
 add_image_object(a: { docId: DocId; page: PageIndex; rect: Rect; path: string; keepAspect: boolean }):
   Promise<{ objects: PageObject[]; docGeneration: DocGeneration }>
+// Stage 2: swap the bitmap of an existing image object, keeping its matrix (이미지 바꾸기).
+replace_image(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration;
+  path: string }): Promise<{ objects: PageObject[]; docGeneration: DocGeneration }>
 transform_object(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration;
   translate?: Point; scale?: [number, number]; rotateDeg?: number }):
   Promise<{ objects: PageObject[]; docGeneration: DocGeneration }>
@@ -497,7 +504,8 @@ Feature F-21.
 // src/ipc/events.ts — app-wide broadcasts (tauri emit/listen)
 'open-file'        { path: string; source: OpenRequest['source'] }
 'doc-changed'      { docId: DocId; docGeneration: DocGeneration; changedPages: PageIndex[] | 'all';
-                     structure: boolean; dirty: boolean; reason: 'edit'|'undo'|'redo'|'save'|'pages'|'ocr'|'redact' }
+                     structure: boolean; dirty: boolean; reason: 'edit'|'undo'|'redo'|'save'|'pages'|'ocr'|'redact';
+                     canUndo: boolean; canRedo: boolean }   // Stage 2: no get_document per edit
 'doc-saved'        { docId: DocId; path: string; docGeneration: DocGeneration }
 'recents-changed'  {}
 'engine-pressure'  { level: 'normal' | 'high' }         // budgets halved; the frontend lowers MAX_MOUNTED_TILES
@@ -617,7 +625,8 @@ export interface Settings {
   locale: 'ko' | 'en'; theme: 'system' | 'light' | 'dark';
   defaultLayout: 'single' | 'continuous' | 'two'; defaultZoom: 'fit-width' | 'fit-page' | 'actual' | number;
   restorePosition: boolean; author: string; renderQuality: 'balanced' | 'high';
-  tileCacheMb: number; backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
+  tileCacheMb: number; recentsCount: number;   // Stage 2: first-class, was `toolDefaults.recentsCount`
+  backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
   toolDefaults: Record<string, unknown>;
 }
 get_settings(): Promise<Settings>

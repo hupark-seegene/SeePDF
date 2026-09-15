@@ -2,13 +2,8 @@
 
 /* Everything in these layers sits **on the page**, which is paper — not on app chrome. Following
    the app theme here would paint black handles and light-grey form text onto white paper in dark
-   mode. `--page-paper` is the token `.page-shell` already references (STAGE1C_NOTES §8 asks for
-   it in tokens.css); `--page-ink` is its counterpart and is requested in STAGE1D_NOTES §7. */
-.viewer .page-shell {
-  --page-ink: #1a1c1f;
-  /* the 필드 강조 표시 wash: the accent at 10 %, mixed over paper rather than over app chrome */
-  --page-field: rgb(47 111 235 / 0.1);
-}
+   mode. `--page-paper`, `--page-ink` and `--page-field` are therefore defined once in
+   `styles/tokens.css` (§14.3b) and never theme-swapped. */
 
 /* The two HTML layer containers are transparent to the pointer; their children are not. An empty
    `.page-surface` must never eat the drag that makes a text selection (STAGE1D_NOTES §3). */
@@ -47,7 +42,7 @@
 /* Handles always sit over the page, which is paper white whatever the app theme is — filling
    them with `--bg-panel` would make them black squares in dark mode. */
 .annot-handles rect {
-  fill: var(--page-paper, #fff);
+  fill: var(--page-paper);
   stroke: var(--accent);
   stroke-width: 1.5;
 }
@@ -60,7 +55,7 @@
 }
 
 .annot-eraser {
-  fill: var(--page-paper, #fff);
+  fill: var(--page-paper);
   fill-opacity: 0.35;
   stroke: var(--accent);
   stroke-dasharray: 3 2;
@@ -87,14 +82,6 @@
   .annot-ghost {
     animation: none;
   }
-}
-
-.annot-probe {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* ---------------------------------------------------------------- popover + editors */
@@ -143,7 +130,7 @@
   padding: 1px 2px;
   border: 1px solid var(--accent);
   border-radius: 2px;
-  background: var(--page-paper, #fff);
+  background: var(--page-paper);
   font-family: var(--font-ui);
   resize: none;
   overflow: hidden;
@@ -187,7 +174,7 @@
 .form-field:focus,
 .form-field:focus-visible {
   outline: var(--focus-ring);
-  background: var(--page-paper, #fff);
+  background: var(--page-paper);
 }
 
 .form-field:disabled {

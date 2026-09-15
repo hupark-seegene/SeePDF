@@ -42,7 +42,7 @@ import {
 } from "./layout";
 import { anchorAt, scrollForAnchor, zoomForWheel } from "./zoom";
 import { TileManager, type TileRequest } from "./TileManager";
-import { makePageLayerContext, PageShell, type PageLayerRenderer } from "./PageShell";
+import { makePageLayerContext, PageShell, type PageLayerRenderer, type PageShellProps } from "./PageShell";
 import { PageMarks } from "./text/PageMarks";
 import { ensureTextLayers, getTextLayer, invalidateTextLayers } from "./text/textLayers";
 import { useSelectionStore, type TextSelection } from "./text/selection";
@@ -66,9 +66,13 @@ export interface ScrollerProps {
   info: DocInfo;
   /** (d)/(e) plug their overlays in here; called once per mounted page. */
   layers?: PageLayerRenderer;
+  /** 필드 강조 표시 — adds `hl=1` to every page/tile URL so pdfium tints the widgets. */
+  fieldHighlight?: boolean;
+  /** forwarded to every `PageShell`: the engine has painted this page at this generation. */
+  onPageRendered?: PageShellProps["onPageRendered"];
 }
 
-export function Scroller({ info, layers }: ScrollerProps) {
+export function Scroller({ info, layers, fieldHighlight = false, onPageRendered }: ScrollerProps) {
   const t = useT();
   const zoomPercent = useViewStore((s) => s.zoomPercent);
   const zoomMode = useViewStore((s) => s.zoomMode);
@@ -167,11 +171,15 @@ export function Scroller({ info, layers }: ScrollerProps) {
       renderScaleKey,
       rotation,
       night: night !== "off",
+      hl: fieldHighlight,
       dpr,
       currentPage,
     });
     tiles.setDesired(renderGen, desired, { fling: flingRef.current });
-  }, [info, mountedItems, scroll, viewport, renderScaleKey, rotation, night, dpr, currentPage, renderGen, tiles]);
+  }, [
+    info, mountedItems, scroll, viewport, renderScaleKey, rotation, night, fieldHighlight, dpr,
+    currentPage, renderGen, tiles,
+  ]);
 
   // A mutation invalidates the pages it touched: the URLs carry the new generation, so the old
   // `<img>`s must go away in the same commit the new ones arrive (no stale pixels, no flash).
@@ -350,12 +358,29 @@ export function Scroller({ info, layers }: ScrollerProps) {
     if (!scrollRequest) return;
     const el = elRef.current;
     if (!el) return;
-    const top = scrollTopForPage(layoutRef.current, scrollRequest.page);
+    let top = scrollTopForPage(layoutRef.current, scrollRequest.page);
+    // An outline destination carries a y in PDF user space: land on the heading, a little below
+    // the top edge, rather than on the top of the page (STAGE1C_NOTES §7.1).
+    const item = layoutRef.current.byPage.get(scrollRequest.page);
+    const geom = info.pages[scrollRequest.page];
+    if (scrollRequest.yPt !== undefined && item && geom) {
+      const ctx = makePageLayerContext({
+        docId: info.docId,
+        docGeneration: info.docGeneration,
+        page: geom,
+        rotation: useViewStore.getState().rotation,
+        zoomPercent: useViewStore.getState().zoomPercent,
+        width: item.w,
+        height: item.h,
+      });
+      const [, y] = ctx.toDevice(geom.crop.l, scrollRequest.yPt);
+      top = Math.max(0, item.y + y - 12);
+    }
     el.scrollTop = top;
     scrollRef.current = { x: el.scrollLeft, y: top };
     commitScroll(scrollRef.current);
     settle();
-  }, [scrollRequest, commitScroll, settle]);
+  }, [scrollRequest, info, commitScroll, settle]);
 
   // A search hit is scrolled into view by its rectangle, not by its page.
   const navNonce = useSearchStore((s) => s.navNonce);
@@ -622,6 +647,7 @@ export function Scroller({ info, layers }: ScrollerProps) {
                 sk: placeholderKeys.get(item.page) ?? 100,
                 rot: rotation,
                 night: nightOn,
+                hl: fieldHighlight,
               })}
               bitmapUrl={
                 tiled
@@ -633,6 +659,7 @@ export function Scroller({ info, layers }: ScrollerProps) {
                       sk: renderScaleKey,
                       rot: rotation,
                       night: nightOn,
+                      hl: fieldHighlight,
                     })
               }
               tiles={tilesByPage.get(item.page) ?? EMPTY_TILES}
@@ -643,6 +670,7 @@ export function Scroller({ info, layers }: ScrollerProps) {
               layers={layers?.(ctx)}
               onTileLoad={(key) => tiles.notifyLoaded(key)}
               onTileError={(key) => tiles.notifyError(key)}
+              onPageRendered={onPageRendered}
             />
           );
         })}
@@ -668,6 +696,7 @@ function collectTiles(a: {
   renderScaleKey: number;
   rotation: DocInfo["pages"][number]["rotation"];
   night: boolean;
+  hl: boolean;
   dpr: number;
   currentPage: PageIndex;
 }): TileRequest[] {
@@ -702,7 +731,7 @@ function collectTiles(a: {
         const rect = tileRect(px.w, px.h, tx, ty);
         if (!rect) continue;
         out.push({
-          key: `${a.info.docId}:${a.info.docGeneration}:${item.page}:${a.renderScaleKey}:${a.rotation}:${tx}:${ty}:${a.night ? 1 : 0}`,
+          key: `${a.info.docId}:${a.info.docGeneration}:${item.page}:${a.renderScaleKey}:${a.rotation}:${tx}:${ty}:${a.night ? 1 : 0}:${a.hl ? 1 : 0}`,
           page: item.page,
           tx,
           ty,
@@ -716,6 +745,7 @@ function collectTiles(a: {
             tx,
             ty,
             night: a.night,
+            hl: a.hl,
           }),
           box: { x: rect.x / a.dpr, y: rect.y / a.dpr, w: rect.w / a.dpr, h: rect.h / a.dpr },
         });

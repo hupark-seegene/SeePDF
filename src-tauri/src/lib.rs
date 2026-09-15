@@ -195,6 +195,7 @@ pub fn run() {
             commands::objects::edit_text_object,
             commands::objects::add_text_object,
             commands::objects::add_image_object,
+            commands::objects::replace_image,
             commands::objects::transform_object,
             commands::objects::delete_objects,
             // --- save (Stage 1b) ---

@@ -70,6 +70,14 @@ pub struct OpenDoc<'p> {
     /// Pages with annotation edits: they need one render before save so pdfium writes `/AP`.
     pub touched: BTreeSet<u16>,
     pub history: History,
+    /// Token for the bundled Hangul font once it has been embedded in **this document**.
+    ///
+    /// `FPDFText_LoadFont` appends a fresh copy of the ~487 KB subset every time it is called
+    /// and PDFium does not deduplicate, so without this Korean text on five different pages of
+    /// one document cost five copies (`STAGE1B_NOTES.md` §5.2). It cannot live in a module
+    /// cache: the `FPDF_FONT` dies with the `FPDF_DOCUMENT`, which [`replace`] swaps on every
+    /// undo, redo and save — so [`replace`] clears it.
+    hangul_font: Option<PdfFontToken>,
     pub text: TextCache,
     /// Rebuilt lazily per page per generation by Stage 1 (a).
     pub annots: HashMap<u16, Vec<Annot>>,
@@ -113,6 +121,41 @@ impl<'p> OpenDoc<'p> {
     /// `&mut` access for [`mutate`] and for `pages_mut()` operations inside it.
     pub fn pdf_mut(&mut self) -> &mut PdfDocument<'p> {
         &mut self.doc
+    }
+
+    /// [`crate::engine::fonts::token_for`], but against the document-level Hangul token, so
+    /// the bundled subset is embedded **once per document** rather than once per call site.
+    ///
+    /// Splitting the borrow here is the whole point: `fonts::token_for` needs
+    /// `&mut PdfDocument` *and* `&mut Option<PdfFontToken>`, and those are two fields of the
+    /// same `OpenDoc`.
+    pub fn hangul_token_for(
+        &mut self,
+        text: &str,
+    ) -> Result<(PdfFontToken, crate::engine::fonts::Pick), EngineError> {
+        let mut cached = self.hangul_font;
+        let out = crate::engine::fonts::token_for(&mut self.doc, text, &mut cached);
+        self.hangul_font = cached;
+        out
+    }
+
+    /// Unconditionally load (or reuse) the bundled font — `ocr_apply`'s "one font for the
+    /// whole batch" path, which knows up front that it needs Hangul.
+    pub fn hangul_token(&mut self) -> Result<PdfFontToken, EngineError> {
+        if let Some(token) = self.hangul_font {
+            return Ok(token);
+        }
+        let token = crate::engine::fonts::load(&mut self.doc)?;
+        self.hangul_font = Some(token);
+        Ok(token)
+    }
+
+    /// Adopt a copy of the bundled font that is **already embedded in this page** as the
+    /// document's token, so re-editing a document we wrote earlier embeds nothing at all.
+    pub fn adopt_hangul_token(&mut self, page: &PdfPage<'p>) {
+        if self.hangul_font.is_none() {
+            self.hangul_font = crate::engine::fonts::embedded_token(page);
+        }
     }
 
     pub fn page_lru_len(&self) -> usize {
@@ -231,14 +274,47 @@ fn collect_bookmark(node: &PdfBookmark<'_>, out: &mut Vec<OutlineNode>, depth: u
     for child in node.iter_direct_children() {
         collect_bookmark(&child, &mut children, depth + 1);
     }
+    let destination = node.destination();
     out.push(OutlineNode {
         title: node.title().unwrap_or_default(),
-        page: node
-            .destination()
+        page: destination
+            .as_ref()
             .and_then(|d| d.page_index().ok())
             .map(|i| i as u16),
+        dest: destination.as_ref().and_then(outline_dest),
         children,
     });
+}
+
+/// `FPDFDest_GetView` + `FPDFDest_GetLocationInPage`, reduced to the (x, y, zoom) a scroller
+/// can act on. Both calls are document-level and need no `FPDF_LoadPage`, which is why the
+/// destination rect is affordable for every node at open (`STAGE1C_NOTES.md` §7.1).
+fn outline_dest(d: &PdfDestination<'_>) -> Option<crate::ipc::types::OutlineDest> {
+    use crate::ipc::types::OutlineDest;
+    use pdfium_render::prelude::PdfDestinationViewSettings as View;
+    let out = match d.view_settings().ok()? {
+        View::SpecificCoordinatesAndZoom(x, y, zoom) => OutlineDest {
+            x: x.map(|p| p.value),
+            y: y.map(|p| p.value),
+            zoom: zoom.filter(|z| *z > 0.0),
+        },
+        View::FitPageHorizontallyToWindow(y) | View::FitBoundsHorizontallyToWindow(y) => {
+            OutlineDest { x: None, y: y.map(|p| p.value), zoom: None }
+        }
+        View::FitPageVerticallyToWindow(x) | View::FitBoundsVerticallyToWindow(x) => {
+            OutlineDest { x: x.map(|p| p.value), y: None, zoom: None }
+        }
+        View::FitPageToRectangle(rect) => OutlineDest {
+            x: Some(rect.left().value),
+            y: Some(rect.top().value),
+            zoom: None,
+        },
+        View::Unknown | View::FitPageToWindow | View::FitBoundsToWindow => return None,
+    };
+    if out.x.is_none() && out.y.is_none() && out.zoom.is_none() {
+        return None;
+    }
+    Some(out)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -304,6 +380,7 @@ pub fn open<'p>(
         pages_meta,
         touched: BTreeSet::new(),
         history: History::new(spill_dir, byte_len, st.history_budget),
+        hangul_font: None,
         text: TextCache::default(),
         annots: HashMap::new(),
         encrypted,
@@ -471,6 +548,8 @@ pub fn mutate<'p, T>(
         structure: opts.structural,
         dirty: doc.dirty(),
         reason: opts.reason,
+        can_undo: doc.history.can_undo(),
+        can_redo: doc.history.can_redo(),
     };
     let summary = doc.summary();
 
@@ -527,6 +606,8 @@ pub fn replace<'p>(
     doc.text.clear();
     doc.annots.clear();
     doc.touched.clear();
+    // The `FPDF_FONT` belonged to the document we just dropped.
+    doc.hangul_font = None;
 
     for i in 0..refine_count(doc.page_count()) {
         let _ = doc.page(i);
@@ -570,6 +651,8 @@ pub fn undo(st: &mut EngineState<'_>, doc_id: &str, redo: bool) -> Result<DocInf
         } else {
             ChangeReason::Undo
         },
+        can_undo: doc.history.can_undo(),
+        can_redo: doc.history.can_redo(),
     };
     let summary = doc.summary();
     tracing::debug!(doc_id, label, redo, "history step applied");

@@ -39,21 +39,28 @@ describe("annot.sync — undo / redo", () => {
     resetPatchQueue();
   });
 
+  /** What `App.tsx` does with one `doc-changed`: the document store first, then (d)'s sync. */
+  async function broadcast(e: DocChangedEvent): Promise<void> {
+    useDocStore.getState().applyDocChanged(e);
+    await applyDocChanged(e);
+  }
+
   it("drops the annotation again after undo and brings it back on redo", async () => {
     const info = await open();
     const annot = await createAnnotation(0, SQUARE);
     if (!annot) throw new Error("create failed");
     expect(useAnnotStore.getState().byPage[0].some((a) => a.id === annot.id)).toBe(true);
 
-    // The title bar's ⌘Z button reads `info.canUndo`, and `docStore.applyDocChanged` does not
-    // carry it — the annotation sync pulls a fresh `DocInfo` on every non-structural change.
-    await applyDocChanged({
+    // The title bar's ⌘Z button reads `info.canUndo`, which now rides on the event itself
+    // (Stage 2, IPC_CONTRACT §8): `App.tsx` feeds every `doc-changed` to *both*
+    // `docStore.applyDocChanged` and the annotation sync, so the test does the same.
+    await broadcast({
       docId: info.docId,
       docGeneration: useDocStore.getState().info?.docGeneration ?? 0,
       changedPages: [0],
       structure: false,
       dirty: true,
-      reason: "edit",
+      reason: "edit", canUndo: true, canRedo: false,
     });
     await new Promise((r) => setTimeout(r, 30));
     expect(useDocStore.getState().info?.canUndo).toBe(true);
@@ -61,13 +68,13 @@ describe("annot.sync — undo / redo", () => {
     await undoWithAnnots();
     const afterUndo = useDocStore.getState().info;
     expect(afterUndo?.docGeneration).toBeGreaterThan(info.docGeneration);
-    await applyDocChanged({
+    await broadcast({
       docId: info.docId,
       docGeneration: afterUndo?.docGeneration ?? 0,
       changedPages: "all",
       structure: true,
       dirty: true,
-      reason: "undo",
+      reason: "undo", canUndo: true, canRedo: false,
     });
     expect(useAnnotStore.getState().byPage[0].some((a) => a.id === annot.id)).toBe(false);
     // the selection follows: a selected annotation that no longer exists must not stay selected
@@ -75,13 +82,13 @@ describe("annot.sync — undo / redo", () => {
 
     await redoWithAnnots();
     const afterRedo = useDocStore.getState().info;
-    await applyDocChanged({
+    await broadcast({
       docId: info.docId,
       docGeneration: afterRedo?.docGeneration ?? 0,
       changedPages: "all",
       structure: true,
       dirty: true,
-      reason: "redo",
+      reason: "redo", canUndo: true, canRedo: false,
     });
     expect(useAnnotStore.getState().byPage[0].some((a) => a.id === annot.id)).toBe(true);
     expect(useDocStore.getState().info?.canRedo).toBe(false);
@@ -109,7 +116,7 @@ describe("annot.sync — undo / redo", () => {
       changedPages: [0],
       structure: false,
       dirty: true,
-      reason: "edit",
+      reason: "edit", canUndo: true, canRedo: false,
     };
     await applyDocChanged(other);
     expect(spy).not.toHaveBeenCalled();

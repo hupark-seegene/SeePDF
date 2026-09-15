@@ -65,6 +65,47 @@ Fixtures: `tracemonkey.pdf` (14 p text), `TAMReview.pdf` (23 p, all text inside 
 
 ---
 
+## P0 status — Stage 2 integration
+
+✅ verified end to end in the **real** app (not the mock) · ⚠️ partial, with the gap named ·
+❌ missing. Evidence, screenshots and the commands behind each line are in
+`docs/STAGE2_INTEGRATION.md` §3; `sN` names are files in `fixtures/out/stage2/shots/`.
+
+| id | status | evidence |
+|---|---|---|
+| F-01 | ✅ | argv open, welcome+recents, wrong→right password all live (`s2-01/05/10/11`); QA-1 Finder double-click and QA-2 drag & drop still unverified |
+| F-02 | ✅ | `gen/500p.pdf` at 두 쪽 + rotate 90, jump to p250, tile p50 0.18 / p95 1.26 ms (`s2-18`); fps and pinch not instrumented (F-30) |
+| F-03 | ✅ | view rotation 90° live; `cargo test render_rotation_sizes` |
+| F-04 | ✅ | rail renders and rings the current page (`s2-01/03`); `cargo test render_thumbnails_keep_aspect_ratio` |
+| F-05 | ✅ | `outline-labels.pdf` → 7 nodes / 3 levels; `TAMReview.pdf` node carries `dest {x:0, y:806}` and the scroller lands on it |
+| F-06 | ✅ | ⌘A selects page 1, Edit ▸ Copy puts 5 012 chars on the pasteboard (`pbpaste`), rectangles match per line (`s2-02`) |
+| F-07 | ✅ | `search("monkey")` → **62 hits** with ±40-char context, the number the row pins |
+| F-08 | ✅ | highlight saved + reopened + rendered by macOS Preview (`s2-03/06`); `opacity 0.40` read back by `inspect_pdf` |
+| F-09 | ✅ | 2-stroke ink, `border 3.0`, round-trips and renders in Preview; eraser is `vitest tools.ink` |
+| F-10 | ✅ | square round-trips with colour/border/opacity; line/arrow by `cargo test annot_line_subj_roundtrip` (not driven live) |
+| F-11 | ✅ | `한글 테스트 텍스트 상자` saved, reopened, and rendered by Preview; bundled subset, file +0.36 MB |
+| F-12 | ✅ | note with `contents "한글 메모 테스트 — Stage 2"` persists and renders PDFium's icon |
+| F-13 | ⚠️ | `cargo test annot_stamp_image_roundtrip` passes; not driven live because arming 도장/서명 opens a native file picker, and 서명 만들기 (draw/type) does not exist (STAGE1D §7.5) |
+| F-14 | ✅ | a square **loaded from disk** recoloured to `[123,214,74]` border 5, saved, verified — no crash; inspector + 주석 list render |
+| F-15 | ✅ | create → undo → redo round trip; `canUndo`/`canRedo` now ride on `doc-changed`, no `get_document` per edit |
+| F-16 | ⚠️ | `move([2,3]→1)` → `A C D B`, rotate swaps 792×612, delete 14→13, insertBlank, merge (7 p + warnings), split everyN → 3 files with `outputs`; **the drag gesture itself and 추출 were not driven with a mouse** |
+| F-17 | ✅ | probe answered `replaceFont/glyphsMissing/Helvetica`, the edit **refused** without `allowFontSubstitution` and succeeded with it; the new string is searchable in the saved file |
+| F-18 | ✅ | `한글 페이지 객체 테스트` added, saved, and found by search with real spaces |
+| F-19 | ✅ | a 2480×3508 PNG placed at 0,0–595×842 pt; the saved file is the OCR fixture of F-21 |
+| F-20 | ⚠️ | `박현우 테스트` / `Raw FORM 입력` typed into `160F-2019.pdf`, saved, read back by `inspect_pdf`; **the value is drawn twice** — PDFium's widget bitmap plus the HTML overlay, offset a pixel (`s2-07`) |
+| F-21 | ✅ | scan with 0 extractable chars → OCR 300 DPI kor+eng, 91 words in 1.29 s → 484 chars; `search("대한민국")` hits before and after save+reopen; selection rects sit on the scanned lines (`s2-13`) |
+| F-22 | ✅ | preview named the collateral, apply reported `removedObjects 2, verified true`, and the saved file's text lost the title (5 087 → 5 018 chars) |
+| F-23 | ✅ | ⌘S in place: file rewritten (mtime + size changed), dirty cleared, `status.saved` toast, the new highlight present on reopen; Save As wrote every artefact of this table; close with unsaved changes shows 저장 / 저장 안 함 / 취소 (`s2-04`); `cargo test save_atomic_abort`, `save_keeps_encryption` |
+| F-24 | ✅ | 3 pages at 150 DPI, sizes exactly `round(pt×dpi/72)` (rotated p0 = 1650×1275), estimate 3 916 110 B vs 3 916 112 B actual. **Fixed in Stage 2**: the payload shape made this fail from the UI |
+| F-25 | ✅ | `text.txt` 11 538 chars with form feeds; `flat.pdf` has 0 annotations |
+| F-26 | ⚠️ | `print_prepare` + OS handler prints the right pages with annotations baked in (`s2-15/17`); the **webview** panel prints the app DOM, so it is the fallback until a print-only DOM exists (STAGE1E §7.4) |
+| F-27 | ✅ | dark ⇄ light switched live with no reflow (`s2-09`); `--page-paper/-ink/-field` moved into `tokens.css` and the last `#fff` literals in `shell.css` are gone |
+| F-28 | ✅ | `node scripts/check-i18n.mjs` — ko 442 / en 442; English switched live (`s2-09`) |
+| F-29 | ⚠️ | ⌘A / ⌘C / ⌘S / ⌘P / ⌘Z / ⇧⌘Z / ⌘G and the mode keys verified live; the full two-platform table is `vitest keymap.*`. The native menu is still English (P1) |
+| F-30 | ❌ | `scripts/perf-baseline.mjs` is still the Stage 0 skeleton — every engine row is `null`, `docs/perf/baseline.md` is not filled and the ±20 % CI gate is off |
+
+---
+
 ## P0 — feature → commands → UI entry point
 
 Every command of `IPC_CONTRACT.md` appears here exactly once, which is how the three documents stay

@@ -168,8 +168,10 @@ pub fn apply(
         doc_id,
         MutateOpts::new("undo.ocrApply", ChangeReason::Ocr).pages(touched),
         |doc| {
-            // One font object for the whole batch: `load_true_type_from_bytes` embeds another
-            // copy of the ~0.5 MB file every time it is called.
+            // One font object for the whole **document**: `load_true_type_from_bytes` embeds
+            // another copy of the ~0.5 MB file every time it is called, so the token is cached
+            // on `OpenDoc` and survives across `ocr_apply` calls — which is what makes (f)'s
+            // per-page chunking (one `ocr_apply` per page) affordable.
             let mut hangul: Option<PdfFontToken> = None;
             let needs_hangul = pages
                 .iter()
@@ -177,7 +179,7 @@ pub fn apply(
                 .flat_map(|l| l.words.iter())
                 .any(|w| !fonts::is_latin1(&w.text));
             if needs_hangul {
-                hangul = Some(fonts::load(doc.pdf_mut())?);
+                hangul = Some(doc.hangul_token()?);
             }
             let helvetica = doc.pdf_mut().fonts_mut().helvetica();
             for (done, page) in pages.iter().enumerate() {

@@ -1,7 +1,179 @@
-# Tauri + React + Typescript
+# SeePDF
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+A lightweight, fast, cross-platform **PDF editor with offline OCR**, built for Korean users first.
 
-## Recommended IDE Setup
+SeePDF opens a 500-page scan as quickly as a viewer does, and then lets you actually change it:
+annotate, fill forms, reorder pages, edit text and images, redact, recognise Korean text and save
+— all locally, with no account, no upload and no network access at any point.
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+* **Stack:** [Tauri v2](https://tauri.app) (Rust) + React 19 / TypeScript / Vite 8
+* **PDF engine:** [PDFium](https://pdfium.googlesource.com/pdfium/) via `pdfium-render`, on one
+  dedicated engine thread (PDFium is not thread-safe)
+* **OCR:** [tesseract.js](https://github.com/naptha/tesseract.js) with the `kor` + `eng`
+  `4.0.0_best_int` models, bundled — OCR works with the network cable pulled
+* **Platforms:** macOS 12+ (arm64 + x86_64) and Windows 10/11 (x86_64)
+* **Size:** a ~60 MB bundle, no Electron, no Chromium copy — the OS webview does the drawing
+
+---
+
+## Features
+
+### Viewing
+* Continuous / single / two-page layouts, 25–400 % zoom, fit-page, fit-width, actual size,
+  ⌘± / ctrl+wheel / pinch, non-destructive rotate (⌘L / ⌘R)
+* Virtualised scrolling with 512 px tiles: only pages within ±1.5 screens are mounted, so a fling
+  through 500 pages costs no React work per frame
+* Thumbnail rail, outline sidebar (jumps to the heading, not just the page), night mode
+* Text selection and copy with real line breaks, streamed search with context, ⌘G / ⇧⌘G
+
+### Annotating
+형광펜 · 밑줄 · 취소선 · 물결선 · 펜(ink) + 지우개 · 사각형 · 타원 · 선 · 화살표 · 메모 ·
+텍스트 상자 (Korean included) · 도장/서명 이미지 — with colour, opacity, border width, author and
+note properties, an annotation list sidebar, and undo/redo for every one of them.
+
+Annotations are written as real PDF annotations with generated `/AP` streams, so macOS Preview and
+Acrobat show exactly what SeePDF showed.
+
+### Pages, content and forms
+* Page organizer: drag to reorder, delete, rotate, duplicate, insert blank, insert from another
+  file, extract, merge, split — one drag is one undo step
+* Edit existing text (with an honest refusal when the font cannot draw the new string), add text
+  boxes with the bundled Hangul font, insert / move / resize / replace images
+* AcroForm filling: text, checkbox, radio, combo, list, with field highlighting
+* **Redaction with true content removal**, verified after the fact: if the marked string can still
+  be extracted from the result, the whole operation is rolled back and reported
+
+### OCR
+Current page / all pages / a range, `kor+eng`, at 200–400 DPI, with progress and cancel. The
+recognised words are written as an **invisible text layer** over the scan, so the page still looks
+like a scan but is selectable, searchable and copyable — in SeePDF and in every other viewer.
+
+### Output
+Save / Save As (atomic: temp file → fsync → verify by reopening → rename, with the original left
+byte-identical if the process dies), export pages as PNG / JPEG, export text, export a flattened
+PDF, print.
+
+### Shell
+Korean-first UI with a full English translation, light / dark / system themes, the complete
+macOS and Windows shortcut tables, a native macOS menu bar, recent files with restored reading
+position, and a welcome screen.
+
+---
+
+## Running it
+
+### Requirements
+
+| | macOS | Windows |
+|---|---|---|
+| OS | 12.0 Monterey or newer (13+ for OCR: WASM SIMD) | Windows 10 1809 or newer |
+| Toolchain | Xcode Command Line Tools | MSVC build tools + WebView2 (preinstalled on Win 11) |
+| Rust | 1.90+ (`rustup`) | 1.90+ (`rustup`), `x86_64-pc-windows-msvc` |
+| Node | 24+, npm 11+ | 24+, npm 11+ |
+
+### First run
+
+```sh
+git clone https://github.com/hupark-seegene/SeePDF.git
+cd SeePDF
+npm install          # postinstall fetches libpdfium for this host and the OCR assets
+npm run tauri dev
+```
+
+`npm install` runs two download steps, both of which need the network **once**:
+
+* `scripts/fetch-pdfium.mjs` → `src-tauri/resources/pdfium/` (the binaries are gitignored).
+  `npm run fetch:pdfium -- --all` fetches every target; `PDFIUM_TARGET=<triple>` picks one.
+* `scripts/prepare-ocr.mjs` → `public/ocr/` (tesseract.js runtime + `kor`/`eng` traineddata,
+  8.4 MB, gitignored). After this the app never touches the network again.
+
+Open a file on launch with `npm run tauri dev -- -- -- /path/to/file.pdf`.
+
+### Building a bundle
+
+```sh
+npm run tauri build                      # .dmg + .app  /  .msi + NSIS .exe
+npm run tauri build -- --debug           # unoptimised, with devtools
+npm run tauri build -- --target x86_64-apple-darwin
+```
+
+On Windows, run the same commands from a *Developer Command Prompt* (or any shell where `link.exe`
+is on `PATH`) and set `PDFIUM_TARGET=x86_64-pc-windows-msvc` before `npm ci` if you are
+cross-preparing resources.
+
+### Checks
+
+```sh
+npm run typecheck                    # tsc --noEmit
+npx vitest run                       # 266 frontend tests
+node scripts/check-i18n.mjs          # ko/en key + placeholder parity (CI gate)
+npm run build && node scripts/check-bundle-size.mjs   # critical-path budget
+
+cd src-tauri
+cargo build --release --tests && cargo test --release # 126 engine tests against real fixtures
+cargo fmt --check && cargo clippy --all-targets -- -D warnings
+```
+
+Useful tools:
+
+```sh
+# what is actually inside a saved file: pages, annotations, form values, extracted text
+cd src-tauri && cargo run --release --example inspect_pdf -- ../fixtures/out/stage2/annotated.pdf
+
+cargo run --release --example gen_fixtures        # regenerate fixtures/gen/**
+node scripts/perf-baseline.mjs --write            # docs/perf/baseline.md
+```
+
+---
+
+## How it is put together
+
+```
+src/                     React 19 frontend
+  ipc/                   the wire contract (docs/IPC_CONTRACT.md), one file per side
+  viewer/                virtualised scroller, tiles, text layer, search
+  annot/ tools/ forms/   annotation overlay, tool controller, AcroForm inputs
+  organize/ dialogs/     page organizer, every sheet
+  ocr/                   tesseract.js worker pool, Hangul normalisation
+  store/                 zustand slices (doc, view, app, annots, pages, jobs)
+src-tauri/               Rust backend
+  engine/                THE pdfium thread: registry, render, text, annot, pages, ocr, save
+  protocol/              the seepdf:// scheme that carries every pixel
+  commands/              every #[tauri::command]
+  ipc/                   the Rust half of the contract
+docs/                    ARCHITECTURE · IPC_CONTRACT · UI_SPEC · FEATURES · WORKPLAN · stage notes
+```
+
+Two rules the code enforces rather than documents:
+
+1. **Every PDFium call happens on the engine thread.** The `thread_safe` feature of
+   `pdfium-render` is deliberately off, which makes its types `!Send`, so the compiler rejects any
+   attempt to touch a document from a command thread.
+2. **`registry::mutate` is the only `&mut` path into a document.** It takes the undo snapshot,
+   flushes the page LRU, bumps the generation, invalidates the caches and emits `doc-changed`.
+   One user action = one `mutate` = one generation = one undo step.
+
+`docs/ARCHITECTURE.md` has the long version, including why pixels travel over a custom URL scheme
+instead of the IPC channel and how the tile budget works.
+
+---
+
+## Licences
+
+SeePDF's own source is in this repository. The things it ships with are not ours:
+
+| Component | Licence | Where |
+|---|---|---|
+| **PDFium** (build 155.0.8057) | BSD-3-Clause (Chromium/PDFium) + MIT for the `pdfium-binaries` packaging by Benoit Blanchon | `src-tauri/resources/pdfium/LICENSE.pdfium`, binaries downloaded at install time |
+| `pdfium-render` | MIT / Apache-2.0, used through a 5-line additive fork (`docs/pdfium-patch.diff`, vendored in `vendor/pdfium-render`) | `vendor/pdfium-render/LICENSE*` |
+| **SeePDF-Hangul.ttf** — a subset of **Noto Sans KR**, instanced at `wght 400` | SIL Open Font License 1.1 (the file carries Adobe's copyright: Noto Sans KR derives from Source Han Sans) | `src-tauri/resources/fonts/OFL.txt`, rationale in `resources/fonts/README.md` |
+| **tesseract.js** 7.0 runtime + **tesseract.js-core** (Tesseract OCR as WebAssembly) | Apache License 2.0 | `public/ocr/LICENSE.txt` |
+| **`kor` / `eng` traineddata** (`tessdata_best` 4.0.0_best_int) | Apache License 2.0 | `public/ocr/LICENSE.txt` |
+| Tauri, React, zustand, lucide-react, ttf-parser, image, png, … | MIT / Apache-2.0 | `package.json`, `src-tauri/Cargo.toml` |
+
+The bundled font is embedded **into the PDFs you create** whenever you type Korean into a text box
+or apply OCR. The OFL permits that; the licence text travels in the bundle
+(`resources/fonts/OFL.txt`) and applies to the embedded subset.
+
+Fonts and OCR data are downloaded at install time and are not committed, so a clone of this
+repository contains no third-party binaries.
