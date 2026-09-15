@@ -133,6 +133,7 @@ fn page_key(
         ty: 0,
         night: Night::Off,
         hl: false,
+        forms: true,
     }
 }
 

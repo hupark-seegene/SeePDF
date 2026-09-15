@@ -188,10 +188,24 @@ impl<'p> OpenDoc<'p> {
         self.pages.clear();
     }
 
-    /// Drops one page handle (after a rotate, or when its content changed under it).
+    /// Drops one page handle **and** its cached text layer — for an edit that changed the
+    /// page's content stream outside [`mutate`]'s bookkeeping.
     pub fn invalidate_page(&mut self, index: u16) {
         self.pages.invalidate(index);
         self.text.invalidate_page(index);
+    }
+
+    /// Drops the page **handle** only, keeping the extracted text.
+    ///
+    /// A PDFium page handle is a parse of the page, not the page itself: dropping it says
+    /// nothing about whether the characters on that page changed. The two callers that need
+    /// this — `ScratchPage::open` (so two handles never straddle an edit) and
+    /// `refresh_pages_meta` (so `page()` re-reads `/Rotate` and the crop box) — are both
+    /// inside [`mutate`], which is the one place that knows which pages actually changed and
+    /// invalidates their text there. Throwing the layer away here as well cost a 5.6 ms
+    /// rebuild the next time the viewer selected text on the page (STAGE1A §5.1).
+    pub fn invalidate_page_handle(&mut self, index: u16) {
+        self.pages.invalidate(index);
     }
 
     pub fn geom(&self, index: u16) -> Result<&PageGeom, EngineError> {
@@ -442,6 +456,12 @@ pub struct MutateOpts {
     pub reason: ChangeReason,
     /// Drag / slider gestures: collapse repeats of the same label within 500 ms.
     pub coalesce: bool,
+    /// The edit does not touch the pages' **content streams**, so the extracted text of the
+    /// changed pages is still valid and its cached layer is kept. True for annotation
+    /// create / update / delete: an annotation lives in `/Annots` and draws from its own
+    /// appearance stream, and `FPDFText_*` only ever reads the page content stream — even a
+    /// Korean text box bakes its glyphs into the annotation's `/AP`, never into the page.
+    pub keeps_text: bool,
 }
 
 impl MutateOpts {
@@ -452,6 +472,7 @@ impl MutateOpts {
             pages: ChangedPages::Some(Vec::new()),
             reason,
             coalesce: false,
+            keeps_text: false,
         }
     }
 
@@ -475,14 +496,33 @@ impl MutateOpts {
         self.coalesce = true;
         self
     }
+
+    /// See [`MutateOpts::keeps_text`]. Only for edits that provably leave every page's
+    /// content stream alone.
+    pub fn keeps_text(mut self) -> Self {
+        self.keeps_text = true;
+        self
+    }
 }
 
 /// **The only `&mut` path into a document.**
 ///
 /// Stage 1 modules call this with a closure that does their pdfium work; everything around
 /// it (undo snapshot, LRU flush, generation bump, cache invalidation, `doc-changed`) is
-/// handled here. If `f` returns `Err`, the generation is not bumped and the snapshot is
-/// dropped, so the document is left exactly as it was.
+/// handled here.
+///
+/// **If `f` returns `Err`, the document is rolled back to the pre-edit snapshot** — not merely
+/// left alone. A closure that mutated and then failed (a three-annotation batch whose third
+/// `FPDFPage_CreateAnnot` returns null; `apply_redactions` losing its verification pass after
+/// it has already deleted objects) used to leave the half-edit in memory under the *old*
+/// generation, so the UI kept showing cached tiles of a document that no longer matched the
+/// bytes. `mutate` now reloads from the snapshot it took in step 1, the generation is still
+/// not bumped, no `doc-changed` is emitted, and the undo entry is discarded without pushing a
+/// redo entry — the document never left the state that snapshot describes (STAGE1A §5.2).
+///
+/// The reload only happens on the error path (≈15 ms for a 1 MB document), so the success
+/// path is unchanged. `redact::apply_verified` keeps its own byte snapshot; it is now
+/// belt-and-braces rather than the only safety net.
 pub fn mutate<'p, T>(
     st: &mut EngineState<'p>,
     doc_id: &str,
@@ -501,7 +541,7 @@ pub fn mutate<'p, T>(
     } else {
         doc.to_bytes()?
     };
-    doc.history.push(opts.label, base, opts.coalesce)?;
+    let pushed = doc.history.push(opts.label, base.clone(), opts.coalesce)?;
 
     // 2. structural edits invalidate every open page handle.
     if opts.structural {
@@ -513,7 +553,21 @@ pub fn mutate<'p, T>(
         Ok(out) => out,
         Err(e) => {
             // Undo the bookkeeping: the snapshot describes a state we never left.
-            let _ = doc.history.take_undo(doc.bytes.clone());
+            if pushed {
+                doc.history.discard_last_undo();
+            }
+            // …and undo the *edit*, which may have got half-way. `replace` drops the page
+            // handles and reloads from the snapshot, so whatever the closure changed in
+            // PDFium's object tree is gone. The generation is untouched, so no cached tile
+            // and no `doc-changed` ever described the half-edited document.
+            if let Err(restore) = replace(st, doc_id, base) {
+                tracing::error!(
+                    doc_id,
+                    error = %restore,
+                    "rollback after a failed mutation could not reload the snapshot"
+                );
+                return Err(e.with_detail(format!("rollback failed: {}", restore.message)));
+            }
             return Err(e);
         }
     };
@@ -531,12 +585,16 @@ pub fn mutate<'p, T>(
     let generation = doc.generation;
     match &opts.pages {
         ChangedPages::All(_) => {
-            doc.text.clear();
+            if !opts.keeps_text {
+                doc.text.clear();
+            }
             doc.annots.clear();
         }
         ChangedPages::Some(pages) => {
             for &p in pages {
-                doc.text.invalidate_page(p);
+                if !opts.keeps_text {
+                    doc.text.invalidate_page(p);
+                }
                 doc.annots.remove(&p);
             }
         }
@@ -702,8 +760,9 @@ fn refresh_pages_meta(
     to_refine.dedup();
     for page in to_refine {
         if page < doc.page_count() {
-            // Drop the cached handle so `page()` treats it as fresh and re-reads its geometry.
-            doc.invalidate_page(page);
+            // Drop the cached handle so `page()` treats it as fresh and re-reads its
+            // geometry. The *handle* only: whether the text changed is `mutate`'s call.
+            doc.invalidate_page_handle(page);
             let _ = doc.page(page)?;
         }
     }

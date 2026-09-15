@@ -17,6 +17,7 @@ import { useDialogStore } from "./dialogs/dialogState";
 import { useOcrDialogOpen } from "./ocr/dialogState";
 import { useToastStore } from "./app/toastStore";
 import { useContextMenuStore } from "./app/contextMenuStore";
+import { usePrintStore } from "./print/printStore";
 import { useT } from "./i18n/useT";
 
 // Everything below the fold is code-split: the welcome screen, the page organizer, the dialog host
@@ -27,6 +28,9 @@ const Organizer = lazy(() => import("./organize"));
 const DialogHost = lazy(() => import("./dialogs/DialogHost"));
 const Toasts = lazy(() => import("./app/Toasts"));
 const ContextMenu = lazy(() => import("./app/ContextMenu"));
+// F-26: the print-only DOM. Mounted only while a print job is in flight, so its page images
+// (one `<img>` per printed page at 150 DPI) exist for exactly as long as the print panel does.
+const PrintRoot = lazy(() => import("./print/PrintRoot"));
 
 /** Cheap synchronous test so the default menu is only suppressed over a page (the import is async). */
 function pageLike(target: EventTarget | null): boolean {
@@ -51,6 +55,7 @@ export default function App() {
   const ocrOpen = useOcrDialogOpen();
   const hasToasts = useToastStore((s) => s.toasts.length > 0);
   const menuOpen = useContextMenuStore((s) => s.menu !== null);
+  const printing = usePrintStore((s) => s.job !== null);
 
   // 1. settings + recents + theme + locale, then drain anything the OS handed us before mount
   useEffect(() => {
@@ -153,6 +158,7 @@ export default function App() {
   const organizing = mode === "pages";
 
   return (
+    <>
     <div className="app-shell" data-ready={ready || undefined}>
       <TitleBar run={run} />
       <div className="app-body">
@@ -194,5 +200,11 @@ export default function App() {
         </Suspense>
       )}
     </div>
+    {printing && (
+      <Suspense fallback={null}>
+        <PrintRoot />
+      </Suspense>
+    )}
+    </>
   );
 }

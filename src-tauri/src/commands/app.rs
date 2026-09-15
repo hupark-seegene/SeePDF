@@ -60,6 +60,7 @@ pub async fn write_recent_thumbnail(
         ty: 0,
         night: Night::Off,
         hl: false,
+        forms: true,
     };
     let png = engine
         .call(Lane::Thumb, "write_recent_thumbnail", move |st| {
@@ -81,12 +82,21 @@ pub fn get_settings(app: AppHandle) -> Settings {
     store::get_settings(&app)
 }
 
+/// The native menu is built before the webview exists, so a language change has to rebuild
+/// it (STAGE0 §4.6). Only when the locale actually moved: `set_settings` is also how the
+/// theme, the zoom default and every tool default are written, and rebuilding the macOS menu
+/// on each of those would flash the menu bar.
 #[tauri::command]
-pub fn set_settings(
-    app: AppHandle,
-    patch: serde_json::Value,
-) -> Result<Settings, EngineError> {
-    store::set_settings(&app, patch)
+pub fn set_settings(app: AppHandle, patch: serde_json::Value) -> Result<Settings, EngineError> {
+    let before = store::get_settings(&app).locale;
+    let settings = store::set_settings(&app, patch)?;
+    #[cfg(target_os = "macos")]
+    if settings.locale != before {
+        crate::app::menu::rebuild(&app, settings.locale);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = before;
+    Ok(settings)
 }
 
 /// Not part of the contract's command list: a diagnostics read the status bar and bug

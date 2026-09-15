@@ -68,11 +68,23 @@ export interface ScrollerProps {
   layers?: PageLayerRenderer;
   /** 필드 강조 표시 — adds `hl=1` to every page/tile URL so pdfium tints the widgets. */
   fieldHighlight?: boolean;
+  /**
+   * `false` adds `forms=0` to every page/tile URL, so PDFium skips `FPDF_FFLDraw` and the
+   * AcroForm widgets are not in the bitmap. (d) sets it while the 양식 HTML overlay is
+   * mounted; otherwise the value would be drawn twice, a pixel or two apart (F-20).
+   */
+  renderFormWidgets?: boolean;
   /** forwarded to every `PageShell`: the engine has painted this page at this generation. */
   onPageRendered?: PageShellProps["onPageRendered"];
 }
 
-export function Scroller({ info, layers, fieldHighlight = false, onPageRendered }: ScrollerProps) {
+export function Scroller({
+  info,
+  layers,
+  fieldHighlight = false,
+  renderFormWidgets = true,
+  onPageRendered,
+}: ScrollerProps) {
   const t = useT();
   const zoomPercent = useViewStore((s) => s.zoomPercent);
   const zoomMode = useViewStore((s) => s.zoomMode);
@@ -172,6 +184,7 @@ export function Scroller({ info, layers, fieldHighlight = false, onPageRendered 
       rotation,
       night: night !== "off",
       hl: fieldHighlight,
+      forms: renderFormWidgets,
       dpr,
       currentPage,
     });
@@ -648,6 +661,7 @@ export function Scroller({ info, layers, fieldHighlight = false, onPageRendered 
                 rot: rotation,
                 night: nightOn,
                 hl: fieldHighlight,
+                forms: renderFormWidgets,
               })}
               bitmapUrl={
                 tiled
@@ -660,6 +674,7 @@ export function Scroller({ info, layers, fieldHighlight = false, onPageRendered 
                       rot: rotation,
                       night: nightOn,
                       hl: fieldHighlight,
+                      forms: renderFormWidgets,
                     })
               }
               tiles={tilesByPage.get(item.page) ?? EMPTY_TILES}
@@ -697,6 +712,7 @@ function collectTiles(a: {
   rotation: DocInfo["pages"][number]["rotation"];
   night: boolean;
   hl: boolean;
+  forms: boolean;
   dpr: number;
   currentPage: PageIndex;
 }): TileRequest[] {
@@ -731,7 +747,7 @@ function collectTiles(a: {
         const rect = tileRect(px.w, px.h, tx, ty);
         if (!rect) continue;
         out.push({
-          key: `${a.info.docId}:${a.info.docGeneration}:${item.page}:${a.renderScaleKey}:${a.rotation}:${tx}:${ty}:${a.night ? 1 : 0}:${a.hl ? 1 : 0}`,
+          key: `${a.info.docId}:${a.info.docGeneration}:${item.page}:${a.renderScaleKey}:${a.rotation}:${tx}:${ty}:${a.night ? 1 : 0}:${a.hl ? 1 : 0}:${a.forms ? 1 : 0}`,
           page: item.page,
           tx,
           ty,
@@ -746,6 +762,7 @@ function collectTiles(a: {
             ty,
             night: a.night,
             hl: a.hl,
+            forms: a.forms,
           }),
           box: { x: rect.x / a.dpr, y: rect.y / a.dpr, w: rect.w / a.dpr, h: rect.h / a.dpr },
         });

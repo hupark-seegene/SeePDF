@@ -212,3 +212,203 @@ fn registry_raw_handles_are_live() {
     assert_eq!(counts.0, counts.1, "raw and high-level see the same annotations");
     assert_eq!(counts.0, 76, "160F-2019.pdf page 0 has 76 widget annotations");
 }
+
+/// STAGE1A §5.2 — a closure that mutates and **then** fails leaves nothing behind.
+///
+/// `registry::mutate` used to only drop its undo bookkeeping on `Err`, so the half-edit stayed
+/// in the in-memory document under the *old* generation: every cached tile, the text layer and
+/// `list_annotations` kept describing a document the bytes no longer matched, and the next
+/// successful edit silently made the orphan permanent. The rollback reloads the pre-edit
+/// snapshot instead.
+#[test]
+fn registry_mutate_rolls_back_a_half_failed_closure() {
+    use seepdf_lib::engine::annot::{create, read};
+    use seepdf_lib::engine::registry::MutateOpts;
+    use seepdf_lib::ipc::types::{AnnotSpec, MarkupSpec, Rect};
+    use seepdf_lib::ipc::{EngineError, ErrorCode};
+
+    let doc = open("tracemonkey.pdf");
+    let doc_id = doc.doc_id.clone();
+
+    let spec = || {
+        AnnotSpec::Highlight(MarkupSpec {
+            rects: vec![Rect::new(100.0, 700.0, 260.0, 712.0)],
+            color: [255, 235, 0],
+            opacity: 0.5,
+            contents: None,
+        })
+    };
+
+    // One real edit first, so the rollback has to restore a *dirty* document, not the file.
+    let kept = with_state({
+        let doc_id = doc_id.clone();
+        let spec = spec();
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.annotate", ChangeReason::Edit).page(0),
+                |d| create::create(d, 0, &spec, None),
+            )
+        }
+    })
+    .expect("first annotation");
+
+    let (generation_before, undo_before, redo_before, count_before) = with_state({
+        let doc_id = doc_id.clone();
+        move |st| {
+            let d = st.doc_mut(&doc_id)?;
+            let count = read::list_page(d, 0)?.len();
+            let d = st.doc_mut(&doc_id)?;
+            Ok((
+                d.generation,
+                d.history.undo_depth(),
+                d.history.redo_depth(),
+                count,
+            ))
+        }
+    })
+    .expect("state before");
+    assert_eq!(count_before, 1, "the first annotation is on the page");
+
+    // Now a closure that creates two more annotations and *then* fails.
+    let err = with_state({
+        let doc_id = doc_id.clone();
+        let spec = spec();
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.annotate", ChangeReason::Edit).page(0),
+                |d| {
+                    create::create(d, 0, &spec, None)?;
+                    create::create(d, 0, &spec, None)?;
+                    Err::<(), _>(EngineError::new(ErrorCode::VerifyFailed, "deliberate failure"))
+                },
+            )
+        }
+    })
+    .expect_err("the closure fails");
+    assert_eq!(err.code, ErrorCode::VerifyFailed);
+
+    let (generation_after, undo_after, redo_after, count_after, dirty_after) = with_state({
+        let doc_id = doc_id.clone();
+        move |st| {
+            let d = st.doc_mut(&doc_id)?;
+            let count = read::list_page(d, 0)?.len();
+            let d = st.doc_mut(&doc_id)?;
+            Ok((
+                d.generation,
+                d.history.undo_depth(),
+                d.history.redo_depth(),
+                count,
+                d.dirty(),
+            ))
+        }
+    })
+    .expect("state after");
+
+    assert_eq!(
+        count_after, count_before,
+        "the two annotations the failed closure created must be gone"
+    );
+    assert_eq!(generation_after, generation_before, "no generation bump");
+    assert_eq!(undo_after, undo_before, "no undo entry for an edit that failed");
+    assert_eq!(
+        redo_after, redo_before,
+        "and no redo entry either — there is nothing to redo"
+    );
+    assert!(dirty_after, "the *successful* first edit is still there");
+
+    // The document is still usable and the surviving annotation is still the one we made.
+    let ids = with_doc(&doc_id, |d| {
+        Ok(read::list_page(d, 0)?
+            .into_iter()
+            .map(|a| a.id)
+            .collect::<Vec<_>>())
+    })
+    .expect("list after rollback");
+    assert_eq!(ids, vec![kept], "the annotation from before the failure survives");
+}
+
+/// STAGE1A §5.1 — an annotation edit keeps the page's cached text layer.
+///
+/// `OpenDoc::invalidate_page` dropped the handle **and** the text, so every annotation write
+/// cost a 5.6 ms `FPDFText_LoadPage` the next time the viewer selected text on that page —
+/// even though an annotation lives in `/Annots` and `FPDFText_*` only reads the page content
+/// stream. `ScratchPage` now drops the handle only, and `mutate` keeps the layer when the
+/// caller says the edit `keeps_text()`.
+#[test]
+fn registry_annotation_edit_keeps_the_text_layer() {
+    use seepdf_lib::engine::annot::create;
+    use seepdf_lib::engine::registry::MutateOpts;
+    use seepdf_lib::engine::text;
+    use seepdf_lib::ipc::types::{AnnotSpec, MarkupSpec, Rect};
+
+    let doc = open("tracemonkey.pdf");
+    let doc_id = doc.doc_id.clone();
+
+    // Build and cache the layer, and remember what it said.
+    let before = with_doc(&doc_id, |d| {
+        let layer = text::layer::layer(d, 0)?;
+        Ok((layer.chars.len(), d.text.layer(0).is_some()))
+    })
+    .expect("build the text layer");
+    assert!(before.1, "the layer is cached after the first build");
+    assert_eq!(before.0, 5087, "tracemonkey page 1 has 5 087 characters");
+
+    with_state({
+        let doc_id = doc_id.clone();
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.annotCreate", ChangeReason::Edit)
+                    .page(0)
+                    .keeps_text(),
+                |d| {
+                    create::create(
+                        d,
+                        0,
+                        &AnnotSpec::Highlight(MarkupSpec {
+                            rects: vec![Rect::new(100.0, 700.0, 260.0, 712.0)],
+                            color: [255, 235, 0],
+                            opacity: 0.5,
+                            contents: None,
+                        }),
+                        None,
+                    )
+                },
+            )
+        }
+    })
+    .expect("annotate");
+
+    let after = with_doc(&doc_id, |d| {
+        // The *cache* getter, not `layer()`: it answers `None` if anything invalidated it.
+        let cached = d.text.layer(0);
+        Ok((cached.is_some(), cached.map(|l| l.chars.len()).unwrap_or(0)))
+    })
+    .expect("read the cache");
+    assert!(
+        after.0,
+        "the annotation write must not have dropped the cached text layer"
+    );
+    assert_eq!(after.1, before.0, "and the text itself is unchanged");
+
+    // A *content* edit still drops it: `keeps_text()` is opt-in, not the default.
+    with_state({
+        let doc_id = doc_id.clone();
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.objectAdd", ChangeReason::Edit).page(0),
+                |_| Ok(()),
+            )
+        }
+    })
+    .expect("content edit");
+    let dropped = with_doc(&doc_id, |d| Ok(d.text.layer(0).is_some())).expect("read the cache");
+    assert!(!dropped, "an edit without keeps_text() still invalidates the layer");
+}

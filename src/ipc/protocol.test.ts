@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { originForOs, pageUrl, scaleKey, seepdfUrl, tileGrid, tileUrl, thumbUrl } from "./protocol";
+import {
+  originForOs,
+  pageUrl,
+  scaleKey,
+  seepdfUrl,
+  setMockAssetResolver,
+  tileGrid,
+  tileUrl,
+  thumbUrl,
+  type Query,
+} from "./protocol";
 
 describe("seepdf:// origin per platform (tauri spike §1)", () => {
   it("uses the custom scheme on macOS/Linux and the http form on Windows", () => {
@@ -34,5 +44,35 @@ describe("mock mode", () => {
     expect(tileUrl({ ...common, tx: 0, ty: 0 })).toMatch(/^data:image\/png;base64,/);
     expect(pageUrl(common)).toMatch(/^data:image\/png;base64,/);
     expect(thumbUrl({ doc: "d1", gen: 1, page: 0, w: 120 })).toMatch(/^data:image\/png;base64,/);
+  });
+});
+
+describe("forms=0 (F-20)", () => {
+  /** Capture the query each builder produces, without depending on the mock's data URLs. */
+  function queryOf(build: () => void): Query {
+    let seen: Query = {};
+    setMockAssetResolver((_route, query) => {
+      seen = query;
+      return "data:,";
+    });
+    try {
+      build();
+    } finally {
+      setMockAssetResolver(null);
+    }
+    return seen;
+  }
+
+  const common = { doc: "d1", gen: 1, page: 0, sk: 200, rot: 0 as const };
+
+  it("is absent by default, so PDFium keeps drawing the widgets", () => {
+    expect(queryOf(() => pageUrl(common)).forms).toBeUndefined();
+    expect(queryOf(() => tileUrl({ ...common, tx: 0, ty: 0 })).forms).toBeUndefined();
+    expect(queryOf(() => pageUrl({ ...common, forms: true })).forms).toBeUndefined();
+  });
+
+  it("is `0` while the 양식 overlay owns the field rendering", () => {
+    expect(queryOf(() => pageUrl({ ...common, forms: false })).forms).toBe(0);
+    expect(queryOf(() => tileUrl({ ...common, tx: 1, ty: 2, forms: false })).forms).toBe(0);
   });
 });

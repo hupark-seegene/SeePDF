@@ -118,6 +118,49 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
       await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 400)));
       return snapshot();
     }
+    /**
+     * F-30 `open.*` rows: open a file and wait for the **first painted pixel**.
+     *
+     * `PageShell.markLoaded` stamps `window.__seepdfFirstPaint` on the first `<img>` that
+     * lands (placeholder, whole-page bitmap or tile), and `Viewer` stamps
+     * `window.__seepdfOpenAt` when the document reaches the UI. Both are cleared here so the
+     * number is this open's, not the session's, and the clock starts before `openPaths` so
+     * `open_document` itself is inside the measurement — that is what the budget means.
+     */
+    case "openTimed": {
+      const m = await import("../dialogs/flows");
+      window.__seepdfFirstPaint = undefined;
+      window.__seepdfOpenAt = performance.now();
+      const started = performance.now();
+      await m.openPaths([String(cmd.path)]);
+      const documentMs = performance.now() - started;
+      const deadline = performance.now() + Number(cmd.timeoutMs ?? 20_000);
+      while (window.__seepdfFirstPaint === undefined && performance.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 8));
+      }
+      const paint = window.__seepdfFirstPaint;
+      return {
+        documentMs,
+        firstPaintMs: paint === undefined ? null : paint - started,
+        state: snapshot(),
+      };
+    }
+    /** F-30 `scroll.*` / `rss.*` rows: walk the document, then read the engine's own stats. */
+    case "scrollThrough": {
+      const view = useViewStore.getState();
+      const info = useDocStore.getState().info;
+      if (!info) throw new Error("no document");
+      const step = Number(cmd.step ?? 25);
+      const settleMs = Number(cmd.settleMs ?? 120);
+      const started = performance.now();
+      let stops = 0;
+      for (let page = 0; page < info.pageCount; page += step) {
+        view.goToPage(page);
+        stops++;
+        await new Promise((r) => setTimeout(r, settleMs));
+      }
+      return { stops, elapsedMs: performance.now() - started, state: snapshot() };
+    }
     case "openWithPassword": {
       const info = await useDocStore.getState().open(String(cmd.path), String(cmd.password));
       return { info: info && { docId: info.docId, pageCount: info.pageCount }, state: snapshot() };
@@ -156,6 +199,19 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
       await new Promise((r) => setTimeout(r, 250));
       return snapshot();
     }
+    /**
+     * Call one exported function of `dialogs/flows` — the seam the smoke needs for the flows
+     * that are only reachable from a dialog button (`runPrint`, `confirmUnsaved`, …). A fixed
+     * module, so this is still a table and not an `eval`.
+     */
+    case "flow": {
+      const m = (await import("../dialogs/flows")) as unknown as Record<string, unknown>;
+      const fn = m[String(cmd.fn)];
+      if (typeof fn !== "function") throw new Error(`unknown flow ${String(cmd.fn)}`);
+      const out = await (fn as (...a: unknown[]) => unknown)(...((cmd.args as unknown[]) ?? []));
+      await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 300)));
+      return { out: out ?? null, state: snapshot() };
+    }
     case "pageOps": {
       const m = await import("../dialogs/flows");
       await m.runPageOps(cmd.ops as never);
@@ -171,6 +227,10 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
           ? api.saveDocumentAs({ docId: info.docId, path }, onProgress)
           : api.saveDocument({ docId: info.docId }, onProgress),
       );
+      // `flows.saveAsFlow` refreshes the store after a Save As (the document's path and its
+      // dirty flag move); this op calls the API directly, so it has to do the same or the
+      // snapshot reports a dirty document that is in fact saved.
+      await useDocStore.getState().refresh();
       await new Promise((r) => setTimeout(r, 250));
       return { out, state: snapshot() };
     }

@@ -334,7 +334,8 @@ reset_form(a: { docId: DocId }): Promise<DocInfo>           // P1
 Engine: `engine/form/` — `FORM_SetFocusedAnnot` → `FORM_SelectAllText` → `FORM_ReplaceSelection`
 (**unverified**; the module ships with the verified `FORM_OnLButtonDown/Up` + per-character `FORM_OnChar`
 fallback behind a unit test) → `FORM_ForceToKillFocus`. Owner (a). Feature F-20.
-Field highlight is **not** a command: it is the `hl=1` tile-URL parameter (§9).
+Field highlight is **not** a command: it is the `hl=1` tile-URL parameter (§9). Neither is
+suppressing the widget the overlay replaces: that is `forms=0` on the same URLs (§9, F-20).
 
 ### 7.3 Pages
 
@@ -536,8 +537,8 @@ every URL with `convertFileSrc('', 'seepdf')` — it never sniffs the OS.
 
 | Route | Query | Response |
 |---|---|---|
-| `/tile` | `doc, gen, page, sk, rot, tx, ty[, night][, hl]` | `image/png` (512×512 or clipped edge) |
-| `/page` | `doc, gen, page, sk, rot[, night][, hl]` | `image/png`, whole page — also the placeholder (`sk` small) |
+| `/tile` | `doc, gen, page, sk, rot, tx, ty[, night][, hl][, forms]` | `image/png` (512×512 or clipped edge) |
+| `/page` | `doc, gen, page, sk, rot[, night][, hl][, forms]` | `image/png`, whole page — also the placeholder (`sk` small) |
 | `/thumb` | `doc, gen, page, w[, rot]` | `image/png`, `set_target_width(w).set_maximum_height(w*2)` |
 | `/ocr` | `doc, gen, page, dpi` | `image/png` gray8 at `dpi` (300 default) |
 | `/recent-thumb` | `id` | `image/png` from `$APPDATA/SeePDF/thumbs/<id>.png` (read on the io thread) |
@@ -545,8 +546,14 @@ every URL with `convertFileSrc('', 'seepdf')` — it never sniffs the OS.
 
 * `sk` = `scaleKey` = `round(zoomPercent × devicePixelRatio)`; device scale `s = sk / 100`.
 * `tx`,`ty` are **tile indices** (device origin = `tx·512, ty·512`).
+* `forms` defaults to `1`. **`forms=0` makes the engine skip `FPDF_FFLDraw`**, so the bitmap carries
+  no AcroForm widget at all — no value text, no field wash, no pushbutton caption (PDFium's own
+  contract: `FPDF_ANNOT` renders "all annotations except widget and popup annotations"). The 양식
+  overlay requests it while it is mounted, so a field value is rendered exactly once — by the HTML
+  input on top (F-20). Everything else on the page is byte-identical to a `forms=1` render, which
+  `cargo test form_forms_flag_suppresses_only_the_widgets` asserts pixel by pixel.
 * Response headers: `Cache-Control: private, max-age=31536000, immutable`,
-  `ETag "<doc>:<gen>:<page>:<kind>:<sk>:<rot>:<tx>:<ty>:<night>:<hl>"`,
+  `ETag "<doc>:<gen>:<page>:<kind>:<sk>:<rot>:<tx>:<ty>:<night>:<hl>:<forms>"`,
   `Access-Control-Allow-Origin: *`, `Access-Control-Expose-Headers: *`,
   `X-Render-Ms`, `X-Encode-Ms`, `X-Cache: hit|miss`, `X-Image-Width`, `X-Image-Height`.
 * Status codes: `400` bad parameters, `404` unknown document, `410` `gen` older than the document's

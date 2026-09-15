@@ -261,6 +261,20 @@
 
 .info-row dd { margin: 0; overflow-wrap: anywhere; }
 
+/* 서명 만들기 — the drawing surface. `touch-action: none` so a trackpad/pen drag draws instead
+   of scrolling the dialog; the paper colour is the page's, not the chrome's (tokens §14.3b). */
+.sign-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 1;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--page-paper);
+  touch-action: none;
+  cursor: crosshair;
+}
+
 @keyframes dlg-fade {
   from { opacity: 0; }
   to { opacity: 1; }

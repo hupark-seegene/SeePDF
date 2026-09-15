@@ -49,6 +49,12 @@ export interface TileParams {
   ty: number;
   night?: boolean;
   hl?: boolean;
+  /**
+   * Draw the AcroForm widgets in the bitmap (default `true`). 양식 mode sets it to `false`
+   * while the HTML overlay is mounted, so a field value is rendered exactly once — by the
+   * input on top, not by PDFium underneath as well (F-20).
+   */
+  forms?: boolean;
 }
 
 export type PageParams = Omit<TileParams, "tx" | "ty">;
@@ -73,14 +79,14 @@ function build(route: string, query: Query): string {
 export function tileUrl(p: TileParams): string {
   return build("/tile", {
     doc: p.doc, gen: p.gen, page: p.page, sk: p.sk, rot: p.rot, tx: p.tx, ty: p.ty,
-    night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined,
+    night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined, forms: p.forms === false ? 0 : undefined,
   });
 }
 
 export function pageUrl(p: PageParams): string {
   return build("/page", {
     doc: p.doc, gen: p.gen, page: p.page, sk: p.sk, rot: p.rot,
-    night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined,
+    night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined, forms: p.forms === false ? 0 : undefined,
   });
 }
 

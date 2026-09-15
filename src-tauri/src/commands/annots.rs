@@ -123,7 +123,9 @@ pub async fn create_annotation(
             let new_id = registry::mutate(
                 st,
                 &doc_id,
-                MutateOpts::new("undo.annotCreate", ChangeReason::Edit).page(page),
+                MutateOpts::new("undo.annotCreate", ChangeReason::Edit)
+                    .page(page)
+                    .keeps_text(),
                 |doc| annot::create::create(doc, page, &spec, id),
             )?;
             result_for(st, &doc_id, page, Some(new_id), None)
@@ -144,7 +146,9 @@ pub async fn update_annotation(
             let previous = registry::mutate(
                 st,
                 &doc_id,
-                MutateOpts::new("undo.annotEdit", ChangeReason::Edit).page(page),
+                MutateOpts::new("undo.annotEdit", ChangeReason::Edit)
+                    .page(page)
+                    .keeps_text(),
                 |doc| annot::update::update(doc, page, &id, &patch),
             )?;
             result_for(st, &doc_id, page, Some(previous.id.clone()), Some(previous))
@@ -164,7 +168,9 @@ pub async fn delete_annotations(
             registry::mutate(
                 st,
                 &doc_id,
-                MutateOpts::new("undo.annotDelete", ChangeReason::Edit).page(page),
+                MutateOpts::new("undo.annotDelete", ChangeReason::Edit)
+                    .page(page)
+                    .keeps_text(),
                 |doc| annot::delete(doc, page, &ids),
             )?;
             result_for(st, &doc_id, page, None, None)

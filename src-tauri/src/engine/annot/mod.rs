@@ -23,7 +23,7 @@
 //! Page handling: all of these open their **own** `PdfPage` from `OpenDoc::pdf()` rather than
 //! going through the LRU, because building a Stamp needs `&PdfDocument` (for the object
 //! constructors) at the same time as the page, and `OpenDoc::page()` borrows the whole
-//! `OpenDoc` mutably. `OpenDoc::invalidate_page` is called first so the LRU never holds a
+//! `OpenDoc` mutably. `OpenDoc::invalidate_page_handle` is called first so the LRU never holds a
 //! second handle to the same page across the edit.
 
 pub mod create;
@@ -122,8 +122,9 @@ impl<'p> ScratchPage<'p> {
                     .with_page(index),
             );
         }
-        // The LRU must not keep a second handle to this page across the edit.
-        doc.invalidate_page(index);
+        // The LRU must not keep a second handle to this page across the edit. The handle
+        // only — `mutate` decides whether the extracted text survives (STAGE1A §5.1).
+        doc.invalidate_page_handle(index);
         let bindings = doc.bindings();
         let mut page = doc
             .pdf()

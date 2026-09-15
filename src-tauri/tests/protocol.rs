@@ -72,9 +72,10 @@ fn protocol_routes() {
     assert_eq!(head(&page, "x-cache"), "miss");
     assert!(!head(&page, "x-render-ms").is_empty());
     assert!(!head(&page, "x-encode-ms").is_empty());
+    // …:night:hl:forms — `forms` is 1 unless the 양식 overlay asks for `forms=0` (F-20).
     assert_eq!(
         etag(&page),
-        format!("\"{id}:{generation}:0:page:100:0:0:0:0:0\"")
+        format!("\"{id}:{generation}:0:page:100:0:0:0:0:0:1\"")
     );
 
     // --- the encoded LRU answers the second request without pdfium ---
@@ -203,4 +204,41 @@ fn protocol_generation_bump_invalidates() {
     assert_eq!(after.status(), StatusCode::OK);
     assert_eq!(head(&after, "x-cache"), "miss", "the old tile was swept");
     assert_eq!(head(&after, "x-image-width"), "792", "rotated by the edit");
+}
+
+/// `forms=0` is a separate cache entry that answers with a different image (F-20).
+///
+/// The 양식 overlay asks for it while it is mounted so the field value is rendered exactly
+/// once — by the HTML input, not by PDFium underneath as well. Two things have to hold at the
+/// route level: the parameter reaches the render (different bytes) and it is part of the key
+/// (different `ETag`, so one does not serve the other from the encoded LRU).
+#[test]
+fn protocol_forms_parameter_is_its_own_cache_entry() {
+    let doc = open("160F-2019.pdf");
+    let (id, generation) = (doc.doc_id.clone(), doc.info.doc_generation);
+    let url = |extra: &str| {
+        format!("seepdf://localhost/page?doc={id}&gen={generation}&page=0&sk=100&rot=0{extra}")
+    };
+
+    let with_widgets = get(&url(""));
+    let without = get(&url("&forms=0"));
+    assert_eq!(with_widgets.status(), StatusCode::OK);
+    assert_eq!(without.status(), StatusCode::OK);
+
+    assert_eq!(etag(&with_widgets), format!("\"{id}:{generation}:0:page:100:0:0:0:0:0:1\""));
+    assert_eq!(etag(&without), format!("\"{id}:{generation}:0:page:100:0:0:0:0:0:0\""));
+    assert_ne!(
+        with_widgets.body(),
+        without.body(),
+        "forms=0 must not answer with the widget render"
+    );
+
+    // Both are cached independently, and neither serves the other.
+    assert_eq!(head(&get(&url("")), "x-cache"), "hit");
+    assert_eq!(head(&get(&url("&forms=0")), "x-cache"), "hit");
+
+    // `forms=1` and an absent `forms` are the same entry.
+    let explicit = get(&url("&forms=1"));
+    assert_eq!(etag(&explicit), etag(&with_widgets));
+    assert_eq!(explicit.body(), with_widgets.body());
 }

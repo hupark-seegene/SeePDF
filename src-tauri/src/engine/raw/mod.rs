@@ -20,6 +20,7 @@ pub mod consts;
 pub mod doc;
 pub mod form;
 pub mod page;
+pub mod render;
 pub mod save;
 
 use pdfium_render::prelude::{Pdfium, PdfiumLibraryBindings};

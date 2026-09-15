@@ -69,12 +69,13 @@ Fixtures: `tracemonkey.pdf` (14 p text), `TAMReview.pdf` (23 p, all text inside 
 
 ✅ verified end to end in the **real** app (not the mock) · ⚠️ partial, with the gap named ·
 ❌ missing. Evidence, screenshots and the commands behind each line are in
-`docs/STAGE2_INTEGRATION.md` §3; `sN` names are files in `fixtures/out/stage2/shots/`.
+`docs/STAGE2_INTEGRATION.md` §3 and `docs/STAGE2B_HARDENING.md`; `sN` names are files in
+`fixtures/out/stage2/shots/`, plain names in `fixtures/out/stage2b/`.
 
 | id | status | evidence |
 |---|---|---|
-| F-01 | ✅ | argv open, welcome+recents, wrong→right password all live (`s2-01/05/10/11`); QA-1 Finder double-click and QA-2 drag & drop still unverified |
-| F-02 | ✅ | `gen/500p.pdf` at 두 쪽 + rotate 90, jump to p250, tile p50 0.18 / p95 1.26 ms (`s2-18`); fps and pinch not instrumented (F-30) |
+| F-01 | ✅ | argv open, welcome+recents, wrong→right password all live (`s2-01/05/10/11`); **QA-1 done in Stage 2b**: `open -a SeePDF.app tracemonkey.pdf` on the bundled app opens it (`qa1-finder-open`), a second `open -a … rotation.pdf` is handled by the **same process** (`qa1-second-open`), and `--smoke` passes against the packaged binary. QA-2 drag & drop still unverified |
+| F-02 | ✅ | `gen/500p.pdf` at 두 쪽 + rotate 90, jump to p250 (`s2-18`); Stage 2b baseline: open 500 p → first paint **26 ms**, tile @2× p50/p95 **0.48 / 2.31 ms**, @4× **0.34 / 1.63 ms**; fps and pinch still not instrumented |
 | F-03 | ✅ | view rotation 90° live; `cargo test render_rotation_sizes` |
 | F-04 | ✅ | rail renders and rings the current page (`s2-01/03`); `cargo test render_thumbnails_keep_aspect_ratio` |
 | F-05 | ✅ | `outline-labels.pdf` → 7 nodes / 3 levels; `TAMReview.pdf` node carries `dest {x:0, y:806}` and the scroller lands on it |
@@ -85,24 +86,24 @@ Fixtures: `tracemonkey.pdf` (14 p text), `TAMReview.pdf` (23 p, all text inside 
 | F-10 | ✅ | square round-trips with colour/border/opacity; line/arrow by `cargo test annot_line_subj_roundtrip` (not driven live) |
 | F-11 | ✅ | `한글 테스트 텍스트 상자` saved, reopened, and rendered by Preview; bundled subset, file +0.36 MB |
 | F-12 | ✅ | note with `contents "한글 메모 테스트 — Stage 2"` persists and renders PDFium's icon |
-| F-13 | ⚠️ | `cargo test annot_stamp_image_roundtrip` passes; not driven live because arming 도장/서명 opens a native file picker, and 서명 만들기 (draw/type) does not exist (STAGE1D §7.5) |
+| F-13 | ⚠️ | `cargo test annot_stamp_image_roundtrip` passes. **서명 만들기 now exists** (Stage 2b §6.3): a canvas sheet whose strokes commit as `AnnotSpec { kind: "signature" }` → a real `/Ink` with `/Subj "SeePDF:Signature"`, covered by `vitest src/dialogs/signature.test.ts` (7 tests). The *image* 도장 path still is not driven live — arming it opens a native file picker |
 | F-14 | ✅ | a square **loaded from disk** recoloured to `[123,214,74]` border 5, saved, verified — no crash; inspector + 주석 list render |
 | F-15 | ✅ | create → undo → redo round trip; `canUndo`/`canRedo` now ride on `doc-changed`, no `get_document` per edit |
 | F-16 | ⚠️ | `move([2,3]→1)` → `A C D B`, rotate swaps 792×612, delete 14→13, insertBlank, merge (7 p + warnings), split everyN → 3 files with `outputs`; **the drag gesture itself and 추출 were not driven with a mouse** |
 | F-17 | ✅ | probe answered `replaceFont/glyphsMissing/Helvetica`, the edit **refused** without `allowFontSubstitution` and succeeded with it; the new string is searchable in the saved file |
 | F-18 | ✅ | `한글 페이지 객체 테스트` added, saved, and found by search with real spaces |
 | F-19 | ✅ | a 2480×3508 PNG placed at 0,0–595×842 pt; the saved file is the OCR fixture of F-21 |
-| F-20 | ⚠️ | `박현우 테스트` / `Raw FORM 입력` typed into `160F-2019.pdf`, saved, read back by `inspect_pdf`; **the value is drawn twice** — PDFium's widget bitmap plus the HTML overlay, offset a pixel (`s2-07`) |
+| F-20 | ✅ | **Fixed in Stage 2b**: `forms=0` on the tile/page routes makes the engine skip `FPDF_FFLDraw` while the 양식 overlay is mounted, so each field is rendered exactly once. `cargo test form_forms_flag_suppresses_only_the_widgets` walks all 2 002 770 px: **0** differ outside a widget rect, the filled field has >100 ink px with `forms=1` and **0** with `forms=0`; `form_forms_flag_tiles_match_the_full_render` proves the tile origin byte for byte; `protocol_forms_parameter_is_its_own_cache_entry` pins the route. Live at 100 % and 200 % (`form-100`, `form-200`), values read back after save → close → reopen. Trade-off: a pushbutton caption is not drawn while the overlay is up |
 | F-21 | ✅ | scan with 0 extractable chars → OCR 300 DPI kor+eng, 91 words in 1.29 s → 484 chars; `search("대한민국")` hits before and after save+reopen; selection rects sit on the scanned lines (`s2-13`) |
 | F-22 | ✅ | preview named the collateral, apply reported `removedObjects 2, verified true`, and the saved file's text lost the title (5 087 → 5 018 chars) |
 | F-23 | ✅ | ⌘S in place: file rewritten (mtime + size changed), dirty cleared, `status.saved` toast, the new highlight present on reopen; Save As wrote every artefact of this table; close with unsaved changes shows 저장 / 저장 안 함 / 취소 (`s2-04`); `cargo test save_atomic_abort`, `save_keeps_encryption` |
 | F-24 | ✅ | 3 pages at 150 DPI, sizes exactly `round(pt×dpi/72)` (rotated p0 = 1650×1275), estimate 3 916 110 B vs 3 916 112 B actual. **Fixed in Stage 2**: the payload shape made this fail from the UI |
 | F-25 | ✅ | `text.txt` 11 538 chars with form feeds; `flat.pdf` has 0 annotations |
-| F-26 | ⚠️ | `print_prepare` + OS handler prints the right pages with annotations baked in (`s2-15/17`); the **webview** panel prints the app DOM, so it is the fallback until a print-only DOM exists (STAGE1E §7.4) |
+| F-26 | ✅ | **Fixed in Stage 2b**: `src/print/` is a print-only DOM — one full-width page image per printed page off `seepdf://page` at 150 DPI (`sk=208`), `print.css` hides the app shell, then `window.print()`. The macOS sheet shows **"All 3 Pages" / "Page 1 of 3"** with the document's own pages (`print-preview`), not the app chrome. The `print_prepare` + OS-handler path is kept as the alternative in the 인쇄 dialog (`print-dialog`). `vitest src/print/print.test.tsx`, 5 tests |
 | F-27 | ✅ | dark ⇄ light switched live with no reflow (`s2-09`); `--page-paper/-ink/-field` moved into `tokens.css` and the last `#fff` literals in `shell.css` are gone |
-| F-28 | ✅ | `node scripts/check-i18n.mjs` — ko 442 / en 442; English switched live (`s2-09`) |
-| F-29 | ⚠️ | ⌘A / ⌘C / ⌘S / ⌘P / ⌘Z / ⇧⌘Z / ⌘G and the mode keys verified live; the full two-platform table is `vitest keymap.*`. The native menu is still English (P1) |
-| F-30 | ❌ | `scripts/perf-baseline.mjs` is still the Stage 0 skeleton — every engine row is `null`, `docs/perf/baseline.md` is not filled and the ±20 % CI gate is off |
+| F-28 | ✅ | `node scripts/check-i18n.mjs` — ko 447 / en 447; English switched live (`s2-09`), and since Stage 2b the **native menu** follows the setting too (`menu-en`) |
+| F-29 | ✅ | ⌘A / ⌘C / ⌘S / ⌘P / ⌘Z / ⇧⌘Z / ⌘G and the mode keys verified live; the full two-platform table is `vitest keymap.*`. **The native menu is Korean now** (Stage 2b §3): labels come from a ko/en table that is UI_SPEC §15.2 verbatim, and `set_settings` rebuilds the menu on the main thread when the locale changes — `menu-ko`, `menu-ko-file`, `menu-en` (live switch, no restart); `cargo test menu_labels_cover_every_item` |
+| F-30 | ✅ | `scripts/perf-baseline.mjs` measures for real from four sources — a new `cargo run --release --example perf_bench`, the dev bridge against the running app (`openTimed` / `scrollThrough`), `ocr-accuracy.mjs` and the bundle report — and writes `docs/perf/baseline.{md,json}` with units, date and machine. Every row is inside its ARCHITECTURE §13 budget except `app.rss.500p.mb` (406.8 MB vs 400 MB, on a **debug** binary — flagged in the table; the engine's own RSS on the same document is 63.3 MB). CI runs `--check` on macos-arm64: ±20 % **gated** on the counts and sizes, **informational** on every wall-clock row, because a re-run on the recording machine moved `open.500p.ms` by −77 % (and +318 % on another pair) from page-cache state alone (Stage 2b §1.3). The wiring also uncovered that CI's bundle gate was measuring the **debug** `dist/` that `tauri build --debug` leaves behind — fixed (Stage 2b §1.4) |
 
 ---
 
@@ -127,7 +128,7 @@ consistent: a command with no feature is out of scope, a feature with no command
 | F-17 | `list_page_objects`, `probe_text_edit`, `edit_text_object`, `transform_object`, `delete_objects` | §6 편집 mode 텍스트 수정 |
 | F-18 | `add_text_object` | §6 편집 mode 텍스트 추가 |
 | F-19 | `add_image_object` | §6 편집 mode 이미지 추가 |
-| F-20 | `list_form_fields`, `set_form_field_value`, `reset_form` (P1), tile parameter `hl=1` | §3 양식 tool strip, HTML overlay inputs |
+| F-20 | `list_form_fields`, `set_form_field_value`, `reset_form` (P1), tile parameters `hl=1` and `forms=0` | §3 양식 tool strip, HTML overlay inputs |
 | F-21 | `ocr_capabilities`, `ocr_page_status`, `ocr_apply`, `/ocr`, `cancel_job` | §10 OCR dialog, ⋯ overflow menu |
 | F-22 | `redact_preview`, `apply_redactions` | §6 편집 mode 영역 표시, §7 redaction panel |
 | F-23 | `save_document`, `save_document_as` | ⌘S / ⇧⌘S, §8 save state, unsaved sheet |

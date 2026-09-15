@@ -58,6 +58,7 @@ fn run_smoke(path: &str) -> Result<(), EngineError> {
         ty: 0,
         night: engine::render::Night::Off,
         hl: false,
+        forms: true,
     };
     let (width, height) = engine.call_blocking(engine::Lane::Interactive, "smoke/render", {
         let key = key.clone();
@@ -118,7 +119,7 @@ pub fn run() {
             // 2. native menu (macOS only; Windows uses the in-window menu bar).
             #[cfg(target_os = "macos")]
             {
-                let menu = app::menu::build(&handle)?;
+                let menu = app::menu::build(&handle, settings.locale)?;
                 app.set_menu(menu)?;
                 app.on_menu_event(app::menu::on_menu_event);
             }

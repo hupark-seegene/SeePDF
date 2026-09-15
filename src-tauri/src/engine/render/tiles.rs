@@ -5,6 +5,12 @@
 //! drawn (render spike §3). Tiles use `set_origin(-tx, -ty)` into a tile-sized bitmap,
 //! which pdfium clips for us and which was verified pixel-exact against a crop of the full
 //! render (427 / 1,048,576 px differing, max channel delta 1).
+//!
+//! The one render that *wants* the widgets gone — `forms=0`, the 양식 overlay's request
+//! (F-20) — does **not** reach for `render_form_data(false)` either, for the same reason: that
+//! switch is what puts pdfium-render on the matrix path, which has no tile origin. It goes
+//! through [`crate::engine::raw::render`] instead, which makes the same `FPDF_RenderPageBitmap`
+//! call minus `FPDF_FFLDraw`.
 
 use crate::engine::render::cache::{Night, RenderKind, TileKey};
 use crate::engine::render::encode::RawImage;
@@ -77,7 +83,9 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
     }
     let geom = doc.geom(key.page)?.clone();
 
-    let (target, origin) = match key.kind {
+    // `full` is the whole scaled page in device px — the same number pdfium-render passes as
+    // `size_x`/`size_y`. It differs from the destination bitmap only for a tile.
+    let (target, origin, full) = match key.kind {
         RenderKind::Tile => {
             let s = geometry::scale_from_key(key.scale_key);
             let (w, h) = geometry::page_pixels(&geom, key.rotation, s);
@@ -87,21 +95,21 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
                     key.tx, key.ty
                 ))
             })?;
-            (Target::Scale(s, tw, th), Some((ox, oy)))
+            (Target::Scale(s, tw, th), Some((ox, oy)), Some((w, h)))
         }
         RenderKind::Page => {
             let s = geometry::scale_from_key(key.scale_key);
             let (w, h) = geometry::page_pixels(&geom, key.rotation, s);
-            (Target::Scale(s, w, h), None)
+            (Target::Scale(s, w, h), None, None)
         }
         RenderKind::Thumb => {
             let width = key.scale_key.clamp(16, 4096);
-            (Target::Thumb(width), None)
+            (Target::Thumb(width), None, None)
         }
         RenderKind::Ocr => {
             let s = (key.scale_key.clamp(72, 1200) as f32) / 72.0;
             let (w, h) = geometry::page_pixels(&geom, key.rotation, s);
-            (Target::Scale(s, w, h), None)
+            (Target::Scale(s, w, h), None, None)
         }
     };
 
@@ -147,14 +155,35 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
         .docs
         .get_mut(&key.doc)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{}'", key.doc)))?;
+    let bindings = doc.bindings();
     let page = doc.page(page_index)?;
 
     let t0 = Instant::now();
-    let mut bitmap = PdfBitmap::empty(width as Pixels, height as Pixels, PdfBitmapFormat::BGRA)
-        .ctx("allocate bitmap")?;
-    page.render_into_bitmap_with_config(&mut bitmap, &config)
-        .ctx("render page")?;
-    let pixels = bitmap.as_raw_bytes();
+    let pixels = if key.forms {
+        let mut bitmap = PdfBitmap::empty(width as Pixels, height as Pixels, PdfBitmapFormat::BGRA)
+            .ctx("allocate bitmap")?;
+        page.render_into_bitmap_with_config(&mut bitmap, &config)
+            .ctx("render page")?;
+        bitmap.as_raw_bytes()
+    } else {
+        // `forms=0` (F-20): the same FFI call minus `FPDF_FFLDraw`, because pdfium-render's
+        // `render_form_data(false)` would take the matrix path, which has no tile origin.
+        let (out_w, out_h) = full.unwrap_or((width, height));
+        let (ox, oy) = origin.unwrap_or((0, 0));
+        crate::engine::raw::render::render_page_without_form_data(
+            bindings,
+            page,
+            width,
+            height,
+            -(ox as i32),
+            -(oy as i32),
+            out_w,
+            out_h,
+            pdfium_rotation(key.rotation),
+            render_flags(grayscale),
+            clear_color(key.night),
+        )?
+    };
     let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
     st.shared.stats.record_tile_ms(render_ms);
 
@@ -165,6 +194,35 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
         render_ms,
         grayscale,
     })
+}
+
+/// PDFium's quarter-turn encoding for `FPDF_RenderPageBitmap` (0 = none .. 3 = 270°).
+fn pdfium_rotation(deg: u16) -> std::os::raw::c_int {
+    match deg % 360 {
+        90 => 1,
+        180 => 2,
+        270 => 3,
+        _ => 0,
+    }
+}
+
+/// The flag word [`base_config`] produces: annotations on, LCD text off, RGBA byte order.
+fn render_flags(grayscale: bool) -> std::os::raw::c_int {
+    use crate::engine::raw::consts;
+    let mut flags = consts::FPDF_ANNOT | consts::FPDF_REVERSE_BYTE_ORDER;
+    if grayscale {
+        flags |= consts::FPDF_GRAYSCALE;
+    }
+    flags
+}
+
+/// `0xAARRGGBB`, matching [`base_config`]'s `set_clear_color`.
+fn clear_color(night: Night) -> pdfium_render::prelude::FPDF_DWORD {
+    if night.is_on() {
+        0x0000_0000
+    } else {
+        0xFFFF_FFFF
+    }
 }
 
 enum Target {

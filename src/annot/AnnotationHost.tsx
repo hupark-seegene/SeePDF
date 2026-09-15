@@ -15,7 +15,7 @@ import { useSelectionStore } from "../viewer";
 import { DRAWING_TOOLS, MARKUP_TOOLS, toolController, type ToolSink } from "../tools/ToolController";
 import { registerTools } from "../tools/registry";
 import { setAnnotCommandHandler } from "../tools/commands";
-import { setStampImage, setStampPicker } from "../tools/stamp";
+import { setDrawnSignature, setStampImage, setStampPicker } from "../tools/stamp";
 import { movePatch } from "../tools/hit";
 import { useAnnotStore } from "../store/annotStore";
 import { useAppStore } from "../store/appStore";
@@ -30,6 +30,7 @@ import {
   patchAnnotation,
   specFromAnnot,
 } from "./actions";
+import { closeDialog, openDialog } from "../dialogs/dialogState";
 import { startAnnotSync } from "./sync";
 import { AnnotOverlay } from "./AnnotOverlay";
 import { ToolSurface } from "./ToolSurface";
@@ -310,6 +311,22 @@ function renderLayers(ctx: PageLayerContext): PageLayers {
 // Start / stop
 // ---------------------------------------------------------------------------
 
+/**
+ * 서명 만들기 (UI_SPEC §6): the sheet a user with no signature file needs. Drawing wins over
+ * picking — `setDrawnSignature` clears any previously picked image — and 이미지 선택… inside
+ * the sheet hands straight over to [`pickStamp`], so the image path is still one click away.
+ * Cancelling either one disarms the tool rather than leaving a tool that cannot commit.
+ */
+function openSignatureSheet(): void {
+  openDialog("signature", {
+    onDrawn: (signature: { paths: number[][]; aspect: number }) => setDrawnSignature(signature),
+    onChooseImage: () => {
+      closeDialog("signature");
+      void pickStamp("signature");
+    },
+  });
+}
+
 async function pickStamp(id: "stamp" | "signature"): Promise<void> {
   const picked = await api
     .openFileDialog({
@@ -353,7 +370,7 @@ function start(): () => void {
   registerTools();
   toolController.setSink(sink);
   toolController.arm(useAppStore.getState().tool);
-  setStampPicker((id) => void pickStamp(id));
+  setStampPicker((id) => (id === "signature" ? openSignatureSheet() : void pickStamp(id)));
   const offSync = startAnnotSync();
   const offForms = startFormSync();
   setAnnotCommandHandler((id) => {

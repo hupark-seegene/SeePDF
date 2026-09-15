@@ -64,7 +64,7 @@ impl Night {
     }
 }
 
-/// `{doc, gen, page, kind, scaleKey, rot, tx, ty, night, hl}`.
+/// `{doc, gen, page, kind, scaleKey, rot, tx, ty, night, hl, forms}`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TileKey {
     pub doc: String,
@@ -79,13 +79,17 @@ pub struct TileKey {
     pub night: Night,
     /// Form-field highlighting ("필드 강조") is part of the key.
     pub hl: bool,
+    /// Draw the AcroForm widgets (`FPDF_FFLDraw`). `false` is the `forms=0` request the
+    /// 양식 overlay makes so the field value is rendered exactly once — by the HTML input
+    /// on top, not by PDFium underneath as well (F-20).
+    pub forms: bool,
 }
 
 impl TileKey {
     /// The `ETag` value from `IPC_CONTRACT.md` §9, quotes included.
     pub fn etag(&self) -> String {
         format!(
-            "\"{}:{}:{}:{}:{}:{}:{}:{}:{}:{}\"",
+            "\"{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}\"",
             self.doc,
             self.generation,
             self.page,
@@ -95,7 +99,8 @@ impl TileKey {
             self.tx,
             self.ty,
             self.night.as_str(),
-            u8::from(self.hl)
+            u8::from(self.hl),
+            u8::from(self.forms)
         )
     }
 }
@@ -243,6 +248,7 @@ mod tests {
             ty: 0,
             night: Night::Off,
             hl: false,
+            forms: true,
         }
     }
 
@@ -282,6 +288,12 @@ mod tests {
 
     #[test]
     fn etag_is_the_contract_shape() {
-        assert_eq!(key(3, 7).etag(), "\"d1:7:3:tile:100:0:0:0:0:0\"");
+        // …:night:hl:forms — `forms` is 1 by default (F-20 only turns it off in 양식 mode).
+        assert_eq!(key(3, 7).etag(), "\"d1:7:3:tile:100:0:0:0:0:0:1\"");
+        let no_forms = TileKey {
+            forms: false,
+            ..key(3, 7)
+        };
+        assert_eq!(no_forms.etag(), "\"d1:7:3:tile:100:0:0:0:0:0:0\"");
     }
 }

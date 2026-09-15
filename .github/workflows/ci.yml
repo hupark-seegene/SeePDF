@@ -105,8 +105,31 @@ jobs:
       - name: tauri build --debug
         run: npm run tauri build -- --debug --target ${{ matrix.target }}
 
+      # `tauri build -- --debug` leaves an unminified, source-mapped `dist/` behind
+      # (`vite.config.ts` keys `minify`/`sourcemap` off `TAURI_ENV_DEBUG`), which is 172 kB gz
+      # critical path instead of 106. The gate has to see the artifact that ships, so the
+      # production frontend is rebuilt first. `check-bundle-size.mjs` now exits 2 with that
+      # explanation if it is ever pointed at a debug build again.
+      - name: Production frontend build (what the size gate measures)
+        run: npm run build
+
       - name: Bundle size gate
         run: node scripts/check-bundle-size.mjs
+
+      # F-30. `--check` re-measures and compares against `docs/perf/baseline.json` with a
+      # ±20 % tolerance, but only fails on the rows marked **gate** there: search hits,
+      # serialised bytes, page counts and the frontend bundle. Every wall-clock row is
+      # informational and printed with its delta — a GitHub-hosted runner shares its CPU, and
+      # the recorded numbers include a 0.33 ms tile, so a ±20 % band around them is noise.
+      # (Measured here: one `--check` run on the recording machine itself moved
+      # `open.500p.ms` by +318 % purely from page-cache state.)
+      #
+      # macOS arm64 only: the baseline was recorded there, and comparing a timing or an RSS
+      # across architectures says nothing. The `app` rows need a window and the `ocr` rows
+      # need the generated fixtures, so both are skipped.
+      - name: Performance baseline (F-30)
+        if: matrix.name == 'macos-arm64'
+        run: node scripts/perf-baseline.mjs --check --skip-app --skip-ocr
 
       - name: Upload bundle
         uses: actions/upload-artifact@v4

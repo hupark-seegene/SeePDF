@@ -18,6 +18,8 @@ export interface ViewerProps {
   layers?: PageLayerRenderer;
   /** 필드 강조 표시 (IPC_CONTRACT §9 `hl=1`) — (d) drives it from `formStore`. */
   fieldHighlight?: boolean;
+  /** `false` adds `forms=0`: PDFium skips the widgets while the 양식 overlay owns them (F-20). */
+  renderFormWidgets?: boolean;
   /**
    * The engine has painted `page` at `docGeneration`. (d) settles its optimistic annotation
    * ghosts here — ARCHITECTURE §10, replacing `annot/RenderProbe.tsx`.
@@ -25,7 +27,7 @@ export interface ViewerProps {
   onPageRendered?(page: PageIndex, docGeneration: DocGeneration): void;
 }
 
-export function Viewer({ layers, fieldHighlight, onPageRendered }: ViewerProps) {
+export function Viewer({ layers, fieldHighlight, renderFormWidgets, onPageRendered }: ViewerProps) {
   const info = useDocStore((s) => s.info);
   // Perf probe: `__seepdfOpenAt` → `__seepdfFirstPaint` (PageShell) is the "open → first page
   // painted" number of ARCHITECTURE §13, readable from the devtools console at any time.
@@ -37,6 +39,7 @@ export function Viewer({ layers, fieldHighlight, onPageRendered }: ViewerProps) 
       info={info}
       layers={layers}
       fieldHighlight={fieldHighlight}
+      renderFormWidgets={renderFormWidgets}
       onPageRendered={onPageRendered}
     />
   );

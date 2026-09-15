@@ -136,6 +136,8 @@ pub fn parse_image_key(path: &str, q: &HashMap<String, String>) -> Result<TileKe
     }
     let night = Night::parse(q.get("night").map(String::as_str));
     let hl = matches!(q.get("hl").map(String::as_str), Some("1") | Some("true"));
+    // `forms` defaults to 1: only the 양식 overlay asks for 0, and only while it is mounted.
+    let forms = !matches!(q.get("forms").map(String::as_str), Some("0") | Some("false"));
 
     let (kind, scale_key, tx, ty) = match path {
         "/tile" => ("tile", num::<u32>(q, "sk")?, num::<u32>(q, "tx")?, num::<u32>(q, "ty")?),
@@ -179,6 +181,7 @@ pub fn parse_image_key(path: &str, q: &HashMap<String, String>) -> Result<TileKe
         ty,
         night,
         hl,
+        forms,
     })
 }
 
@@ -543,6 +546,26 @@ mod tests {
         assert_eq!((key.tx, key.ty, key.rotation), (1, 4, 90));
         assert_eq!(key.night, Night::Dark);
         assert!(key.hl);
+        assert!(key.forms, "forms defaults to on");
+
+        // `forms=0` (F-20): the 양식 overlay is mounted, so PDFium must not draw the widgets.
+        let no_forms = parse_image_key(
+            "/page",
+            &query(&[
+                ("doc", "d1"),
+                ("gen", "1"),
+                ("page", "0"),
+                ("sk", "200"),
+                ("forms", "0"),
+            ]),
+        )
+        .expect("page");
+        assert!(!no_forms.forms);
+        assert_ne!(
+            no_forms.etag(),
+            TileKey { forms: true, ..no_forms.clone() }.etag(),
+            "forms is part of the cache key and the ETag"
+        );
 
         let thumb = parse_image_key(
             "/thumb",

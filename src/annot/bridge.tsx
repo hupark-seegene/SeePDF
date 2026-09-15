@@ -75,10 +75,17 @@ export function AnnotatedCanvas() {
   const highlight = useFormStore((s) => s.highlight);
   const hasForm = useDocStore((s) => s.info?.hasForm ?? false);
 
+  // F-20: while the HTML overlay is mounted it is the *only* renderer of a field. `forms=0`
+  // makes the engine skip `FPDF_FFLDraw`, so PDFium's widget bitmap (value, wash, caption)
+  // is not underneath the input a pixel or two off. Leaving 양식 mode unmounts the overlay
+  // and the pages are re-requested with the widgets back on.
+  const formOverlayMounted = formMode && hasForm;
+
   return (
     <Viewer
       layers={layers}
       fieldHighlight={formMode && highlight && hasForm}
+      renderFormWidgets={!formOverlayMounted}
       onPageRendered={pageRendered}
     />
   );

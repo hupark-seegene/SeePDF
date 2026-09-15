@@ -1,0 +1,64 @@
+/* The print stylesheet of F-26. On paper the print root is the only thing that exists; on
+   screen it is parked off-canvas. `.app-shell` is the single child of `#root` the app renders,
+   so hiding it (rather than `body > *:not(...)`) keeps the rule specific and cheap. */
+
+/* On screen the print root is laid out **off-canvas**, not `display: none`: a hidden subtree is
+   not painted, and WebKit's print snapshot then produced one blank sheet even though every
+   `<img>` had fired `load`. Off-canvas keeps the page images decoded and rasterised, so the
+   print context has something to paginate. `opacity` (not `visibility`) for the same reason. */
+#seepdf-print-root {
+  position: fixed;
+  top: 0;
+  left: -20000px;
+  width: 816px; /* US-Letter at 96 CSS dpi; @media print overrides it with the real page box */
+  opacity: 0.01;
+  pointer-events: none;
+  z-index: -1;
+}
+
+@media print {
+  /* No running headers, no app chrome, no scroll container — just the pages. */
+  @page {
+    size: auto;
+    margin: 0;
+  }
+
+  html,
+  body,
+  #root {
+    height: auto;
+    overflow: visible;
+    background: #fff;
+  }
+
+  #root > .app-shell {
+    display: none !important;
+  }
+
+  #seepdf-print-root {
+    position: static;
+    left: auto;
+    top: auto;
+    width: auto;
+    opacity: 1;
+    z-index: auto;
+    margin: 0;
+    padding: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-page {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* `break-after` is the modern spelling; WebKit still wants the legacy property too. */
+    page-break-after: always;
+    break-after: page;
+  }
+
+  .print-page:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+}

@@ -2,9 +2,14 @@
  * The HTML input overlay of 양식 mode (F-20) — the `forms` slot of `PageShell`.
  *
  * One real DOM control per widget, placed with `ctx.rectToBox`, so the browser gives us focus
- * order, IME, autofill-free text entry and accessibility for nothing. The PDF's own widget
- * appearance stays visible underneath (the tile URL's `hl=1` tints it); the input is transparent
- * and only paints its text.
+ * order, IME, autofill-free text entry and accessibility for nothing.
+ *
+ * **This overlay is the only renderer of a field while it is mounted.** `annot/bridge.tsx` asks
+ * for `forms=0` page and tile URLs in 양식 mode, which makes the engine skip `FPDF_FFLDraw`, so
+ * PDFium draws no widget value, no widget wash and no pushbutton caption underneath. Before
+ * Stage 2b both drew and the two were a pixel or two apart (`s2-07.png`, F-20). Leaving 양식
+ * mode unmounts the overlay and the pages are re-requested with the widgets back on, so a
+ * reader always sees the document exactly as the file describes it.
  *
  * **Korean input.** Text fields are *uncontrolled* — `defaultValue` plus a commit on blur / Enter.
  * A controlled `value` would re-render mid-composition and drop the jamo being typed, which is the
@@ -98,9 +103,19 @@ function FieldControl({ field, ctx }: { field: FormField; ctx: PageLayerContext 
     }
     case "button":
     case "signature":
+      // A pushbutton's caption lives in its widget appearance, which `forms=0` suppresses
+      // while this overlay is mounted (F-20), so printing `field.name` here would put
+      // "B.Reset" or "link" on top of the page's own text. The box marks where the widget is;
+      // the name is in the tooltip and in the 양식 inspector.
       return (
-        <div className="form-field form-readonly" style={style} title={t("form.fieldType")}>
-          {field.type === "signature" ? t("sign.title") : field.name}
+        <div
+          className="form-field form-readonly"
+          style={style}
+          data-highlight={highlight || undefined}
+          title={field.name}
+          aria-label={field.name}
+        >
+          {field.type === "signature" ? t("sign.title") : null}
         </div>
       );
     default: {

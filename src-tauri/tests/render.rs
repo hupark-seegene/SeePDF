@@ -22,6 +22,7 @@ fn key(doc: &TestDoc, kind: RenderKind, scale_key: u32, tx: u32, ty: u32) -> Til
         ty,
         night: Night::Off,
         hl: false,
+        forms: true,
     }
 }
 

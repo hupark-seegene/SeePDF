@@ -11,6 +11,7 @@ use common::*;
 
 use seepdf_lib::engine::form::{self, TextEntryMethod};
 use seepdf_lib::engine::registry::{self, MutateOpts};
+use seepdf_lib::engine::render::cache::{Night, RenderKind, TileKey};
 use seepdf_lib::engine::render::tiles;
 use seepdf_lib::ipc::types::{ChangeReason, FieldType, FieldValue, FormField, Rect};
 
@@ -379,4 +380,179 @@ fn form_probe_replace_selection() {
     })
     .expect("probe");
     println!("PROBE FORM_* {report}");
+}
+
+// ---------------------------------------------------------------------------------------
+// F-20 — the widget is drawn by PDFium **or** by the HTML overlay, never by both
+// ---------------------------------------------------------------------------------------
+
+fn render_page(doc_id: &str, scale_key: u32, forms: bool) -> (u32, u32, Vec<u8>) {
+    render_image(doc_id, RenderKind::Page, scale_key, 0, 0, forms)
+}
+
+fn render_image(
+    doc_id: &str,
+    kind: RenderKind,
+    scale_key: u32,
+    tx: u32,
+    ty: u32,
+    forms: bool,
+) -> (u32, u32, Vec<u8>) {
+    let key = TileKey {
+        doc: doc_id.to_string(),
+        generation: with_state({
+            let doc_id = doc_id.to_string();
+            move |st| Ok(st.doc(&doc_id)?.generation)
+        })
+        .expect("generation"),
+        page: 0,
+        kind,
+        scale_key,
+        rotation: 0,
+        tx,
+        ty,
+        night: Night::Off,
+        hl: false,
+        forms,
+    };
+    with_state(move |st| {
+        let raw = tiles::render(st, &tiles::RenderRequest::new(key))?;
+        Ok((raw.width, raw.height, raw.pixels))
+    })
+    .expect("render")
+}
+
+/// Every widget of page 0 as a device-pixel box at scale `s`, grown by one pixel so the
+/// anti-aliased edge of an appearance stream counts as "inside the widget".
+fn widget_boxes(doc: &TestDoc, s: f32) -> Vec<(i64, i64, i64, i64)> {
+    let geom = doc.info.pages[0].clone();
+    let m = seepdf_lib::engine::render::geometry::page_to_device(&geom, 0, s);
+    fields(&doc.doc_id)
+        .into_iter()
+        .filter(|f| f.page == 0)
+        .map(|f| {
+            let (x0, y0) = (
+                m[0] * f.rect.l + m[2] * f.rect.t + m[4],
+                m[1] * f.rect.l + m[3] * f.rect.t + m[5],
+            );
+            let (x1, y1) = (
+                m[0] * f.rect.r + m[2] * f.rect.b + m[4],
+                m[1] * f.rect.r + m[3] * f.rect.b + m[5],
+            );
+            (
+                x0.min(x1).floor() as i64 - 2,
+                y0.min(y1).floor() as i64 - 2,
+                x0.max(x1).ceil() as i64 + 2,
+                y0.max(y1).ceil() as i64 + 2,
+            )
+        })
+        .collect()
+}
+
+/// `forms=0` removes **exactly** the AcroForm widgets: the value the user typed, the widget
+/// wash and the pushbutton captions all go, and not one pixel outside a widget rect moves.
+/// That is what lets the HTML overlay of 양식 mode be the single renderer of a field (F-20);
+/// before this the value appeared twice, a pixel or two apart.
+#[test]
+fn form_forms_flag_suppresses_only_the_widgets() {
+    let doc = open("160F-2019.pdf");
+    let all = fields(&doc.doc_id);
+    let target = all
+        .iter()
+        .find(|f| f.name == "A.NOM")
+        .expect("160F-2019.pdf has A.NOM");
+    write(
+        &doc.doc_id,
+        0,
+        target.index,
+        FieldValue::Text {
+            text: "박현우 테스트".into(),
+        },
+    )
+    .expect("fill A.NOM");
+
+    let s = 2.0f32;
+    let (w, h, with_forms) = render_page(&doc.doc_id, 200, true);
+    let (w2, h2, without_forms) = render_page(&doc.doc_id, 200, false);
+    assert_eq!((w, h), (w2, h2));
+    assert_ne!(with_forms, without_forms, "the widgets must disappear");
+
+    let boxes = widget_boxes(&doc, s);
+    let inside = |x: i64, y: i64| {
+        boxes
+            .iter()
+            .any(|(x0, y0, x1, y1)| x >= *x0 && x < *x1 && y >= *y0 && y < *y1)
+    };
+
+    let mut outside_diff = 0usize;
+    let mut target_box_ink_with = 0usize;
+    let mut target_box_ink_without = 0usize;
+    let tb = {
+        let m = seepdf_lib::engine::render::geometry::page_to_device(&doc.info.pages[0], 0, s);
+        let (x0, y0) = (
+            m[0] * target.rect.l + m[2] * target.rect.t + m[4],
+            m[1] * target.rect.l + m[3] * target.rect.t + m[5],
+        );
+        let (x1, y1) = (
+            m[0] * target.rect.r + m[2] * target.rect.b + m[4],
+            m[1] * target.rect.r + m[3] * target.rect.b + m[5],
+        );
+        (
+            x0.min(x1) as i64,
+            y0.min(y1) as i64,
+            x0.max(x1) as i64,
+            y0.max(y1) as i64,
+        )
+    };
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let i = ((y as usize) * (w as usize) + x as usize) * 4;
+            let a = &with_forms[i..i + 3];
+            let b = &without_forms[i..i + 3];
+            if a != b && !inside(x, y) {
+                outside_diff += 1;
+            }
+            // Two pixels in from the field edge, so the widget's own border is not counted.
+            if x > tb.0 + 2 && x < tb.2 - 2 && y > tb.1 + 2 && y < tb.3 - 2 {
+                if a.iter().any(|&c| c < 200) {
+                    target_box_ink_with += 1;
+                }
+                if b.iter().any(|&c| c < 200) {
+                    target_box_ink_without += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        outside_diff, 0,
+        "forms=0 changed {outside_diff} px outside every widget rect"
+    );
+    assert!(
+        target_box_ink_with > 100,
+        "PDFium should draw the value with forms=1 ({target_box_ink_with} ink px)"
+    );
+    assert_eq!(
+        target_box_ink_without, 0,
+        "PDFium must draw nothing inside the field with forms=0 ({target_box_ink_without} ink px)"
+    );
+}
+
+/// The `forms=0` path is a hand-rolled `FPDF_RenderPageBitmap`, so it has to honour the tile
+/// origin exactly like pdfium-render's does: tile (1,1) at 4× is the matching crop of the
+/// whole-page render at 4×, byte for byte.
+#[test]
+fn form_forms_flag_tiles_match_the_full_render() {
+    let doc = open("160F-2019.pdf");
+    let (fw, fh, full) = render_image(&doc.doc_id, RenderKind::Page, 400, 0, 0, false);
+    let (tx, ty) = (1u32, 1u32);
+    let (tw, th, tile) = render_image(&doc.doc_id, RenderKind::Tile, 400, tx, ty, false);
+    let (ox, oy, ew, eh) = seepdf_lib::engine::render::geometry::tile_rect(fw, fh, tx, ty)
+        .expect("tile is on the page");
+    assert_eq!((tw, th), (ew, eh));
+    for row in 0..th as usize {
+        let t = &tile[row * tw as usize * 4..(row + 1) * tw as usize * 4];
+        let start = ((oy as usize + row) * fw as usize + ox as usize) * 4;
+        let f = &full[start..start + tw as usize * 4];
+        assert_eq!(t, f, "row {row} of tile ({tx},{ty}) differs from the crop");
+    }
 }

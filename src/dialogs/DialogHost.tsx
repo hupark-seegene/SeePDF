@@ -16,8 +16,11 @@ import { DocInfoDialog } from "./DocInfoDialog";
 import { ExtractDialog, InsertFromDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
 import type { MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
 import type { PageIndex } from "../ipc/types";
+import type { DrawnSignature } from "./SignatureDialog";
 
 const OcrDialog = lazy(() => import("../ocr").then((m) => ({ default: m.OcrDialog })));
+// 서명 만들기 carries a canvas and its own drawing state; only 주석 mode ever opens it.
+const SignatureDialog = lazy(() => import("./SignatureDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -72,6 +75,16 @@ function Current({ entry }: { entry: DialogEntry }) {
           paths={p.paths as string[]}
           resolve={p.resolve as (v: MultipleFilesAnswer) => void}
         />
+      );
+    case "signature":
+      return (
+        <Suspense fallback={null}>
+          <SignatureDialog
+            onClose={close}
+            onDrawn={p.onDrawn as (s: DrawnSignature) => void}
+            onChooseImage={p.onChooseImage as () => void}
+          />
+        </Suspense>
       );
   }
 }

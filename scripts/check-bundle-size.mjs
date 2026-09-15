@@ -65,6 +65,22 @@ const report = {
   files: rows.sort((a, b) => b.bytes - a.bytes).slice(0, 10).map((r) => ({ file: r.file, kb: kb(r.bytes), gzKb: kb(r.gzBytes) })),
 };
 
+/**
+ * `npm run tauri build -- --debug` leaves an **unminified, source-mapped** `dist/` behind
+ * (`vite.config.ts` keys `minify`/`sourcemap` off `TAURI_ENV_DEBUG`). Measuring that against a
+ * production budget is meaningless — it is 172 kB gz critical path and 3.6 MB total on a tree
+ * that ships 106 kB and 597 kB — so say what happened instead of failing with a size the
+ * author cannot act on. CI runs `npm run build` between the two steps for the same reason.
+ */
+const sourcemaps = rows.filter((r) => r.file.endsWith(".map")).length;
+if (sourcemaps > 0) {
+  console.error(
+    `[bundle] ERROR ${relative(ROOT, DIST)} is a **debug** build (${sourcemaps} sourcemaps, not minified).\n` +
+      "[bundle]       `npm run tauri build -- --debug` writes one; run `npm run build` before this gate.",
+  );
+  process.exit(2);
+}
+
 const asJson = process.argv.includes("--json");
 if (asJson) {
   console.log(JSON.stringify(report, null, 2));

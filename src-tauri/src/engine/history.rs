@@ -127,19 +127,23 @@ impl History {
     ///
     /// `coalesce` is true for drag/slider gestures: a push with the same label inside
     /// [`COALESCE_MS`] keeps the older snapshot, so one gesture is one undo step.
+    ///
+    /// Returns whether an entry was actually stored — `false` means the push coalesced into
+    /// the previous one. [`registry::mutate`](crate::engine::registry::mutate) needs that to
+    /// know whether its rollback should pop anything.
     pub fn push(
         &mut self,
         label: impl Into<String>,
         bytes: Arc<[u8]>,
         coalesce: bool,
-    ) -> Result<(), EngineError> {
+    ) -> Result<bool, EngineError> {
         let label = label.into();
         let now = now_ms();
         self.redo.clear();
         if coalesce {
             if let Some(last) = self.undo.last() {
                 if last.label == label && now.saturating_sub(last.at_ms) <= COALESCE_MS {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
         }
@@ -153,7 +157,18 @@ impl History {
             let dropped = self.undo.remove(0);
             self.release(&dropped.snapshot);
         }
-        Ok(())
+        Ok(true)
+    }
+
+    /// Undo a [`push`](Self::push) that turned out to describe an edit that never happened.
+    ///
+    /// Unlike [`take_undo`](Self::take_undo) this pushes **nothing** onto the redo stack: the
+    /// document never left the state the popped snapshot describes, so offering to "redo" it
+    /// would be offering to redo nothing. Used by `registry::mutate`'s error path.
+    pub fn discard_last_undo(&mut self) {
+        if let Some(entry) = self.undo.pop() {
+            self.release(&entry.snapshot);
+        }
     }
 
     /// Pops the newest undo entry; the caller pushes `current` onto the redo stack.

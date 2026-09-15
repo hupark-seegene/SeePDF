@@ -274,21 +274,32 @@ export async function insertFromFileFlow(at: PageIndex): Promise<void> {
 // Printing
 // ---------------------------------------------------------------------------
 
+/** How F-26 reaches paper. */
+export type PrintMethod = "document" | "handler";
+
 /**
- * `print_prepare` writes a flattened temp file (the chosen pages, annotations and filled form
- * values baked in) and the OS handler opens it, which is what actually reaches paper.
+ * 인쇄 (F-26), two ways, both of which put the **document** on paper — never the app chrome.
  *
- * Webview printing is **deliberately the fallback**, not the primary path: it is available —
- * `core:webview:allow-print` is in `capabilities/default.json` and the `plugin:webview|print`
- * command opens the macOS print panel — but what it prints is the webview's **DOM**, i.e. the
- * SeePDF toolbar, sidebar and canvas element, on one sheet. F-26 wants the rendered pages, so
- * that path only makes sense once there is a print-only DOM (STAGE1E_NOTES §7.4, P1). Verified
- * in the Stage 2 smoke: the panel's preview showed the app chrome, "Page 1 of 1"
- * (`docs/STAGE2_INTEGRATION.md`).
+ * * `"document"` (default) — mount the print-only DOM (`src/print/PrintRoot.tsx`): one
+ *   full-width `<img>` per requested page off the `seepdf://page` route at 150 DPI, with
+ *   `print.css` hiding the app shell, then `window.print()`. This is the path F-26 asks for:
+ *   ⌘P opens the system print dialog, and its preview shows the pages.
+ * * `"handler"` — `print_prepare` writes a flattened temp file (the chosen pages, annotations
+ *   and filled form values baked in) and the OS handler (Preview / Edge / Acrobat) opens it.
+ *   Kept as the alternative in the 인쇄 dialog: it is the only path that can print a document
+ *   SeePDF cannot rasterise fast enough, and it is what Stage 2 verified end to end.
+ *
+ * Before the print-only DOM existed, `plugin:webview|print` printed the webview's DOM — the
+ * SeePDF toolbar, sidebar and canvas element on one sheet ("Page 1 of 1", `s2-16.png`). It is
+ * now only reached if the OS has no PDF handler at all.
  */
-export async function runPrint(pages: PageIndex[] | undefined): Promise<void> {
+export async function runPrint(
+  pages: PageIndex[] | undefined,
+  method: PrintMethod = "document",
+): Promise<void> {
   const info = useDocStore.getState().info;
   if (!info) return;
+  if (method === "document") return printDocumentDom(info, pages);
   toast("print.preparing", undefined, { timeoutMs: 1800 });
   try {
     const { tempPath } = await api.printPrepare({ docId: info.docId, pages });
@@ -298,6 +309,20 @@ export async function runPrint(pages: PageIndex[] | undefined): Promise<void> {
   } catch (e) {
     toast("error.generic", undefined, { tone: "danger", detail: message(e) });
   }
+}
+
+/** Fill the print store; `PrintRoot` renders the pages and calls `window.print()` itself. */
+async function printDocumentDom(info: DocInfo, pages: PageIndex[] | undefined): Promise<void> {
+  const { PRINT_DPI, scaleKeyForDpi, usePrintStore } = await import("../print/printStore");
+  const all = Array.from({ length: info.pageCount }, (_, i) => i);
+  toast("print.rendering", undefined, { timeoutMs: 2400 });
+  usePrintStore.getState().start({
+    docId: info.docId,
+    generation: info.docGeneration,
+    pages: pages?.length ? pages : all,
+    rotation: useViewStore.getState().rotation,
+    scaleKey: scaleKeyForDpi(PRINT_DPI),
+  });
 }
 
 /**

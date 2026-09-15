@@ -207,6 +207,10 @@ new `src/dev/testHook.ts`, new `src/ipc/invokeShape.test.ts`.
 
 ## 5. What is still open, worst first
 
+> **Superseded by `docs/STAGE2B_HARDENING.md`.** Items 1–3, 10 and the macOS half of 4 (QA-1),
+> plus 8 and 9, were closed by the Stage 2b hardening pass; this list is kept as the record of
+> what Stage 2 handed over. See that file for what is open now.
+
 1. **F-30 — the performance baseline is not recorded.** `scripts/perf-baseline.mjs` is still the
    Stage 0 skeleton: every engine row is `null` and nothing drives the release binary, so the
    ±20 % CI gate cannot be turned on. Individual numbers *were* measured by hand during the smoke
