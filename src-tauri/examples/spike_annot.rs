@@ -10,6 +10,9 @@
 //!     call made before `Pdfium::new`), because pdfium-render 0.9.4 exposes **no** raw handle accessors,
 //!     yet several things (ink lists, borders, AP removal, FORM_* text entry, circle creation) are raw-only.
 
+// Throw-away spike code kept for reference; its unused probes are deliberate.
+#![allow(dead_code, unused_assignments)]
+
 use image::{Rgba, RgbaImage};
 use pdfium_render::prelude::*;
 use std::ffi::c_void;

@@ -13,10 +13,8 @@
 //! single-file and dependency-light so implementation agents can copy snippets verbatim.
 
 use pdfium_render::prelude::*;
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------------------------
@@ -615,298 +613,19 @@ fn section_encode(rgba: &[u8], w: i32, h: i32) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 5. Engine ownership model
+// 5. Engine ownership model — REMOVED
 // ---------------------------------------------------------------------------------------------
-
-fn assert_send<T: Send>() {}
-fn assert_sync<T: Sync>() {}
-/// What `tauri::App::manage<T>` requires.
-fn assert_manageable<T: Send + Sync + 'static>() {}
-
-type DocId = u32;
-
-/// Model (b): everything behind a global lock, documents borrow a leaked `&'static Pdfium`.
-/// Pages are kept alongside; the `Drop` impl guarantees pages close before their documents
-/// (FPDF_ClosePage after FPDF_CloseDocument is use-after-free inside pdfium).
-struct Engine {
-    pdfium: &'static Pdfium,
-    docs: HashMap<DocId, PdfDocument<'static>>,
-    pages: HashMap<(DocId, PdfPageIndex), PdfPage<'static>>,
-    next_id: DocId,
-}
-
-impl Engine {
-    fn new(pdfium: &'static Pdfium) -> Self {
-        Engine { pdfium, docs: HashMap::new(), pages: HashMap::new(), next_id: 1 }
-    }
-
-    fn open(&mut self, bytes: Vec<u8>) -> Result<DocId, PdfiumError> {
-        let doc = self.pdfium.load_pdf_from_byte_vec(bytes, None)?;
-        let id = self.next_id;
-        self.next_id += 1;
-        self.docs.insert(id, doc);
-        Ok(id)
-    }
-
-    fn close(&mut self, id: DocId) {
-        self.pages.retain(|(d, _), _| *d != id); // pages first!
-        self.docs.remove(&id);
-    }
-
-    fn page(&mut self, id: DocId, index: PdfPageIndex) -> Result<&PdfPage<'static>, PdfiumError> {
-        if !self.pages.contains_key(&(id, index)) {
-            let doc = self.docs.get(&id).ok_or(PdfiumError::PageIndexOutOfBounds)?;
-            let page = doc.pages().get(index)?; // PdfPage<'static> because PdfDocument<'static>
-            self.pages.insert((id, index), page);
-        }
-        Ok(&self.pages[&(id, index)])
-    }
-
-    fn render_rgba(&mut self, id: DocId, index: PdfPageIndex, cfg: &PdfRenderConfig) -> Result<(i32, i32, Vec<u8>), PdfiumError> {
-        let page = self.page(id, index)?;
-        let bmp = page.render_with_config(cfg)?;
-        Ok((bmp.width(), bmp.height(), bmp.as_rgba_bytes()))
-    }
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        self.pages.clear();
-        self.docs.clear();
-    }
-}
-
-/// Model (a): a dedicated engine thread. The thread owns `Pdfium` on its own stack; documents
-/// borrow it locally, so no leaking / 'static is needed and nothing pdfium-related ever
-/// crosses a thread boundary (only plain `Vec<u8>` results do).
-enum Cmd {
-    Ping(crossbeam_channel::Sender<()>),
-    Open(Vec<u8>, crossbeam_channel::Sender<Result<DocId, String>>),
-    Render {
-        doc: DocId,
-        page: PdfPageIndex,
-        scale: f32,
-        reply: crossbeam_channel::Sender<Result<(i32, i32, Vec<u8>), String>>,
-    },
-    Close(DocId),
-    Shutdown,
-}
-
-fn spawn_engine_thread() -> (crossbeam_channel::Sender<Cmd>, std::thread::JoinHandle<()>) {
-    let (tx, rx) = crossbeam_channel::unbounded::<Cmd>();
-    let handle = std::thread::Builder::new()
-        .name("pdf-engine".into())
-        .stack_size(16 * 1024 * 1024)
-        .spawn(move || {
-            // The library is already bound process-wide by main(); `Pdfium::default()` returns a
-            // fresh handle when bindings exist (it short-circuits on
-            // PdfiumLibraryBindingsAlreadyInitialized). In the real app this thread would call
-            // Pdfium::bind_to_library + Pdfium::new itself, so no `&'static` is needed anywhere.
-            let pdfium = Pdfium::default();
-            let mut docs: HashMap<DocId, PdfDocument<'_>> = HashMap::new();
-            let mut pages: HashMap<(DocId, PdfPageIndex), PdfPage<'_>> = HashMap::new();
-            let mut next = 1;
-            for cmd in rx {
-                match cmd {
-                    Cmd::Ping(r) => {
-                        let _ = r.send(());
-                    }
-                    Cmd::Open(bytes, r) => {
-                        let res = pdfium.load_pdf_from_byte_vec(bytes, None).map(|d| {
-                            let id = next;
-                            next += 1;
-                            docs.insert(id, d);
-                            id
-                        });
-                        let _ = r.send(res.map_err(|e| e.to_string()));
-                    }
-                    Cmd::Render { doc, page, scale, reply } => {
-                        let res = (|| {
-                            if !pages.contains_key(&(doc, page)) {
-                                let d = docs.get(&doc).ok_or_else(|| "no such doc".to_string())?;
-                                pages.insert((doc, page), d.pages().get(page).map_err(|e| e.to_string())?);
-                            }
-                            let p = &pages[&(doc, page)];
-                            let b = p.render_with_config(&screen_config(scale)).map_err(|e| e.to_string())?;
-                            Ok((b.width(), b.height(), b.as_rgba_bytes()))
-                        })();
-                        let _ = reply.send(res);
-                    }
-                    Cmd::Close(id) => {
-                        pages.retain(|(d, _), _| *d != id);
-                        docs.remove(&id);
-                    }
-                    Cmd::Shutdown => break,
-                }
-            }
-            pages.clear();
-            docs.clear();
-        })
-        .expect("spawn engine thread");
-    (tx, handle)
-}
-
-fn section_ownership(pdfium: &'static Pdfium) -> Result<(), PdfiumError> {
-    banner("5. engine ownership model");
-
-    // --- Send/Sync probes (all compile under feature "thread_safe") ---
-    assert_send::<Pdfium>();
-    assert_sync::<Pdfium>();
-    assert_send::<PdfDocument<'static>>();
-    assert_sync::<PdfDocument<'static>>();
-    assert_send::<PdfPage<'static>>();
-    assert_sync::<PdfPage<'static>>();
-    assert_send::<PdfPages<'static>>();
-    assert_send::<PdfBitmap<'static>>();
-    assert_sync::<PdfBitmap<'static>>();
-    assert_send::<PdfPageText<'static>>();
-    assert_sync::<PdfPageText<'static>>();
-    assert_send::<PdfRenderConfig>();
-    assert_sync::<PdfRenderConfig>();
-    assert_manageable::<Mutex<Engine>>();
-    assert_manageable::<Engine>();
-    println!("Send/Sync probes: Pdfium, PdfDocument<'static>, PdfPage<'static>, PdfPages, PdfBitmap, PdfPageText, PdfRenderConfig are all Send + Sync; Mutex<Engine> satisfies tauri::Manager::manage bounds");
-    println!("(without feature thread_safe every one of those `unsafe impl Send/Sync` is cfg'd out and none of it compiles)");
-
-    // --- Model (b): leaked &'static Pdfium + documents/pages in a struct ---
-    let mut engine = Engine::new(pdfium);
-    let a = engine.open(read_fixture("tracemonkey.pdf")?)?;
-    let b = engine.open(read_fixture("alphatrans.pdf")?)?;
-    let (wa, ha, _) = engine.render_rgba(a, 0, &screen_config(1.0))?;
-    let (wb, hb, _) = engine.render_rgba(b, 0, &screen_config(1.0))?;
-    let (wa2, _, _) = engine.render_rgba(a, 1, &screen_config(1.0))?;
-    println!("two docs open at once: doc{a} p0 {wa}x{ha}, doc{b} p0 {wb}x{hb}, doc{a} p1 {wa2}px wide — interleaved renders OK");
-    engine.close(b);
-    let (wa3, _, _) = engine.render_rgba(a, 2, &screen_config(1.0))?;
-    println!("after closing doc{b}: doc{a} p2 still renders ({wa3}px wide); cached pages for doc{b} were dropped before the document");
-
-    // Cached page (kept open) vs pages().get() every time:
-    {
-        let t = Instant::now();
-        for _ in 0..20 {
-            engine.render_rgba(a, 3, &screen_config(1.0))?;
-        }
-        let cached = ms(t.elapsed()) / 20.0;
-        let doc = &engine.docs[&a];
-        let t = Instant::now();
-        for _ in 0..20 {
-            let p = doc.pages().get(3)?;
-            let b = p.render_with_config(&screen_config(1.0))?;
-            let _ = b.as_rgba_bytes();
-        }
-        let fresh = ms(t.elapsed()) / 20.0;
-        println!("1x render p3: cached PdfPage {cached:.2} ms/render vs pages().get() each time {fresh:.2} ms/render");
-    }
-
-    // --- Concurrency under thread_safe: does a second thread buy anything? ---
-    {
-        let shared = Arc::new(Mutex::new(engine));
-        let render_n = move |eng: &Arc<Mutex<Engine>>, n: usize, off: PdfPageIndex| -> Duration {
-            let t = Instant::now();
-            for i in 0..n {
-                let mut e = eng.lock().unwrap();
-                e.render_rgba(a, (i as PdfPageIndex + off) % 14, &screen_config(2.0)).unwrap();
-            }
-            t.elapsed()
-        };
-        let _warm = render_n(&shared, 14, 0); // loads + caches all 14 PdfPages
-        let single = render_n(&shared, 14, 0);
-        let t = Instant::now();
-        let h1 = {
-            let s = Arc::clone(&shared);
-            std::thread::spawn(move || render_n(&s, 7, 0))
-        };
-        let h2 = {
-            let s = Arc::clone(&shared);
-            std::thread::spawn(move || render_n(&s, 7, 7))
-        };
-        h1.join().unwrap();
-        h2.join().unwrap();
-        let two = t.elapsed();
-        println!(
-            "14 renders @2x through Mutex<Engine>: 1 thread {:.1} ms, 2 threads {:.1} ms (pdfium is serialised by the crate's global lock; no parallel speedup possible)",
-            ms(single),
-            ms(two)
-        );
-
-        // Direct shared-reference concurrency (PdfDocument: Sync) — relies on the crate's per-call
-        // lock. NOTE: FPDF_RenderPageBitmapWithMatrix / FPDFBitmap_CreateEx / FPDFText_* are NOT
-        // locked in 0.9.4's thread_safe.rs, so this is only sound for the FPDF_RenderPageBitmap path.
-        let eng = shared.lock().unwrap();
-        let doc: &PdfDocument<'static> = &eng.docs[&a];
-        let t = Instant::now();
-        std::thread::scope(|s| {
-            for k in 0..2 {
-                s.spawn(move || {
-                    for i in 0..7 {
-                        let p = doc.pages().get(k * 7 + i).unwrap();
-                        let _ = p.render_with_config(&screen_config(2.0)).unwrap();
-                    }
-                });
-            }
-        });
-        println!("14 renders @2x from 2 threads sharing &PdfDocument (no Mutex): {:.1} ms — same wall time, confirms global serialisation", ms(t.elapsed()));
-        drop(eng);
-    }
-
-    // --- Model (a): dedicated engine thread over crossbeam ---
-    {
-        let (tx, handle) = spawn_engine_thread();
-        let (rtx, rrx) = crossbeam_channel::bounded(1);
-        // channel round-trip overhead
-        let t = Instant::now();
-        for _ in 0..1000 {
-            tx.send(Cmd::Ping(rtx.clone())).unwrap();
-            rrx.recv().unwrap();
-        }
-        let ping = t.elapsed();
-        let (otx, orx) = crossbeam_channel::bounded(1);
-        tx.send(Cmd::Open(read_fixture("tracemonkey.pdf")?, otx)).unwrap();
-        let id = orx.recv().unwrap().expect("open");
-        let (ptx, prx) = crossbeam_channel::bounded(1);
-        let t = Instant::now();
-        tx.send(Cmd::Render { doc: id, page: 0, scale: 2.0, reply: ptx.clone() }).unwrap();
-        let (w, h, px) = prx.recv().unwrap().expect("render");
-        let first = t.elapsed();
-        let t = Instant::now();
-        tx.send(Cmd::Render { doc: id, page: 0, scale: 2.0, reply: ptx }).unwrap();
-        let _ = prx.recv().unwrap().expect("render");
-        let second = t.elapsed();
-        println!(
-            "engine thread: ping round-trip {:.1} us; render p0@2x {w}x{h} ({:.1} MiB) first {:.1} ms (incl. page load), second {:.1} ms",
-            ping.as_secs_f64() * 1e6 / 1000.0,
-            mib(px.len()),
-            ms(first),
-            ms(second)
-        );
-        tx.send(Cmd::Close(id)).unwrap();
-        tx.send(Cmd::Shutdown).unwrap();
-        handle.join().unwrap();
-        println!("engine thread shut down cleanly (docs/pages dropped on the engine thread)");
-    }
-
-    // --- Dropping a DOCUMENT while one of its pages is alive: the borrow checker allows it! ---
-    // PdfPage<'a> borrows the Pdfium lifetime 'a, not the PdfDocument, so this compiles. At runtime
-    // FPDF_ClosePage after FPDF_CloseDocument is a use-after-free inside pdfium. Never run it;
-    // the guard exists only so the compiler proves the point.
-    if std::env::var_os("SPIKE_UAF").is_some() {
-        let doc = pdfium.load_pdf_from_byte_vec(read_fixture("alphatrans.pdf")?, None)?;
-        let page: PdfPage<'static> = doc.pages().get(0)?;
-        drop(doc); // compiles fine
-        println!("{}", page.width().value); // UB: page outlived its document
-    }
-    println!("drop(doc) while a PdfPage<'static> is alive: COMPILES (no lifetime tie) — engine code must drop pages before documents");
-
-    // --- Dropping a page while holding text(): compile-time error, see docs/spikes/render.md ---
-    // PdfPageText<'a> holds `page: &'a PdfPage<'a>`; this does not compile:
-    //     let page = doc.pages().get(0)?;
-    //     let text = page.text()?;
-    //     drop(page);                // error[E0505]: cannot move out of `page` because it is borrowed
-    //     println!("{}", text.all());
-    println!("drop(page) while PdfPageText alive: rejected at compile time (E0505), verified separately");
-
-    Ok(())
-}
+//
+// This section proved that with the `thread_safe` feature every pdfium-render type is
+// Send + Sync, that `Mutex<Engine>` satisfies `tauri::Manager::manage`, and that a
+// dedicated engine thread is nevertheless the right model (2 threads = 0 % speed-up,
+// 289/481 FFI entry points actually locked). Its findings are recorded in
+// `docs/spikes/render.md` §5 and were adopted as ARCHITECTURE decisions D1/D2.
+//
+// SeePDF now builds pdfium-render **without** `thread_safe`, so those `unsafe impl Send`
+// blocks are cfg'd out and this code no longer compiles — which is exactly the point of
+// D2: the compiler, not a convention, keeps pdfium on the engine thread. The live
+// implementation is `src/engine/thread.rs`.
 
 // ---------------------------------------------------------------------------------------------
 // 6. Memory
@@ -987,7 +706,6 @@ fn run() -> Result<(), PdfiumError> {
 
     drop(alpha);
     drop(trace);
-    section_ownership(pdfium)?;
     section_memory(pdfium)?;
 
     println!();
