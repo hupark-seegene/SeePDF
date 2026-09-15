@@ -1,0 +1,14 @@
+[
+  { "path": "/Users/veri/Documents/SeePDF-샘플.pdf", "name": "SeePDF-샘플.pdf", "dir": "/Users/veri/Documents",
+    "pages": 3, "bytes": 1016315, "lastOpened": "2026-09-15T09:30:00+09:00", "lastPage": 0, "zoomPercent": 118,
+    "layout": "continuous", "pinned": true, "thumbId": "sample" },
+  { "path": "/Users/veri/Documents/계약서 초안.pdf", "name": "계약서 초안.pdf", "dir": "/Users/veri/Documents",
+    "pages": 12, "bytes": 2456789, "lastOpened": "2026-09-14T18:02:00+09:00", "lastPage": 4, "zoomPercent": 100,
+    "layout": "continuous", "pinned": false, "thumbId": "contract" },
+  { "path": "/Users/veri/Downloads/tracemonkey.pdf", "name": "tracemonkey.pdf", "dir": "/Users/veri/Downloads",
+    "pages": 14, "bytes": 1016315, "lastOpened": "2026-09-12T11:45:00+09:00", "lastPage": 2, "zoomPercent": 150,
+    "layout": "single", "pinned": false, "thumbId": "trace" },
+  { "path": "/Users/veri/Downloads/160F-2019.pdf", "name": "160F-2019.pdf", "dir": "/Users/veri/Downloads",
+    "pages": 2, "bytes": 522113, "lastOpened": "2026-09-02T08:10:00+09:00", "lastPage": 0, "zoomPercent": 100,
+    "layout": "two", "pinned": false, "thumbId": null }
+]

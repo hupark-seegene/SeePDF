@@ -1,0 +1,41 @@
+[
+  {
+    "id": "6b1c4a02-0000-4000-8000-000000000001",
+    "page": 0,
+    "kind": "highlight",
+    "subtype": "Highlight",
+    "rect": { "l": 72, "b": 686, "r": 396, "t": 702 },
+    "quads": [{ "l": 72, "b": 686, "r": 396, "t": 702 }],
+    "color": [255, 216, 77],
+    "fillColor": null,
+    "opacity": 0.4,
+    "borderWidth": 0,
+    "contents": "여기부터 확인",
+    "author": "박현우",
+    "created": "2026-03-01T09:12:00+09:00",
+    "modified": "2026-03-01T09:12:00+09:00",
+    "hidden": false,
+    "printed": true,
+    "locked": false,
+    "editable": "full"
+  },
+  {
+    "id": "6b1c4a02-0000-4000-8000-000000000002",
+    "page": 1,
+    "kind": "note",
+    "subtype": "Text",
+    "rect": { "l": 430, "b": 700, "r": 452, "t": 722 },
+    "color": [255, 154, 61],
+    "fillColor": null,
+    "opacity": 1,
+    "borderWidth": 1,
+    "contents": "이 단락은 다시 검토할 것",
+    "author": "박현우",
+    "created": "2026-03-01T09:20:00+09:00",
+    "modified": "2026-03-01T09:20:00+09:00",
+    "hidden": false,
+    "printed": true,
+    "locked": false,
+    "editable": "full"
+  }
+]

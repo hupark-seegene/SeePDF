@@ -1,0 +1,14 @@
+{
+  "locale": "ko",
+  "theme": "system",
+  "defaultLayout": "continuous",
+  "defaultZoom": "fit-width",
+  "restorePosition": true,
+  "author": "박현우",
+  "renderQuality": "balanced",
+  "tileCacheMb": 64,
+  "backupsEnabled": true,
+  "ocrLanguages": ["kor", "eng"],
+  "ocrDpi": "auto",
+  "toolDefaults": {}
+}

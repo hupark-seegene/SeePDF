@@ -1,0 +1,10 @@
+[
+  { "title": "1. 시작하기", "page": 0, "children": [
+    { "title": "1.1 문서 열기", "page": 0, "children": [] },
+    { "title": "1.2 화면 구성", "page": 0, "children": [] }
+  ] },
+  { "title": "2. 주석 도구", "page": 1, "children": [
+    { "title": "2.1 형광펜", "page": 1, "children": [] }
+  ] },
+  { "title": "3. 양식과 OCR", "page": 2, "children": [] }
+]

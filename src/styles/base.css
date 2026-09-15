@@ -1,0 +1,136 @@
+/* Reset + the primitives every panel uses. Korean is the design language: 크기는 한국어 문자열 기준. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  font-weight: var(--weight-base);
+  color: var(--text-primary);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Korean body text (UI_SPEC §14.1) */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  overscroll-behavior: none;
+}
+
+/* The chrome must never be selectable or dragged as text. */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+h1,
+h2,
+h3,
+p,
+figure {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: default;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+/* Keyboard focus is always visible; pointer focus is not (UI_SPEC quality bar). */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-md);
+}
+
+::selection {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+/* Quiet scrollbars — the document is the loud thing on screen, not the chrome. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.text-xs { font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: var(--weight-xs); }
+.text-sm { font-size: var(--text-sm); line-height: var(--leading-sm); }
+.text-md { font-size: var(--text-md); line-height: var(--leading-md); font-weight: var(--weight-md); }
+.text-lg { font-size: var(--text-lg); line-height: var(--leading-lg); font-weight: var(--weight-lg); }
+.muted { color: var(--text-secondary); }
+.dim { color: var(--text-tertiary); }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }

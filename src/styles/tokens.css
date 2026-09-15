@@ -1,0 +1,163 @@
+/* SeePDF design tokens — UI_SPEC §14. No colour literal exists outside this file. */
+
+:root {
+  /* 14.1 typography */
+  --font-ui: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+    "Segoe UI Variable Text", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", Menlo, "D2Coding", monospace;
+
+  --text-xs: 11px;    --leading-xs: 15px;  --weight-xs: 500;
+  --text-sm: 12px;    --leading-sm: 17px;  --weight-sm: 400;
+  --text-base: 13px;  --leading-base: 19px; --weight-base: 400;
+  --text-md: 14px;    --leading-md: 21px;  --weight-md: 500;
+  --text-lg: 17px;    --leading-lg: 24px;  --weight-lg: 600;
+  --text-xl: 22px;    --leading-xl: 30px;  --weight-xl: 600;
+
+  /* 14.2 spacing, control sizes, radius, elevation */
+  --space-0\.5: 2px; --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-12: 48px;
+
+  --control-compact: 28px;
+  --control-default: 32px;
+  --control-dialog: 36px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* chrome heights (UI_SPEC §1) */
+  --h-titlebar: 44px;
+  --h-toolstrip: 40px;
+  --h-statusbar: 28px;
+  --w-sidebar: 240px;
+  --w-inspector: 260px;
+  --titlebar-gutter: 8px;
+  --page-gap: 16px;
+
+  /* 14.5 motion */
+  --dur-instant: 90ms;
+  --dur-fast: 140ms;
+  --dur-slow: 220ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-inout: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 14.3 colour — light */
+  --accent: #2f6feb;
+  --accent-hover: #2a62d0;
+  --accent-subtle: #e8f0fe;
+  --accent-contrast: #ffffff;
+  --bg-app: #f5f5f7;
+  --bg-chrome: #fafafb;
+  --bg-panel: #ffffff;
+  --bg-canvas: #9da2aa;
+  --bg-hover: rgb(0 0 0 / 0.045);
+  --bg-active: rgb(0 0 0 / 0.075);
+  --bg-selected: #e8f0fe;
+  --text-primary: #1a1c1f;
+  --text-secondary: #5c6169;
+  --text-tertiary: #8a9099;
+  --text-inverse: #ffffff;
+  --text-disabled: #b3b8bf;
+  --border-subtle: rgb(0 0 0 / 0.08);
+  --border-default: rgb(0 0 0 / 0.14);
+  --border-strong: rgb(0 0 0 / 0.24);
+  --focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px rgb(47 111 235 / 0.55);
+  --danger: #d93f3f;
+  --danger-subtle: #fdecec;
+  --warning: #c77700;
+  --success: #2e9e5b;
+
+  --elevation-1: 0 1px 2px rgb(0 0 0 / 0.06), 0 0 0 1px var(--border-subtle);
+  --elevation-2: 0 6px 16px rgb(0 0 0 / 0.12), 0 0 0 1px var(--border-subtle);
+  --elevation-3: 0 16px 48px rgb(0 0 0 / 0.2), 0 0 0 1px var(--border-subtle);
+  --page-shadow: 0 1px 3px rgb(0 0 0 / 0.18), 0 0 0 1px rgb(0 0 0 / 0.06);
+
+  /* 14.4 annotation palette */
+  --swatch-yellow: #ffd84d;
+  --swatch-green: #7bd64a;
+  --swatch-blue: #4db8ff;
+  --swatch-pink: #ff7fb0;
+  --swatch-purple: #b07bff;
+  --swatch-orange: #ff9a3d;
+  --swatch-red: #f5533d;
+  --swatch-black: #2b2f33;
+
+  color-scheme: light;
+}
+
+/* The OS decides unless the user picked a theme explicitly (settings: 시스템 설정 / 밝게 / 어둡게). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --accent: #4e8bff;
+    --accent-hover: #6b9eff;
+    --accent-subtle: #1b2942;
+    --accent-contrast: #0b0d10;
+    --bg-app: #1b1d20;
+    --bg-chrome: #232629;
+    --bg-panel: #1f2225;
+    --bg-canvas: #121417;
+    --bg-hover: rgb(255 255 255 / 0.06);
+    --bg-active: rgb(255 255 255 / 0.1);
+    --bg-selected: #1b2942;
+    --text-primary: #e8eaed;
+    --text-secondary: #a2a8b0;
+    --text-tertiary: #737a83;
+    --text-inverse: #14161a;
+    --text-disabled: #565c64;
+    --border-subtle: rgb(255 255 255 / 0.09);
+    --border-default: rgb(255 255 255 / 0.16);
+    --border-strong: rgb(255 255 255 / 0.28);
+    --focus-ring: 0 0 0 2px #1f2225, 0 0 0 4px rgb(78 139 255 / 0.6);
+    --danger: #f1706e;
+    --danger-subtle: #37211f;
+    --warning: #e0a030;
+    --success: #4fbe7c;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --accent: #4e8bff;
+  --accent-hover: #6b9eff;
+  --accent-subtle: #1b2942;
+  --accent-contrast: #0b0d10;
+  --bg-app: #1b1d20;
+  --bg-chrome: #232629;
+  --bg-panel: #1f2225;
+  --bg-canvas: #121417;
+  --bg-hover: rgb(255 255 255 / 0.06);
+  --bg-active: rgb(255 255 255 / 0.1);
+  --bg-selected: #1b2942;
+  --text-primary: #e8eaed;
+  --text-secondary: #a2a8b0;
+  --text-tertiary: #737a83;
+  --text-inverse: #14161a;
+  --text-disabled: #565c64;
+  --border-subtle: rgb(255 255 255 / 0.09);
+  --border-default: rgb(255 255 255 / 0.16);
+  --border-strong: rgb(255 255 255 / 0.28);
+  --focus-ring: 0 0 0 2px #1f2225, 0 0 0 4px rgb(78 139 255 / 0.6);
+  --danger: #f1706e;
+  --danger-subtle: #37211f;
+  --warning: #e0a030;
+  --success: #4fbe7c;
+  color-scheme: dark;
+}
+
+/* macOS overlay title bar: reserve the traffic lights (UI_SPEC §1) */
+:root[data-os="macos"] {
+  --titlebar-gutter: 78px;
+}
+
+:root[data-os="windows"] {
+  font-size: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 90ms;
+    --dur-fast: 0ms;
+    --dur-slow: 0ms;
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "docId": "d1",
+  "path": "/Users/veri/Documents/SeePDF-샘플.pdf",
+  "name": "SeePDF-샘플.pdf",
+  "bytes": 1016315,
+  "pageCount": 3,
+  "pages": [
+    { "index": 0, "widthPt": 595.28, "heightPt": 841.89, "rotation": 0, "crop": { "l": 0, "b": 0, "r": 595.28, "t": 841.89 }, "label": null },
+    { "index": 1, "widthPt": 595.28, "heightPt": 841.89, "rotation": 0, "crop": { "l": 0, "b": 0, "r": 595.28, "t": 841.89 }, "label": null },
+    { "index": 2, "widthPt": 595.28, "heightPt": 841.89, "rotation": 0, "crop": { "l": 0, "b": 0, "r": 595.28, "t": 841.89 }, "label": null }
+  ],
+  "docGeneration": 1,
+  "dirty": false,
+  "canUndo": false,
+  "canRedo": false,
+  "undoLabel": null,
+  "redoLabel": null,
+  "encrypted": false,
+  "permissions": {
+    "print": true, "modify": true, "extractText": true, "annotate": true,
+    "fillForms": true, "assemble": true, "revision": "unprotected"
+  },
+  "hasForm": true,
+  "xfa": false,
+  "hasOutline": true,
+  "meta": {
+    "title": "SeePDF 샘플 문서",
+    "author": "SeePDF",
+    "subject": "Stage 0 mock fixture",
+    "creator": "SeePDF mock adapter",
+    "producer": "SeePDF",
+    "created": "D:20260101090000+09'00'",
+    "modified": "D:20260301120000+09'00'"
+  },
+  "pdfVersion": "1.7",
+  "tagged": true
+}

@@ -1,0 +1,35 @@
+{
+  "pages": [
+    {
+      "index": 0,
+      "lines": [
+        { "text": "SeePDF 샘플 문서", "x": 72, "y": 760, "size": 22 },
+        { "text": "Lightweight PDF editor with Korean OCR", "x": 72, "y": 726, "size": 13 },
+        { "text": "이 페이지는 목업 어댑터가 만든 가짜 텍스트 레이어입니다.", "x": 72, "y": 690, "size": 11 },
+        { "text": "선택과 검색을 실제 단어 상자로 시험할 수 있습니다.", "x": 72, "y": 672, "size": 11 },
+        { "text": "The mock text layer carries real word boxes in PDF points.", "x": 72, "y": 640, "size": 11 },
+        { "text": "Search for PDF, 한국어 or mock to see streaming hits.", "x": 72, "y": 622, "size": 11 }
+      ]
+    },
+    {
+      "index": 1,
+      "lines": [
+        { "text": "2. 주석 도구", "x": 72, "y": 760, "size": 16 },
+        { "text": "형광펜, 밑줄, 취소선, 메모, 펜, 도형, 텍스트 상자.", "x": 72, "y": 730, "size": 11 },
+        { "text": "Highlight, underline, strikeout, note, ink, shapes.", "x": 72, "y": 712, "size": 11 },
+        { "text": "모든 주석은 PDF 좌표계(포인트, y 위쪽)로 저장됩니다.", "x": 72, "y": 680, "size": 11 },
+        { "text": "Annotations round-trip through the engine as quads.", "x": 72, "y": 662, "size": 11 }
+      ]
+    },
+    {
+      "index": 2,
+      "lines": [
+        { "text": "3. 양식과 OCR", "x": 72, "y": 760, "size": 16 },
+        { "text": "이 문서에는 입력란 3개가 있습니다.", "x": 72, "y": 730, "size": 11 },
+        { "text": "This mock document has three form fields.", "x": 72, "y": 712, "size": 11 },
+        { "text": "OCR은 tesseract.js 워커에서 오프라인으로 동작합니다.", "x": 72, "y": 680, "size": 11 },
+        { "text": "Korean OCR runs fully offline inside the app.", "x": 72, "y": 662, "size": 11 }
+      ]
+    }
+  ]
+}

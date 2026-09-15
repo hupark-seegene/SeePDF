@@ -1,0 +1,8 @@
+[
+  { "page": 2, "index": 0, "name": "applicant.name", "type": "text", "rect": { "l": 180, "b": 600, "r": 420, "t": 620 },
+    "value": "", "readOnly": false, "required": true, "multiline": false, "maxLen": 40, "fontSizePt": 11 },
+  { "page": 2, "index": 1, "name": "applicant.email", "type": "text", "rect": { "l": 180, "b": 570, "r": 420, "t": 590 },
+    "value": "", "readOnly": false, "required": false, "multiline": false, "fontSizePt": 11 },
+  { "page": 2, "index": 2, "name": "agree.terms", "type": "checkbox", "rect": { "l": 180, "b": 540, "r": 196, "t": 556 },
+    "value": "Off", "checked": false, "readOnly": false, "required": true }
+]

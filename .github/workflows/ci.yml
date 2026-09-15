@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Fast feedback that needs no Rust toolchain and no pdfium.
+  frontend:
+    name: frontend (typecheck · vitest · i18n)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install (no pdfium download needed for these checks)
+        run: npm ci --ignore-scripts
+      - run: node scripts/check-i18n.mjs
+      - run: npm run typecheck
+      - run: npx vitest run
+      - name: Production build against the mock adapter
+        run: npm run build
+        env:
+          VITE_SEEPDF_MOCK: "1"
+      - run: node scripts/check-bundle-size.mjs
+
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x64
+            os: macos-13
+            target: x86_64-apple-darwin
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
+
+      # postinstall runs scripts/fetch-pdfium.mjs, which honours PDFIUM_TARGET.
+      - name: npm ci (fetches libpdfium for ${{ matrix.target }})
+        run: npm ci
+        env:
+          PDFIUM_TARGET: ${{ matrix.target }}
+
+      - run: npm run typecheck
+      - run: npx vitest run
+
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --target ${{ matrix.target }} -- -D warnings
+
+      - name: cargo test --release
+        working-directory: src-tauri
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: tauri build --debug
+        run: npm run tauri build -- --debug --target ${{ matrix.target }}
+
+      - name: Bundle size gate
+        run: node scripts/check-bundle-size.mjs
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: seepdf-${{ matrix.name }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            src-tauri/target/${{ matrix.target }}/debug/bundle/macos/*.app
+            src-tauri/target/${{ matrix.target }}/debug/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/debug/bundle/msi/*.msi
+            src-tauri/target/${{ matrix.target }}/debug/bundle/nsis/*.exe
