@@ -1,0 +1,234 @@
+/*
+ * OCR sheet — UI_SPEC §10 (520 px modal) and §14 (tokens only, no colour literals).
+ * Radius step for a sheet is --radius-xl, elevation --elevation-3.
+ */
+
+.ocr-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgb(0 0 0 / 0.28);
+}
+
+.ocr-sheet {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: min(680px, calc(100vh - 2 * var(--space-4)));
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elevation-3);
+  overflow: hidden;
+}
+
+.ocr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-2);
+}
+
+.ocr-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+  font-weight: var(--weight-lg);
+}
+
+.ocr-body {
+  padding: 0 var(--space-4) var(--space-4);
+  overflow-y: auto;
+}
+
+.ocr-description {
+  margin: 0 0 var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+}
+
+.ocr-section + .ocr-section {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ocr-label {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  font-weight: var(--weight-xs);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.ocr-range-input {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-2);
+}
+
+.ocr-error {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--danger, var(--text-secondary));
+}
+
+.ocr-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ocr-output {
+  margin: 0;
+  font-size: var(--text-base);
+}
+
+.ocr-hint {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--text-secondary);
+}
+
+.ocr-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+
+.ocr-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  font-size: var(--text-base);
+}
+
+.ocr-row-label {
+  color: var(--text-secondary);
+}
+
+.ocr-row .field {
+  min-width: 150px;
+}
+
+.ocr-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.ocr-disclosure:hover {
+  color: var(--text-primary);
+}
+
+.ocr-caret {
+  display: inline-block;
+  transition: transform var(--dur-instant) var(--ease-out);
+}
+
+.ocr-caret[data-open] {
+  transform: rotate(90deg);
+}
+
+/* --- progress view ------------------------------------------------------- */
+
+.ocr-progress-body {
+  padding-top: var(--space-2);
+}
+
+.ocr-progress-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.ocr-thumb {
+  width: 64px;
+  height: auto;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--elevation-1);
+  background: var(--bg-app);
+}
+
+.ocr-progress-text {
+  min-width: 0;
+}
+
+.ocr-progress-count {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-md);
+}
+
+.ocr-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.ocr-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width var(--dur-fast, 140ms) var(--ease-out);
+}
+
+/* --- result -------------------------------------------------------------- */
+
+.ocr-result {
+  display: block;
+}
+
+.ocr-result-title {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--weight-md);
+}
+
+/* --- footer -------------------------------------------------------------- */
+
+.ocr-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-chrome);
+}
+
+.ocr-estimate {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.ocr-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+
+.ocr-footer .btn {
+  height: 36px;
+}

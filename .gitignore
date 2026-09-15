@@ -30,3 +30,6 @@ src-tauri/resources/pdfium/*.so
 
 # spike/test outputs
 fixtures/out/
+
+# OCR asset bundle (produced by `npm run prepare:ocr`, 8.1 MB)
+public/ocr/

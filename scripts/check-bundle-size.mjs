@@ -21,6 +21,7 @@ const BUDGET_TOTAL_KB = 2048;
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {
+    if (dir === DIST && (entry === "ocr" || entry === "fonts")) continue; // counted elsewhere (OCR data, fonts)
     const path = join(dir, entry);
     if (statSync(path).isDirectory()) walk(path, out);
     else out.push(path);
