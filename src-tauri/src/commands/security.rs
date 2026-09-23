@@ -4,18 +4,16 @@
 //! `apply_redactions` re-extracts the page text after `regenerate_content()` and fails with
 //! `verifyFailed` (restoring the snapshot) if any marked string survives — a fake redaction
 //! is never shipped. `remove_password` is `FPDF_SaveAsCopy` with `FPDF_REMOVE_SECURITY = 4`
-//! (**not** 3, the deprecated value); `set_password`, `remove_metadata` and `set_metadata`
-//! need `lopdf`, which is a P1 dependency.
+//! (**not** 3, the deprecated value).
 //!
-//! Stage 2: the three file-rewrite bodies `STAGE1B_NOTES.md` §5.1 asks for now live here —
-//! `remove_password` is implemented, and the two metadata writers go through
-//! `engine::save::write_metadata`, which owns the single "why not yet" message so the P1
-//! `lopdf` patch has exactly one call site.
+//! P1-1 / P1-3: `set_password`, `remove_metadata` and `set_metadata` are thin wrappers over
+//! `engine::security`, which rewrites PDFium's serialised bytes with `lopdf` (AES-256 V5/R6
+//! encryption; `/Info` + XMP) and verifies the result by reopening it with PDFium.
 
 use crate::engine::redact;
 use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
-    BytesWritten, DocInfo, DocMeta, PageIndex, Permissions, RedactOptions, RedactPreview,
+    BytesWritten, DocInfo, DocMeta, PageIndex, PermissionsRequest, RedactOptions, RedactPreview,
     RedactResult, Rect,
 };
 use crate::ipc::EngineError;
@@ -87,20 +85,32 @@ pub async fn remove_password(
         .await
 }
 
-/// P1; needs `lopdf`.
+/// 암호 설정 — an AES-256 (V5 / R6) protected copy at `out_path`; see
+/// `engine::security::set_password`. The open document is not modified.
 #[tauri::command]
 pub async fn set_password(
-    _engine: State<'_, EngineHandle>,
-    _doc_id: String,
-    _out_path: String,
-    _user_password: Option<String>,
-    _owner_password: String,
-    _permissions: Permissions,
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    out_path: String,
+    user_password: Option<String>,
+    owner_password: String,
+    permissions: Option<PermissionsRequest>,
 ) -> Result<BytesWritten, EngineError> {
-    Err(EngineError::unsupported("set_password"))
+    engine
+        .call(Lane::Edit, "set_password", move |st| {
+            crate::engine::security::set_password(
+                st,
+                &doc_id,
+                &out_path,
+                user_password.as_deref(),
+                &owner_password,
+                permissions.unwrap_or_default(),
+            )
+        })
+        .await
 }
 
-/// P1; needs `lopdf`. `engine::save::write_metadata` carries the reason.
+/// 메타데이터 제거 — deletes `/Info` and the XMP packet; one undo step.
 #[tauri::command]
 pub async fn remove_metadata(
     engine: State<'_, EngineHandle>,
@@ -108,15 +118,12 @@ pub async fn remove_metadata(
 ) -> Result<DocInfo, EngineError> {
     engine
         .call(Lane::Edit, "remove_metadata", move |st| {
-            // Existence check first, so an unknown docId is `notFound` and not `unsupported`.
-            let _ = st.doc(&doc_id)?;
-            crate::engine::save::write_metadata(&DocMeta::default())?;
-            Ok(st.doc(&doc_id)?.info())
+            crate::engine::security::remove_metadata(st, &doc_id)
         })
         .await
 }
 
-/// P1; needs `lopdf`. `engine::save::write_metadata` carries the reason.
+/// 문서 속성 편집 — writes the given `/Info` fields; one undo step.
 #[tauri::command]
 pub async fn set_metadata(
     engine: State<'_, EngineHandle>,
@@ -125,9 +132,7 @@ pub async fn set_metadata(
 ) -> Result<DocInfo, EngineError> {
     engine
         .call(Lane::Edit, "set_metadata", move |st| {
-            let _ = st.doc(&doc_id)?;
-            crate::engine::save::write_metadata(&meta)?;
-            Ok(st.doc(&doc_id)?.info())
+            crate::engine::security::set_metadata(st, &doc_id, &meta)
         })
         .await
 }

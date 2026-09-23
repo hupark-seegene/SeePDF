@@ -184,6 +184,17 @@ A build ships only when all of the following are green on both platforms:
 | P1-11 | **macOS Vision OCR** | `ocr_recognize_native` behind the same `OcrPage` contract; needs `objc2`, `objc2-foundation`, `objc2-core-foundation`, `objc2-core-graphics`, `objc2-vision` (unverified compile) |
 | P1-12 | Korean stamp set (결재 / 승인 / 기밀), per-tool default styles, reading mode + full screen, hide-annotation-while-dragging (`set_annotations_hidden`) | small UI work on top of P0 machinery |
 
+### P1 status — Stage 3
+
+✅ verified by tests against real PDFium · ⚠️ partial, with the gap named. Details in
+`docs/STAGE3_SECURITY_NOTES.md`.
+
+| id | status | evidence |
+|---|---|---|
+| P1-1 | ✅ | 문서 정보 edits 제목/작성자/주제/키워드 (blank = remove), 보안 → 메타데이터 제거; lopdf `/Info` rewrite + XMP drop, Hangul as UTF-16BE, one undo step; `cargo test --test security metadata_*`, `docInfo.flow.test.tsx`. ⚠️ refused on encrypted documents |
+| P1-2 | ✅ | 보안 → 암호 제거 writes an `-unlocked` copy (`FPDF_REMOVE_SECURITY = 4`); enabled only when the document is encrypted |
+| P1-3 | ✅ | 보안 → 암호 설정: AES-256 V5/R6 copy, 4 permission checkboxes, verified reopen before write; `cargo test --test security password_*`. ⚠️ AES-256 files report revision `unknown` (no `r6` in the contract union yet) |
+
 ## P2 — after v1
 
 Paragraph reflow when editing text · document tabs in one window · link creation and go-to-page

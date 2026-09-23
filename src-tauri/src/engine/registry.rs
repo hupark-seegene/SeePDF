@@ -367,13 +367,10 @@ pub fn open<'p>(
         .form()
         .map(|f| matches!(f.form_type(), PdfFormType::XfaFull | PdfFormType::XfaForeground))
         .unwrap_or(false);
-    let encrypted = !matches!(
-        doc.permissions().security_handler_revision(),
-        Ok(PdfSecurityHandlerRevision::Unprotected) | Err(_)
-    ) || password.is_some();
+    let encrypted = security_revision(bindings, &doc) != -1 || password.is_some();
 
-    let permissions = read_permissions(&doc);
-    let meta = read_metadata(&doc);
+    let permissions = read_permissions(bindings, &doc);
+    let meta = read_metadata(bindings, &doc);
     let pdf_version = version_string(doc.version());
     let tagged = doc.catalog().is_tagged();
     let has_outline = doc.bookmarks().root().is_some();
@@ -478,6 +475,13 @@ impl MutateOpts {
 
     pub fn structural(mut self) -> Self {
         self.structural = true;
+        self.pages = ChangedPages::All(crate::ipc::types::AllPages::All);
+        self
+    }
+
+    /// Every page may look different (the document was reloaded from new bytes) but the
+    /// page list itself did not change: `changedPages: "all"`, `structure: false`.
+    pub fn all_pages(mut self) -> Self {
         self.pages = ChangedPages::All(crate::ipc::types::AllPages::All);
         self
     }
@@ -599,24 +603,110 @@ pub fn mutate<'p, T>(
             }
         }
     }
+    announce(st, doc_id, opts.pages, opts.structural, opts.reason, TileDrop::Older(generation))?;
+    Ok(out)
+}
+
+/// Which cached tiles an [`announce`] throws away.
+enum TileDrop {
+    /// Everything below this generation (an in-place edit).
+    Older(crate::ipc::types::DocGeneration),
+    /// Every tile of the document (undo / redo).
+    All,
+}
+
+/// The tail every mutation shares once the generation is bumped: publish the new
+/// [`DocSummary`], drop stale tiles and emit `doc-changed`.
+fn announce(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    changed_pages: ChangedPages,
+    structure: bool,
+    reason: ChangeReason,
+    tiles: TileDrop,
+) -> Result<(), EngineError> {
+    let doc = st.doc(doc_id)?;
     let payload = DocChangedPayload {
         doc_id: doc.doc_id.clone(),
-        doc_generation: generation,
-        changed_pages: opts.pages.clone(),
-        structure: opts.structural,
+        doc_generation: doc.generation,
+        changed_pages,
+        structure,
         dirty: doc.dirty(),
-        reason: opts.reason,
+        reason,
         can_undo: doc.history.can_undo(),
         can_redo: doc.history.can_redo(),
     };
     let summary = doc.summary();
 
     st.shared.docs.write().insert(doc_id.to_string(), summary);
-    st.shared.tiles.drop_older_generations(doc_id, generation);
+    match tiles {
+        TileDrop::Older(generation) => st.shared.tiles.drop_older_generations(doc_id, generation),
+        TileDrop::All => st.shared.tiles.drop_document(doc_id),
+    }
     if let Some(app) = &st.app {
         let _ = app.emit("doc-changed", payload);
     }
-    Ok(out)
+    Ok(())
+}
+
+/// A mutation that rewrites the **serialised file** instead of PDFium's object tree — the
+/// path for what PDFium can read but not write (`/Info`, XMP; P1-1). One call = one undo step,
+/// exactly like [`mutate`]:
+///
+/// 1. undo snapshot of the pre-edit state (discarded again on any error);
+/// 2. `save::serialize` — `/AP` generation and form kill-focus included, so nothing pending
+///    is lost by the reload;
+/// 3. `f(bytes, doc)` returns the rewritten file;
+/// 4. `save::verify_bytes` reopens it (same password, same page count) — a rewrite that
+///    PDFium cannot read never replaces the document;
+/// 5. [`replace`] (which re-reads `meta`, permissions, pages and clears every per-document
+///    cache), generation + 1, `doc-changed` with `changedPages: "all"`.
+///
+/// Steps 2–4 leave the open document as it was, so there is nothing to roll back when they
+/// fail; a failing [`replace`] reloads the snapshot like [`mutate`] does.
+pub fn mutate_bytes(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    opts: MutateOpts,
+    f: impl FnOnce(&[u8], &OpenDoc<'_>) -> Result<Vec<u8>, EngineError>,
+) -> Result<DocInfo, EngineError> {
+    let doc = st
+        .docs
+        .get_mut(doc_id)
+        .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))?;
+    let base = if doc.generation == doc.saved_generation && doc.history.undo_depth() == 0 {
+        doc.bytes.clone()
+    } else {
+        doc.to_bytes()?
+    };
+    let pushed = doc.history.push(opts.label, base.clone(), opts.coalesce)?;
+
+    let rewritten = (|| {
+        let current = super::save::serialize(st, doc_id)?;
+        let doc = st.doc(doc_id)?;
+        let (pages, password) = (doc.page_count(), doc.password.clone());
+        let out = f(&current, doc)?;
+        super::save::verify_bytes(st, &out, pages, password)?;
+        replace(st, doc_id, Arc::from(out.into_boxed_slice()))
+    })();
+    if let Err(e) = rewritten {
+        let doc = st.doc_mut(doc_id)?;
+        if pushed {
+            doc.history.discard_last_undo();
+        }
+        // Only a failed `replace` can have touched the open document; reloading the
+        // snapshot is cheap and harmless in the other cases.
+        if let Err(restore) = replace(st, doc_id, base) {
+            return Err(e.with_detail(format!("rollback failed: {}", restore.message)));
+        }
+        return Err(e);
+    }
+
+    let doc = st.doc_mut(doc_id)?;
+    doc.generation += 1;
+    let generation = doc.generation;
+    announce(st, doc_id, opts.pages, opts.structural, opts.reason, TileDrop::Older(generation))?;
+    Ok(st.doc(doc_id)?.info())
 }
 
 /// Replaces a document's bytes in place, keeping its id, path and history (undo / redo and
@@ -639,8 +729,8 @@ pub fn replace<'p>(
         .load_pdf_from_byte_vec(bytes.to_vec(), password.as_deref())
         .map_err(|e| EngineError::pdfium("reload document", e))?;
     let form = loaded.form().map(|f| f.raw_handle());
-    let permissions = read_permissions(&loaded);
-    let meta = read_metadata(&loaded);
+    let permissions = read_permissions(doc.bindings, &loaded);
+    let meta = read_metadata(doc.bindings, &loaded);
     let pdf_version = version_string(loaded.version());
     let tagged = loaded.catalog().is_tagged();
     let has_outline = loaded.bookmarks().root().is_some();
@@ -698,27 +788,19 @@ pub fn undo(st: &mut EngineState<'_>, doc_id: &str, redo: bool) -> Result<DocInf
     let doc = st.doc_mut(doc_id)?;
     doc.generation += 1;
     let info = doc.info();
-    let payload = DocChangedPayload {
-        doc_id: doc.doc_id.clone(),
-        doc_generation: doc.generation,
-        changed_pages: ChangedPages::All(crate::ipc::types::AllPages::All),
-        structure: true,
-        dirty: doc.dirty(),
-        reason: if redo {
+    tracing::debug!(doc_id, label, redo, "history step applied");
+    announce(
+        st,
+        doc_id,
+        ChangedPages::All(crate::ipc::types::AllPages::All),
+        true,
+        if redo {
             ChangeReason::Redo
         } else {
             ChangeReason::Undo
         },
-        can_undo: doc.history.can_undo(),
-        can_redo: doc.history.can_redo(),
-    };
-    let summary = doc.summary();
-    tracing::debug!(doc_id, label, redo, "history step applied");
-    st.shared.docs.write().insert(doc_id.to_string(), summary);
-    st.shared.tiles.drop_document(doc_id);
-    if let Some(app) = &st.app {
-        let _ = app.emit("doc-changed", payload);
-    }
+        TileDrop::All,
+    )?;
     Ok(info)
 }
 
@@ -823,41 +905,60 @@ fn geom_from_page(index: u16, page: &PdfPage<'_>) -> Option<PageGeom> {
     })
 }
 
-fn read_permissions(doc: &PdfDocument<'_>) -> Permissions {
-    let p = doc.permissions();
-    let revision = match p.security_handler_revision() {
-        Ok(PdfSecurityHandlerRevision::Unprotected) => SecurityRevision::Unprotected,
-        Ok(PdfSecurityHandlerRevision::Revision2) => SecurityRevision::R2,
-        Ok(PdfSecurityHandlerRevision::Revision3) => SecurityRevision::R3,
-        Ok(PdfSecurityHandlerRevision::Revision4) => SecurityRevision::R4,
-        Err(_) => SecurityRevision::Unknown,
+/// `FPDF_GetSecurityHandlerRevision`: -1 when the document is not encrypted, else the
+/// standard security handler's `/R` (2, 3, 4, or 5 / 6 for AES-256).
+///
+/// Read raw because pdfium-render's `PdfSecurityHandlerRevision` stops at R4 and returns
+/// `Err` for R5 / R6 — which made every AES-256 file (our own `set_password` output
+/// included) look unencrypted with every permission granted.
+fn security_revision(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>) -> i32 {
+    // SAFETY: a live document handle on the engine thread.
+    unsafe { bindings.FPDF_GetSecurityHandlerRevision(doc.raw_handle()) }
+}
+
+/// The permission flags the **current** open grants (an owner-password open gets all bits).
+///
+/// ISO 32000-2 table 22, bit n = `1 << (n - 1)`: 3 print, 4 modify, 5 copy / extract,
+/// 6 annotate (R2: and fill forms), 9 fill forms (R ≥ 3), 11 assemble (R ≥ 3; R2 folds it
+/// into 4). Bit 10 (accessibility extraction) is deliberately not what `extract_text` means.
+fn read_permissions(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>) -> Permissions {
+    let revision_raw = security_revision(bindings, doc);
+    if revision_raw == -1 {
+        return Permissions::default();
+    }
+    // SAFETY: as above.
+    let bits = unsafe { bindings.FPDF_GetDocPermissions(doc.raw_handle()) } as u32;
+    let bit = |n: u32| bits & (1 << (n - 1)) != 0;
+    let revision = match revision_raw {
+        2 => SecurityRevision::R2,
+        3 => SecurityRevision::R3,
+        4 => SecurityRevision::R4,
+        // R5 / R6 (AES-256) have no value in the contract's union yet.
+        _ => SecurityRevision::Unknown,
     };
+    let r2 = revision_raw == 2;
     Permissions {
-        print: p.can_print_high_quality().unwrap_or(true)
-            || p.can_print_only_low_quality().unwrap_or(true),
-        modify: p.can_modify_document_content().unwrap_or(true),
-        extract_text: p.can_extract_text_and_graphics().unwrap_or(true),
-        annotate: p.can_add_or_modify_text_annotations().unwrap_or(true),
-        fill_forms: p
-            .can_fill_existing_interactive_form_fields()
-            .unwrap_or(true),
-        assemble: p.can_assemble_document().unwrap_or(true),
+        print: bit(3),
+        modify: bit(4),
+        extract_text: bit(5),
+        annotate: bit(6),
+        fill_forms: if r2 { bit(6) } else { bit(9) || bit(6) },
+        assemble: if r2 { bit(4) } else { bit(11) },
         revision,
     }
 }
 
-fn read_metadata(doc: &PdfDocument<'_>) -> DocMeta {
-    let m = doc.metadata();
-    let get = |tag: PdfDocumentMetadataTagType| m.get(tag).map(|t| t.value().to_string());
+fn read_metadata(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>) -> DocMeta {
+    let get = |tag: &str| raw::doc::meta_text(bindings, doc, tag);
     DocMeta {
-        title: get(PdfDocumentMetadataTagType::Title),
-        author: get(PdfDocumentMetadataTagType::Author),
-        subject: get(PdfDocumentMetadataTagType::Subject),
-        keywords: get(PdfDocumentMetadataTagType::Keywords),
-        creator: get(PdfDocumentMetadataTagType::Creator),
-        producer: get(PdfDocumentMetadataTagType::Producer),
-        created: get(PdfDocumentMetadataTagType::CreationDate),
-        modified: get(PdfDocumentMetadataTagType::ModificationDate),
+        title: get("Title"),
+        author: get("Author"),
+        subject: get("Subject"),
+        keywords: get("Keywords"),
+        creator: get("Creator"),
+        producer: get("Producer"),
+        created: get("CreationDate"),
+        modified: get("ModDate"),
     }
 }
 

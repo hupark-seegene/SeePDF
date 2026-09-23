@@ -420,16 +420,26 @@ apply_redactions(a: { docId: DocId; page: PageIndex; rects: Rect[];
   options: { fill: Rgb; overlayText?: string } }):
   Promise<{ removedObjects: number; verified: boolean; docGeneration: DocGeneration }>
 
-remove_password(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }>                 // P1
+remove_password(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }>                 // P1, implemented
 set_password(a: { docId: DocId; outPath: string; userPassword?: string; ownerPassword: string;
-  permissions: Partial<Permissions> }): Promise<{ bytes: number }>                                 // P1, needs `lopdf`
-remove_metadata(a: { docId: DocId }): Promise<DocInfo>                                             // P1, needs `lopdf`
-set_metadata(a: { docId: DocId; meta: DocMeta }): Promise<DocInfo>                                 // P1, needs `lopdf`
+  permissions: Partial<Permissions> }): Promise<{ bytes: number }>                                 // P1, implemented (Stage 3, lopdf AES-256 R6)
+remove_metadata(a: { docId: DocId }): Promise<DocInfo>                                             // P1, implemented (Stage 3, lopdf)
+set_metadata(a: { docId: DocId; meta: DocMeta }): Promise<DocInfo>                                 // P1, implemented (Stage 3, lopdf)
 ```
 
 `apply_redactions` re-extracts the page text after `regenerate_content()` and fails with `verifyFailed`
 (rolling back to the snapshot) if any marked string survives — a fake redaction is never shipped.
 Owner (a) for redaction, (b) for the metadata and security file rewrites. Features F-22, P1-1, P1-2, P1-3.
+
+Stage 3 semantics (`docs/STAGE3_SECURITY_NOTES.md`):
+* `set_password.permissions` may be partial: a missing flag means **allowed**; `revision` is ignored.
+  The open document is untouched; the copy is verified (opens with user and owner password, refuses
+  no password when a user password is set) before anything is written. Empty `ownerPassword` or a
+  password over 127 UTF-8 bytes → `invalidArgument`; a failed check → `verifyFailed`.
+* `set_metadata` / `remove_metadata` are **one undo step** each and return the reloaded `DocInfo`.
+  In `set_metadata` an omitted field keeps its value, a blank string removes the key, and `modified`
+  omitted means "now". Both drop the catalog XMP `/Metadata` stream. An encrypted document →
+  `unsupported` ("remove the password first"), no undo entry.
 
 ### 7.6 Save
 

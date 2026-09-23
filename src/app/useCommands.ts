@@ -94,6 +94,9 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "file.docInfo":
         if (info) openDialog("docInfo");
         return;
+      case "tools.security":
+        if (info) openDialog("security");
+        return;
       case "file.reveal":
         if (info?.path) void api.revealInFileManager({ path: info.path });
         return;
@@ -314,7 +317,7 @@ function openRecentMenu(): void {
   openContextMenu({ x: 96, y: 52, labelKey: "menu.file.openRecent", items });
 }
 
-/** ⋯ — 인쇄, OCR, 문서 정보, 설정 (UI_SPEC §2). */
+/** ⋯ — 인쇄, 보안, OCR, 문서 정보, 설정 (UI_SPEC §2). */
 function openOverflowMenu(): void {
   const info = useDocStore.getState().info;
   openContextMenu({
@@ -323,6 +326,7 @@ function openOverflowMenu(): void {
     labelKey: "common.more",
     items: [
       { id: "print", labelKey: "menu.file.print", disabled: !info, onSelect: () => openDialog("print") },
+      { id: "security", labelKey: "menu.tools.security", disabled: !info, onSelect: () => openDialog("security") },
       {
         id: "ocr",
         labelKey: "menu.tools.ocr",

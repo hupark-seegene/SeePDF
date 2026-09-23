@@ -15,7 +15,7 @@ import { pngDataUrl, solidPngDataUrl, type RgbaPixel } from "./png";
 import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, DocGeneration, DocId, DocInfo, EngineError,
   EngineStats, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, Mat6, MergeWarning, OcrPage, OutlineNode,
-  PageGeom, PageIndex, PageObject, PageOp, RecentEntry, Rect, RedactPreview, SaveResult, SearchEvent, SearchHit,
+  PageGeom, PageIndex, Permissions, PageObject, PageOp, RecentEntry, Rect, RedactPreview, SaveResult, SearchEvent, SearchHit,
   Settings, TextEditProbe, ViewportHint,
 } from "./types";
 
@@ -684,11 +684,20 @@ export const mock = {
       docGeneration: d.info.docGeneration + 1,
     }));
   },
-  async removePassword(_a: { docId: DocId; outPath: string }) {
-    throw err("unsupported", "not implemented in the mock adapter");
+  // both write a copy to `outPath`; the open document is untouched
+  async removePassword(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }> {
+    const d = doc(a.docId);
+    if (!a.outPath) throw err("invalidArgument", "outPath is required");
+    if (!d.info.encrypted) throw err("invalidArgument", "document is not encrypted");
+    return { bytes: d.info.bytes };
   },
-  async setPassword(_a: unknown) {
-    throw err("unsupported", "not implemented in the mock adapter");
+  async setPassword(a: {
+    docId: DocId; outPath: string; userPassword?: string; ownerPassword: string; permissions: Partial<Permissions>;
+  }): Promise<{ bytes: number }> {
+    const d = doc(a.docId);
+    if (!a.outPath) throw err("invalidArgument", "outPath is required");
+    if (!a.ownerPassword) throw err("invalidArgument", "ownerPassword is required");
+    return { bytes: d.info.bytes };
   },
   async removeMetadata(a: { docId: DocId }): Promise<DocInfo> {
     const d = doc(a.docId);
@@ -700,7 +709,14 @@ export const mock = {
   async setMetadata(a: { docId: DocId; meta: DocInfo["meta"] }): Promise<DocInfo> {
     const d = doc(a.docId);
     return mutate(d, { reason: "edit", pages: "all" }, () => {
-      d.info.meta = { ...a.meta };
+      // like the backend: `undefined` keeps a key, a blank string removes it
+      const meta = { ...d.info.meta };
+      for (const [k, v] of Object.entries(a.meta) as [keyof DocInfo["meta"], string | undefined][]) {
+        if (v === undefined) continue;
+        if (v.trim()) meta[k] = v;
+        else delete meta[k];
+      }
+      d.info.meta = meta;
       return structuredClone(d.info);
     });
   },

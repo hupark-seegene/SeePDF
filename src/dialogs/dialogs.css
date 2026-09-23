@@ -279,3 +279,25 @@
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* 보안 */
+.sec-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.sec-section + .sec-section {
+  padding-block-start: var(--space-4);
+  border-block-start: 1px solid var(--border-default);
+}
+.sec-head { margin: 0; font-weight: 600; }
+.sec-value { padding-block-start: 6px; }
+
+/* 문서 정보 */
+.docinfo-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-block-end: var(--space-3);
+  border-block-end: 1px solid var(--border-default);
+}

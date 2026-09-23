@@ -21,6 +21,8 @@ import type { DrawnSignature } from "./SignatureDialog";
 const OcrDialog = lazy(() => import("../ocr").then((m) => ({ default: m.OcrDialog })));
 // 서명 만들기 carries a canvas and its own drawing state; only 주석 mode ever opens it.
 const SignatureDialog = lazy(() => import("./SignatureDialog"));
+// 보안 is rarely opened; keep it out of the dialog chunk.
+const SecurityDialog = lazy(() => import("./SecurityDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -75,6 +77,12 @@ function Current({ entry }: { entry: DialogEntry }) {
           paths={p.paths as string[]}
           resolve={p.resolve as (v: MultipleFilesAnswer) => void}
         />
+      );
+    case "security":
+      return (
+        <Suspense fallback={null}>
+          <SecurityDialog onClose={close} />
+        </Suspense>
       );
     case "signature":
       return (

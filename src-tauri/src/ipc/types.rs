@@ -134,6 +134,33 @@ impl Default for Permissions {
     }
 }
 
+/// `set_password`'s `permissions: Partial<Permissions>` (contract §7.5). Every flag the
+/// frontend leaves out is **allowed**, and `revision` (read-only, it describes the file) is
+/// ignored if sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PermissionsRequest {
+    pub print: bool,
+    pub modify: bool,
+    pub extract_text: bool,
+    pub annotate: bool,
+    pub fill_forms: bool,
+    pub assemble: bool,
+}
+
+impl Default for PermissionsRequest {
+    fn default() -> Self {
+        Self {
+            print: true,
+            modify: true,
+            extract_text: true,
+            annotate: true,
+            fill_forms: true,
+            assemble: true,
+        }
+    }
+}
+
 /// Raw `"D:YYYYMMDD…"` strings; the frontend parses them.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -23,6 +23,7 @@ pub mod redact;
 pub mod registry;
 pub mod render;
 pub mod save;
+pub mod security;
 pub mod stats;
 pub mod text;
 pub mod thread;

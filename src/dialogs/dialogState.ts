@@ -13,7 +13,7 @@ import type { DocInfo, PageIndex } from "../ipc/types";
 
 export type DialogName =
   | "export" | "merge" | "split" | "print" | "settings" | "docInfo"
-  | "password" | "unsaved" | "extract" | "insertFrom" | "multipleFiles" | "signature";
+  | "password" | "unsaved" | "extract" | "insertFrom" | "multipleFiles" | "signature" | "security";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";

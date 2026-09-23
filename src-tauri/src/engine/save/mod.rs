@@ -22,6 +22,9 @@
 //! **Encryption survives** a flags-0/NO_INCREMENTAL save (verified, pages spike §5), so a
 //! document opened with a password stays encrypted; `remove_password` is the separate
 //! `FPDF_REMOVE_SECURITY = 4` path.
+//!
+//! Metadata (P1-1) is the one thing this module writes *after* PDFium: [`write_info`] rewrites
+//! `/Info` and drops the XMP packet with `lopdf`, through [`registry::mutate_bytes`].
 
 use crate::engine::pages::write_atomic;
 use crate::engine::raw;
@@ -43,6 +46,16 @@ const KEEP_BACKUPS: usize = 3;
 /// Shared by [`save`], `export_flattened` and the page subset writer so there is exactly one
 /// place that knows an `/AP` render has to happen before serialisation.
 pub fn serialize(st: &mut EngineState<'_>, doc_id: &str) -> Result<Vec<u8>, EngineError> {
+    serialize_with(st, doc_id, raw::save::SaveFlags::NoIncremental)
+}
+
+/// [`serialize`] with explicit `FPDF_SaveAsCopy` flags — `set_password` needs
+/// `RemoveSecurity` for an input that is already encrypted.
+pub fn serialize_with(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    flags: raw::save::SaveFlags,
+) -> Result<Vec<u8>, EngineError> {
     render::tiles::generate_appearances(st, doc_id)?;
     let doc = st.doc_mut(doc_id)?;
     if let Some(form) = doc.form_handle() {
@@ -51,7 +64,7 @@ pub fn serialize(st: &mut EngineState<'_>, doc_id: &str) -> Result<Vec<u8>, Engi
         raw::form::force_to_kill_focus(doc.bindings(), form);
     }
     doc.close_pages();
-    raw::save::save_as_copy(doc.bindings(), doc.pdf(), raw::save::SaveFlags::NoIncremental)
+    raw::save::save_as_copy(doc.bindings(), doc.pdf(), flags)
 }
 
 /// `save_document` / `save_document_as`.
@@ -254,22 +267,124 @@ pub fn read_metadata(st: &EngineState<'_>, doc_id: &str) -> Result<DocMeta, Engi
     Ok(st.doc(doc_id)?.meta.clone())
 }
 
-/// What `set_metadata` can actually write today.
+/// Rewrites the document-level metadata of a serialised PDF with `lopdf` (P1-1).
 ///
-/// **Nothing.** PDFium exports `FPDF_GetMetaText` and there is no `FPDF_SetMetaText` in build
-/// 8057, `PdfMetadata` has no setter, and the only document-level string PDFium can write is
-/// `PdfCatalog::set_language` (pages spike §5). Writing `/Info` means rewriting the saved bytes
-/// with `lopdf`, which `WORKPLAN.md` §5 schedules as a P1 dependency.
+/// PDFium can only *read* `/Info` (`FPDF_GetMetaText`; build 8057 has no `FPDF_SetMetaText`
+/// and `PdfMetadata` has no setter — pages spike §5), so `set_metadata` / `remove_metadata`
+/// go through [`registry::mutate_bytes`]: PDFium serialises, this rewrites, PDFium reloads.
 ///
-/// This returns the `unsupported` error the contract's `set_metadata` is supposed to return,
-/// with the reason in `message`, so `commands/security.rs` has one line to call when the
-/// dependency lands (`STAGE1B_NOTES.md` §5).
-pub fn write_metadata(_meta: &DocMeta) -> Result<(), EngineError> {
-    Err(EngineError::new(
-        ErrorCode::Unsupported,
-        "PDFium build 8057 has no FPDF_SetMetaText: writing /Info needs the P1 `lopdf` \
-         dependency (WORKPLAN §5, pages spike §5)",
-    ))
+/// * `clear == false` (`set_metadata`): every `Some` field of `meta` is written, an empty or
+///   blank string removes that key, `None` leaves the key as it is. `ModDate` is set to now
+///   (`D:YYYYMMDDHHmmSS+HH'mm'`, local time) unless `meta.modified` carries a value.
+/// * `clear == true` (`remove_metadata`, 메타데이터 제거): the `/Info` dictionary is deleted
+///   outright — the object, not only the trailer reference, so no orphan copy of the old
+///   strings stays in the file — and `meta` is ignored.
+///
+/// **Both paths drop the catalog `/Metadata` XMP stream.** Acrobat and most DAMs prefer XMP
+/// over `/Info` when both exist, so a stale XMP packet would keep showing the old title after
+/// an edit, and would leak the author after a "remove". Writing a fresh XMP packet is not
+/// worth an XML writer for a light app; `/Info` alone is what every reader falls back to.
+///
+/// Strings are PDF text strings: printable ASCII as a literal, anything else (Hangul) as
+/// UTF-16BE with a `FE FF` BOM, which is what `FPDF_GetMetaText` decodes. The input must not
+/// be encrypted — `lopdf` would need the owner password to re-encrypt, so callers refuse
+/// encrypted documents first.
+pub fn write_info(bytes: &[u8], meta: &DocMeta, clear: bool) -> Result<Vec<u8>, EngineError> {
+    use lopdf::{Dictionary, Object};
+
+    let mut doc = lopdf::Document::load_mem(bytes).map_err(|e| lopdf_error("parse", e))?;
+    if doc.is_encrypted() {
+        return Err(EngineError::new(
+            ErrorCode::Unsupported,
+            "this document is encrypted: remove the password first",
+        ));
+    }
+
+    // The XMP packet goes in both modes (see above).
+    if let Ok(catalog) = doc.catalog_mut() {
+        if let Some(Object::Reference(id)) = catalog.remove(b"Metadata") {
+            doc.objects.remove(&id);
+        }
+    }
+
+    let info_ref = doc.trailer.get(b"Info").ok().and_then(|o| o.as_reference().ok());
+    if clear {
+        doc.trailer.remove(b"Info");
+        if let Some(id) = info_ref {
+            doc.objects.remove(&id);
+        }
+    } else {
+        let id = match info_ref {
+            Some(id) if doc.get_dictionary(id).is_ok() => id,
+            _ => {
+                // No /Info, a dangling reference, or an inline dictionary: start a fresh
+                // indirect one and carry over whatever the inline dictionary had.
+                let inline = match doc.trailer.get(b"Info") {
+                    Ok(Object::Dictionary(d)) => d.clone(),
+                    _ => Dictionary::new(),
+                };
+                let id = doc.add_object(Object::Dictionary(inline));
+                doc.trailer.set("Info", Object::Reference(id));
+                id
+            }
+        };
+        let modified = meta.modified.clone().or_else(|| Some(pdf_date_now()));
+        let fields: [(&str, &Option<String>); 8] = [
+            ("Title", &meta.title),
+            ("Author", &meta.author),
+            ("Subject", &meta.subject),
+            ("Keywords", &meta.keywords),
+            ("Creator", &meta.creator),
+            ("Producer", &meta.producer),
+            ("CreationDate", &meta.created),
+            ("ModDate", &modified),
+        ];
+        let info = doc.get_dictionary_mut(id).map_err(|e| lopdf_error("/Info", e))?;
+        for (key, value) in fields {
+            match value.as_deref().map(str::trim) {
+                None => {}
+                Some("") => {
+                    info.remove(key.as_bytes());
+                }
+                Some(_) => info.set(key, pdf_text_string(value.as_deref().unwrap_or_default())),
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(bytes.len());
+    doc.save_to(&mut out).map_err(|e| lopdf_error("write", e))?;
+    Ok(out)
+}
+
+/// A PDF text string (ISO 32000 §7.9.2.2): PDFDocEncoding-safe ASCII as a literal, anything
+/// else as UTF-16BE with a BOM.
+pub fn pdf_text_string(value: &str) -> lopdf::Object {
+    if value.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        lopdf::Object::string_literal(value)
+    } else {
+        let mut encoded = Vec::with_capacity(2 + value.len() * 2);
+        lopdf::encode_utf16_be(value, &mut encoded);
+        lopdf::Object::String(encoded, lopdf::StringFormat::Hexadecimal)
+    }
+}
+
+/// Now as a PDF date, `D:YYYYMMDDHHmmSS+HH'mm'` in local time.
+pub fn pdf_date_now() -> String {
+    let now = chrono::Local::now();
+    let offset = now.offset().local_minus_utc();
+    let sign = if offset < 0 { '-' } else { '+' };
+    let minutes = offset.abs() / 60;
+    format!(
+        "D:{}{sign}{:02}'{:02}'",
+        now.format("%Y%m%d%H%M%S"),
+        minutes / 60,
+        minutes % 60
+    )
+}
+
+/// A `lopdf` failure on bytes PDFium itself just produced: nothing the user can fix.
+pub fn lopdf_error(context: &str, e: impl std::fmt::Display) -> EngineError {
+    EngineError::new(ErrorCode::Pdfium, format!("lopdf {context}: {e}"))
 }
 
 #[cfg(test)]

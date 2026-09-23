@@ -42,6 +42,7 @@ Acrobat show exactly what SeePDF showed.
 * AcroForm filling: text, checkbox, radio, combo, list, with field highlighting
 * **Redaction with true content removal**, verified after the fact: if the marked string can still
   be extracted from the result, the whole operation is rolled back and reported
+* 보안: 암호 설정 (AES-256, 열기/권한 암호 + 권한) / 암호 제거, 문서 정보(메타데이터) 편집 및 메타데이터 제거
 
 ### OCR
 Current page / all pages / a range, `kor+eng`, at 200–400 DPI, with progress and cancel. The
