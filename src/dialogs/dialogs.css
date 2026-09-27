@@ -301,3 +301,83 @@
   padding-block-end: var(--space-3);
   border-block-end: 1px solid var(--border-default);
 }
+
+/* 워터마크 / 머리글·바닥글 */
+.stamp-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 196px;
+  gap: var(--space-4);
+  align-items: start;
+}
+.stamp-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.stamp-text { resize: vertical; min-height: 52px; font-family: inherit; }
+.stamp-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stamp-pos { gap: var(--space-4); }
+.anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 18px);
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+.anchor-grid button {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+}
+.anchor-grid button:hover { background: var(--bg-active); }
+.anchor-grid button[data-active] { background: var(--accent); }
+.stamp-preview {
+  position: sticky;
+  top: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+.stamp-page {
+  position: relative;
+  overflow: hidden;
+  background: var(--page-paper);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--elevation-1);
+}
+.stamp-mark {
+  position: absolute;
+  white-space: pre;
+  line-height: 1.2;
+  text-align: center;
+  transform-origin: center;
+  pointer-events: none;
+}
+.stamp-image {
+  display: grid;
+  place-items: center;
+  border: 1px dashed currentColor;
+  color: var(--text-tertiary);
+}
+
+/* 압축 */
+.compress-presets { display: flex; flex-direction: column; gap: var(--space-2); }
+.compress-run { display: flex; align-items: center; gap: var(--space-2); min-height: var(--control-default); }
+.compress-run .job-bar { flex: 1; }
+.compress-table { width: 100%; border-collapse: collapse; }
+.compress-table th,
+.compress-table td { padding-block: var(--space-1); text-align: start; font-weight: normal; }
+.compress-table th { color: var(--text-secondary); width: 132px; }
+.compress-table td.gain { color: var(--success); }
+.compress-warn { color: var(--warning); }
+.compress-table td.compress-warn { font-weight: 500; }
+p.compress-warn {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}

@@ -193,7 +193,16 @@ A build ships only when all of the following are green on both platforms:
 |---|---|---|
 | P1-1 | ✅ | 문서 정보 edits 제목/작성자/주제/키워드 (blank = remove), 보안 → 메타데이터 제거; lopdf `/Info` rewrite + XMP drop, Hangul as UTF-16BE, one undo step; `cargo test --test security metadata_*`, `docInfo.flow.test.tsx`. ⚠️ refused on encrypted documents |
 | P1-2 | ✅ | 보안 → 암호 제거 writes an `-unlocked` copy (`FPDF_REMOVE_SECURITY = 4`); enabled only when the document is encrypted |
-| P1-3 | ✅ | 보안 → 암호 설정: AES-256 V5/R6 copy, 4 permission checkboxes, verified reopen before write; `cargo test --test security password_*`. ⚠️ AES-256 files report revision `unknown` (no `r6` in the contract union yet) |
+| P1-3 | ✅ | 보안 → 암호 설정: AES-256 V5/R6 copy, 4 permission checkboxes, verified reopen before write; `cargo test --test security password_*`. AES-256 files now report `r5` / `r6` (Stage 4) and 문서 정보 shows `AES-256 (R6)` |
+
+### P1 status — Stage 4
+
+Details in `docs/STAGE4_NOTES.md`.
+
+| id | status | evidence |
+|---|---|---|
+| P1-4 | ✅ | 도구 → 워터마크 / 머리글·바닥글 (⌥⌘W): text with `{{page}}`/`{{total}}`/`{{date}}`/`{{filename}}`, multi-line, Hangul font, or a PNG/JPEG shared as one Form XObject; 9 anchors + margin, rotation, opacity, page range; upright on `/Rotate` pages; objects tagged `SeePDF:Stamp`; one undo step; `cargo test --test stamp` (6), `stamp.test.ts`, `stamp.flow.test.tsx`. ⚠️ no "remove stamps" command yet; a rotated stamp near an edge can be clipped |
+| P1-5 | ✅ ⚠️ | 도구 → 압축: 300/150/96 DPI presets, cancellable estimate on a scratch copy, measured before/after + amber "no gain" warning, apply = one undo step (`stale` if the document changed); JPEG sources re-encoded as JPEG only when smaller; `cargo test --test compress` (5), `compress.flow.test.tsx`. ⚠️ images in Form XObjects / with SMask / shared between pages are skipped; non-JPEG images go through Flate and can grow; untested on encrypted documents |
 
 ## P2 — after v1
 

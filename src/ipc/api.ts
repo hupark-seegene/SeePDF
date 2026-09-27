@@ -11,10 +11,10 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { useMock } from "./env";
 import { parseRawPage, parseTextLayer, type RawPage, type TextLayerView } from "./binary";
 import type {
-  Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, DocGeneration, DocId, DocInfo, DocMeta,
+  Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
   EngineError, EngineStats, ErrorCode, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, ObjectId,
   ObjectsResult, OcrEngine, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, Rect,
-  RedactPreview, Rgb, SaveResult, SearchEvent, Settings, TextEditProbe, ViewportHint,
+  RedactPreview, Rgb, SaveResult, SearchEvent, Settings, StampResult, StampSpec, TextEditProbe, ViewportHint,
 } from "./types";
 
 export { parseTextLayer, parseRawPage };
@@ -348,6 +348,34 @@ export function removeMetadata(a: { docId: DocId }): Promise<DocInfo> {
 
 export function setMetadata(a: { docId: DocId; meta: DocMeta }): Promise<DocInfo> {
   return call("set_metadata", a, (mock) => mock.setMetadata(a));
+}
+
+// ---------------------------------------------------------------------------
+// 7.5b Stamp and compress (Stage 4: P1-4 / P1-5)
+// ---------------------------------------------------------------------------
+
+/** 워터마크 / 머리글·바닥글 — one undo step (`undo.watermark` / `undo.headerFooter`). */
+export function addStamp(a: { docId: DocId; spec: StampSpec }): Promise<StampResult> {
+  return call("add_stamp", a, (mock) => mock.addStamp(a));
+}
+
+/**
+ * 압축 예상: a job on a scratch copy. The `CompressReport` rides on the final `done` event
+ * (`e.report`); its `token` is what `compressApply` / `compressDiscard` take.
+ */
+export function compressEstimate(
+  a: { docId: DocId; options: CompressOptions },
+  onEvent: (e: JobEvent) => void,
+): Promise<JobId> {
+  return call("compress_estimate", { ...a, onProgress: channel(onEvent) }, (mock) => mock.compressEstimate(a, onEvent));
+}
+
+export function compressApply(a: { docId: DocId; token: number }): Promise<DocInfo> {
+  return call("compress_apply", a, (mock) => mock.compressApply(a));
+}
+
+export function compressDiscard(a: { docId: DocId; token: number }): Promise<void> {
+  return call("compress_discard", a, (mock) => mock.compressDiscard(a));
 }
 
 // ---------------------------------------------------------------------------

@@ -105,6 +105,10 @@ pub enum SecurityRevision {
     R2,
     R3,
     R4,
+    /// AES-256, ISO 32000-1 Adobe extension level 3 (deprecated, still in the wild).
+    R5,
+    /// AES-256, PDF 2.0 — what `set_password` writes.
+    R6,
     Unknown,
 }
 
@@ -1015,6 +1019,105 @@ pub struct OcrPageStatus {
 }
 
 // ---------------------------------------------------------------------------------------
+// Stage 4: page stamps (P1-4) and compression (P1-5)
+// ---------------------------------------------------------------------------------------
+
+/// Where a page stamp sits, as the user sees the page: `t`/`m`/`b` row, `l`/`c`/`r` column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StampAnchor {
+    Tl,
+    Tc,
+    Tr,
+    Ml,
+    Mc,
+    Mr,
+    Bl,
+    Bc,
+    Br,
+}
+
+/// Only picks the undo label (`undo.watermark` vs `undo.headerFooter`); geometry comes from
+/// the anchor and margin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StampRole {
+    Watermark,
+    Header,
+    Footer,
+}
+
+/// Contract `StampSource`. `{{page}}`, `{{total}}`, `{{date}}` and `{{filename}}` are
+/// replaced per page in `text`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum PageStampSource {
+    Text {
+        text: String,
+        font_size_pt: f32,
+        color: Rgb,
+    },
+    /// Height follows the image's aspect ratio.
+    Image { path: String, width_pt: f32 },
+}
+
+/// `PageIndex[] | 'all'`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PageSelection {
+    All(AllPages),
+    List(Vec<PageIndex>),
+}
+
+/// Contract `StampSpec` (`add_stamp`). Named `PageStampSpec` in Rust because `StampSpec` is
+/// already the stamp **annotation** spec (`AnnotSpec::Stamp`); the wire shape is the
+/// contract's exactly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageStampSpec {
+    pub role: StampRole,
+    pub source: PageStampSource,
+    pub anchor: StampAnchor,
+    /// Distance from the page edge for non-centre anchors, in points (>= 0).
+    pub margin_pt: f32,
+    /// -180..180, counter-clockwise as the user sees the page, about the stamp's centre.
+    pub rotate_deg: f32,
+    /// 0..1, fill and stroke alpha.
+    pub opacity: f32,
+    pub pages: PageSelection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StampResult {
+    pub info: DocInfo,
+    pub pages_stamped: u32,
+}
+
+/// `compress_estimate`'s options. `target_dpi` is one of the presets 300 / 150 / 96.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressOptions {
+    pub target_dpi: u32,
+    /// Default: every page.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pages: Option<Vec<PageIndex>>,
+}
+
+/// Rides on the `done` job event of `compress_estimate`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressReport {
+    /// Pending-result handle for `compress_apply` / `compress_discard`.
+    pub token: u64,
+    pub before_bytes: u64,
+    pub after_bytes: u64,
+    pub images_total: u32,
+    pub images_downsampled: u32,
+    pub elapsed_ms: f64,
+}
+
+// ---------------------------------------------------------------------------------------
 // §8 Events and progress
 // ---------------------------------------------------------------------------------------
 
@@ -1039,6 +1142,9 @@ pub enum JobEvent {
         elapsed_ms: f64,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         outputs: Option<Vec<String>>,
+        /// `compress_estimate` only.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        report: Option<CompressReport>,
     },
     Cancelled {
         job_id: JobId,
@@ -1407,5 +1513,89 @@ mod tests {
         let numeric: Settings = serde_json::from_value(numeric).unwrap();
         assert!(matches!(numeric.default_zoom, DefaultZoom::Percent(z) if z == 125.0));
         assert!(matches!(numeric.ocr_dpi, OcrDpi::Fixed(400)));
+    }
+
+    #[test]
+    fn stage4_stamp_and_compress_shapes() {
+        let spec: PageStampSpec = serde_json::from_value(json!({
+            "role": "watermark",
+            "source": { "kind": "text", "text": "DRAFT {{page}}", "fontSizePt": 48.0, "color": [200, 0, 0] },
+            "anchor": "mc",
+            "marginPt": 36.0,
+            "rotateDeg": 45.0,
+            "opacity": 0.5,
+            "pages": "all"
+        }))
+        .expect("text StampSpec");
+        assert!(matches!(spec.pages, PageSelection::All(AllPages::All)));
+        assert!(matches!(spec.source, PageStampSource::Text { font_size_pt, .. } if font_size_pt == 48.0));
+        assert_eq!(
+            serde_json::to_value(&spec).unwrap(),
+            json!({
+                "role": "watermark",
+                "source": { "kind": "text", "text": "DRAFT {{page}}", "fontSizePt": 48.0, "color": [200, 0, 0] },
+                "anchor": "mc", "marginPt": 36.0, "rotateDeg": 45.0, "opacity": 0.5,
+                "pages": "all"
+            })
+        );
+
+        let spec: PageStampSpec = serde_json::from_value(json!({
+            "role": "footer",
+            "source": { "kind": "image", "path": "/tmp/logo.png", "widthPt": 120.0 },
+            "anchor": "br", "marginPt": 24.0, "rotateDeg": 0.0, "opacity": 1.0,
+            "pages": [0, 2]
+        }))
+        .expect("image StampSpec");
+        assert_eq!(spec.role, StampRole::Footer);
+        assert_eq!(spec.anchor, StampAnchor::Br);
+        assert!(matches!(&spec.pages, PageSelection::List(p) if p == &vec![0, 2]));
+        assert!(matches!(spec.source, PageStampSource::Image { width_pt, .. } if width_pt == 120.0));
+        for (anchor, wire) in [(StampAnchor::Tl, "tl"), (StampAnchor::Mr, "mr"), (StampAnchor::Bc, "bc")] {
+            assert_eq!(serde_json::to_value(anchor).unwrap(), json!(wire));
+        }
+
+        let options: CompressOptions =
+            serde_json::from_value(json!({ "targetDpi": 150 })).expect("CompressOptions");
+        assert_eq!((options.target_dpi, options.pages.is_none()), (150, true));
+        let options: CompressOptions =
+            serde_json::from_value(json!({ "targetDpi": 96, "pages": [1] })).unwrap();
+        assert_eq!(options.pages, Some(vec![1]));
+
+        let report = CompressReport {
+            token: 3,
+            before_bytes: 1000,
+            after_bytes: 800,
+            images_total: 4,
+            images_downsampled: 2,
+            elapsed_ms: 12.5,
+        };
+        assert_eq!(
+            serde_json::to_value(JobEvent::Done {
+                job_id: 9,
+                elapsed_ms: 12.5,
+                outputs: None,
+                report: Some(report),
+            })
+            .unwrap(),
+            json!({
+                "type": "done", "jobId": 9, "elapsedMs": 12.5,
+                "report": {
+                    "token": 3, "beforeBytes": 1000, "afterBytes": 800,
+                    "imagesTotal": 4, "imagesDownsampled": 2, "elapsedMs": 12.5
+                }
+            })
+        );
+        // Other jobs' `done` has no `report` key at all.
+        let done = serde_json::to_value(JobEvent::Done {
+            job_id: 1,
+            elapsed_ms: 1.0,
+            outputs: Some(vec!["/a.png".into()]),
+            report: None,
+        })
+        .unwrap();
+        assert!(done.get("report").is_none());
+
+        assert_eq!(serde_json::to_value(SecurityRevision::R5).unwrap(), json!("r5"));
+        assert_eq!(serde_json::to_value(SecurityRevision::R6).unwrap(), json!("r6"));
     }
 }

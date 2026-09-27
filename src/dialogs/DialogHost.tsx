@@ -15,7 +15,7 @@ import { SettingsDialog } from "./SettingsDialog";
 import { DocInfoDialog } from "./DocInfoDialog";
 import { ExtractDialog, InsertFromDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
 import type { MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
-import type { PageIndex } from "../ipc/types";
+import type { PageIndex, StampRole } from "../ipc/types";
 import type { DrawnSignature } from "./SignatureDialog";
 
 const OcrDialog = lazy(() => import("../ocr").then((m) => ({ default: m.OcrDialog })));
@@ -23,6 +23,9 @@ const OcrDialog = lazy(() => import("../ocr").then((m) => ({ default: m.OcrDialo
 const SignatureDialog = lazy(() => import("./SignatureDialog"));
 // 보안 is rarely opened; keep it out of the dialog chunk.
 const SecurityDialog = lazy(() => import("./SecurityDialog"));
+// 워터마크 / 머리글·바닥글 and 압축 (Stage 4): rare, each in its own chunk.
+const StampDialog = lazy(() => import("./StampDialog"));
+const CompressDialog = lazy(() => import("./CompressDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -82,6 +85,18 @@ function Current({ entry }: { entry: DialogEntry }) {
       return (
         <Suspense fallback={null}>
           <SecurityDialog onClose={close} />
+        </Suspense>
+      );
+    case "stamp":
+      return (
+        <Suspense fallback={null}>
+          <StampDialog onClose={close} role={p.role as StampRole | undefined} />
+        </Suspense>
+      );
+    case "compress":
+      return (
+        <Suspense fallback={null}>
+          <CompressDialog onClose={close} />
         </Suspense>
       );
     case "signature":

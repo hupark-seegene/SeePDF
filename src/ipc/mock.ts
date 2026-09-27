@@ -16,7 +16,7 @@ import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, DocGeneration, DocId, DocInfo, EngineError,
   EngineStats, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, Mat6, MergeWarning, OcrPage, OutlineNode,
   PageGeom, PageIndex, Permissions, PageObject, PageOp, RecentEntry, Rect, RedactPreview, SaveResult, SearchEvent, SearchHit,
-  Settings, TextEditProbe, ViewportHint,
+  Settings, StampResult, StampSpec, TextEditProbe, ViewportHint, CompressOptions, CompressReport,
 } from "./types";
 
 import documentFixture from "../test/ipc-samples/document.json";
@@ -47,6 +47,9 @@ interface MockDoc {
 
 const docs = new Map<DocId, MockDoc>();
 const jobs = new Map<JobId, { cancel: () => void }>();
+/** 압축 예상 results waiting for 적용 / 취소: at most one per document, like the engine. */
+const pendingCompress = new Map<DocId, { token: number; afterBytes: number }>();
+let nextCompressToken = 1;
 let nextDoc = 1;
 let nextJob = 1;
 let nextAnnot = 1;
@@ -97,7 +100,7 @@ function mutate<T>(
   d.info.dirty = opts.dirty ?? true;
   d.info.canUndo = d.undo.length > 0;
   d.info.canRedo = d.redo.length > 0;
-  d.info.undoLabel = opts.undoLabel ?? "menu.edit.undo";
+  d.info.undoLabel = opts.undoLabel ?? "undo.objectEdit";
   d.info.redoLabel = null;
   mockEvents.emit("doc-changed", {
     docId: d.info.docId,
@@ -340,7 +343,10 @@ function recentThumbImage(id: string): string {
 function runJob(
   total: number,
   onEvent: (e: JobEvent) => void,
-  opts: { stepMs?: number; note?: (done: number) => string; outputs?: string[]; onDone?: () => void } = {},
+  opts: {
+    stepMs?: number; note?: (done: number) => string; outputs?: string[]; onDone?: () => void;
+    report?: (elapsedMs: number) => CompressReport;
+  } = {},
 ): JobId {
   const jobId = nextJob++;
   const started = Date.now();
@@ -355,7 +361,8 @@ function runJob(
       clearInterval(timer);
       jobs.delete(jobId);
       opts.onDone?.();
-      onEvent({ type: "done", jobId, elapsedMs: Date.now() - started, outputs: opts.outputs });
+      const elapsedMs = Date.now() - started;
+      onEvent({ type: "done", jobId, elapsedMs, outputs: opts.outputs, report: opts.report?.(elapsedMs) });
       return;
     }
     onEvent({ type: "progress", jobId, done, total, page: done, note: opts.note?.(done) });
@@ -374,6 +381,11 @@ function runJob(
 // ---------------------------------------------------------------------------
 // The command surface (same names as `api.ts`)
 // ---------------------------------------------------------------------------
+
+const PAGE_OP_LABEL: Record<PageOp["kind"], string> = {
+  move: "undo.pageMove", delete: "undo.pageDelete", rotate: "undo.pageRotate", insertBlank: "undo.pageInsert",
+  duplicate: "undo.pageDuplicate", insertFrom: "undo.pageInsertFrom", reverse: "undo.pageReverse",
+};
 
 export const mock = {
   // 4. documents -------------------------------------------------------------
@@ -394,6 +406,7 @@ export const mock = {
   },
   async closeDocument(a: { docId: DocId }): Promise<void> {
     docs.delete(a.docId);
+    pendingCompress.delete(a.docId);
   },
   async getDocument(a: { docId: DocId }): Promise<DocInfo> {
     return structuredClone(doc(a.docId).info);
@@ -519,7 +532,7 @@ export const mock = {
   async createAnnotation(a: { docId: DocId; page: PageIndex; spec: AnnotSpec; id?: string }): Promise<AnnotResult> {
     const d = doc(a.docId);
     const annot = annotFromSpec(a.page, a.spec, a.id ?? `mock-${nextAnnot++}`, settings.author);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: `tool.${annot.kind}` }, () => {
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.annotCreate" }, () => {
       d.annots.set(a.page, [...(d.annots.get(a.page) ?? []), annot]);
       return { list: listOf(d, a.page), annot: structuredClone(annot), previous: null };
     });
@@ -530,7 +543,7 @@ export const mock = {
     const idx = list.findIndex((x) => x.id === a.id);
     if (idx < 0) throw err("notFound", `annotation ${a.id}`);
     const previous = structuredClone(list[idx]);
-    return mutate(d, { reason: "edit", pages: [a.page] }, () => {
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.annotEdit" }, () => {
       const next: Annot = { ...list[idx], ...a.patch, modified: new Date().toISOString() } as Annot;
       list[idx] = next;
       d.annots.set(a.page, list);
@@ -539,7 +552,7 @@ export const mock = {
   },
   async deleteAnnotations(a: { docId: DocId; page: PageIndex; ids: string[] }): Promise<AnnotResult> {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "menu.edit.delete" }, () => {
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.annotDelete" }, () => {
       const kept = (d.annots.get(a.page) ?? []).filter((x) => !a.ids.includes(x.id));
       d.annots.set(a.page, kept);
       return { list: listOf(d, a.page), annot: null, previous: null };
@@ -559,7 +572,7 @@ export const mock = {
     const field = d.fields.find((f) => f.page === a.page && f.index === a.index);
     if (!field) throw err("notFound", `field ${a.index}`);
     const previous = field.value;
-    return mutate(d, { reason: "edit", pages: [a.page] }, () => {
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.formFill" }, () => {
       const value = a.value;
       if ("text" in value) field.value = value.text;
       else if ("checked" in value) {
@@ -574,7 +587,7 @@ export const mock = {
   },
   async resetForm(a: { docId: DocId }): Promise<DocInfo> {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: "all" }, () => {
+    return mutate(d, { reason: "edit", pages: "all", undoLabel: "undo.formReset" }, () => {
       d.fields = d.fields.map((f) => ({ ...f, value: f.type === "checkbox" ? "Off" : "", checked: false }));
       return structuredClone(d.info);
     });
@@ -583,7 +596,7 @@ export const mock = {
   // 7.3 pages ----------------------------------------------------------------
   async pageOps(a: { docId: DocId; ops: PageOp[] }): Promise<DocInfo> {
     const d = doc(a.docId);
-    return mutate(d, { reason: "pages", pages: "all", structure: true, undoLabel: "pages.title" }, () => {
+    return mutate(d, { reason: "pages", pages: "all", structure: true, undoLabel: a.ops.length === 1 ? PAGE_OP_LABEL[a.ops[0].kind] : "undo.pageOps" }, () => {
       for (const op of a.ops) applyPageOp(d, op);
       d.info.pages = d.info.pages.map((p, index) => ({ ...p, index }));
       d.info.pageCount = d.info.pages.length;
@@ -652,19 +665,19 @@ export const mock = {
   },
   async addTextObject(a: { docId: DocId; page: PageIndex }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "tool.addText" }, () => mock.listPageObjects(a));
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectAdd" }, () => mock.listPageObjects(a));
   },
   async addImageObject(a: { docId: DocId; page: PageIndex }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "tool.addImage" }, () => mock.listPageObjects(a));
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectAdd" }, () => mock.listPageObjects(a));
   },
   async transformObject(a: { docId: DocId; page: PageIndex }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page] }, () => mock.listPageObjects(a));
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectTransform" }, () => mock.listPageObjects(a));
   },
   async deleteObjects(a: { docId: DocId; page: PageIndex }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "menu.edit.delete" }, () => mock.listPageObjects(a));
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectDelete" }, () => mock.listPageObjects(a));
   },
 
   // 7.5 redaction / security -------------------------------------------------
@@ -678,7 +691,7 @@ export const mock = {
   },
   async applyRedactions(a: { docId: DocId; page: PageIndex; rects: Rect[] }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "redact", pages: [a.page], undoLabel: "redact.title" }, () => ({
+    return mutate(d, { reason: "redact", pages: [a.page], undoLabel: "undo.redact" }, () => ({
       removedObjects: a.rects.length,
       verified: true,
       docGeneration: d.info.docGeneration + 1,
@@ -701,14 +714,14 @@ export const mock = {
   },
   async removeMetadata(a: { docId: DocId }): Promise<DocInfo> {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: "all" }, () => {
+    return mutate(d, { reason: "edit", pages: "all", undoLabel: "undo.metadataRemove" }, () => {
       d.info.meta = {};
       return structuredClone(d.info);
     });
   },
   async setMetadata(a: { docId: DocId; meta: DocInfo["meta"] }): Promise<DocInfo> {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: "all" }, () => {
+    return mutate(d, { reason: "edit", pages: "all", undoLabel: "undo.metadataEdit" }, () => {
       // like the backend: `undefined` keeps a key, a blank string removes it
       const meta = { ...d.info.meta };
       for (const [k, v] of Object.entries(a.meta) as [keyof DocInfo["meta"], string | undefined][]) {
@@ -719,6 +732,60 @@ export const mock = {
       d.info.meta = meta;
       return structuredClone(d.info);
     });
+  },
+
+  // 7.5b stamp / compress (Stage 4) ---------------------------------------------
+  async addStamp(a: { docId: DocId; spec: StampSpec }): Promise<StampResult> {
+    const d = doc(a.docId);
+    const { spec } = a;
+    if (spec.source.kind === "text" && !spec.source.text.trim()) throw err("invalidArgument", "empty stamp text");
+    if (spec.source.kind === "image" && !spec.source.path) throw err("notFound", "stamp image missing");
+    const pages = spec.pages === "all" ? d.info.pages.map((p) => p.index) : spec.pages;
+    if (!pages.length || pages.some((p) => p < 0 || p >= d.info.pageCount)) throw err("invalidArgument", "page out of range");
+    const undoLabel = spec.role === "watermark" ? "undo.watermark" : "undo.headerFooter";
+    mutate(d, { reason: "edit", pages: spec.pages === "all" ? "all" : pages, undoLabel }, () => {
+      d.info.bytes += 900 * pages.length;
+    });
+    // like the engine: the DocInfo *after* the step (generation, history labels)
+    return { info: structuredClone(d.info), pagesStamped: pages.length };
+  },
+  async compressEstimate(
+    a: { docId: DocId; options: CompressOptions },
+    onEvent: (e: JobEvent) => void,
+  ): Promise<JobId> {
+    const d = doc(a.docId);
+    const pages = a.options.pages?.length ? a.options.pages : d.info.pages.map((p) => p.index);
+    pendingCompress.delete(a.docId);
+    const before = d.info.bytes;
+    // 300 DPI: nothing in the fixture is above it, so the rewrite comes out slightly bigger
+    const ratio = a.options.targetDpi === 300 ? 1.002 : a.options.targetDpi === 150 ? 0.58 : 0.41;
+    const imagesTotal = pages.length * 2;
+    return runJob(Math.max(1, pages.length), onEvent, {
+      stepMs: 60,
+      report: (elapsedMs) => {
+        const token = nextCompressToken++;
+        const afterBytes = Math.round(before * ratio);
+        pendingCompress.set(a.docId, { token, afterBytes });
+        return {
+          token, beforeBytes: before, afterBytes, imagesTotal,
+          imagesDownsampled: a.options.targetDpi === 300 ? 0 : imagesTotal - 1, elapsedMs,
+        };
+      },
+    });
+  },
+  async compressApply(a: { docId: DocId; token: number }): Promise<DocInfo> {
+    const d = doc(a.docId);
+    const pending = pendingCompress.get(a.docId);
+    if (!pending || pending.token !== a.token) throw err("notFound", `compress result ${a.token}`);
+    pendingCompress.delete(a.docId);
+    mutate(d, { reason: "edit", pages: "all", structure: true, undoLabel: "undo.compress" }, () => {
+      d.info.bytes = pending.afterBytes;
+    });
+    return structuredClone(d.info);
+  },
+  async compressDiscard(a: { docId: DocId; token: number }): Promise<void> {
+    const pending = pendingCompress.get(a.docId);
+    if (pending?.token === a.token) pendingCompress.delete(a.docId);
   },
 
   // 7.6 save -----------------------------------------------------------------
@@ -783,6 +850,7 @@ export const mock = {
     d.info.docGeneration += 1;
     d.info.canUndo = d.undo.length > 0;
     d.info.canRedo = true;
+    d.info.redoLabel = d.redo[d.redo.length - 1]?.info.undoLabel ?? null;
     mockEvents.emit("doc-changed", {
       docId: d.info.docId, docGeneration: d.info.docGeneration, changedPages: "all",
       structure: true, dirty: d.info.dirty, reason: "undo",
@@ -799,6 +867,7 @@ export const mock = {
     d.info.docGeneration += 1;
     d.info.canUndo = true;
     d.info.canRedo = d.redo.length > 0;
+    d.info.redoLabel = d.redo[d.redo.length - 1]?.info.undoLabel ?? null;
     mockEvents.emit("doc-changed", {
       docId: d.info.docId, docGeneration: d.info.docGeneration, changedPages: "all",
       structure: true, dirty: d.info.dirty, reason: "redo",
@@ -826,7 +895,7 @@ export const mock = {
     await new Promise<void>((resolve) => {
       runJob(Math.max(1, a.pages.length), onProgress, { stepMs: 120, onDone: resolve });
     });
-    return mutate(d, { reason: "ocr", pages: "all", undoLabel: "ocr.title" }, () => structuredClone(d.info));
+    return mutate(d, { reason: "ocr", pages: "all", undoLabel: "undo.ocrApply" }, () => structuredClone(d.info));
   },
 
   // 11. app, settings, recents ----------------------------------------------
@@ -1049,6 +1118,8 @@ function boundsOfPaths(paths: number[][]): Rect {
 /** Test helper: forget every open document, job and cached image. */
 export function resetMock(): void {
   docs.clear();
+  pendingCompress.clear();
+  nextCompressToken = 1;
   for (const job of jobs.values()) job.cancel();
   jobs.clear();
   textCache.clear();

@@ -10,7 +10,7 @@ use seepdf_lib::engine::registry;
 use seepdf_lib::engine::render::tiles;
 use seepdf_lib::engine::save;
 use seepdf_lib::engine::security;
-use seepdf_lib::ipc::types::{DocInfo, DocMeta, PermissionsRequest};
+use seepdf_lib::ipc::types::{DocInfo, DocMeta, PermissionsRequest, SecurityRevision};
 use seepdf_lib::ipc::{EngineError, ErrorCode};
 use std::path::PathBuf;
 
@@ -249,6 +249,8 @@ fn password_aes256_roundtrip() {
     assert!(!p.print, "{p:?}");
     assert!(!p.extract_text, "{p:?}");
     assert!(p.annotate && p.fill_forms && p.assemble && p.modify, "{p:?}");
+    // Stage 4: R6 is reported as such, not `unknown`.
+    assert_eq!(p.revision, SecurityRevision::R6);
 
     let diff = difference(&render_page0(&doc.doc_id), &render_page0(&opened.doc_id));
     assert!(diff <= 0.005, "page 0 differs in {:.3} % of pixels", diff * 100.0);
@@ -269,6 +271,7 @@ fn password_owner_only() {
     assert!(!opened.info.permissions.print);
     assert!(!opened.info.permissions.extract_text);
     assert!(opened.info.permissions.annotate);
+    assert_eq!(opened.info.permissions.revision, SecurityRevision::R6);
     // An empty user password is the same as none.
     let bytes = protect(&doc.doc_id, "protected-owner-only-2.pdf", Some(""), "owner1", restricted())
         .expect("set_password");

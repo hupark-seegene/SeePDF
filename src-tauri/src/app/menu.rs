@@ -62,6 +62,7 @@ pub const MENU_IDS: &[&str] = &[
     "tools.ocr",
     "tools.security",
     "tools.redact",
+    "tools.stamp",
     "tools.compress",
     "tools.merge",
     "help.shortcuts",
@@ -134,6 +135,7 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("tools.ocr", "텍스트 인식(OCR)…", "Recognize Text (OCR)…"),
     ("tools.security", "보안…", "Security…"),
     ("tools.redact", "영역 표시", "Redact"),
+    ("tools.stamp", "워터마크 / 머리글·바닥글…", "Watermark / Header & Footer…"),
     ("tools.compress", "압축…", "Compress…"),
     ("tools.merge", "파일 합치기…", "Merge Files…"),
     // window / help
@@ -269,6 +271,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&item("tools.ocr", None)?)
         .item(&item("tools.redact", Some("CmdOrCtrl+Shift+R"))?)
         .item(&item("tools.security", None)?)
+        .item(&item("tools.stamp", Some("CmdOrCtrl+Alt+W"))?)
         .item(&item("tools.compress", None)?)
         .item(&item("tools.merge", None)?)
         .build()?;

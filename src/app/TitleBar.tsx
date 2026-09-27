@@ -6,6 +6,7 @@ import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { shortcutFor } from "../keys/keymap";
+import { historyTitle } from "./historyLabel";
 import type { CommandId } from "./useCommands";
 
 /**
@@ -20,10 +21,20 @@ export function TitleBar({ run }: { run: (id: CommandId) => void }) {
   const info = useDocStore((s) => s.info);
   const [menuOpen, setMenuOpen] = useState(false);
   const sc = (id: string) => shortcutFor(id, os);
+  // `useT` re-renders on a locale change, so the labels below follow it.
+  const undoTitle = historyTitle("undo", info?.canUndo ? info.undoLabel : null);
+  const redoTitle = historyTitle("redo", info?.canRedo ? info.redoLabel : null);
+  // `doc-changed` carries canUndo/canRedo but not the labels (they are dropped as stale), so
+  // fetch them once when the pointer reaches ↶ / ↷ — cheaper than a get_document per edit.
+  const labelsMissing = !!info && ((info.canUndo && !info.undoLabel) || (info.canRedo && !info.redoLabel));
 
   return (
     <header className="titlebar" data-tauri-drag-region>
-      <div className="titlebar-left" data-tauri-drag-region="false">
+      <div
+        className="titlebar-left"
+        data-tauri-drag-region="false"
+        onPointerEnter={labelsMissing ? () => void useDocStore.getState().refresh() : undefined}
+      >
         <IconButton
           icon={PanelLeft}
           label={t("sidebar.toggle")}
@@ -33,14 +44,14 @@ export function TitleBar({ run }: { run: (id: CommandId) => void }) {
         />
         <IconButton
           icon={Undo2}
-          label={t("menu.edit.undo")}
+          label={undoTitle}
           shortcut={sc("edit.undo")}
           disabled={!info?.canUndo}
           onClick={() => run("edit.undo")}
         />
         <IconButton
           icon={Redo2}
-          label={t("menu.edit.redo")}
+          label={redoTitle}
           shortcut={sc("edit.redo")}
           disabled={!info?.canRedo}
           onClick={() => run("edit.redo")}

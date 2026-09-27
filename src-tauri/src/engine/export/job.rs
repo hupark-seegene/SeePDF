@@ -6,9 +6,12 @@
 //! same obligation: **exactly one** terminal event (`done`, `cancelled` or `error`) reaches the
 //! frontend, whichever command gets there first, and `Jobs::finish` runs with it so the token
 //! is not leaked. [`JobReporter`] is that bookkeeping; the commands supply the work.
+//!
+//! Events go to a [`JobSink`] rather than straight to a `Channel`, so the same driver runs
+//! under `cargo test` (a closure collecting events) and in the app (the command's channel).
 
 use crate::engine::jobs::Jobs;
-use crate::ipc::types::{JobEvent, JobId, PageIndex};
+use crate::ipc::types::{CompressReport, JobEvent, JobId, PageIndex};
 use crate::ipc::EngineError;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -16,8 +19,18 @@ use std::sync::Arc;
 use std::time::Instant;
 use tauri::ipc::Channel;
 
+/// Where a job's events go.
+pub type JobSink = Arc<dyn Fn(JobEvent) + Send + Sync>;
+
+/// A [`JobSink`] that forwards to a Tauri channel (dropped frontends are ignored).
+pub fn channel_sink(channel: Channel<JobEvent>) -> JobSink {
+    Arc::new(move |event| {
+        let _ = channel.send(event);
+    })
+}
+
 pub struct JobReporter {
-    channel: Channel<JobEvent>,
+    channel: JobSink,
     jobs: Arc<Jobs>,
     job_id: JobId,
     total: u32,
@@ -35,7 +48,12 @@ impl JobReporter {
         job_id: JobId,
         total: u32,
     ) -> Arc<Self> {
-        let _ = channel.send(JobEvent::Started { job_id, total });
+        Self::start_with(channel_sink(channel), jobs, job_id, total)
+    }
+
+    /// [`JobReporter::start`] with an arbitrary sink.
+    pub fn start_with(channel: JobSink, jobs: Arc<Jobs>, job_id: JobId, total: u32) -> Arc<Self> {
+        (channel)(JobEvent::Started { job_id, total });
         Arc::new(Self {
             channel,
             jobs,
@@ -58,7 +76,7 @@ impl JobReporter {
             self.outputs.lock().push(path);
         }
         let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self.channel.send(JobEvent::Progress {
+        (self.channel)(JobEvent::Progress {
             job_id: self.job_id,
             done,
             total: self.total,
@@ -77,10 +95,11 @@ impl JobReporter {
             return;
         }
         let outputs = self.outputs.lock().clone();
-        let _ = self.channel.send(JobEvent::Done {
+        (self.channel)(JobEvent::Done {
             job_id: self.job_id,
             elapsed_ms: self.started.elapsed().as_secs_f64() * 1000.0,
             outputs: Some(outputs),
+            report: None,
         });
         self.jobs.finish(self.job_id);
     }
@@ -91,10 +110,25 @@ impl JobReporter {
             return;
         }
         let outputs = self.outputs.lock().clone();
-        let _ = self.channel.send(JobEvent::Done {
+        (self.channel)(JobEvent::Done {
             job_id: self.job_id,
             elapsed_ms: self.started.elapsed().as_secs_f64() * 1000.0,
             outputs: Some(outputs),
+            report: None,
+        });
+        self.jobs.finish(self.job_id);
+    }
+
+    /// Sends `done` carrying a `compress_estimate` report (no output files).
+    pub fn finish_with_report(&self, report: CompressReport) {
+        if !self.claim() {
+            return;
+        }
+        (self.channel)(JobEvent::Done {
+            job_id: self.job_id,
+            elapsed_ms: self.started.elapsed().as_secs_f64() * 1000.0,
+            outputs: None,
+            report: Some(report),
         });
         self.jobs.finish(self.job_id);
     }
@@ -103,7 +137,7 @@ impl JobReporter {
         if !self.claim() {
             return;
         }
-        let _ = self.channel.send(JobEvent::Cancelled {
+        (self.channel)(JobEvent::Cancelled {
             job_id: self.job_id,
             done: self.done.load(Ordering::Relaxed),
         });
@@ -115,7 +149,7 @@ impl JobReporter {
         if !self.claim() {
             return;
         }
-        let _ = self.channel.send(JobEvent::Error {
+        (self.channel)(JobEvent::Error {
             job_id: self.job_id,
             error,
         });

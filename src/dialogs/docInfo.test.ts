@@ -39,3 +39,17 @@ describe("docInfo.metaFromForm", () => {
     expect(metaChanged(meta, { title: "a", author: "", subject: "", keywords: "" })).toBe(true);
   });
 });
+
+describe("docInfo.encryptionKey", () => {
+  it("names AES-256 R5/R6 and the older handlers", async () => {
+    const { encryptionKey } = await import("./docInfo");
+    const { t } = await import("../i18n");
+    expect(t(encryptionKey("r6", true))).toBe("AES-256 (R6)");
+    expect(t(encryptionKey("r5", true))).toBe("AES-256 (R5)");
+    expect(t(encryptionKey("r4", true))).toBe("AES-128 (R4)");
+    expect(t(encryptionKey("unknown", true))).toBe("알 수 없음");
+    expect(t(encryptionKey("unprotected", false))).toBe("없음");
+    // an encrypted file whose revision could not be read is never shown as 없음
+    expect(t(encryptionKey("unprotected", true))).toBe("알 수 없음");
+  });
+});

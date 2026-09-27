@@ -57,7 +57,7 @@ export interface PageGeom {
 }
 export interface Permissions {
   print: boolean; modify: boolean; extractText: boolean; annotate: boolean;
-  fillForms: boolean; assemble: boolean; revision: 'unprotected' | 'r2' | 'r3' | 'r4' | 'unknown';
+  fillForms: boolean; assemble: boolean; revision: 'unprotected' | 'r2' | 'r3' | 'r4' | 'r5' | 'r6' | 'unknown';
 }
 export interface DocMeta {
   title?: string; author?: string; subject?: string; keywords?: string;
@@ -223,6 +223,38 @@ export interface RedactPreview {
 }
 
 // ---------------------------------------------------------------------------
+// 7.5b Stamp (P1-4 워터마크 / 머리글·바닥글) and compress (P1-5 압축) — Stage 4 contract
+// ---------------------------------------------------------------------------
+
+export type StampAnchor = 'tl' | 'tc' | 'tr' | 'ml' | 'mc' | 'mr' | 'bl' | 'bc' | 'br';
+export type StampRole = 'watermark' | 'header' | 'footer';
+export type StampSource =
+  | { kind: 'text'; text: string; fontSizePt: number; color: Rgb }
+  | { kind: 'image'; path: string; widthPt: number };          // height follows the image aspect
+export interface StampSpec {
+  role: StampRole;            // only affects the undo label + docs; geometry comes from anchor/margins
+  source: StampSource;
+  anchor: StampAnchor;
+  marginPt: number;           // distance from the page edge for non-centre anchors (>= 0)
+  rotateDeg: number;          // -180..180, about the stamp centre; 0 for header/footer
+  opacity: number;            // 0..1 (fill + stroke alpha)
+  pages: PageIndex[] | 'all';
+}
+export interface StampResult { info: DocInfo; pagesStamped: number }
+
+export type CompressPreset = 300 | 150 | 96;   // target DPI for raster images
+export interface CompressOptions {
+  targetDpi: CompressPreset;
+  pages?: PageIndex[];         // default all
+}
+export interface CompressReport {
+  token: number;               // pending-result handle, valid until apply/discard or doc close
+  beforeBytes: number; afterBytes: number;
+  imagesTotal: number; imagesDownsampled: number;
+  elapsedMs: number;
+}
+
+// ---------------------------------------------------------------------------
 // 7.6 Save
 // ---------------------------------------------------------------------------
 
@@ -271,7 +303,7 @@ export interface EnginePressureEvent { level: 'normal' | 'high' }
 export type JobEvent =
   | { type: 'started'; jobId: JobId; total: number }
   | { type: 'progress'; jobId: JobId; done: number; total: number; page?: PageIndex; note?: string }
-  | { type: 'done'; jobId: JobId; elapsedMs: number; outputs?: string[] }
+  | { type: 'done'; jobId: JobId; elapsedMs: number; outputs?: string[]; report?: CompressReport }
   | { type: 'cancelled'; jobId: JobId; done: number }
   | { type: 'error'; jobId: JobId; error: EngineError };
 

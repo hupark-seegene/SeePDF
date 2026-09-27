@@ -10,7 +10,7 @@ import { useDocStore } from "../store/docStore";
 import { toast } from "../app/toastStore";
 import { Dialog } from "./Dialog";
 import { dirName, message } from "./flows";
-import { formatPdfDate, metaChanged, metaFormOf, metaFromForm, type MetaForm } from "./docInfo";
+import { encryptionKey, formatPdfDate, metaChanged, metaFormOf, metaFromForm, type MetaForm } from "./docInfo";
 
 const FIELDS: { key: keyof MetaForm; labelKey: string; hintKey?: string }[] = [
   { key: "title", labelKey: "dialog.docInfo.docTitle" },
@@ -41,7 +41,7 @@ export function DocInfoDialog({ onClose }: { onClose(): void }) {
     { key: "prop.created", value: formatPdfDate(info.meta.created, locale) },
     { key: "prop.modified", value: formatPdfDate(info.meta.modified, locale) },
     { key: "dialog.docInfo.tagged", value: t(info.tagged ? "common.yes" : "common.no") },
-    { key: "status.encrypted", value: t(info.encrypted ? "common.yes" : "common.no") },
+    { key: "security.encryption", value: t(encryptionKey(info.permissions.revision, info.encrypted)) },
   ];
   const changed = metaChanged(info.meta, form);
 

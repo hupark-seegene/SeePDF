@@ -1,0 +1,500 @@
+//! Watermarks, headers and footers — P1-4, `IPC_CONTRACT.md` §7.4a (`add_stamp`).
+//!
+//! A stamp is ordinary page content, not an annotation: text becomes one text object per line
+//! (Helvetica for Latin-1, the bundled Hangul subset otherwise — the same fonts and the same
+//! once-per-document embedding as `objects::add_text`), an image becomes one Form XObject
+//! that every stamped page references, so a logo on 300 pages is stored once.
+//!
+//! ## Geometry
+//!
+//! Everything is laid out in **visual space**: origin at the bottom-left of the page *as the
+//! user sees it* (after `/Rotate`), y up, size = the crop box with width/height swapped for
+//! 90° / 270°. The stamp box is placed by anchor + margin there, rotated about its own centre
+//! by `rotateDeg` (counter-clockwise, as seen), and the result is mapped into the page's
+//! unrotated user space with [`visual_to_user`]. That one matrix is why a "top-left" header
+//! stays top-left and upright on a page with `/Rotate 90`.
+//!
+//! ## Opacity
+//!
+//! Text: fill and stroke alpha on the object (`FPDFPageObj_SetFillColor`), which PDFium writes
+//! as an `/ExtGState` with `/ca` / `/CA`. Images: the alpha is baked into the image's own
+//! alpha channel (an `/SMask`), because PDFium's content generator emits no graphics state for
+//! form or image objects.
+//!
+//! ## Marking
+//!
+//! Every object we add carries the marked-content tag `SeePDF:Stamp` (`FPDFPageObj_AddMark`),
+//! so a later "remove watermark" can find exactly what this command wrote.
+
+use crate::engine::annot::ScratchPage;
+use crate::engine::raw;
+use crate::engine::raw::object::{Matrix, XObject};
+use crate::engine::registry::{self, MutateOpts};
+use crate::engine::types::EngineState;
+use crate::ipc::error::PdfiumResultExt;
+use crate::ipc::types::{
+    ChangeReason, PageIndex, PageSelection, PageStampSource, PageStampSpec, Rect, StampAnchor,
+    StampResult, StampRole,
+};
+use crate::ipc::{EngineError, ErrorCode};
+use pdfium_render::prelude::*;
+
+/// The content-mark name every stamp object carries.
+pub const STAMP_MARK: &str = "SeePDF:Stamp";
+/// Line spacing, as a multiple of the font size (same as `add_text_object`).
+const LINE_HEIGHT: f32 = 1.2;
+
+/// `add_stamp` — one undo step for the whole operation.
+pub fn add_stamp(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    spec: &PageStampSpec,
+) -> Result<StampResult, EngineError> {
+    validate(spec)?;
+    let (page_count, file_stem) = {
+        let doc = st.doc(doc_id)?;
+        let stem = doc
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string());
+        (doc.page_count(), stem)
+    };
+    let pages = resolve_pages(&spec.pages, page_count)?;
+
+    // An image stamp is drawn once on a one-page scratch document and copied into the target
+    // as a single Form XObject.
+    let image_source = match &spec.source {
+        PageStampSource::Image { path, width_pt } => {
+            Some(image_page(st.pdfium, path, *width_pt, spec.opacity)?)
+        }
+        PageStampSource::Text { .. } => None,
+    };
+
+    let label = match spec.role {
+        StampRole::Watermark => "undo.watermark",
+        StampRole::Header | StampRole::Footer => "undo.headerFooter",
+    };
+    let opts = MutateOpts::new(label, ChangeReason::Edit);
+    let opts = match &spec.pages {
+        PageSelection::All(_) => opts.all_pages(),
+        PageSelection::List(_) => opts.pages(pages.clone()),
+    };
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let total = page_count;
+    let spec = spec.clone();
+
+    let stamped = registry::mutate(st, doc_id, opts, move |doc| {
+        for &p in &pages {
+            doc.invalidate_page_handle(p);
+        }
+        // Text: resolve every page's lines and their fonts first — font loading needs
+        // `&mut OpenDoc`, page work below only `&PdfDocument`.
+        let mut texts: Vec<Vec<(String, PdfFontToken)>> = Vec::new();
+        if let PageStampSource::Text { text, .. } = &spec.source {
+            {
+                // Re-use a copy of the bundled font this document already embeds.
+                let scratch = ScratchPage::open(doc, pages[0])?;
+                doc.adopt_hangul_token(&scratch.page);
+            }
+            for &p in &pages {
+                let resolved = substitute(text, p + 1, total, &date, &file_stem);
+                let mut lines = Vec::new();
+                for line in resolved.replace("\r\n", "\n").split('\n') {
+                    if line.trim().is_empty() {
+                        // Keeps the line's slot in the layout; no object is created.
+                        lines.push((String::new(), doc.hangul_token_for("A")?.0));
+                    } else {
+                        let (token, _) = doc.hangul_token_for(line)?;
+                        lines.push((line.to_string(), token));
+                    }
+                }
+                texts.push(lines);
+            }
+        }
+
+        let bindings = doc.bindings();
+        let document = doc.pdf();
+        let xobject = match &image_source {
+            Some(source) => Some((
+                XObject::from_page(bindings, document, &source.doc, 0)?,
+                source.width,
+                source.height,
+            )),
+            None => None,
+        };
+        for (i, &p) in pages.iter().enumerate() {
+            let mut page = document
+                .pages()
+                .get(p as PdfPageIndex)
+                .ctx(&format!("load page {p}"))?;
+            page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+            let geom = registry::geom_from_page(p, &page)
+                .ok_or_else(|| EngineError::new(ErrorCode::Pdfium, "read page geometry"))?;
+            let space = VisualSpace::new(geom.rotation, geom.crop);
+            match (&spec.source, &xobject) {
+                (PageStampSource::Text { font_size_pt, color, .. }, _) => {
+                    place_text(
+                        bindings,
+                        document,
+                        &mut page,
+                        &texts[i],
+                        *font_size_pt,
+                        *color,
+                        &spec,
+                        &space,
+                    )?;
+                }
+                (PageStampSource::Image { .. }, Some((xobject, w, h))) => {
+                    // The scratch page was `w × h` points, so the Form XObject already has the
+                    // stamp's size and only needs placing.
+                    let matrix = placement(&spec, &space, *w, *h);
+                    xobject.place(&page, matrix, Some(STAMP_MARK))?;
+                }
+                (PageStampSource::Image { .. }, None) => unreachable!("image source prepared"),
+            }
+            page.regenerate_content().ctx("regenerate page content")?;
+        }
+        drop(xobject);
+        Ok(pages.len() as u32)
+    })?;
+    Ok(StampResult {
+        info: st.doc(doc_id)?.info(),
+        pages_stamped: stamped,
+    })
+}
+
+fn validate(spec: &PageStampSpec) -> Result<(), EngineError> {
+    if !spec.margin_pt.is_finite() || spec.margin_pt < 0.0 {
+        return Err(EngineError::invalid("marginPt must be >= 0"));
+    }
+    if !spec.rotate_deg.is_finite() || !(-180.0..=180.0).contains(&spec.rotate_deg) {
+        return Err(EngineError::invalid("rotateDeg must be within -180..180"));
+    }
+    if !spec.opacity.is_finite() || !(0.0..=1.0).contains(&spec.opacity) {
+        return Err(EngineError::invalid("opacity must be within 0..1"));
+    }
+    match &spec.source {
+        PageStampSource::Text { text, font_size_pt, .. } => {
+            if text.trim().is_empty() {
+                return Err(EngineError::invalid("the stamp text is empty"));
+            }
+            if !font_size_pt.is_finite() || *font_size_pt <= 0.0 || *font_size_pt > 1638.0 {
+                return Err(EngineError::invalid(format!(
+                    "font size {font_size_pt} pt is out of range"
+                )));
+            }
+        }
+        PageStampSource::Image { path, width_pt } => {
+            if !width_pt.is_finite() || *width_pt <= 0.0 || *width_pt > 14_400.0 {
+                return Err(EngineError::invalid(format!(
+                    "image width {width_pt} pt is out of range"
+                )));
+            }
+            if path.is_empty() {
+                return Err(EngineError::invalid("the image path is empty"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_pages(selection: &PageSelection, count: u16) -> Result<Vec<PageIndex>, EngineError> {
+    let mut pages: Vec<PageIndex> = match selection {
+        PageSelection::All(_) => (0..count).collect(),
+        PageSelection::List(list) => list.clone(),
+    };
+    pages.sort_unstable();
+    pages.dedup();
+    if pages.is_empty() {
+        return Err(EngineError::invalid("no pages to stamp"));
+    }
+    if let Some(&max) = pages.last() {
+        if max >= count {
+            return Err(EngineError::invalid(format!(
+                "page {max} is out of range (page count {count})"
+            ))
+            .with_page(max));
+        }
+    }
+    Ok(pages)
+}
+
+/// `{{page}}` (1-based), `{{total}}`, `{{date}}`, `{{filename}}`; anything else stays literal.
+pub fn substitute(template: &str, page: u16, total: u16, date: &str, filename: &str) -> String {
+    template
+        .replace("{{page}}", &page.to_string())
+        .replace("{{total}}", &total.to_string())
+        .replace("{{date}}", date)
+        .replace("{{filename}}", filename)
+}
+
+// ---------------------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------------------
+
+/// `a × b` in PDF's row-vector convention: apply `a` first, then `b`.
+fn mul(a: Matrix, b: Matrix) -> Matrix {
+    [
+        a[0] * b[0] + a[1] * b[2],
+        a[0] * b[1] + a[1] * b[3],
+        a[2] * b[0] + a[3] * b[2],
+        a[2] * b[1] + a[3] * b[3],
+        a[4] * b[0] + a[5] * b[2] + b[4],
+        a[4] * b[1] + a[5] * b[3] + b[5],
+    ]
+}
+
+fn translate(x: f32, y: f32) -> Matrix {
+    [1.0, 0.0, 0.0, 1.0, x, y]
+}
+
+/// Counter-clockwise by `deg` in a y-up space.
+fn rotate(deg: f32) -> Matrix {
+    let (s, c) = deg.to_radians().sin_cos();
+    [c, s, -s, c, 0.0, 0.0]
+}
+
+/// The page as the user sees it.
+pub struct VisualSpace {
+    pub width: f32,
+    pub height: f32,
+    /// Visual → unrotated user space.
+    pub to_user: Matrix,
+}
+
+impl VisualSpace {
+    pub fn new(rotation: u16, crop: Rect) -> Self {
+        let (w, h) = (crop.width(), crop.height());
+        let (width, height) = if rotation % 180 == 90 { (h, w) } else { (w, h) };
+        Self {
+            width,
+            height,
+            to_user: visual_to_user(rotation, crop),
+        }
+    }
+}
+
+/// Maps visual coordinates `(u, v)` (origin bottom-left of the displayed page, y up) to the
+/// page's unrotated user space, for `/Rotate` = `rotation` (clockwise, as PDF defines it).
+///
+/// * 0:   `x = l + u`, `y = b + v`
+/// * 90:  `x = r − v`, `y = b + u` — the displayed bottom-left is the user-space bottom-right
+/// * 180: `x = r − u`, `y = t − v`
+/// * 270: `x = l + v`, `y = t − u`
+pub fn visual_to_user(rotation: u16, crop: Rect) -> Matrix {
+    match rotation % 360 {
+        90 => [0.0, 1.0, -1.0, 0.0, crop.r, crop.b],
+        180 => [-1.0, 0.0, 0.0, -1.0, crop.r, crop.t],
+        270 => [0.0, -1.0, 1.0, 0.0, crop.l, crop.t],
+        _ => [1.0, 0.0, 0.0, 1.0, crop.l, crop.b],
+    }
+}
+
+/// Bottom-left of a `w × h` box placed by `anchor` + `margin` on the visual page.
+pub fn anchor_origin(anchor: StampAnchor, margin: f32, space: &VisualSpace, w: f32, h: f32) -> (f32, f32) {
+    use StampAnchor::*;
+    let x = match anchor {
+        Tl | Ml | Bl => margin,
+        Tc | Mc | Bc => (space.width - w) / 2.0,
+        Tr | Mr | Br => space.width - margin - w,
+    };
+    let y = match anchor {
+        Tl | Tc | Tr => space.height - margin - h,
+        Ml | Mc | Mr => (space.height - h) / 2.0,
+        Bl | Bc | Br => margin,
+    };
+    (x, y)
+}
+
+/// Box-local → user space: place by anchor, rotate about the box centre, un-rotate the page.
+fn placement(spec: &PageStampSpec, space: &VisualSpace, w: f32, h: f32) -> Matrix {
+    let (x, y) = anchor_origin(spec.anchor, spec.margin_pt, space, w, h);
+    let about_centre = mul(
+        mul(translate(-w / 2.0, -h / 2.0), rotate(spec.rotate_deg)),
+        translate(x + w / 2.0, y + h / 2.0),
+    );
+    mul(about_centre, space.to_user)
+}
+
+fn to_pdf(m: Matrix) -> PdfMatrix {
+    PdfMatrix::new(m[0], m[1], m[2], m[3], m[4], m[5])
+}
+
+// ---------------------------------------------------------------------------------------
+// Text
+// ---------------------------------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn place_text<'p>(
+    bindings: &dyn PdfiumLibraryBindings,
+    document: &PdfDocument<'p>,
+    page: &mut PdfPage<'p>,
+    lines: &[(String, PdfFontToken)],
+    size: f32,
+    color: [u8; 3],
+    spec: &PageStampSpec,
+    space: &VisualSpace,
+) -> Result<(), EngineError> {
+    let alpha = (spec.opacity * 255.0).round().clamp(0.0, 255.0) as u8;
+    let fill = PdfColor::new(color[0], color[1], color[2], alpha);
+
+    // Create and measure every line at the origin first: the box needs the widest one.
+    let mut objects: Vec<Option<(PdfPageTextObject<'p>, f32, f32)>> = Vec::new();
+    let mut box_w: f32 = 0.0;
+    for (line, token) in lines {
+        if line.is_empty() {
+            objects.push(None);
+            continue;
+        }
+        let mut object = PdfPageTextObject::new(document, line, *token, PdfPoints::new(size))
+            .ctx("create text object")?;
+        object.set_fill_color(fill).ctx("set_fill_color")?;
+        object.set_stroke_color(fill).ctx("set_stroke_color")?;
+        let natural = object.bounds().ctx("measure text object")?.to_rect();
+        let (left, width) = (natural.left().value, natural.width().value);
+        box_w = box_w.max(width);
+        objects.push(Some((object, left, width)));
+    }
+    let box_h = lines.len() as f32 * size * LINE_HEIGHT;
+    let place = placement(spec, space, box_w, box_h);
+
+    let mut baseline = box_h - size;
+    for entry in objects {
+        if let Some((mut object, left, width)) = entry {
+            use StampAnchor::*;
+            let x = match spec.anchor {
+                Tl | Ml | Bl => 0.0,
+                Tc | Mc | Bc => (box_w - width) / 2.0,
+                Tr | Mr | Br => box_w - width,
+            } - left;
+            let m = mul(translate(x, baseline), place);
+            object.apply_matrix(to_pdf(m)).ctx("place text object")?;
+            page.objects_mut()
+                .add_text_object(object)
+                .ctx("add text object")?;
+            let index = raw::object::object_count(bindings, page).saturating_sub(1);
+            raw::object::add_mark(bindings, page, index, STAMP_MARK)?;
+        }
+        baseline -= size * LINE_HEIGHT;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// Image
+// ---------------------------------------------------------------------------------------
+
+/// A one-page scratch document holding the image at `width × height` points.
+struct ImageSource<'p> {
+    doc: PdfDocument<'p>,
+    width: f32,
+    height: f32,
+}
+
+fn image_page<'p>(
+    pdfium: &'p Pdfium,
+    path: &str,
+    width_pt: f32,
+    opacity: f32,
+) -> Result<ImageSource<'p>, EngineError> {
+    let source = std::path::Path::new(path);
+    if !source.is_file() {
+        return Err(EngineError::not_found(format!("{}", source.display())));
+    }
+    let image = image::open(source).map_err(|e| {
+        EngineError::new(
+            ErrorCode::InvalidArgument,
+            format!("{}: {e}", source.display()),
+        )
+    })?;
+    if image.width() == 0 || image.height() == 0 {
+        return Err(EngineError::invalid("the image is empty"));
+    }
+    let height_pt = width_pt * image.height() as f32 / image.width() as f32;
+    let mut rgba = image.to_rgba8();
+    if opacity < 1.0 {
+        for px in rgba.pixels_mut() {
+            px.0[3] = (px.0[3] as f32 * opacity).round() as u8;
+        }
+    }
+    let image = image::DynamicImage::ImageRgba8(rgba);
+
+    let mut doc = pdfium.create_new_pdf().ctx("create scratch document")?;
+    let mut page = doc
+        .pages_mut()
+        .create_page_at_end(PdfPagePaperSize::Custom(
+            PdfPoints::new(width_pt),
+            PdfPoints::new(height_pt),
+        ))
+        .ctx("create scratch page")?;
+    let mut object = PdfPageImageObject::new(&doc, &image).ctx("create image object")?;
+    object.scale(width_pt, height_pt).ctx("scale image object")?;
+    page.objects_mut()
+        .add_image_object(object)
+        .ctx("add image object")?;
+    page.regenerate_content().ctx("regenerate scratch page")?;
+    drop(page);
+    Ok(ImageSource {
+        doc,
+        width: width_pt,
+        height: height_pt,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn apply(m: Matrix, u: f32, v: f32) -> (f32, f32) {
+        (m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5])
+    }
+
+    #[test]
+    fn visual_corners_map_to_the_displayed_corners() {
+        let crop = Rect::new(0.0, 0.0, 600.0, 800.0);
+        // /Rotate 90: displayed bottom-left is user bottom-right, displayed top-left is
+        // user bottom-left.
+        let m = visual_to_user(90, crop);
+        assert_eq!(apply(m, 0.0, 0.0), (600.0, 0.0));
+        assert_eq!(apply(m, 0.0, 600.0), (0.0, 0.0));
+        let m = visual_to_user(180, crop);
+        assert_eq!(apply(m, 0.0, 0.0), (600.0, 800.0));
+        let m = visual_to_user(270, crop);
+        assert_eq!(apply(m, 0.0, 0.0), (0.0, 800.0));
+        assert_eq!(apply(m, 800.0, 0.0), (0.0, 0.0));
+        let m = visual_to_user(0, Rect::new(10.0, 20.0, 610.0, 820.0));
+        assert_eq!(apply(m, 0.0, 0.0), (10.0, 20.0));
+    }
+
+    #[test]
+    fn tokens_are_replaced_and_unknown_ones_stay() {
+        assert_eq!(
+            substitute("{{page}} / {{total}} {{filename}} {{x}}", 3, 9, "2026-09-28", "a"),
+            "3 / 9 a {{x}}"
+        );
+        assert_eq!(substitute("{{date}}", 1, 1, "2026-09-28", "a"), "2026-09-28");
+    }
+
+    #[test]
+    fn rotation_about_the_centre_keeps_the_centre() {
+        let space = VisualSpace::new(0, Rect::new(0.0, 0.0, 600.0, 800.0));
+        let spec = PageStampSpec {
+            role: StampRole::Watermark,
+            source: PageStampSource::Text {
+                text: "x".into(),
+                font_size_pt: 10.0,
+                color: [0, 0, 0],
+            },
+            anchor: StampAnchor::Mc,
+            margin_pt: 0.0,
+            rotate_deg: 45.0,
+            opacity: 1.0,
+            pages: PageSelection::All(crate::ipc::types::AllPages::All),
+        };
+        let m = placement(&spec, &space, 200.0, 40.0);
+        let (x, y) = apply(m, 100.0, 20.0);
+        assert!((x - 300.0).abs() < 1e-3 && (y - 400.0).abs() < 1e-3);
+    }
+}

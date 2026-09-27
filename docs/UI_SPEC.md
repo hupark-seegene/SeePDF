@@ -175,6 +175,21 @@ elapsed/remaining, and an always-live 취소. On completion: an inline success b
 right (페이지 범위, DPI 72–600 default 150, 품질, 투명 배경, 페이지마다 파일 하나), an estimated size, then
 progress in the status bar and a completion toast with Finder에서 보기 / 폴더 열기.
 
+**워터마크 / 머리글·바닥글** (P1-4, 760 px, ⋯ menu or ⌥⌘W / Ctrl+Alt+W): 종류 segmented (워터마크 | 머리글 |
+바닥글) — the role picks the defaults (워터마크: 가운데, 45°, 60 pt, 25 %; 머리글: 위 가운데 `{{filename}}`;
+바닥글: 아래 가운데 `{{page}} / {{total}}`; both 0°, 10 pt, 100 %), switching keeps text the user typed ·
+내용 텍스트 | 이미지 (PNG/JPEG picker + 너비 pt) · text area with token chips 쪽 번호 / 전체 쪽수 / 날짜 /
+파일 이름 inserted at the caret · 글자 크기 · 색상 (the Inspector swatches) · 불투명도 slider · 회전 (워터마크 only)
+· 위치 3×3 anchor grid + 여백 pt · 페이지 범위 · a page-shaped preview on the right (CSS approximation, page 1
+tokens expanded). 적용 → one undo step (`undo.watermark` / `undo.headerFooter`) and a toast with 실행 취소.
+
+**압축** (P1-5, 640 px, 도구 ▸ 압축… or ⋯): 이미지 품질 radio 인쇄 품질 · 300 DPI / 화면용 · 150 DPI (default) /
+최소 크기 · 96 DPI · 페이지 범위 · 예상 runs `compress_estimate` on a scratch copy with an inline progress bar and
+취소, then a table 현재 크기 / 압축 후 / 변화 (signed %) / 줄인 이미지. When the result is not smaller the change is
+amber and an amber note advises against applying. 적용 (disabled until an estimate exists) replaces the document
+as one `undo.compress` step and toasts `before → after` with 실행 취소. Changing an option, 다시 예상 or closing
+the dialog discards the pending result.
+
 **Others**: 암호 입력 (on `passwordRequired`, retries in place) · 저장하지 않은 변경 사항 (저장 / 저장 안 함 /
 취소) · 파일 합치기 (ordered list with drag, per-file range field, warnings for forms/outline) ·
 문서 분할 ({{n}}쪽마다 / 페이지 범위로, output folder) · 인쇄 (range + the system dialog) ·

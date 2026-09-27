@@ -19,6 +19,7 @@ pub mod annot;
 pub mod consts;
 pub mod doc;
 pub mod form;
+pub mod object;
 pub mod page;
 pub mod render;
 pub mod save;

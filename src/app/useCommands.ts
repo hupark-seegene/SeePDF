@@ -97,6 +97,12 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "tools.security":
         if (info) openDialog("security");
         return;
+      case "tools.stamp":
+        if (info) openDialog("stamp");
+        return;
+      case "tools.compress":
+        if (info) openDialog("compress");
+        return;
       case "file.reveal":
         if (info?.path) void api.revealInFileManager({ path: info.path });
         return;
@@ -317,7 +323,7 @@ function openRecentMenu(): void {
   openContextMenu({ x: 96, y: 52, labelKey: "menu.file.openRecent", items });
 }
 
-/** ⋯ — 인쇄, 보안, OCR, 문서 정보, 설정 (UI_SPEC §2). */
+/** ⋯ — 인쇄, 보안, 워터마크, 압축, OCR, 문서 정보, 설정 (UI_SPEC §2). */
 function openOverflowMenu(): void {
   const info = useDocStore.getState().info;
   openContextMenu({
@@ -327,6 +333,8 @@ function openOverflowMenu(): void {
     items: [
       { id: "print", labelKey: "menu.file.print", disabled: !info, onSelect: () => openDialog("print") },
       { id: "security", labelKey: "menu.tools.security", disabled: !info, onSelect: () => openDialog("security") },
+      { id: "stamp", labelKey: "menu.tools.stamp", disabled: !info, onSelect: () => openDialog("stamp") },
+      { id: "compress", labelKey: "menu.tools.compress", disabled: !info, onSelect: () => openDialog("compress") },
       {
         id: "ocr",
         labelKey: "menu.tools.ocr",

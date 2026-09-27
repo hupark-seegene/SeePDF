@@ -67,3 +67,14 @@ describe("dialogs.docInfo.flow", () => {
     spy.mockRestore();
   });
 });
+
+describe("dialogs.docInfo.encryption", () => {
+  it("shows AES-256 (R6) for a revision-6 document", async () => {
+    await useDocStore.getState().open(SAMPLE);
+    const info = useDocStore.getState().info!;
+    useDocStore.getState().adopt({ ...info, encrypted: true, permissions: { ...info.permissions, revision: "r6" } });
+    render(<DialogHost />);
+    openDialog("docInfo");
+    expect(await screen.findByText("AES-256 (R6)")).toBeInTheDocument();
+  });
+});

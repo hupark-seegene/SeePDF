@@ -88,6 +88,12 @@ pub struct OpenDoc<'p> {
     pub tagged: bool,
     pub xfa: bool,
     pub has_outline: bool,
+    /// A running `compress_estimate` (its scratch copy of the document). Independent of `doc`,
+    /// so its place in the drop order does not matter.
+    pub compress_work: Option<crate::engine::compress::Work<'p>>,
+    /// The finished `compress_estimate` result waiting for `compress_apply` /
+    /// `compress_discard`. At most one per document; dropped by [`replace`] and on close.
+    pub compress_pending: Option<crate::engine::compress::Pending>,
 }
 
 impl<'p> OpenDoc<'p> {
@@ -401,6 +407,8 @@ pub fn open<'p>(
         tagged,
         xfa,
         has_outline,
+        compress_work: None,
+        compress_pending: None,
     };
 
     // Exact geometry (rotation, crop box, label) for as many pages as the budget allows.
@@ -756,6 +764,8 @@ pub fn replace<'p>(
     doc.touched.clear();
     // The `FPDF_FONT` belonged to the document we just dropped.
     doc.hangul_font = None;
+    // A pending compress result describes bytes that are no longer the document's.
+    doc.compress_pending = None;
 
     for i in 0..refine_count(doc.page_count()) {
         let _ = doc.page(i);
@@ -878,7 +888,7 @@ fn read_pages_meta(
 }
 
 /// Exact geometry, from a loaded page.
-fn geom_from_page(index: u16, page: &PdfPage<'_>) -> Option<PageGeom> {
+pub fn geom_from_page(index: u16, page: &PdfPage<'_>) -> Option<PageGeom> {
     let rotation = page
         .rotation()
         .map(|r| r.as_degrees() as i32)
@@ -933,7 +943,8 @@ fn read_permissions(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>)
         2 => SecurityRevision::R2,
         3 => SecurityRevision::R3,
         4 => SecurityRevision::R4,
-        // R5 / R6 (AES-256) have no value in the contract's union yet.
+        5 => SecurityRevision::R5,
+        6 => SecurityRevision::R6,
         _ => SecurityRevision::Unknown,
     };
     let r2 = revision_raw == 2;

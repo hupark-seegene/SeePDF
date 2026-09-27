@@ -56,6 +56,7 @@ async fn run_save(
                 job_id,
                 elapsed_ms: saved.elapsed_ms,
                 outputs: Some(vec![saved.path.clone()]),
+                report: None,
             });
         }
         Err(error) => {

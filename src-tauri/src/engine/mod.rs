@@ -9,6 +9,7 @@
 //! * [`raw`] — the only `unsafe` in the tree.
 
 pub mod annot;
+pub mod compress;
 pub mod export;
 pub mod fonts;
 pub mod form;
@@ -24,6 +25,7 @@ pub mod registry;
 pub mod render;
 pub mod save;
 pub mod security;
+pub mod stamp;
 pub mod stats;
 pub mod text;
 pub mod thread;

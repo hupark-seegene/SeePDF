@@ -93,10 +93,14 @@ export const useDocStore = create<DocState>((set, get) => ({
     if (!info || info.docId !== e.docId) return;
     // Stage 2: `canUndo`/`canRedo` ride on the event (IPC_CONTRACT §8), so the title bar's
     // ↶ / ↷ stay honest without a `get_document` per edit (STAGE1D_NOTES §7.4). The labels
-    // still come from `DocInfo`, and a structural change refreshes anyway.
+    // still come from `DocInfo`: an event for a *newer* generation means the labels we hold describe
+    // an older history, so they are dropped (the title bar fetches them on hover) rather than shown
+    // wrong. A save does not touch the history.
+    const stale = e.docGeneration > info.docGeneration && e.reason !== "save";
     set({
       info: {
         ...info,
+        ...(stale ? { undoLabel: null, redoLabel: null } : null),
         docGeneration: e.docGeneration,
         dirty: e.dirty,
         canUndo: e.canUndo ?? info.canUndo,

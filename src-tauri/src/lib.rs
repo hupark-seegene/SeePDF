@@ -185,6 +185,11 @@ pub fn run() {
             commands::security::set_password,
             commands::security::remove_metadata,
             commands::security::set_metadata,
+            // --- stamps and compression (Stage 4) ---
+            commands::stamp::add_stamp,
+            commands::stamp::compress_estimate,
+            commands::stamp::compress_apply,
+            commands::stamp::compress_discard,
             // --- pages (Stage 1b) ---
             commands::pages::page_ops,
             commands::pages::extract_pages,

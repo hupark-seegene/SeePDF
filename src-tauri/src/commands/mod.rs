@@ -15,6 +15,7 @@ pub mod ocr;
 pub mod pages;
 pub mod save;
 pub mod security;
+pub mod stamp;
 pub mod text;
 
 use crate::ipc::EngineError;

@@ -1,7 +1,7 @@
 /**
  * 문서 정보 helpers: PDF date strings and the editable `/Info` fields (P1-1).
  */
-import type { DocMeta } from "../ipc/types";
+import type { DocMeta, Permissions } from "../ipc/types";
 
 /**
  * "D:YYYYMMDDHHmmSSOHH'mm'" → a localised date. Every part after the year is optional (PDF 32000
@@ -39,6 +39,15 @@ export function formatPdfDate(raw: string | undefined, locale: string): string {
   } catch {
     return raw;
   }
+}
+
+/**
+ * i18n key for the 암호화 row: `AES-256 (R6)` etc. An unprotected document reads 없음; an
+ * encrypted one whose handler revision we cannot name reads 알 수 없음.
+ */
+export function encryptionKey(revision: Permissions["revision"], encrypted: boolean): string {
+  if (revision === "unprotected") return encrypted ? "dialog.docInfo.encryption.unknown" : "dialog.docInfo.encryption.none";
+  return `dialog.docInfo.encryption.${revision}`;
 }
 
 export interface MetaForm {

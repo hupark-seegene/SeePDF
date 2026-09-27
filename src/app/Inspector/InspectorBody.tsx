@@ -7,30 +7,18 @@
  * file is the markup around it.
  */
 import { useMemo } from "react";
-import type { Annot, AnnotKind, Rgb } from "../../ipc/types";
+import type { Annot, AnnotKind } from "../../ipc/types";
 import { formatRelativeDay } from "../../i18n";
 import { useT } from "../../i18n/useT";
 import { useAppStore } from "../../store/appStore";
-import { MARKUP_KINDS, PALETTE, useAnnotStore } from "../../store/annotStore";
+import { MARKUP_KINDS, useAnnotStore } from "../../store/annotStore";
 import { commitField, useFormStore } from "../../forms/formStore";
 import { makeApply } from "./apply";
+import { Swatches } from "../Swatches";
 import type { PropertyId } from "./patch";
 
 const WIDTHS = [1, 2, 4, 8, 12];
 const FONT_SIZES = [8, 10, 12, 14, 18, 24, 36];
-
-function rgbCss(c: Rgb): string {
-  return `rgb(${c[0]} ${c[1]} ${c[2]})`;
-}
-
-function hexOf(c: Rgb): string {
-  return `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function rgbOf(hex: string): Rgb {
-  const n = Number.parseInt(hex.slice(1), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
 
 /** The selected annotations, resolved through the store (ghosts included). */
 function useSelection(): Annot[] {
@@ -48,38 +36,6 @@ function useApply() {
   const setStyle = useAnnotStore((s) => s.setStyle);
   const selection = useSelection();
   return makeApply(selection, setStyle);
-}
-
-function Swatches({ value, onPick, label }: { value: Rgb | null; onPick(c: Rgb): void; label: string }) {
-  const t = useT();
-  return (
-    <div className="swatches" role="radiogroup" aria-label={label}>
-      {PALETTE.map((sw) => {
-        const selected = !!value && sw.rgb.join() === value.join();
-        return (
-          <button
-            key={sw.key}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            aria-label={t("a11y.colorSwatch", { name: t(sw.key) })}
-            className="swatch"
-            data-selected={selected || undefined}
-            style={{ background: rgbCss(sw.rgb) }}
-            onClick={() => onPick(sw.rgb)}
-          />
-        );
-      })}
-      <label className="swatch swatch-custom" title={t("color.custom")}>
-        <input
-          type="color"
-          aria-label={t("color.custom")}
-          value={hexOf(value ?? [0, 0, 0])}
-          onChange={(e) => onPick(rgbOf(e.currentTarget.value))}
-        />
-      </label>
-    </div>
-  );
 }
 
 function Slider({ id, label, value, min, max, onChange }: {

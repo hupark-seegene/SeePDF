@@ -37,6 +37,7 @@ export const KEYMAP: KeyBinding[] = [
   { id: "file.export", labelKey: "menu.file.export", mac: ["Alt+Cmd+E"], win: ["Ctrl+Alt+E"], when: "doc", group: "file" },
   { id: "file.print", labelKey: "menu.file.print", mac: ["Cmd+P"], win: ["Ctrl+P"], when: "doc", group: "file" },
   { id: "file.docInfo", labelKey: "menu.file.docInfo", mac: ["Cmd+I"], win: ["Ctrl+D"], when: "doc", group: "file" },
+  { id: "tools.stamp", labelKey: "menu.tools.stamp", mac: ["Alt+Cmd+W"], win: ["Ctrl+Alt+W"], when: "doc", group: "file" },
   { id: "app.settings", labelKey: "menu.settings", mac: ["Cmd+Comma"], win: ["Ctrl+Comma"], when: "always", group: "file" },
   { id: "app.quit", labelKey: "menu.quit", mac: ["Cmd+Q"], win: ["Alt+F4"], when: "always", group: "file" },
 
@@ -119,7 +120,12 @@ export const KEYMAP: KeyBinding[] = [
 ];
 
 export const KEYMAP_BY_ID: Record<string, KeyBinding> = Object.fromEntries(KEYMAP.map((b) => [b.id, b]));
-export const MENU_IDS: readonly string[] = KEYMAP.map((b) => b.id);
+/**
+ * Native-menu items with no shortcut row above (the 도구 menu in `src-tauri/src/app/menu.rs`).
+ * Without them here `menu:tools/…` would never reach the dispatcher.
+ */
+export const MENU_ONLY_IDS: readonly string[] = ["tools.ocr", "tools.security", "tools.compress", "tools.merge"];
+export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 
 export function chordsFor(binding: KeyBinding, os: OsName): string[] {
   return os === "windows" ? binding.win : binding.mac;

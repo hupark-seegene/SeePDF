@@ -128,7 +128,7 @@ export interface PageGeom {
 }
 export interface Permissions {
   print: boolean; modify: boolean; extractText: boolean; annotate: boolean;
-  fillForms: boolean; assemble: boolean; revision: 'unprotected' | 'r2' | 'r3' | 'r4' | 'unknown';
+  fillForms: boolean; assemble: boolean; revision: 'unprotected' | 'r2' | 'r3' | 'r4' | 'r5' | 'r6' | 'unknown';   // r5/r6 = AES-256 (Stage 4)
 }
 export interface DocMeta {
   title?: string; author?: string; subject?: string; keywords?: string;
@@ -404,6 +404,45 @@ then revert). `edit_text_object` with `allowFontSubstitution: false` returns `fo
 silently substituting. Every command here regenerates the page content once. Owner (b).
 Features F-17, F-18, F-19.
 
+### 7.4a Page stamps — watermark, header, footer (P1-4, Stage 4)
+
+```ts
+export type StampAnchor = 'tl' | 'tc' | 'tr' | 'ml' | 'mc' | 'mr' | 'bl' | 'bc' | 'br';
+export type StampRole = 'watermark' | 'header' | 'footer';
+export type StampSource =
+  | { kind: 'text'; text: string; fontSizePt: number; color: Rgb }
+  | { kind: 'image'; path: string; widthPt: number };          // height follows the image aspect
+export interface StampSpec {
+  role: StampRole; source: StampSource; anchor: StampAnchor;
+  marginPt: number;        // >= 0, from the page edge for non-centre anchors
+  rotateDeg: number;       // -180..180, counter-clockwise as seen, about the stamp centre
+  opacity: number;         // 0..1
+  pages: PageIndex[] | 'all';
+}
+export interface StampResult { info: DocInfo; pagesStamped: number }
+add_stamp(a: { docId: DocId; spec: StampSpec }): Promise<StampResult>
+```
+
+Engine: `engine/stamp.rs` (Rust type names `PageStampSpec` / `PageStampSource`, because `StampSpec` is
+already the stamp *annotation*; the wire shape is the one above). One `mutate` = one undo step, label
+`undo.watermark` (role `watermark`) or `undo.headerFooter`; `changedPages` is `'all'` or the list.
+* Text: `{{page}}` (1-based), `{{total}}`, `{{date}}` (local `YYYY-MM-DD`), `{{filename}}` (file name
+  without extension, `Untitled` for an unsaved document) are replaced per page; unknown `{{x}}` stay
+  literal; `\n` splits lines. One text object per line, Helvetica for Latin-1 and the bundled Hangul
+  subset otherwise (embedded once per document). Box = widest line × (lines × size × 1.2); lines are
+  left / centred / right-aligned by the anchor's column.
+* Image: drawn once on a scratch page and copied in as **one Form XObject** that every stamped page
+  references (a logo on 300 pages is stored once). Opacity is baked into the image's alpha (`/SMask`).
+* Geometry is computed on the crop box *as displayed*: `/Rotate` is honoured, so `tl` is top-left and
+  upright on screen for any page rotation. The box is placed by anchor + margin, then rotated about its
+  centre (a rotated box at a corner anchor can therefore extend past the margin).
+* Text opacity = fill + stroke alpha (`/ExtGState /ca /CA`).
+* Every object carries the marked-content tag `SeePDF:Stamp` (`FPDFPageObj_AddMark`).
+* Errors: blank text, font size ∉ (0, 1638], `widthPt` ∉ (0, 14400], `marginPt` < 0, `rotateDeg` ∉
+  [-180, 180], `opacity` ∉ [0, 1], empty or out-of-range page list → `invalidArgument`; image file
+  missing → `notFound`; undecodable image → `invalidArgument`; Hangul outside the bundled subset →
+  `fontCoverage`. Encrypted documents are stamped like any edit (the password survives the save).
+
 ### 7.5 Redaction and security
 
 ```ts
@@ -452,6 +491,41 @@ save_document_as(a: { docId: DocId; path: string }, onProgress: Channel<JobEvent
 Engine: `engine/save/` — pre-flight AP render → `FPDF_SaveAsCopy(flags = 0)` → temp + fsync → verify by
 reopening → backup → `rename` → reload (ARCHITECTURE §8). Errors: `readOnly` (offer Save As), `io`,
 `verifyFailed`. Owner (b). Feature F-23.
+
+### 7.6a Compress (P1-5, Stage 4)
+
+```ts
+export type CompressPreset = 300 | 150 | 96;   // target DPI for raster images
+export interface CompressOptions { targetDpi: CompressPreset; pages?: PageIndex[] }   // default all
+export interface CompressReport {
+  token: number;               // pending-result handle, valid until apply/discard/doc change
+  beforeBytes: number; afterBytes: number;
+  imagesTotal: number; imagesDownsampled: number;
+  elapsedMs: number;
+}
+compress_estimate(a: { docId: DocId; options: CompressOptions }, onProgress: Channel<JobEvent>): Promise<JobId>
+compress_apply(a: { docId: DocId; token: number }): Promise<DocInfo>      // one undo step `undo.compress`
+compress_discard(a: { docId: DocId; token: number }): Promise<void>
+```
+
+Engine: `engine/compress.rs`. `compress_estimate` validates the options (preset not 300/150/96 or a page
+out of range → `invalidArgument`, promise rejected, no job), serialises the document into a **scratch**
+`PdfDocument` and returns the job id. Events: `started{total = pages}`, one `progress{done, page}` per
+page, then `done{elapsedMs, report}` — or `cancelled` / `error`. The open document is never touched.
+* Candidates: top-level image objects whose effective DPI (PDFium image metadata: pixels ÷ on-page
+  size × 72) exceeds `targetDpi × 1.1` on both axes. Skipped (counted in `imagesTotal` only):
+  transparency (`/SMask`, `/Mask`, soft-mask state), 1-bit / stencil images, images inside Form
+  XObjects (not counted), and images whose encoded stream appears more than once on the selected pages
+  (a shared XObject — per-object replacement would store one copy per page).
+* Re-encoding: `/DCTDecode` / `/JPXDecode` originals → JPEG q80 via `FPDFImageObj_LoadJpegFileInline` on
+  the existing object, only when smaller; everything else → `FPDFImageObj_SetBitmap` (24-bit BGR or
+  8-bit gray; PDFium writes Flate, which can come out larger — `afterBytes` shows it).
+* The result is verified (`save::verify_bytes`) and kept as the document's single pending entry
+  (a new estimate replaces it; close, undo/redo, save or any reload drop it).
+* `compress_apply`: unknown/spent token → `notFound`; the document changed since the estimate →
+  `stale`; otherwise the document is replaced from the pending bytes (`mutate_bytes`), one undo step,
+  and the returned `DocInfo.undoLabel` is `undo.compress`. `compress_discard` of an unknown token is a
+  no-op. Cancel with `cancel_job`.
 
 ### 7.7 Export and print
 
@@ -528,13 +602,13 @@ Feature F-21.
 export type JobEvent =
   | { type: 'started'; jobId: JobId; total: number }
   | { type: 'progress'; jobId: JobId; done: number; total: number; page?: PageIndex; note?: string }
-  | { type: 'done'; jobId: JobId; elapsedMs: number; outputs?: string[] }
+  | { type: 'done'; jobId: JobId; elapsedMs: number; outputs?: string[]; report?: CompressReport }   // report: compress_estimate only
   | { type: 'cancelled'; jobId: JobId; done: number }
   | { type: 'error'; jobId: JobId; error: EngineError };
 ```
 
 Channels are used by `search_start` (own event type), `export_images`, `export_flattened`,
-`split_document`, `ocr_apply`, `scan_annotations`, `save_document`. Every job id can be cancelled with
+`split_document`, `ocr_apply`, `scan_annotations`, `save_document`, `compress_estimate`. Every job id can be cancelled with
 `cancel_job`. Measured headroom: Channel ≥ 42k msg/s, `emit` ≥ 60k msg/s — both far above the ≤ 100 msg/s
 this contract produces.
 
@@ -678,6 +752,8 @@ paths to the fs scope automatically.
 | `export_images`, `export_text`, `export_flattened`, `estimate_export`, `print_prepare` | (b) backend export | F-24, F-25, F-26 |
 | `ocr_capabilities`, `ocr_page_status`, `ocr_apply` | (b) engine OCR layer + (f) worker pipeline | F-21 |
 | `remove_password`, `set_password`, `remove_metadata`, `set_metadata`, `ocr_recognize_native` | (b), P1 | P1-1, P1-2, P1-3, P1-11 |
+| `add_stamp` | Stage 4, `engine/stamp.rs` | P1-4 |
+| `compress_estimate`, `compress_apply`, `compress_discard` | Stage 4, `engine/compress.rs` | P1-5 |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

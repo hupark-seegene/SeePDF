@@ -43,6 +43,10 @@ Acrobat show exactly what SeePDF showed.
 * **Redaction with true content removal**, verified after the fact: if the marked string can still
   be extracted from the result, the whole operation is rolled back and reported
 * 보안: 암호 설정 (AES-256, 열기/권한 암호 + 권한) / 암호 제거, 문서 정보(메타데이터) 편집 및 메타데이터 제거
+* 워터마크 / 머리글·바닥글: text (with `{{page}}` / `{{total}}` / `{{date}}` / `{{filename}}`) or an
+  image, 9 anchors, rotation, opacity, page range — one undo step, correct on rotated pages
+* 압축: downsample images to 300 / 150 / 96 DPI on a scratch copy, show the measured before/after
+  size, then apply (one undo step) or discard
 
 ### OCR
 Current page / all pages / a range, `kor+eng`, at 200–400 DPI, with progress and cancel. The
