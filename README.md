@@ -10,9 +10,20 @@ annotate, fill forms, reorder pages, edit text and images, redact, recognise Kor
 * **PDF engine:** [PDFium](https://pdfium.googlesource.com/pdfium/) via `pdfium-render`, on one
   dedicated engine thread (PDFium is not thread-safe)
 * **OCR:** [tesseract.js](https://github.com/naptha/tesseract.js) with the `kor` + `eng`
-  `4.0.0_best_int` models, bundled — OCR works with the network cable pulled
+  `4.0.0_best_int` models, bundled — OCR works with the network cable pulled; on macOS 13+ Apple
+  Vision is used by default (Hangul CER 0 % vs 1.16 %, ~3× faster)
 * **Platforms:** macOS 12+ (arm64 + x86_64) and Windows 10/11 (x86_64)
-* **Size:** a ~60 MB bundle, no Electron, no Chromium copy — the OS webview does the drawing
+* **Size:** a 12.5 MB Windows installer / 14 MB macOS dmg, no Electron, no Chromium copy — the OS
+  webview does the drawing
+
+## Download
+
+Installers are published on [GitHub Releases](https://github.com/hupark-seegene/SeePDF/releases/latest):
+`SeePDF_<version>_x64-setup.exe` (Windows, recommended), `SeePDF_<version>_x64_en-US.msi` (Windows,
+for managed deployment) and `SeePDF_<version>_aarch64.dmg` (Apple silicon). The builds are not
+code-signed yet: Windows SmartScreen shows "추가 정보 → 실행", and macOS needs 시스템 설정 → 개인정보 보호 및
+보안 → "그래도 열기". Installed copies check for updates at launch (설정 → 일반) once signed update
+bundles are published (see `.github/workflows/release.yml`).
 
 ---
 
@@ -53,6 +64,15 @@ Acrobat show exactly what SeePDF showed.
   on the left and insertions on the right, 이전/다음 변경 navigation and 변경만 보기
 * 자동 저장 / 복구: while a document has unsaved changes, a recovery copy is kept (every 30 s / 1 min /
   5 min, or off) without touching your file; after a crash SeePDF offers to reopen it
+
+### Structure and review (v0.2)
+* 목차 편집 (add / rename / indent / drag / set destination), 링크 만들기 (page or web), 페이지 레이블
+  (i, ii, … then 1, 2, …) shown in the page box, thumbnails and 목차
+* 페이지 자르기 (with automatic margin detection) and 페이지 크기 변경 (A4 / Letter / A3 / custom, scale or
+  centre), Bates numbering (`{{bates}}`, prefix / digits / start)
+* 주석 답글 (threads that survive save and reopen in other viewers), 주석 목록 내보내기 (TXT / CSV / Markdown)
+* 여러 파일에서 검색 (files or a whole folder), 분할 보기 (two independently scrolled panes of one document),
+  읽어 주기 (the OS voice, offline), 업데이트 확인
 
 ### OCR
 Current page / all pages / a range, `kor+eng`, at 200–400 DPI, with progress and cancel. The
