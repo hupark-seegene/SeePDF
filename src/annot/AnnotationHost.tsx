@@ -37,7 +37,7 @@ import { startToolDefaultsSync } from "./toolDefaults";
 import { AnnotOverlay } from "./AnnotOverlay";
 import { ToolSurface } from "./ToolSurface";
 import { LinkLayer } from "./LinkLayer";
-import { NotePopover, TextBoxEditor, type TextDraft } from "./editors";
+import { NotePopover, TextBoxEditor, ThreadPopover, type TextDraft } from "./editors";
 import { FormLayer } from "../forms/FormLayer";
 import { startFormSync } from "../forms/formStore";
 import { markupSpec, type MarkupKind } from "../tools/markup";
@@ -206,8 +206,9 @@ function onKeyDownCapture(e: KeyboardEvent): void {
   const hasSelection = useAnnotStore.getState().selected.length > 0;
 
   if (e.key === "Escape") {
-    if (useAnnotStore.getState().editing || draft) {
+    if (useAnnotStore.getState().editing || useAnnotStore.getState().thread || draft) {
       useAnnotStore.getState().setEditing(null);
+      useAnnotStore.getState().setThread(null);
       setDraft(null);
       e.preventDefault();
       e.stopPropagation();
@@ -281,6 +282,7 @@ function SurfaceSlot({ ctx }: { ctx: PageLayerContext }) {
   const mode = useAppStore((s) => s.mode);
   const tool = useAppStore((s) => s.tool);
   const editing = useAnnotStore((s) => s.editing);
+  const thread = useAnnotStore((s) => s.thread);
   const nonce = useDraftNonce();
   const annots = useAnnotStore((s) => s.byPage[ctx.index]);
   const ghosts = useAnnotStore((s) => s.ghosts);
@@ -291,6 +293,11 @@ function SurfaceSlot({ ctx }: { ctx: PageLayerContext }) {
     editing && editing.page === ctx.index
       ? (annots ?? []).find((a) => a.id === editing.id) ?? ghosts.find((g) => g.annot.id === editing.id)?.annot
       : undefined;
+  // P2 threads: 답글 on anything but a note (a note's thread lives in its own popover)
+  const threadTarget =
+    thread && thread.page === ctx.index && thread.id !== editTarget?.id
+      ? (annots ?? []).find((a) => a.id === thread.id)
+      : undefined;
   const pageDraft = draft && draft.page === ctx.index ? draft : null;
 
   return (
@@ -299,6 +306,7 @@ function SurfaceSlot({ ctx }: { ctx: PageLayerContext }) {
       {mode === "read" && <LinkLayer ctx={ctx} />}
       {active && <ToolSurface ctx={ctx} tool={active} />}
       {editTarget?.kind === "note" && <NotePopover ctx={ctx} annot={editTarget} />}
+      {threadTarget && threadTarget.kind !== "note" && <ThreadPopover ctx={ctx} annot={threadTarget} />}
       {editTarget?.kind === "textbox" && (
         <TextBoxEditor ctx={ctx} annot={editTarget} onClose={() => useAnnotStore.getState().setEditing(null)} />
       )}

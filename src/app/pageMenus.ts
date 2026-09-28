@@ -17,12 +17,17 @@ import { openContextMenu, type MenuEntry } from "./contextMenuStore";
 import { openDialog } from "../dialogs/dialogState";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
-import { useViewStore } from "../store/viewStore";
+import { paneView, useViewStore, type PaneId } from "../store/viewStore";
 import { usePagesStore } from "../store/pagesStore";
 import { editLeaveGuard } from "../tools/commands";
-import { copyToClipboard, currentSelectionText, isEmptySelection, useSelectionStore } from "../viewer";
+import {
+  copyToClipboard, currentSelectionText, isEmptySelection, makePageLayerContext, useSelectionStore,
+} from "../viewer";
 import { shortcutFor } from "../keys/keymap";
-import type { PageIndex, PageOp } from "../ipc/types";
+import { annotAt } from "../tools/hit";
+import { GRAB_PX } from "../tools/select";
+import { annotsOnPage, deleteAnnotations, openThread } from "../annot/actions";
+import type { Annot, PageIndex, PageOp } from "../ipc/types";
 
 /** The page a context-menu event happened on, or `null` when it was not over a page. */
 export function pageFromEvent(target: EventTarget | null): { page: PageIndex; source: "canvas" | "thumbnail" } | null {
@@ -52,11 +57,64 @@ function textMenu(fn: (m: TextMenu) => unknown): void {
   void import("./textMenu").then(fn);
 }
 
-export function openPageContextMenu(page: PageIndex, source: "canvas" | "thumbnail", x: number, y: number): void {
+/**
+ * The annotation under a canvas right-click, in the pane it happened in (분할 보기: each pane has
+ * its own zoom and rotation). Replies are never on the page, so they are never under the pointer.
+ */
+function annotationUnder(page: PageIndex, x: number, y: number, target: EventTarget | null | undefined): Annot | null {
+  const info = useDocStore.getState().info;
+  const geom = info?.pages[page];
+  const shell = (target as HTMLElement | null)?.closest?.<HTMLElement>(".page-shell");
+  if (!info || !geom || !shell) return null;
+  const pane = (shell.closest<HTMLElement>("[data-pane]")?.dataset.pane ?? "main") as PaneId;
+  const view = paneView(useViewStore.getState(), pane);
+  const box = shell.getBoundingClientRect();
+  const ctx = makePageLayerContext({
+    docId: info.docId,
+    docGeneration: info.docGeneration,
+    page: geom,
+    rotation: view.rotation,
+    zoomPercent: view.zoomPercent,
+    width: box.width,
+    height: box.height,
+  });
+  const [px, py] = ctx.toPage(x - box.left, y - box.top);
+  return annotAt(annotsOnPage(page), px, py, GRAB_PX / Math.max(0.01, ctx.scale));
+}
+
+export function openPageContextMenu(
+  page: PageIndex,
+  source: "canvas" | "thumbnail",
+  x: number,
+  y: number,
+  target?: EventTarget | null,
+): void {
   const info = useDocStore.getState().info;
   if (!info) return;
   const view = useViewStore.getState();
   const app = useAppStore.getState();
+
+  // UI_SPEC §12 Annotation (P2 threads): 답글 opens the thread with the reply box focused
+  const annot = source === "canvas" ? annotationUnder(page, x, y, target) : null;
+  const annotItems: MenuEntry[] = annot
+    ? [
+        {
+          id: "replyAnnot",
+          labelKey: "annot.thread.reply",
+          onSelect: () => {
+            if (useAppStore.getState().mode === "read") useAppStore.getState().setMode("annotate");
+            openThread(page, annot.id, true);
+          },
+        },
+        {
+          id: "deleteAnnot",
+          labelKey: "common.delete",
+          danger: true,
+          onSelect: () => void deleteAnnotations(page, [annot.id]),
+        },
+        { id: "sepAnnot", separator: true },
+      ]
+    : [];
 
   const shared: MenuEntry[] = [
     { id: "goTo", labelKey: "pages.goTo", onSelect: () => view.goToPage(page) },
@@ -167,6 +225,6 @@ export function openPageContextMenu(page: PageIndex, source: "canvas" | "thumbna
     x,
     y,
     labelKey: source === "thumbnail" ? "sidebar.tab.thumbnails" : "a11y.canvas",
-    items: source === "thumbnail" ? [...shared, ...editing] : [...textItems, ...shared, ...canvasOnly],
+    items: source === "thumbnail" ? [...shared, ...editing] : [...annotItems, ...textItems, ...shared, ...canvasOnly],
   });
 }

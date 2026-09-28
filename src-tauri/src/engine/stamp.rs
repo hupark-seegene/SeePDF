@@ -352,7 +352,10 @@ pub fn expand_tokens(template: &str, tokens: &Tokens<'_>) -> String {
 pub fn bates_label(opts: &BatesOptions, n: usize) -> String {
     let number = opts.bates_start.saturating_add(n as u64);
     let width = opts.bates_digits as usize;
-    format!("{}{:0width$}{}", opts.bates_prefix, number, opts.bates_suffix)
+    format!(
+        "{}{:0width$}{}",
+        opts.bates_prefix, number, opts.bates_suffix
+    )
 }
 
 // ---------------------------------------------------------------------------------------
@@ -764,7 +767,11 @@ mod tests {
             ..BatesOptions::default()
         };
         assert_eq!(bates_label(&narrow, 0), "01");
-        assert_eq!(bates_label(&narrow, 999), "1000", "wider than the padding, never cut");
+        assert_eq!(
+            bates_label(&narrow, 999),
+            "1000",
+            "wider than the padding, never cut"
+        );
         let tokens = Tokens {
             page: 2,
             total: 14,
@@ -773,7 +780,10 @@ mod tests {
             bates: "ABC000102",
         };
         assert_eq!(
-            expand_tokens("{{bates}} · {{page}}/{{total}} {{filename}} {{nope}} {{", &tokens),
+            expand_tokens(
+                "{{bates}} · {{page}}/{{total}} {{filename}} {{nope}} {{",
+                &tokens
+            ),
             "ABC000102 · 2/14 {{page}} {{nope}} {{"
         );
         assert_eq!(expand_tokens("{{{{page}}", &tokens), "{{2");

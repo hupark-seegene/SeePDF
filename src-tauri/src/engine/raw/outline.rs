@@ -9,7 +9,8 @@
 
 use crate::ipc::types::{LinkDest, OutlineDest, OutlineNode};
 use pdfium_render::prelude::{
-    FPDF_ACTION, FPDF_BOOKMARK, FPDF_BOOL, FPDF_DEST, FPDF_DOCUMENT, FS_FLOAT, PdfiumLibraryBindings,
+    PdfiumLibraryBindings, FPDF_ACTION, FPDF_BOOKMARK, FPDF_BOOL, FPDF_DEST, FPDF_DOCUMENT,
+    FS_FLOAT,
 };
 use std::collections::HashSet;
 use std::os::raw::{c_ulong, c_void};
@@ -85,16 +86,27 @@ fn node(
     let (page, view) = if dest.is_null() {
         (None, None)
     } else {
-        (dest_page(bindings, document, dest), dest_view(bindings, dest))
+        (
+            dest_page(bindings, document, dest),
+            dest_view(bindings, dest),
+        )
     };
     let action = unsafe { bindings.FPDFBookmark_GetAction(bookmark) };
-    let url = if page.is_none() { uri_of(bindings, document, action) } else { None };
+    let url = if page.is_none() {
+        uri_of(bindings, document, action)
+    } else {
+        None
+    };
     OutlineNode {
         title: title(bindings, bookmark).unwrap_or_default(),
         page,
         dest: if page.is_some() { view } else { None },
         url,
-        open: if children.is_empty() { None } else { Some(count > 0) },
+        open: if children.is_empty() {
+            None
+        } else {
+            Some(count > 0)
+        },
         children,
     }
 }
@@ -126,7 +138,8 @@ pub fn uri_of(
         if bindings.FPDFAction_GetType(action) != PDFACTION_URI {
             return None;
         }
-        let len = bindings.FPDFAction_GetURIPath(document, action, std::ptr::null_mut(), 0) as usize;
+        let len =
+            bindings.FPDFAction_GetURIPath(document, action, std::ptr::null_mut(), 0) as usize;
         if len < 2 {
             return None;
         }
@@ -185,7 +198,10 @@ pub fn dest_view(bindings: &dyn PdfiumLibraryBindings, dest: FPDF_DEST) -> Optio
         (
             bindings.is_true(has_x).then_some(x),
             bindings.is_true(has_y).then_some(y),
-            bindings.is_true(has_zoom).then_some(zoom).filter(|z| *z != 0.0),
+            bindings
+                .is_true(has_zoom)
+                .then_some(zoom)
+                .filter(|z| *z != 0.0),
         )
     } else {
         (None, None, None)
@@ -201,9 +217,21 @@ pub fn dest_view(bindings: &dyn PdfiumLibraryBindings, dest: FPDF_DEST) -> Optio
             y: location.1,
             zoom: location.2.filter(|z| *z > 0.0),
         },
-        (PDFDEST_VIEW_FITH | PDFDEST_VIEW_FITBH, 1) => OutlineDest { x: None, y: Some(params[0]), zoom: None },
-        (PDFDEST_VIEW_FITV | PDFDEST_VIEW_FITBV, 1) => OutlineDest { x: Some(params[0]), y: None, zoom: None },
-        (PDFDEST_VIEW_FITR, 4) => OutlineDest { x: Some(params[0]), y: Some(params[3]), zoom: None },
+        (PDFDEST_VIEW_FITH | PDFDEST_VIEW_FITBH, 1) => OutlineDest {
+            x: None,
+            y: Some(params[0]),
+            zoom: None,
+        },
+        (PDFDEST_VIEW_FITV | PDFDEST_VIEW_FITBV, 1) => OutlineDest {
+            x: Some(params[0]),
+            y: None,
+            zoom: None,
+        },
+        (PDFDEST_VIEW_FITR, 4) => OutlineDest {
+            x: Some(params[0]),
+            y: Some(params[3]),
+            zoom: None,
+        },
         _ => return None,
     };
     if out.x.is_none() && out.y.is_none() && out.zoom.is_none() {
@@ -223,5 +251,10 @@ pub fn link_dest(
     }
     let page = dest_page(bindings, document, dest)?;
     let view = dest_view(bindings, dest).unwrap_or_default();
-    Some(LinkDest { page, x: view.x, y: view.y, zoom: view.zoom })
+    Some(LinkDest {
+        page,
+        x: view.x,
+        y: view.y,
+        zoom: view.zoom,
+    })
 }

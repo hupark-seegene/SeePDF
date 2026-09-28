@@ -59,6 +59,11 @@ export interface AnnotTarget {
   id: AnnotId;
 }
 
+/** P2 threads: the thread popover's root, and whether its reply box takes the focus (답글). */
+export interface ThreadTarget extends AnnotTarget {
+  focusReply: boolean;
+}
+
 export interface AnnotState {
   byPage: Record<PageIndex, Annot[]>;
   /** the generation each page's list was produced at — a late reply for an older one is dropped */
@@ -81,6 +86,11 @@ export interface AnnotState {
   filter: AnnotKind[] | null;
   /** the note popover / free-text editor target */
   editing: AnnotTarget | null;
+  /**
+   * P2 threads: the thread shown in a popover — a note's own popover (with `editing` on the same
+   * id) or, for any other kind, the thread popover. Cleared with `editing` and when it goes away.
+   */
+  thread: ThreadTarget | null;
   /** bumped whenever a scan/list pass finishes, so the sidebar can memoise cheaply */
   listNonce: number;
 
@@ -91,6 +101,7 @@ export interface AnnotState {
   toggleSelect(id: AnnotId, additive?: boolean): void;
   hover(id: AnnotId | null): void;
   setEditing(target: AnnotTarget | null): void;
+  setThread(target: ThreadTarget | null): void;
   setFilter(filter: AnnotKind[] | null): void;
 
   addGhost(annot: Annot): void;
@@ -131,6 +142,7 @@ export const useAnnotStore = create<AnnotState>((set, get) => ({
   viewNonce: {},
   filter: null,
   editing: null,
+  thread: null,
   listNonce: 0,
 
   setPage(page, annots, generation) {
@@ -143,6 +155,7 @@ export const useAnnotStore = create<AnnotState>((set, get) => ({
       pageGeneration: generation === undefined ? s.pageGeneration : { ...s.pageGeneration, [page]: generation },
       selected: gone.length ? s.selected.filter((id) => !gone.includes(id)) : s.selected,
       editing: s.editing && gone.includes(s.editing.id) ? null : s.editing,
+      thread: s.thread && gone.includes(s.thread.id) ? null : s.thread,
       listNonce: s.listNonce + 1,
     });
   },
@@ -162,6 +175,7 @@ export const useAnnotStore = create<AnnotState>((set, get) => ({
       selected: s.selected.filter((id) => !ids.includes(id)),
       ghosts: s.ghosts.filter((g) => !ids.includes(g.annot.id)),
       editing: s.editing && ids.includes(s.editing.id) ? null : s.editing,
+      thread: s.thread && ids.includes(s.thread.id) ? null : s.thread,
       listNonce: s.listNonce + 1,
     }));
   },
@@ -182,7 +196,12 @@ export const useAnnotStore = create<AnnotState>((set, get) => ({
   },
 
   setEditing(editing) {
-    set({ editing });
+    // the thread of the note being edited stays; any other thread popover closes
+    set((s) => ({ editing, thread: editing && s.thread?.id === editing.id ? s.thread : null }));
+  },
+
+  setThread(thread) {
+    set((s) => ({ thread, editing: thread && s.editing?.id === thread.id ? s.editing : null }));
   },
 
   setFilter(filter) {
@@ -288,6 +307,7 @@ export const useAnnotStore = create<AnnotState>((set, get) => ({
       ghosts: [],
       filter: null,
       editing: null,
+      thread: null,
       listNonce: 0,
       viewNonce: {},
     });

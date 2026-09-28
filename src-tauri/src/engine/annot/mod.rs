@@ -29,6 +29,7 @@
 pub mod create;
 pub mod font;
 pub mod read;
+pub mod reply;
 pub mod update;
 
 use crate::engine::raw;
@@ -281,7 +282,8 @@ pub fn list(doc: &mut OpenDoc<'_>, page: PageIndex) -> Result<Vec<Annot>, Engine
     Ok(list)
 }
 
-/// `delete_annotations` — removes the named annotations **and** their linked popups.
+/// `delete_annotations` — removes the named annotations, **their replies** (P2 threads: every
+/// annotation whose `/IRT` leads back to a deleted one, transitively) and their linked popups.
 ///
 /// Indices shift on every removal, so the whole set is collected first and removed in
 /// descending order. Missing ids are reported rather than silently skipped: the frontend
@@ -291,42 +293,89 @@ pub fn delete(
     page_index: PageIndex,
     ids: &[AnnotId],
 ) -> Result<usize, EngineError> {
+    delete_with(doc, page_index, ids, true)
+}
+
+/// [`delete`] with the reply cascade switchable. `update::rebuild` deletes and re-creates an
+/// annotation under the same `/NM`, and its replies must survive that: their `/IRT` keeps
+/// resolving to the old dictionary (PDFium never drops an object on save), which carries the
+/// same `/NM`, so the thread is intact after the rebuild.
+pub fn delete_with(
+    doc: &mut OpenDoc<'_>,
+    page_index: PageIndex,
+    ids: &[AnnotId],
+    cascade_replies: bool,
+) -> Result<usize, EngineError> {
+    /// One annotation of the page: its `/NM`, the `/NM` its `/IRT` leads to, and — for a
+    /// Popup — the `/NM` of its `/Parent`. `FPDFAnnot_GetLinkedAnnot` hands back a second
+    /// handle to the same dictionary, so handle identity means nothing: links compare by `/NM`.
+    struct Row {
+        name: Option<String>,
+        replies_to: Option<String>,
+        popup_of: Option<String>,
+    }
+
     let bindings = doc.bindings();
     let scratch = ScratchPage::open(doc, page_index)?;
     let page = &scratch.page;
     let count = raw::annot::count(bindings, page);
 
-    let mut victims: Vec<usize> = Vec::new();
-    let mut found: Vec<&str> = Vec::new();
+    let mut rows: Vec<Row> = Vec::with_capacity(count);
     for i in 0..count {
         let annot = raw::annot::get(bindings, page, i)?;
-        let name = annot.string("NM");
-        let is_target = name
-            .as_deref()
-            .map(|n| ids.iter().any(|id| id == n))
-            .unwrap_or(false);
-        if is_target {
-            victims.push(i);
-            if let Some(id) = ids.iter().find(|id| Some(id.as_str()) == name.as_deref()) {
-                found.push(id);
-            }
-            continue;
-        }
-        // A Popup whose /Parent is one of the targets goes with it.
-        if annot.subtype() == raw::consts::FPDF_ANNOT_POPUP && parent_is_target(&annot, ids) {
-            victims.push(i);
-        }
+        let popup = annot.subtype() == raw::consts::FPDF_ANNOT_POPUP;
+        rows.push(Row {
+            name: annot.string("NM"),
+            replies_to: if cascade_replies && !popup {
+                read::in_reply_to(&annot)
+            } else {
+                None
+            },
+            popup_of: if popup {
+                annot.linked("Parent").and_then(|p| p.string("NM"))
+            } else {
+                None
+            },
+        });
     }
-    if found.len() < ids.len() {
-        let missing: Vec<&AnnotId> = ids
-            .iter()
-            .filter(|id| !found.contains(&id.as_str()))
-            .collect();
+
+    let missing: Vec<&AnnotId> = ids
+        .iter()
+        .filter(|id| !rows.iter().any(|r| r.name.as_deref() == Some(id.as_str())))
+        .collect();
+    if !missing.is_empty() {
         return Err(EngineError::not_found(format!(
             "annotation(s) {missing:?} are not on page {page_index}"
         ))
         .with_page(page_index));
     }
+
+    // The targets, then their replies until nothing new joins (a reply to a reply…).
+    let mut doomed: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+    loop {
+        let before = doomed.len();
+        for r in &rows {
+            if let (Some(name), Some(parent)) = (&r.name, &r.replies_to) {
+                if doomed.contains(parent.as_str()) {
+                    doomed.insert(name.as_str());
+                }
+            }
+        }
+        if doomed.len() == before {
+            break;
+        }
+    }
+
+    let victims: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            // A Popup whose /Parent is one of the targets goes with it.
+            r.name.as_deref().is_some_and(|n| doomed.contains(n))
+                || r.popup_of.as_deref().is_some_and(|p| doomed.contains(p))
+        })
+        .map(|(i, _)| i)
+        .collect();
     for &i in victims.iter().rev() {
         raw::annot::remove(bindings, page, i)?;
     }
@@ -335,18 +384,6 @@ pub fn delete(
     doc.touched.insert(page_index);
     doc.annots.remove(&page_index);
     Ok(removed)
-}
-
-/// Whether this Popup's `/Parent` is one of the annotations being deleted.
-///
-/// `FPDFAnnot_GetLinkedAnnot` hands back a second handle to the same dictionary, so handle
-/// identity means nothing: the comparison is on `/NM`.
-fn parent_is_target(annot: &raw::annot::AnnotRef<'_>, ids: &[AnnotId]) -> bool {
-    annot
-        .linked("Parent")
-        .and_then(|parent| parent.string("NM"))
-        .map(|name| ids.contains(&name))
-        .unwrap_or(false)
 }
 
 /// `set_annotations_hidden` (P1) — flips the `/F` HIDDEN bit.

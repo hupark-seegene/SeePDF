@@ -69,7 +69,10 @@ pub fn set_page_labels(
 /// `get_page_labels` — the document's `/PageLabels` as ranges, sorted by `start` (`[]` when it
 /// has none). Read from the bytes the document was last loaded from: PDFium never writes
 /// `/PageLabels`, so every edit since then left it as it was. `unsupported` when encrypted.
-pub fn get_page_labels(st: &EngineState<'_>, doc_id: &str) -> Result<Vec<PageLabelRange>, EngineError> {
+pub fn get_page_labels(
+    st: &EngineState<'_>,
+    doc_id: &str,
+) -> Result<Vec<PageLabelRange>, EngineError> {
     refuse_encrypted(st, doc_id)?;
     let doc = st.doc(doc_id)?;
     let page_count = doc.page_count();
@@ -82,7 +85,10 @@ pub fn get_page_labels(st: &EngineState<'_>, doc_id: &str) -> Result<Vec<PageLab
 
 /// Sorted, validated ranges as they will read back: blank prefix → `None`, `first: 1` →
 /// `None`, a decimal range at page 0 when the first starts later.
-pub fn normalize(ranges: &[PageLabelRange], page_count: u16) -> Result<Vec<PageLabelRange>, EngineError> {
+pub fn normalize(
+    ranges: &[PageLabelRange],
+    page_count: u16,
+) -> Result<Vec<PageLabelRange>, EngineError> {
     let mut out: Vec<PageLabelRange> = Vec::with_capacity(ranges.len() + 1);
     let mut starts = HashSet::new();
     for r in ranges {
@@ -94,7 +100,10 @@ pub fn normalize(ranges: &[PageLabelRange], page_count: u16) -> Result<Vec<PageL
             .with_page(r.start));
         }
         if !starts.insert(r.start) {
-            return Err(EngineError::invalid(format!("two page label ranges start at page {}", r.start)));
+            return Err(EngineError::invalid(format!(
+                "two page label ranges start at page {}",
+                r.start
+            )));
         }
         if let Some(first) = r.first {
             if first == 0 || first > MAX_FIRST {
@@ -112,7 +121,15 @@ pub fn normalize(ranges: &[PageLabelRange], page_count: u16) -> Result<Vec<PageL
     }
     out.sort_by_key(|r| r.start);
     if out.first().is_some_and(|r| r.start > 0) {
-        out.insert(0, PageLabelRange { start: 0, style: PageLabelStyle::Decimal, prefix: None, first: None });
+        out.insert(
+            0,
+            PageLabelRange {
+                start: 0,
+                style: PageLabelStyle::Decimal,
+                prefix: None,
+                first: None,
+            },
+        );
     }
     Ok(out)
 }
@@ -288,9 +305,15 @@ fn read_ranges(doc: &Document) -> Vec<PageLabelRange> {
         };
         if let Ok((_, Object::Array(nums))) = dict.get(b"Nums").and_then(|n| doc.dereference(n)) {
             for pair in nums.chunks_exact(2) {
-                let Ok(start) = pair[0].as_i64() else { continue };
-                let Ok((_, Object::Dictionary(label))) = doc.dereference(&pair[1]) else { continue };
-                let Ok(start) = u16::try_from(start) else { continue };
+                let Ok(start) = pair[0].as_i64() else {
+                    continue;
+                };
+                let Ok((_, Object::Dictionary(label))) = doc.dereference(&pair[1]) else {
+                    continue;
+                };
+                let Ok(start) = u16::try_from(start) else {
+                    continue;
+                };
                 let style = style_of(
                     label
                         .get(b"S")
@@ -310,7 +333,12 @@ fn read_ranges(doc: &Document) -> Vec<PageLabelRange> {
                     .and_then(|s| s.as_i64().ok())
                     .and_then(|s| u32::try_from(s).ok())
                     .filter(|s| *s > 1);
-                out.push(PageLabelRange { start, style, prefix, first });
+                out.push(PageLabelRange {
+                    start,
+                    style,
+                    prefix,
+                    first,
+                });
             }
         }
         if let Ok((_, Object::Array(kids))) = dict.get(b"Kids").and_then(|k| doc.dereference(k)) {
@@ -327,8 +355,18 @@ mod tests {
     use super::*;
     use crate::ipc::ErrorCode;
 
-    fn range(start: u16, style: PageLabelStyle, prefix: Option<&str>, first: Option<u32>) -> PageLabelRange {
-        PageLabelRange { start, style, prefix: prefix.map(str::to_owned), first }
+    fn range(
+        start: u16,
+        style: PageLabelStyle,
+        prefix: Option<&str>,
+        first: Option<u32>,
+    ) -> PageLabelRange {
+        PageLabelRange {
+            start,
+            style,
+            prefix: prefix.map(str::to_owned),
+            first,
+        }
     }
 
     #[test]
@@ -367,12 +405,21 @@ mod tests {
         assert_eq!(labels_for(&out, 6), vec!["1", "2", "iii", "iv", "1", "2"]);
 
         let bad = |r: Vec<PageLabelRange>| normalize(&r, 6).unwrap_err().code;
-        assert_eq!(bad(vec![range(6, PageLabelStyle::Decimal, None, None)]), ErrorCode::InvalidArgument);
         assert_eq!(
-            bad(vec![range(1, PageLabelStyle::Decimal, None, None), range(1, PageLabelStyle::Roman, None, None)]),
+            bad(vec![range(6, PageLabelStyle::Decimal, None, None)]),
             ErrorCode::InvalidArgument
         );
-        assert_eq!(bad(vec![range(0, PageLabelStyle::Decimal, None, Some(0))]), ErrorCode::InvalidArgument);
+        assert_eq!(
+            bad(vec![
+                range(1, PageLabelStyle::Decimal, None, None),
+                range(1, PageLabelStyle::Roman, None, None)
+            ]),
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            bad(vec![range(0, PageLabelStyle::Decimal, None, Some(0))]),
+            ErrorCode::InvalidArgument
+        );
         assert!(normalize(&[], 6).unwrap().is_empty());
     }
 
@@ -388,7 +435,10 @@ mod tests {
         )
         .unwrap();
         let mut doc = Document::with_version("1.7");
-        let catalog = doc.add_object(Dictionary::from_iter(vec![("Type", Object::Name(b"Catalog".to_vec()))]));
+        let catalog = doc.add_object(Dictionary::from_iter(vec![(
+            "Type",
+            Object::Name(b"Catalog".to_vec()),
+        )]));
         doc.trailer.set("Root", Object::Reference(catalog));
         let mut tree = Dictionary::new();
         let mut nums = Vec::new();
@@ -407,7 +457,9 @@ mod tests {
             nums.push(Object::Dictionary(label));
         }
         tree.set("Nums", Object::Array(nums));
-        doc.catalog_mut().unwrap().set("PageLabels", Object::Dictionary(tree));
+        doc.catalog_mut()
+            .unwrap()
+            .set("PageLabels", Object::Dictionary(tree));
         assert_eq!(read_ranges(&doc), ranges);
         assert_eq!(
             labels_for(&ranges, 8),

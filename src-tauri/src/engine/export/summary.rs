@@ -145,12 +145,12 @@ fn is_text_markup(kind: AnnotKind) -> bool {
 /// A skipped whitespace or line break between two kept characters becomes one space.
 pub fn quoted_text(text: &TextLayer, quads: &[Rect]) -> String {
     let inside = |c: &layer::CharEntry| -> bool {
-        let (x, y) = (
-            (c.loose.l + c.loose.r) / 2.0,
-            (c.loose.b + c.loose.t) / 2.0,
-        );
+        let (x, y) = ((c.loose.l + c.loose.r) / 2.0, (c.loose.b + c.loose.t) / 2.0);
         quads.iter().any(|q| {
-            x >= q.l - QUAD_SLACK && x <= q.r + QUAD_SLACK && y >= q.b - QUAD_SLACK && y <= q.t + QUAD_SLACK
+            x >= q.l - QUAD_SLACK
+                && x <= q.r + QUAD_SLACK
+                && y >= q.b - QUAD_SLACK
+                && y <= q.t + QUAD_SLACK
         })
     };
     let mut out = String::new();
@@ -214,7 +214,10 @@ pub fn format_date(raw: &str) -> String {
     use chrono::{DateTime, FixedOffset, Local, NaiveDate, TimeZone};
     let s = raw.trim();
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return dt.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string();
+        return dt
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
     }
     let body = s.strip_prefix("D:").unwrap_or(s);
     let digits: String = body.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -244,14 +247,18 @@ pub fn format_date(raw: &str) -> String {
                 .filter(|p| !p.is_empty())
                 .filter_map(|p| p.parse().ok())
                 .collect();
-            let secs = nums.first().copied().unwrap_or(0) * 3600 + nums.get(1).copied().unwrap_or(0) * 60;
+            let secs =
+                nums.first().copied().unwrap_or(0) * 3600 + nums.get(1).copied().unwrap_or(0) * 60;
             Some(if sign == '-' { -secs } else { secs })
         }
         _ => None,
     };
     match offset.and_then(FixedOffset::east_opt) {
         Some(offset) => match offset.from_local_datetime(&naive).single() {
-            Some(dt) => dt.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string(),
+            Some(dt) => dt
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
             None => naive.format("%Y-%m-%d %H:%M:%S").to_string(),
         },
         None => naive.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -263,7 +270,12 @@ pub fn format_date(raw: &str) -> String {
 // ---------------------------------------------------------------------------------------
 
 /// The file's bytes in `format`.
-pub fn render(rows: &[SummaryRow], format: SummaryFormat, doc_name: &str, locale: Locale) -> Vec<u8> {
+pub fn render(
+    rows: &[SummaryRow],
+    format: SummaryFormat,
+    doc_name: &str,
+    locale: Locale,
+) -> Vec<u8> {
     match format {
         SummaryFormat::Csv => render_csv(rows, locale),
         SummaryFormat::Txt => render_txt(rows, doc_name, locale).into_bytes(),
@@ -298,7 +310,8 @@ fn headers(locale: Locale) -> Headers {
 }
 
 fn page_heading(row: &SummaryRow, locale: Locale) -> String {
-    let base = tr("annotSummary.page", locale, "Page {{n}}").replace("{{n}}", &row.page.to_string());
+    let base =
+        tr("annotSummary.page", locale, "Page {{n}}").replace("{{n}}", &row.page.to_string());
     match &row.label {
         Some(label) if *label != row.page.to_string() => format!("{base} ({label})"),
         _ => base,
@@ -306,7 +319,8 @@ fn page_heading(row: &SummaryRow, locale: Locale) -> String {
 }
 
 fn count_line(count: usize, locale: Locale) -> String {
-    tr("annotSummary.count", locale, "{{count}} annotations").replace("{{count}}", &count.to_string())
+    tr("annotSummary.count", locale, "{{count}} annotations")
+        .replace("{{count}}", &count.to_string())
 }
 
 /// RFC 4180 with a UTF-8 BOM and CRLF line ends.
@@ -314,7 +328,14 @@ fn render_csv(rows: &[SummaryRow], locale: Locale) -> Vec<u8> {
     let h = headers(locale);
     let mut out = String::from("\u{FEFF}");
     let header = [
-        &h.page, &h.label, &h.kind, &h.author, &h.created, &h.modified, &h.color, &h.contents,
+        &h.page,
+        &h.label,
+        &h.kind,
+        &h.author,
+        &h.created,
+        &h.modified,
+        &h.color,
+        &h.contents,
         &h.quote,
     ];
     out.push_str(
@@ -378,16 +399,28 @@ fn render_txt(rows: &[SummaryRow], doc_name: &str, locale: Locale) -> String {
         if !r.author.is_empty() {
             head.push(r.author.clone());
         }
-        let when = if r.modified.is_empty() { &r.created } else { &r.modified };
+        let when = if r.modified.is_empty() {
+            &r.created
+        } else {
+            &r.modified
+        };
         if !when.is_empty() {
             head.push(when.clone());
         }
-        out.push_str(&format!("[{}] {}\n", page_heading(r, locale), head.join(" · ")));
+        out.push_str(&format!(
+            "[{}] {}\n",
+            page_heading(r, locale),
+            head.join(" · ")
+        ));
         if !r.quote.is_empty() {
             out.push_str(&format!("  {}: \u{201C}{}\u{201D}\n", h.quote, r.quote));
         }
         if !r.contents.trim().is_empty() {
-            out.push_str(&format!("  {}: {}\n", h.contents, indent(&r.contents, "    ")));
+            out.push_str(&format!(
+                "  {}: {}\n",
+                h.contents,
+                indent(&r.contents, "    ")
+            ));
         }
         out.push_str(&format!("  {}: {}\n", h.color, r.color));
     }
@@ -416,7 +449,11 @@ fn render_md(rows: &[SummaryRow], doc_name: &str, locale: Locale) -> String {
         if !r.author.is_empty() {
             head.push(md_escape(&r.author));
         }
-        let when = if r.modified.is_empty() { &r.created } else { &r.modified };
+        let when = if r.modified.is_empty() {
+            &r.created
+        } else {
+            &r.modified
+        };
         if !when.is_empty() {
             head.push(when.clone());
         }
@@ -440,14 +477,18 @@ fn render_md(rows: &[SummaryRow], doc_name: &str, locale: Locale) -> String {
 }
 
 fn indent(text: &str, pad: &str) -> String {
-    text.replace("\r\n", "\n").replace('\n', &format!("\n{pad}"))
+    text.replace("\r\n", "\n")
+        .replace('\n', &format!("\n{pad}"))
 }
 
 /// Backslash-escapes the characters Markdown would read as markup.
 pub fn md_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        if matches!(c, '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|') {
+        if matches!(
+            c,
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|'
+        ) {
             out.push('\\');
         }
         out.push(c);
@@ -486,12 +527,17 @@ mod tests {
 
     #[test]
     fn csv_has_bom_crlf_and_one_row_per_annotation() {
-        let rows = vec![row(1, "형광펜", "메모, \"인용\"", "Trace-based"), row(3, "메모", "두 줄\n내용", "")];
+        let rows = vec![
+            row(1, "형광펜", "메모, \"인용\"", "Trace-based"),
+            row(3, "메모", "두 줄\n내용", ""),
+        ];
         let bytes = render(&rows, SummaryFormat::Csv, "doc.pdf", Locale::Ko);
         assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF]);
         let text = String::from_utf8(bytes[3..].to_vec()).unwrap();
         assert!(text.starts_with("페이지,페이지 레이블,종류,"));
-        assert!(text.contains("1,,형광펜,홍길동,,2026-09-28 12:00:00,#FFD400,\"메모, \"\"인용\"\"\",Trace-based\r\n"));
+        assert!(text.contains(
+            "1,,형광펜,홍길동,,2026-09-28 12:00:00,#FFD400,\"메모, \"\"인용\"\"\",Trace-based\r\n"
+        ));
         assert!(text.contains("\"두 줄\n내용\""));
         // header + 2 records; the embedded LF is inside quotes, so count CRLFs
         assert_eq!(text.matches("\r\n").count(), 3);
@@ -499,14 +545,19 @@ mod tests {
 
     #[test]
     fn txt_and_markdown_group_by_page() {
-        let rows = vec![row(1, "형광펜", "", "Trace-based"), row(1, "메모", "확인 *필요*", ""), row(2, "펜", "", "")];
+        let rows = vec![
+            row(1, "형광펜", "", "Trace-based"),
+            row(1, "메모", "확인 *필요*", ""),
+            row(2, "펜", "", ""),
+        ];
         let md = String::from_utf8(render(&rows, SummaryFormat::Md, "a.pdf", Locale::Ko)).unwrap();
         assert!(md.starts_with("# 주석 목록 — a.pdf\n\n주석 3개\n"));
         assert_eq!(md.matches("\n## 1쪽\n").count(), 1);
         assert!(md.contains("\n## 2쪽\n"));
         assert!(md.contains("  > Trace-based\n"));
         assert!(md.contains("확인 \\*필요\\*"));
-        let txt = String::from_utf8(render(&rows, SummaryFormat::Txt, "a.pdf", Locale::En)).unwrap();
+        let txt =
+            String::from_utf8(render(&rows, SummaryFormat::Txt, "a.pdf", Locale::En)).unwrap();
         assert!(txt.starts_with("Annotations — a.pdf\n3 annotations\n"));
         assert!(txt.contains("[Page 1] 형광펜 · 홍길동 · 2026-09-28 12:00:00\n"));
         assert!(txt.contains("  Quoted text: \u{201C}Trace-based\u{201D}\n"));

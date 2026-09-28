@@ -70,6 +70,16 @@ async function stopReading(): Promise<void> {
   await stopSpeaking();
 }
 
+/**
+ * The window is closing mid-search (여러 파일에서 검색, P2): the file being read is open in the engine
+ * outside `docStore`, so stop the run and let it close that file before the window goes.
+ */
+async function stopMultiSearch(): Promise<void> {
+  if (!useJobStore.getState().jobs.some((j) => j.kind === "multiSearch" && j.state === "running")) return;
+  const { cancelSearch } = await import("./multisearch/flow");
+  await cancelSearch();
+}
+
 /** Cheap synchronous test so the default menu is only suppressed over a page (the import is async). */
 function pageLike(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -153,6 +163,7 @@ export default function App() {
               await leaveCompare();
               await stopBatchOcr();
               await stopReading();
+              await stopMultiSearch();
               await win.destroy();
             }
             return;
@@ -164,6 +175,7 @@ export default function App() {
           await leaveCompare();
           await stopBatchOcr();
           await stopReading();
+          await stopMultiSearch();
         });
       })
       .then((fn) => {
@@ -182,7 +194,7 @@ export default function App() {
     const onMenu = (e: MouseEvent) => {
       void import("./app/pageMenus").then(({ openPageContextMenu, pageFromEvent }) => {
         const hit = pageFromEvent(e.target);
-        if (hit) openPageContextMenu(hit.page, hit.source, e.clientX, e.clientY);
+        if (hit) openPageContextMenu(hit.page, hit.source, e.clientX, e.clientY, e.target);
       });
       if (pageLike(e.target)) e.preventDefault();
     };

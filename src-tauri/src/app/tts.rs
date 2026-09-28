@@ -53,7 +53,10 @@ pub trait Speaker: Send + Sync {
     /// `None` when this platform has no offline voice.
     fn engine(&self) -> Option<TtsEngine>;
     /// Starts speaking; returns the utterance and the voice picked, if one was picked.
-    fn start(&self, request: &SpeakRequest) -> Result<(Box<dyn Utterance>, Option<String>), EngineError>;
+    fn start(
+        &self,
+        request: &SpeakRequest,
+    ) -> Result<(Box<dyn Utterance>, Option<String>), EngineError>;
 }
 
 struct Current {
@@ -144,7 +147,11 @@ impl Drop for Tts {
     }
 }
 
-fn validate(text: &str, lang: Option<&str>, rate: Option<f32>) -> Result<SpeakRequest, EngineError> {
+fn validate(
+    text: &str,
+    lang: Option<&str>,
+    rate: Option<f32>,
+) -> Result<SpeakRequest, EngineError> {
     if text.trim().is_empty() {
         return Err(EngineError::invalid("there is no text to read"));
     }
@@ -179,9 +186,10 @@ pub fn voice_language(request: &SpeakRequest) -> Option<String> {
             .to_ascii_lowercase();
         return (!primary.is_empty()).then_some(primary);
     }
-    let hangul = request.text.chars().any(|c| {
-        matches!(c as u32, 0xAC00..=0xD7A3 | 0x1100..=0x11FF | 0x3130..=0x318F)
-    });
+    let hangul = request
+        .text
+        .chars()
+        .any(|c| matches!(c as u32, 0xAC00..=0xD7A3 | 0x1100..=0x11FF | 0x3130..=0x318F));
     hangul.then(|| "ko".to_string())
 }
 
@@ -274,7 +282,9 @@ pub fn parse_say_voices(listing: &str) -> Vec<Voice> {
             let (name, locale) = left.rsplit_once(char::is_whitespace)?;
             let (name, locale) = (name.trim(), locale.trim());
             let looks_like_locale = locale.len() >= 2
-                && locale.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+                && locale
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
             (!name.is_empty() && looks_like_locale).then(|| Voice {
                 name: name.to_string(),
                 locale: locale.to_string(),
@@ -369,10 +379,17 @@ impl Speaker for SaySpeaker {
         self.program.is_file().then_some(TtsEngine::Say)
     }
 
-    fn start(&self, request: &SpeakRequest) -> Result<(Box<dyn Utterance>, Option<String>), EngineError> {
+    fn start(
+        &self,
+        request: &SpeakRequest,
+    ) -> Result<(Box<dyn Utterance>, Option<String>), EngineError> {
         let voice = voice_language(request).and_then(|lang| pick_voice(self.voices(), &lang));
         let mut command = Command::new(&self.program);
-        command.args(say_args(voice.as_deref(), request.rate, self.output.as_deref()));
+        command.args(say_args(
+            voice.as_deref(),
+            request.rate,
+            self.output.as_deref(),
+        ));
         let utterance = ProcessUtterance::spawn(command, request.text.clone().into_bytes())?;
         Ok((Box::new(utterance), voice))
     }
@@ -414,7 +431,10 @@ pub fn sapi_script(lang: Option<&str>, rate: i32) -> String {
 
 /// `-EncodedCommand` wants base64 of UTF-16LE.
 pub fn encode_command(script: &str) -> String {
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
     base64(&bytes)
 }
 
@@ -430,8 +450,16 @@ fn base64(bytes: &[u8]) -> String {
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(TABLE[(n >> 18) as usize & 63] as char);
         out.push(TABLE[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { TABLE[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TABLE[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -445,7 +473,10 @@ impl Speaker for SapiSpeaker {
         cfg!(target_os = "windows").then_some(TtsEngine::Sapi)
     }
 
-    fn start(&self, request: &SpeakRequest) -> Result<(Box<dyn Utterance>, Option<String>), EngineError> {
+    fn start(
+        &self,
+        request: &SpeakRequest,
+    ) -> Result<(Box<dyn Utterance>, Option<String>), EngineError> {
         let lang = voice_language(request);
         let script = sapi_script(lang.as_deref(), sapi_rate(request.rate));
         let mut command = Command::new("powershell.exe");
@@ -477,7 +508,10 @@ impl Speaker for NoSpeaker {
         None
     }
 
-    fn start(&self, _request: &SpeakRequest) -> Result<(Box<dyn Utterance>, Option<String>), EngineError> {
+    fn start(
+        &self,
+        _request: &SpeakRequest,
+    ) -> Result<(Box<dyn Utterance>, Option<String>), EngineError> {
         Err(EngineError::unsupported("no system voice on this platform"))
     }
 }
@@ -499,7 +533,10 @@ mod tests {
         assert_eq!(voices[1].locale, "ko_KR");
         // Yuna wins for Korean; `kn_IN` is not Korean
         assert_eq!(pick_voice(&voices, "ko").as_deref(), Some("Yuna"));
-        assert_eq!(pick_voice(&voices[..3], "ko").as_deref(), Some("Eddy (한국어(한국))"));
+        assert_eq!(
+            pick_voice(&voices[..3], "ko").as_deref(),
+            Some("Eddy (한국어(한국))")
+        );
         assert_eq!(pick_voice(&voices, "en").as_deref(), Some("Albert"));
         assert_eq!(pick_voice(&voices, "fr"), None);
     }
@@ -511,16 +548,28 @@ mod tests {
             lang: lang.map(Into::into),
             rate: 1.0,
         };
-        assert_eq!(voice_language(&req("안녕하세요", None)).as_deref(), Some("ko"));
+        assert_eq!(
+            voice_language(&req("안녕하세요", None)).as_deref(),
+            Some("ko")
+        );
         assert_eq!(voice_language(&req("Hello", None)), None);
-        assert_eq!(voice_language(&req("Hello", Some("en-US"))).as_deref(), Some("en"));
-        assert_eq!(voice_language(&req("x", Some("ko_KR"))).as_deref(), Some("ko"));
+        assert_eq!(
+            voice_language(&req("Hello", Some("en-US"))).as_deref(),
+            Some("en")
+        );
+        assert_eq!(
+            voice_language(&req("x", Some("ko_KR"))).as_deref(),
+            Some("ko")
+        );
     }
 
     #[test]
     fn rates_map_to_each_engine() {
         assert_eq!(say_args(None, 1.0, None), Vec::<String>::new());
-        assert_eq!(say_args(Some("Yuna"), 1.5, None), vec!["-v", "Yuna", "-r", "278"]);
+        assert_eq!(
+            say_args(Some("Yuna"), 1.5, None),
+            vec!["-v", "Yuna", "-r", "278"]
+        );
         assert_eq!(sapi_rate(1.0), 0);
         assert_eq!(sapi_rate(3.0), 10);
         assert_eq!(sapi_rate(0.5), -6);
@@ -541,6 +590,9 @@ mod tests {
         assert!(script.contains("Add-Type -AssemblyName System.Speech"));
         assert!(script.contains("-like 'ko*'"));
         assert!(script.contains("$s.Rate = -3"));
-        assert!(!sapi_script(Some("ko'; rm"), 0).contains("rm"), "odd languages are ignored");
+        assert!(
+            !sapi_script(Some("ko'; rm"), 0).contains("rm"),
+            "odd languages are ignored"
+        );
     }
 }

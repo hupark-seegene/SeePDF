@@ -45,7 +45,7 @@ One document per window; the first window shows the welcome screen.
 | left group | `☰` sidebar toggle · `↶` undo · `↷` redo (undo/redo only when a document is open) |
 | centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty |
 | centre | **mode switcher**: 읽기 · 주석 · 편집 · 페이지 · 양식 (segmented, ⌘1–⌘5) |
-| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 합치기, 분할, 문서 정보, 설정) |
+| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정) |
 
 Changing mode changes four things at once: the tool strip, the default canvas cursor, the properties
 panel content, and what a click on the page does.
@@ -69,13 +69,10 @@ dimmer weight. The active tool has an `--accent-subtle` background and a 1 px ac
 
 | Tab | Icon | Content | Empty state |
 |---|---|---|---|
-| 축소판 | `rectangle-vertical` | 1–2 column thumbnail list, page number under each, current page with a 2 px accent ring, drag to reorder, ⌘/⇧ multi-select, context menu | — |
-| 목차 | `list-tree` | outline tree with disclosure triangles, current section highlighted on scroll | `sidebar.outline.empty` |
-| 주석 | `message-square` | flat list grouped by page: type icon, author, excerpt, timestamp; click scrolls and selects; filter chips by type; a header with the count and **내보내기…** (P2: opens 내보내기 on its 주석 목록 format) | `sidebar.annotations.empty` |
 | 축소판 | `rectangle-vertical` | 1–2 column thumbnail list, page number under each (the page label when the document has `/PageLabels`, P2 — the number in the tooltip), current page with a 2 px accent ring, drag to reorder, ⌘/⇧ multi-select, context menu | — |
 | 목차 | `list-tree` | outline tree with disclosure triangles, current section highlighted on scroll; a node written closed (`open: false`) starts collapsed; the page column shows labels; a web node (`url`, `globe` icon) asks before opening its address. Header: 목차 + **편집** (P2, disabled on an encrypted document with the reason as tooltip) — see §4.1 | `sidebar.outline.empty` |
-| 주석 | `message-square` | flat list grouped by page: type icon, author, excerpt, timestamp; click scrolls and selects; filter chips by type | `sidebar.annotations.empty` |
-| 검색 | `search` | query field, 대소문자 구분 / 단어 단위 toggles, result count, results with ±40 characters of context and the match in bold, grouped by page, streaming in as they arrive | `sidebar.search.empty` |
+| 주석 | `message-square` | flat list grouped by page: type icon, author, excerpt, timestamp; click scrolls and selects; filter chips by type (a thread is filtered by its top-level annotation's type); a header with the count and **내보내기…** (P2: opens 내보내기 on its 주석 목록 format). **Threads (P2):** replies are listed under their top-level annotation — indented, `corner-down-right`, excerpt + 작성자 · 날짜, flattened and oldest first — behind a count badge (`message-square` + N) that folds / unfolds them (open by default); a click on a reply opens the thread's popover; right-click on a row = 답글 · 삭제 | `sidebar.annotations.empty` |
+| 검색 | `search` | query field, 대소문자 구분 / 단어 단위 toggles, result count, results with ±40 characters of context and the match in bold, grouped by page, streaming in as they arrive; a quiet 여러 파일에서 검색… button (P2) under the toggles | `sidebar.search.empty` |
 
 Sidebar open/closed, active tab and width persist per app (not per document) in `settings.json`.
 
@@ -121,6 +118,18 @@ reads back with no page and no url and is written back as a title only (IPC_CONT
   `sepia(0.2)` multiplied onto `--sepia-paper`. The `--page-*` tokens are re-scoped to those papers while a
   night mode is on; thumbnails, the organizer and the compare view stay day-rendered. Persisted in
   `Settings.night` (Stage 8): every change is saved and each window starts in the remembered mode.
+* **분할 보기** (P2; 보기 ▸ 분할 보기, ⌥⌘S / Ctrl+Alt+S, the status-bar `columns-2` button): the page area splits
+  좌우 (default) or 위아래 into two panes of the **same** document, 1 px `--border-default` between them. Each pane has
+  its own zoom, zoom mode, view rotation, current page and scroll; layout (단일 / 연속 / 두 쪽) and night mode are
+  shared. The second pane opens on the focused pane's page at its zoom. The **focused** pane (2 px `--accent-subtle`
+  inset outline) is the one the status bar shows and the keys, menus, sidebar navigation and search hits act on;
+  it alone carries the annotation / form / 편집 layers — the other pane is a read-only view until a click in it
+  focuses it (a text selection or a pan starts with that click; a drawing tool, whose layer moves over with the
+  focus, starts with the next one). 동기화 스크롤 (status bar `link-2`, off by default): a
+  pane that scrolls moves the other by the same number of pages (page units, so any zoom), keeping the distance the
+  user put between them. Esc with nothing else to cancel (no tool armed, no text selection, no annotation
+  selected or being edited) closes the split, as do the menu item, the button and opening another document; the
+  main pane stays where it was. Both panes share one tile manager (one in-flight budget) and the engine's cache.
 
 ---
 
@@ -173,6 +182,16 @@ A second surface exists for speed: an **inline popover** 8 px above a selected a
 `--radius-lg`, `--elevation-2`) with only swatches, opacity, thickness, 메모 and 삭제. It closes on Esc,
 outside click, or a scroll of more than 40 px; opening the panel closes the popover.
 
+**Threads (P2).** The 메모 popover opens 8 px **below** its note and ends with the note's thread: every reply
+(작성자 in the semibold weight or 작성자 없음, relative date, the text; 답글 편집 `pencil` edits it in place —
+uncontrolled, written on blur or ⌘↵ / Ctrl+↵, Esc cancels — and 답글 삭제 `x` deletes it), then a 2-line reply box
+(답글 입력…) with 답글 달기 (also ⌘↵ / Ctrl+↵). A reply is written as 설정 ▸ 작성자. 답글 on any other annotation
+(context menu) opens the **thread popover** below it: 답글 스레드 + ×, the annotation's own 메모 as the first line,
+the same list and box, the box focused. Deleting an annotation that has replies (삭제 anywhere: popover, 주석 row,
+⌫, context menu, the eraser) asks 주석과 답글 삭제 — "이 주석에 달린 답글 N개도 함께 삭제됩니다" (danger 삭제 /
+취소); the replies go with it in the same undo step. An encrypted document cannot take replies (toast
+`annot.thread.encrypted`).
+
 ---
 
 ## 8. Status bar (28 px)
@@ -181,7 +200,9 @@ outside click, or a scroll of more than 40 px; opening the panel closes the popo
 followed by `(n / total)`; it accepts a label — exact, then case-insensitive — or a plain page number, a label
 winning over a number that is also a label; anything else restores the current value) ·
 view layout segmented (단일 / 연속 / 두 쪽) · 왼쪽/오른쪽 회전 ·
-야간 모드 `moon` (cycles, pressed while on) · zoom `− [slider] +` with a numeric combo (25/50/75/100/125/150/200/400 %, 페이지 맞춤, 너비 맞춤,
+야간 모드 `moon` (cycles, pressed while on) · 분할 보기 `columns-2` (pressed while split; while split also 위아래로
+나누기 `rows-2` ⇄ 좌우로 나누기 `columns-2` and 동기화 스크롤 `link-2`, pressed while on — P2; the page field, layout,
+rotation and zoom act on the focused pane) · zoom `− [slider] +` with a numeric combo (25/50/75/100/125/150/200/400 %, 페이지 맞춤, 너비 맞춤,
 실제 크기) · right side: save state (저장됨 / 저장되지 않은 변경 사항 / 저장 중…) and a progress slot used
 by OCR, export, search and save (label + determinate bar + cancel ×). P2: while the system voice reads
 (읽어 주기), a pressed `audio-lines` button at the start of the right side — `읽는 중… — 정지`; a click stops it.
@@ -225,6 +246,21 @@ encrypted file asks 암호 입력; dismissing it skips the file. A file whose pa
 copy. While running: `파일 2/5 · name` + progress + 취소 (stops the current file, closes it, leaves the rest 대기;
 시작 resumes). 닫기 only hides the sheet — the batch continues in the status bar (× cancels) and ends with a toast.
 When done: 완료 N · 건너뜀 N · 실패 N and Finder에서 보기 (the first copy).
+
+**여러 파일에서 검색** (P2, 640 px, 편집 ▸ 여러 파일에서 검색…, ⋯, the 검색 panel's button; works with no document
+open; no shortcut): the query field (Enter starts) with 대소문자 구분 / 단어 단위로 · 검색할 파일: 파일 추가… (multi-select)
+/ 폴더 추가… (every PDF below it, sub-folders included, `list_pdf_files`) / 목록 비우기 and 파일 N개 · the list, one row per
+file: disclosure chevron, name, status (대기 / 여는 중… / 검색 중… / 결과 N개 / 건너뜀 · 이유 / 실패 · 이유 / 취소됨), ×; under
+an open row its hits streaming in as they are found — `N쪽` + ±40 characters with the match marked (50 per file, then
+더 보기). 검색 runs **one** job over every file in list order (the status bar shows `파일 2/5` with ×): each file is
+opened beside the window's document, searched from its first page and closed; the window's own document, when
+listed, is searched in memory (its unsaved edits count) and stays open; an encrypted file asks 암호 입력 and
+dismissing it skips the file. While running: `파일 2/5 · name` + progress + 취소 (stops the file being read, closes it,
+leaves the rest 대기). When done: 결과 N개 · 파일 N개 · 건너뜀 N · 실패 N. A click on a hit opens its file through the
+normal open path (저장하지 않은 변경 사항 first; the password the search was given is tried first), closes the dialog and
+makes the hits the 검색 panel's — the same page highlights, that hit current and scrolled into view, ⌘G walks them.
+닫기 only hides the dialog: the job carries on in the status bar and ends with a toast (결과 보기 reopens the dialog,
+whose results stay until 목록 비우기).
 
 **내보내기** (non-modal sheet): format list on the left (PDF 평면화 / PNG / JPEG / 텍스트 / 주석 목록), options on
 the right (페이지 범위, DPI 72–600 default 150, 품질, 투명 배경, 페이지마다 파일 하나), an estimated size, then
@@ -367,7 +403,10 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
   the selection's last line and opens it; 영역 표시로 표시 marks the line rects and switches to 편집 · 영역 표시;
   검색 puts the selection (whitespace folded, ≤ 200 characters) into the 검색 panel and runs it
 * **Empty page area**: 붙여넣기 · 메모 추가 · 페이지 회전 · 이미지로 내보내기 · 스냅샷 · 페이지로 이동… · 이 페이지 읽어 주기 (P2)
-* **Annotation**: 편집 · 속성… · 메모 열기 · 복사 · 삭제 · 이 스타일을 기본값으로
+* **Annotation**: 편집 · 속성… · 메모 열기 · 복사 · 삭제 · 이 스타일을 기본값으로. P2: a right-click on an annotation
+  on the canvas (hit-tested in the pane it happened in; replies are never on the page) opens the canvas menu with
+  **답글** (the thread popover / the note's popover, reply box focused; 읽기 switches to 주석) and 삭제 on top; a 주석
+  tab row's menu is 답글 · 삭제
 * **Thumbnail / page cell**: 이 페이지로 이동 · 왼쪽/오른쪽 회전 · 삭제 · 복제 · 추출… · 뒤에 페이지 삽입… ·
   자르기… · 페이지 크기 변경… (P2) · 이미지로 내보내기
 * **Outline item**: 이동 · 하위 항목 모두 펼치기/접기
@@ -390,7 +429,8 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 
 **View** — 사이드바 ⌃⌘S / Ctrl+F9 · 속성 패널 ⌥⌘P / Ctrl+F10 · 사이드바 탭 ⌘⌥1…4 / Ctrl+Alt+1…4 ·
 확대/축소 ⌘+ / ⌘− · 실제 크기 ⌘0 · 페이지 맞춤 ⌘9 · 너비 맞춤 ⌘8 · 단일/연속/두 쪽 ⌃1/⌃2/⌃3 (Ctrl+Shift+1/2/3) ·
-왼쪽/오른쪽 회전 ⌘L / ⌘R · 야간 모드 ⌃⌘N / Ctrl+Shift+N · 읽기 모드 ⌃⌘R / F8 · 전체 화면 ⌃⌘F / F11
+왼쪽/오른쪽 회전 ⌘L / ⌘R · 야간 모드 ⌃⌘N / Ctrl+Shift+N · 읽기 모드 ⌃⌘R / F8 · 전체 화면 ⌃⌘F / F11 ·
+분할 보기 ⌥⌘S / Ctrl+Alt+S (P2; toggles — Esc with nothing else to cancel closes it)
 
 > 읽기 모드 (P1-12) hides the title/tool bar, sidebar, 주석 tool strip, properties panel and status bar;
 > only the pages remain, and a toast says "읽기 모드 · Esc 키를 누르면 나갑니다". 전체 화면 is the window's own
@@ -1225,6 +1265,52 @@ from the same catalogue). The native menu's `view.readAloud` label lives in `app
 | `pageLabels.error.start` / `.duplicate` / `.first` | 1–{{count}} 사이의 페이지를 입력하세요 / 같은 페이지에서 시작하는 범위가 이미 있습니다 / 1–1000000 사이의 수를 입력하세요 | Enter a page from 1 to {{count}} / Another range already starts on this page / Enter a number from 1 to 1000000 |
 | `pageLabels.applied` / `pageLabels.removed` | 페이지 레이블을 적용했습니다 / 페이지 레이블을 제거했습니다 | Page labels applied / Page labels removed |
 | `undo.outlineEdit` / `undo.linkCreate` / `undo.linkEdit` / `undo.linkDelete` / `undo.pageLabels` | 목차 편집 / 링크 추가 / 링크 편집 / 링크 삭제 / 페이지 레이블 | Edit Bookmarks / Add Link / Edit Link / Delete Link / Page Labels |
+
+### 15.20b P2 — annotation threads, 여러 파일에서 검색, 분할 보기
+| Key | ko | en |
+|---|---|---|
+| `menu.view.split` | 분할 보기 | Split View |
+| `menu.edit.findInFiles` | 여러 파일에서 검색… | Search in Files… |
+| `view.split.label` | 분할 보기 | Split view |
+| `view.split.side` | 좌우로 나누기 | Split side by side |
+| `view.split.stacked` | 위아래로 나누기 | Split top and bottom |
+| `view.split.sync` | 동기화 스크롤 | Synchronized scrolling |
+| `view.split.secondPane` | 분할 보기의 두 번째 창 | Second pane of the split view |
+| `annot.thread.label` | 답글 스레드 | Thread |
+| `annot.thread.reply` | 답글 | Reply |
+| `annot.thread.placeholder` | 답글 입력… | Write a reply… |
+| `annot.thread.send` | 답글 달기 | Reply |
+| `annot.thread.edit` | 답글 편집 | Edit reply |
+| `annot.thread.delete` | 답글 삭제 | Delete reply |
+| `annot.thread.noAuthor` | 작성자 없음 | No author |
+| `annot.thread.expand` | 답글 {{count}}개 펼치기 | Show {{count}} reply |
+| `annot.thread.expand_other` | 답글 {{count}}개 펼치기 | Show {{count}} replies |
+| `annot.thread.collapse` | 답글 {{count}}개 접기 | Hide {{count}} reply |
+| `annot.thread.collapse_other` | 답글 {{count}}개 접기 | Hide {{count}} replies |
+| `annot.thread.deleteTitle` | 주석과 답글 삭제 | Delete Annotation and Replies |
+| `annot.thread.deleteBody` | 이 주석에 달린 답글 {{count}}개도 함께 삭제됩니다. 삭제할까요? | Its {{count}} reply will be deleted too. Delete? |
+| `annot.thread.deleteBody_other` | 이 주석에 달린 답글 {{count}}개도 함께 삭제됩니다. 삭제할까요? | Its {{count}} replies will be deleted too. Delete? |
+| `annot.thread.encrypted` | 암호가 걸린 문서에는 답글을 저장할 수 없습니다. 보안에서 암호를 제거한 뒤 다시 시도하세요. | Replies cannot be saved into an encrypted document. Remove the password in Security and try again. |
+| `annot.thread.failed` | 답글을 저장하지 못했습니다 | The reply could not be saved |
+| `undo.annotReply` | 답글 | Reply |
+| `multiSearch.title` | 여러 파일에서 검색 | Search in Files |
+| `multiSearch.query` | 검색어 | Search term |
+| `multiSearch.files` | 검색할 파일 | Files |
+| `multiSearch.addFiles` | 파일 추가… | Add Files… |
+| `multiSearch.addFolder` | 폴더 추가… | Add Folder… |
+| `multiSearch.pickFiles` | 검색할 PDF 선택 | Choose PDFs to search |
+| `multiSearch.pickFolder` | 검색할 폴더 선택 (하위 폴더 포함) | Choose a folder to search (sub-folders included) |
+| `multiSearch.empty` | 검색할 파일이나 폴더를 추가하세요 | Add files or a folder to search |
+| `multiSearch.start` | 검색 | Search |
+| `multiSearch.running` | 여러 파일에서 검색 중… | Searching in files… |
+| `multiSearch.summary` | 결과 {{hits}}개 · 파일 {{files}}개 · 건너뜀 {{skipped}} · 실패 {{failed}} | {{hits}} results in {{files}} files · {{skipped}} skipped · {{failed}} failed |
+| `multiSearch.finished` | 여러 파일에서 검색을 마쳤습니다: 결과 {{hits}}개 · 파일 {{files}}개 | Search in files finished: {{hits}} results in {{files}} files |
+| `multiSearch.cancelled` | 여러 파일에서 검색을 취소했습니다: 결과 {{hits}}개 · 파일 {{files}}개 | Search in files cancelled: {{hits}} results in {{files}} files |
+| `multiSearch.showResults` | 결과 보기 | Show Results |
+| `multiSearch.folderFailed` | 폴더를 읽을 수 없습니다 | The folder could not be read |
+| `multiSearch.reason.password` | 암호를 입력하지 않았습니다 | No password was entered |
+| `multiSearch.reason.searchFailed` | 검색하지 못했습니다 | Could not be searched |
+| `multiSearch.openHit` | {{name}} {{page}}쪽 열기 | Open {{name}}, page {{page}} |
 
 ### 15.21 Notes for the implementer
 

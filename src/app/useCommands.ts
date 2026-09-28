@@ -16,7 +16,7 @@ import { usePagesStore } from "../store/pagesStore";
 import { openDialog } from "../dialogs/dialogState";
 import { openContextMenu, type MenuEntry } from "./contextMenuStore";
 import { toolController } from "../tools/ToolController";
-import { clearTextSelection, findStep, selectAllOnCurrentPage } from "../viewer/viewerCommands";
+import { clearTextSelection, escapeClearedSelection, findStep, selectAllOnCurrentPage } from "../viewer/viewerCommands";
 import { editLeaveGuard, runAnnotCommand } from "../tools/commands";
 import { toggleFullScreen, toggleReadingMode } from "./readingMode";
 import type { PageOp } from "../ipc/types";
@@ -67,8 +67,12 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
     if (id.startsWith("tool.")) {
       const tool = id.slice("tool.".length) as ToolId;
       if (tool === ("none" as ToolId)) {
+        // 분할 보기 (P2): an Esc with nothing else to cancel — no tool armed, no text selection
+        // just cleared by it — closes the split
+        const idle = app.tool === "select" && !escapeClearedSelection();
         app.setTool("select");
         toolController.arm("select");
+        if (idle && view.split) view.closeSplit();
         return;
       }
       app.setTool(tool, opts?.momentary);
@@ -167,6 +171,10 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "edit.find":
         app.setSidebarTab("search");
         return;
+      // P2 여러 파일에서 검색… — works without a document too
+      case "edit.findInFiles":
+        openDialog("multiSearch");
+        return;
       // The native Edit menu owns ⌘G / ⇧⌘G / ⌘A and emits `menu:<id>`, so these three are
       // dispatched here and nowhere else (the duplicate listener inside the viewer is gone,
       // STAGE1C_NOTES §7.2). The viewer exports the three primitives.
@@ -263,6 +271,11 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         return;
       case "view.night":
         view.cycleNight();
+        return;
+      // 분할 보기 (P2): 보기 menu, ⌥⌘S / Ctrl+Alt+S, the status-bar button
+      case "view.split":
+        if (info && app.mode !== "pages") view.toggleSplit();
+        else view.closeSplit();
         return;
       // 읽기 모드 / 전체 화면 (P1-12): the native View menu, ⌃⌘R / F8 and ⌃⌘F / F11
       case "view.readingMode":
@@ -365,7 +378,7 @@ function openRecentMenu(): void {
   openContextMenu({ x: 96, y: 52, labelKey: "menu.file.openRecent", items });
 }
 
-/** ⋯ — 인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 합치기, 분할, 문서 정보, 설정 (UI_SPEC §2). */
+/** ⋯ — 인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정 (UI_SPEC §2). */
 function openOverflowMenu(): void {
   const info = useDocStore.getState().info;
   openContextMenu({
@@ -385,6 +398,7 @@ function openOverflowMenu(): void {
         onSelect: () => void import("../ocr").then((m) => m.openOcrDialog()),
       },
       { id: "batchOcr", labelKey: "menu.tools.batchOcr", onSelect: () => openDialog("batchOcr") },
+      { id: "findInFiles", labelKey: "menu.edit.findInFiles", onSelect: () => openDialog("multiSearch") },
       { id: "merge", labelKey: "menu.tools.merge", onSelect: () => openDialog("merge") },
       { id: "split", labelKey: "pages.split", disabled: !info, onSelect: () => openDialog("split") },
       {

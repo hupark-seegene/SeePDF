@@ -1,0 +1,13 @@
+/* 여러 파일에서 검색 (P2). Tokens only; the hit rows borrow the 검색 panel's `.search-result`. */
+.msearch-list { max-height: 320px; overflow-y: auto; margin-top: var(--space-2); }
+.msearch-list > ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.msearch-empty { padding: var(--space-4) 0; text-align: center; color: var(--text-tertiary); }
+.msearch-file-head { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: var(--space-2); }
+.msearch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msearch-status { color: var(--text-secondary); white-space: nowrap; }
+.msearch-status[data-status="done"] { color: var(--success); }
+.msearch-status[data-status="failed"] { color: var(--danger); }
+.msearch-status[data-status="skipped"], .msearch-status[data-status="cancelled"] { color: var(--warning); }
+.msearch-hits { list-style: none; margin: 0 0 var(--space-1) 28px; padding: 0; display: grid; gap: 2px; }
+.msearch-hits .search-result { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2); align-items: baseline; }
+.msearch-page { white-space: nowrap; }

@@ -662,7 +662,10 @@ impl AnnotRef<'_> {
     /// PDF default `[0 0 1]` applies and several viewers stroke a 1 pt border round the link.
     pub fn set_no_border(&mut self) -> bool {
         // SAFETY: `self.handle` is live; the call takes plain floats.
-        let ok = unsafe { self.bindings.FPDFAnnot_SetBorder(self.handle, 0.0, 0.0, 0.0) };
+        let ok = unsafe {
+            self.bindings
+                .FPDFAnnot_SetBorder(self.handle, 0.0, 0.0, 0.0)
+        };
         self.bindings.is_true(ok)
     }
 

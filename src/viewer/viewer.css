@@ -1,5 +1,39 @@
 /* The viewer canvas — UI_SPEC §5, ARCHITECTURE §10. Every colour is a token (F-27). */
 
+/* 분할 보기 (P2): the panes share the canvas area — 좌우 by default, 위아래 with data-split="stacked".
+   One pane (no split) fills it exactly like the bare canvas did. */
+.viewer-panes {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.viewer-panes[data-split="stacked"] {
+  flex-direction: column;
+}
+
+.viewer-panes > .canvas.viewer {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.viewer-panes[data-split] > .canvas.viewer + .canvas.viewer {
+  border-inline-start: 1px solid var(--border-default);
+}
+
+.viewer-panes[data-split="stacked"] > .canvas.viewer + .canvas.viewer {
+  border-inline-start: 0;
+  border-block-start: 1px solid var(--border-default);
+}
+
+/* the pane the keys, menus and tools act on */
+.viewer-panes[data-split] > .canvas.viewer[data-focused] {
+  outline: 2px solid var(--accent-subtle);
+  outline-offset: -2px;
+}
+
 .canvas.viewer {
   position: relative;
   padding: 0;

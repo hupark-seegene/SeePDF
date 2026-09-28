@@ -6,11 +6,15 @@
  * The list is filled by `scan_annotations` (one streamed pass per document, `src/annot/sync.ts`)
  * and kept current by the same per-page re-list every other surface uses, so it is never a second
  * source of truth.
+ *
+ * P2 threads: replies sit under their thread's top-level annotation, behind a count badge that
+ * folds them; a row's context menu has 답글 (the thread popover, reply box focused) and 삭제
+ * (which asks first when the annotation has replies — they go with it).
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
-  Circle, Download, Highlighter, MessageSquarePlus, Minus, MoveUpRight, PenLine, Signature, Square, Link2,
-  Stamp, Sticker, Strikethrough, Trash2, Type, Underline, Waves,
+  Circle, CornerDownRight, Download, Highlighter, Link2, MessageSquare, MessageSquarePlus, Minus, MoveUpRight,
+  PenLine, Signature, Square, Stamp, Sticker, Strikethrough, Trash2, Type, Underline, Waves,
 } from "lucide-react";
 import { openDialog } from "../dialogs/dialogState";
 import type { Annot, AnnotKind } from "../ipc/types";
@@ -19,7 +23,9 @@ import { useT } from "../i18n/useT";
 import { useAnnotStore } from "../store/annotStore";
 import { useAppStore } from "../store/appStore";
 import { useViewStore } from "../store/viewStore";
-import { deleteAnnotations } from "../annot/actions";
+import { deleteAnnotations, openThread } from "../annot/actions";
+import { isoOf, threaded } from "../annot/threads";
+import { openContextMenu } from "../app/contextMenuStore";
 import type { IconProps } from "../app/IconButton";
 import type { ComponentType } from "react";
 
@@ -72,12 +78,16 @@ export function annotLabel(a: Annot, t: (key: string) => string): string {
   }
 }
 
-/** Page → its annotations, page order. Ghosts are included so a new note appears immediately. */
+/**
+ * Page → its annotations, page order. Ghosts are included so a new note appears immediately.
+ * P2 threads: a reply is listed under its thread's top-level annotation (`Annot.replies`), not
+ * on its own, and the filter chips pick threads by their top-level annotation's kind.
+ */
 export function groupByPage(byPage: Record<number, Annot[]>, ghosts: Annot[], filter: AnnotKind[] | null) {
   const merged = new Map<number, Annot[]>();
   for (const key of Object.keys(byPage)) {
     const page = Number(key);
-    const list = (byPage[page] ?? []).filter((a) => !filter || filter.includes(a.kind));
+    const list = threaded(byPage[page] ?? []).filter((a) => !filter || filter.includes(a.kind));
     if (list.length) merged.set(page, list);
   }
   for (const ghost of ghosts) {
@@ -105,7 +115,17 @@ export function AnnotationList() {
     () => groupByPage(byPage, ghosts.map((g) => g.annot), filter),
     [byPage, ghosts, filter],
   );
-  const total = groups.reduce((n, [, list]) => n + list.length, 0);
+  // every annotation, replies included (a thread row is one top-level annotation + its replies)
+  const total = groups.reduce((n, [, list]) => n + list.reduce((m, a) => m + 1 + (a.replies?.length ?? 0), 0), 0);
+  // P2 threads are open by default; the badge folds one away
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const toggle = (id: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const open = (annot: Annot) => {
     useAnnotStore.getState().select([annot.id]);
@@ -114,6 +134,28 @@ export function AnnotationList() {
     if (annot.kind === "note" || annot.kind === "textbox") {
       useAnnotStore.getState().setEditing({ page: annot.page, id: annot.id });
     }
+  };
+
+  /** 답글 (UI_SPEC §12): the thread's popover with the reply box focused. */
+  const reply = (annot: Annot) => {
+    useViewStore.getState().goToPage(annot.page);
+    if (useAppStore.getState().mode === "read") useAppStore.getState().setMode("annotate");
+    openThread(annot.page, annot.id, true);
+  };
+
+  const menu = (e: React.MouseEvent, annot: Annot) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      labelKey: "sidebar.tab.annotations",
+      items: [
+        { id: "reply", labelKey: "annot.thread.reply", disabled: annot.id.startsWith("ghost-"), onSelect: () => reply(annot) },
+        { id: "sep", separator: true },
+        { id: "delete", labelKey: "common.delete", danger: true, onSelect: () => void deleteAnnotations(annot.page, [annot.id]) },
+      ],
+    });
   };
 
   return (
@@ -157,44 +199,92 @@ export function AnnotationList() {
         groups.map(([page, list]) => (
           <section key={page}>
             <h3 className="annot-group-label">{t("a11y.page", { n: page + 1 })}</h3>
-            {list.map((a) => (
-              <div
-                key={a.id}
-                className="annot-row"
-                data-selected={selected.includes(a.id) || undefined}
-                role="button"
-                tabIndex={0}
-                aria-label={t("a11y.annotation", { type: annotLabel(a, t), author: a.author ?? "" })}
-                onClick={() => open(a)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    open(a);
-                  }
-                }}
-              >
-                <Icon annot={a} />
-                <span>
-                  <span className="excerpt">{(a.kind === "textbox" ? a.text || a.contents : a.contents) || annotLabel(a, t)}</span>
-                  <span className="meta">
-                    {annotLabel(a, t)}
-                    {a.author ? ` · ${a.author}` : ""}
-                    {a.modified ? ` · ${formatRelativeDay(a.modified)}` : ""}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label={t("common.delete")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void deleteAnnotations(a.page, [a.id]);
-                  }}
-                >
-                  <Trash2 size={14} strokeWidth={1.75} aria-hidden />
-                </button>
-              </div>
-            ))}
+            {list.map((a) => {
+              const replies = a.replies ?? [];
+              const folded = collapsed.has(a.id);
+              return (
+                <div key={a.id} className="annot-thread-item" data-testid="annot-thread">
+                  <div
+                    className="annot-row"
+                    data-selected={selected.includes(a.id) || undefined}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={t("a11y.annotation", { type: annotLabel(a, t), author: a.author ?? "" })}
+                    onClick={() => open(a)}
+                    onContextMenu={(e) => menu(e, a)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        open(a);
+                      }
+                    }}
+                  >
+                    <Icon annot={a} />
+                    <span>
+                      <span className="excerpt">{(a.kind === "textbox" ? a.text || a.contents : a.contents) || annotLabel(a, t)}</span>
+                      <span className="meta">
+                        {annotLabel(a, t)}
+                        {a.author ? ` · ${a.author}` : ""}
+                        {a.modified && isoOf(a.modified) ? ` · ${formatRelativeDay(isoOf(a.modified))}` : ""}
+                      </span>
+                    </span>
+                    {replies.length > 0 && (
+                      <button
+                        type="button"
+                        className="annot-thread-badge"
+                        aria-expanded={!folded}
+                        aria-label={t(folded ? "annot.thread.expand" : "annot.thread.collapse", { count: replies.length })}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggle(a.id);
+                        }}
+                      >
+                        <MessageSquare size={12} strokeWidth={1.75} aria-hidden />
+                        <span className="mono">{replies.length}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label={t("common.delete")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void deleteAnnotations(a.page, [a.id]);
+                      }}
+                    >
+                      <Trash2 size={14} strokeWidth={1.75} aria-hidden />
+                    </button>
+                  </div>
+                  {replies.length > 0 && !folded && (
+                    <ul className="annot-thread-replies" aria-label={t("annot.thread.label")}>
+                      {replies.map((r) => (
+                        <li key={r.id}>
+                          <button
+                            type="button"
+                            className="annot-reply-row"
+                            data-testid="annot-reply-row"
+                            onClick={() => {
+                              useViewStore.getState().goToPage(a.page);
+                              openThread(a.page, a.id, false);
+                            }}
+                            onContextMenu={(e) => menu(e, r)}
+                          >
+                            <CornerDownRight size={12} strokeWidth={1.75} aria-hidden />
+                            <span>
+                              <span className="excerpt">{r.contents}</span>
+                              <span className="meta">
+                                {r.author || t("annot.thread.noAuthor")}
+                                {isoOf(r.modified ?? r.created) ? ` · ${formatRelativeDay(isoOf(r.modified ?? r.created))}` : ""}
+                              </span>
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
           </section>
         ))
       )}

@@ -14,6 +14,12 @@
  *
  * It is a plain class, not a store: the tile inventory must never re-render React per frame
  * (ARCHITECTURE §10). The component subscribes once and re-reads `mounted()` when it changes.
+ *
+ * **Clients (P2 분할 보기).** The two panes of a split share one manager: each hands over its own
+ * desired set under a client id (`setDesired(…, { client })`), the queue is their union (a tile
+ * both panes want — same page, same zoom — is requested once), the in-flight and mounted budgets
+ * are the window's, not doubled, and `mounted(client)` is the admitted tiles that client wants.
+ * With one client (the default `"main"`) it behaves exactly as before.
  */
 import type { PageIndex } from "../ipc/types";
 import type { Box } from "./geometry";
@@ -53,12 +59,13 @@ export class TileManager {
   private readonly flingInflight: number;
   private maxMounted: number;
 
-  private generation = 0;
   private fling = false;
   private seq = 0;
   private pressure: "normal" | "high" = "normal";
 
-  /** everything the viewport wants, priority-sorted */
+  /** per client (a pane of 분할 보기): its viewport generation and what it wants */
+  private clients = new Map<string, { generation: number; tiles: TileRequest[] }>();
+  /** everything the viewports want, priority-sorted, one entry per key */
   private queue: TileRequest[] = [];
   /** what is in the DOM, in admission order */
   private admitted = new Map<string, Admitted>();
@@ -66,6 +73,7 @@ export class TileManager {
   private everLoaded = new Set<string>();
   private listeners = new Set<() => void>();
   private cachedMounted: TileRequest[] | null = null;
+  private cachedByClient = new Map<string, TileRequest[]>();
 
   constructor(options: TileManagerOptions = {}) {
     this.maxInflight = options.maxInflight ?? MAX_INFLIGHT;
@@ -98,33 +106,67 @@ export class TileManager {
    * The viewport moved: `generation` is the viewport generation (bumped with every `set_viewport`),
    * `tiles` is everything visible now, in any order.
    */
-  setDesired(generation: number, tiles: TileRequest[], opts: { fling?: boolean } = {}): void {
-    const generationChanged = generation !== this.generation;
-    this.generation = generation;
+  setDesired(generation: number, tiles: TileRequest[], opts: { fling?: boolean; client?: string } = {}): void {
+    const client = opts.client ?? "main";
+    const generationChanged = generation !== (this.clients.get(client)?.generation ?? 0);
+    this.clients.set(client, { generation, tiles });
     this.fling = opts.fling ?? false;
-
-    this.queue = [...tiles].sort((a, b) => a.priority - b.priority || a.page - b.page || a.ty - b.ty || a.tx - b.tx);
-    const wanted = new Set(this.queue.map((t) => t.key));
+    const mine = new Set(tiles.map((t) => t.key));
+    const wanted = this.rebuildQueue();
 
     // Cancellation: a tile nobody wants any more is unmounted at once. On a generation bump the
     // engine has already dropped its render, so even a loaded tile would repaint stale pixels.
     let removed = false;
     for (const [key, entry] of [...this.admitted]) {
-      if (!wanted.has(key) || (generationChanged && !entry.loaded)) {
+      if (!wanted.has(key) || (generationChanged && !entry.loaded && mine.has(key))) {
         this.admitted.delete(key);
         removed = true;
       }
     }
 
-    this.pump(removed);
+    // With two panes, a tile the other pane already had mounted may now be this one's too.
+    if (!this.pump(removed) && this.clients.size > 1) this.emit();
   }
 
-  /** The `<img>`s the viewer should render, in admission (priority) order. */
-  mounted(): TileRequest[] {
+  /** A pane went away (분할 보기 closed): its tiles are no longer wanted on its account. */
+  removeClient(client: string): void {
+    if (!this.clients.delete(client)) return;
+    const wanted = this.rebuildQueue();
+    for (const key of [...this.admitted.keys()]) if (!wanted.has(key)) this.admitted.delete(key);
+    this.pump(true);
+  }
+
+  /** The union of every client's tiles, priority-sorted, the best priority winning a shared key. */
+  private rebuildQueue(): Set<string> {
+    const byKey = new Map<string, TileRequest>();
+    for (const { tiles } of this.clients.values()) {
+      for (const tile of tiles) {
+        const known = byKey.get(tile.key);
+        if (!known || tile.priority < known.priority) byKey.set(tile.key, tile);
+      }
+    }
+    this.queue = [...byKey.values()].sort(
+      (a, b) => a.priority - b.priority || a.page - b.page || a.ty - b.ty || a.tx - b.tx,
+    );
+    return new Set(byKey.keys());
+  }
+
+  /**
+   * The `<img>`s the viewer should render, in admission (priority) order — every admitted tile, or
+   * with `client` only the ones that client wants (a pane of 분할 보기).
+   */
+  mounted(client?: string): TileRequest[] {
     if (!this.cachedMounted) {
       this.cachedMounted = [...this.admitted.values()].sort((a, b) => a.seq - b.seq).map((e) => e.req);
     }
-    return this.cachedMounted;
+    if (client === undefined) return this.cachedMounted;
+    let mine = this.cachedByClient.get(client);
+    if (!mine) {
+      const keys = new Set((this.clients.get(client)?.tiles ?? []).map((t) => t.key));
+      mine = this.cachedMounted.filter((t) => keys.has(t.key));
+      this.cachedByClient.set(client, mine);
+    }
+    return mine;
   }
 
   mountedFor(page: PageIndex): TileRequest[] {
@@ -156,7 +198,7 @@ export class TileManager {
     let inflight = 0;
     for (const entry of this.admitted.values()) if (!entry.loaded) inflight += 1;
     return {
-      generation: this.generation,
+      generation: this.clients.get("main")?.generation ?? 0,
       inflight,
       mounted: this.admitted.size,
       queued: this.queue.length,
@@ -175,7 +217,7 @@ export class TileManager {
   // -------------------------------------------------------------------------
 
   /** Admit as many queued tiles as the in-flight and mounted budgets allow. */
-  private pump(force = false): void {
+  private pump(force = false): boolean {
     let inflight = 0;
     for (const entry of this.admitted.values()) if (!entry.loaded) inflight += 1;
 
@@ -190,7 +232,11 @@ export class TileManager {
       changed = true;
     }
 
-    if (this.evict() || changed) this.emit();
+    if (this.evict() || changed) {
+      this.emit();
+      return true;
+    }
+    return false;
   }
 
   /** LRU: when more tiles are mounted than the budget allows, drop the farthest ones. */
@@ -210,6 +256,7 @@ export class TileManager {
 
   private emit(): void {
     this.cachedMounted = null;
+    this.cachedByClient.clear();
     for (const listener of this.listeners) listener();
   }
 }

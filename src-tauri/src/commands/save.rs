@@ -49,6 +49,71 @@ fn exists(path: &str) -> bool {
     std::path::Path::new(path).try_exists().unwrap_or(true)
 }
 
+/// At most this many files come back from one folder (여러 파일에서 검색 is a search over a
+/// project folder, not over a disk).
+pub const MAX_LISTED_PDFS: usize = 2000;
+/// How deep a recursive listing goes.
+const MAX_LIST_DEPTH: usize = 16;
+
+/// P2 여러 파일에서 검색 › 폴더 추가: every `*.pdf` (any case) under `dir`, sorted by path.
+///
+/// File-system only, on a blocking thread — no PDFium. Hidden entries (`.name`) are skipped and
+/// symbolic links are not followed (a link cycle would never end). `recursive` defaults to
+/// true; at most [`MAX_LISTED_PDFS`] paths, [`MAX_LIST_DEPTH`] levels. An unreadable
+/// sub-directory is skipped; an unreadable `dir` itself is an `io` error.
+#[tauri::command]
+pub async fn list_pdf_files(
+    dir: String,
+    recursive: Option<bool>,
+) -> Result<Vec<String>, EngineError> {
+    let recursive = recursive.unwrap_or(true);
+    tauri::async_runtime::spawn_blocking(move || list_pdfs(std::path::Path::new(&dir), recursive))
+        .await
+        .map_err(|e| EngineError::io(format!("list folder: {e}")))?
+}
+
+pub fn list_pdfs(dir: &std::path::Path, recursive: bool) -> Result<Vec<String>, EngineError> {
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+    let mut first = true;
+    while let Some((path, depth)) = stack.pop() {
+        let entries = match std::fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(e) if first => return Err(EngineError::from(e)),
+            Err(_) => continue,
+        };
+        first = false;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            // `file_type` does not follow symbolic links.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let child = entry.path();
+            if kind.is_dir() {
+                if recursive && depth + 1 < MAX_LIST_DEPTH {
+                    stack.push((child, depth + 1));
+                }
+            } else if kind.is_file()
+                && child
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+            {
+                out.push(child.display().to_string());
+                if out.len() >= MAX_LISTED_PDFS {
+                    out.sort();
+                    return Ok(out);
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 async fn run_save(
     engine: State<'_, EngineHandle>,
     doc_id: String,
@@ -86,7 +151,44 @@ async fn run_save(
 
 #[cfg(test)]
 mod tests {
-    use super::exists;
+    use super::{exists, list_pdfs};
+
+    #[test]
+    fn list_pdf_files_recurses_sorts_and_skips_hidden() {
+        let dir = std::env::temp_dir().join(format!("seepdf-list-pdfs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("하위/깊은")).unwrap();
+        std::fs::create_dir_all(dir.join(".숨김")).unwrap();
+        for (name, body) in [
+            ("b.pdf", "%PDF"),
+            ("A.PDF", "%PDF"),
+            ("메모.txt", "x"),
+            ("하위/계약서.pdf", "%PDF"),
+            ("하위/깊은/c.pdf", "%PDF"),
+            (".숨김/d.pdf", "%PDF"),
+            (".e.pdf", "%PDF"),
+        ] {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        let all = list_pdfs(&dir, true).unwrap();
+        let rel: Vec<String> = all
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&dir.display().to_string())
+                    .unwrap()
+                    .trim_start_matches(['/', '\\'])
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            rel,
+            vec!["A.PDF", "b.pdf", "하위/계약서.pdf", "하위/깊은/c.pdf"]
+        );
+        let flat = list_pdfs(&dir, false).unwrap();
+        assert_eq!(flat.len(), 2);
+        assert!(list_pdfs(&dir.join("없음"), true).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn path_exists_reports_files_and_free_names() {

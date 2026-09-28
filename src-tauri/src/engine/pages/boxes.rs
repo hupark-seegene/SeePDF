@@ -127,15 +127,15 @@ pub fn set_page_boxes(
                     _ => None,
                 },
                 Some(None) => Some(media_rect),
-                Some(Some(CropSpec::Rect(r))) => Some(
-                    intersect(&normalize(r), &media_rect).ok_or_else(|| {
+                Some(Some(CropSpec::Rect(r))) => {
+                    Some(intersect(&normalize(r), &media_rect).ok_or_else(|| {
                         EngineError::invalid(format!(
                             "the crop box lies outside the media box of page {}",
                             p + 1
                         ))
                         .with_page(p)
-                    })?,
-                ),
+                    })?)
+                }
                 Some(Some(CropSpec::Margins { margins })) => {
                     let inset = margins_to_user(rotation, &crop_now, &margins)
                         .map_err(|e| e.with_page(p))?;
@@ -459,7 +459,9 @@ fn is_identity(m: Matrix) -> bool {
 }
 
 fn check_box(r: &Rect, what: &str) -> Result<(), EngineError> {
-    let finite = [r.l, r.b, r.r, r.t].iter().all(|v| v.is_finite() && v.abs() <= HUGE);
+    let finite = [r.l, r.b, r.r, r.t]
+        .iter()
+        .all(|v| v.is_finite() && v.abs() <= HUGE);
     let r = normalize(*r);
     if !finite || r.width() < MIN_SIDE || r.height() < MIN_SIDE {
         return Err(EngineError::invalid(format!(
@@ -548,8 +550,8 @@ fn explicit_box(found: Result<PdfPageBoundaryBox, PdfiumError>) -> Option<Rect> 
 /// What the page shows: its own crop box, else its own media box, else PDFium's page box
 /// (which honours inherited boxes).
 fn visible_box(page: &PdfPage<'_>) -> Result<Rect, EngineError> {
-    if let Some(r) = explicit_box(page.boundaries().crop())
-        .or_else(|| explicit_box(page.boundaries().media()))
+    if let Some(r) =
+        explicit_box(page.boundaries().crop()).or_else(|| explicit_box(page.boundaries().media()))
     {
         return Ok(r);
     }
@@ -688,17 +690,32 @@ mod tests {
     #[test]
     fn boxes_are_validated() {
         assert!(check_box(&Rect::new(0.0, 0.0, 100.0, 100.0), "crop").is_ok());
-        assert!(check_box(&Rect::new(100.0, 100.0, 0.0, 0.0), "crop").is_ok(), "normalised");
+        assert!(
+            check_box(&Rect::new(100.0, 100.0, 0.0, 0.0), "crop").is_ok(),
+            "normalised"
+        );
         assert!(check_box(&Rect::new(0.0, 0.0, 0.5, 100.0), "crop").is_err());
         assert!(check_box(&Rect::new(0.0, 0.0, f32::NAN, 100.0), "crop").is_err());
         assert!(check_box(&Rect::new(0.0, 0.0, 20_000.0, 100.0), "media").is_err());
-        assert!(check_margins(&Margins { top: -1.0, right: 0.0, bottom: 0.0, left: 0.0 }).is_err());
+        assert!(check_margins(&Margins {
+            top: -1.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0
+        })
+        .is_err());
         assert_eq!(
-            intersect(&Rect::new(0.0, 0.0, 10.0, 10.0), &Rect::new(5.0, 5.0, 20.0, 20.0)),
+            intersect(
+                &Rect::new(0.0, 0.0, 10.0, 10.0),
+                &Rect::new(5.0, 5.0, 20.0, 20.0)
+            ),
             Some(Rect::new(5.0, 5.0, 10.0, 10.0))
         );
         assert_eq!(
-            intersect(&Rect::new(0.0, 0.0, 10.0, 10.0), &Rect::new(10.0, 0.0, 20.0, 20.0)),
+            intersect(
+                &Rect::new(0.0, 0.0, 10.0, 10.0),
+                &Rect::new(10.0, 0.0, 20.0, 20.0)
+            ),
             None
         );
     }

@@ -11,8 +11,8 @@ use seepdf_lib::engine::registry;
 use seepdf_lib::engine::save;
 use seepdf_lib::engine::structure::{labels, links, outline};
 use seepdf_lib::ipc::types::{
-    Annot, AnnotKind, AnnotResult, DocInfo, LinkDest, LinkTarget, LinkUrl, OutlineDest, OutlineNode,
-    PageLabelRange, PageLabelStyle, Rect,
+    Annot, AnnotKind, AnnotResult, DocInfo, LinkDest, LinkTarget, LinkUrl, OutlineDest,
+    OutlineNode, PageLabelRange, PageLabelStyle, Rect,
 };
 use seepdf_lib::ipc::{EngineError, ErrorCode};
 use std::collections::HashSet;
@@ -43,7 +43,12 @@ fn get_labels(doc_id: &str) -> Result<Vec<PageLabelRange>, EngineError> {
     with_state(move |st| labels::get_page_labels(st, &doc_id))
 }
 
-fn create_link(doc_id: &str, page: u16, rect: Rect, target: LinkTarget) -> Result<AnnotResult, EngineError> {
+fn create_link(
+    doc_id: &str,
+    page: u16,
+    rect: Rect,
+    target: LinkTarget,
+) -> Result<AnnotResult, EngineError> {
     let doc_id = doc_id.to_string();
     with_state(move |st| links::create_link(st, &doc_id, page, rect, &target))
 }
@@ -93,11 +98,23 @@ fn reopen(bytes: Vec<u8>) -> TestDoc {
 }
 
 fn node(title: &str, page: Option<u16>) -> OutlineNode {
-    OutlineNode { title: title.into(), page, dest: None, url: None, open: None, children: vec![] }
+    OutlineNode {
+        title: title.into(),
+        page,
+        dest: None,
+        url: None,
+        open: None,
+        children: vec![],
+    }
 }
 
 fn page_target(page: u16, y: Option<f32>) -> LinkTarget {
-    LinkTarget::Page(LinkDest { page, x: None, y, zoom: None })
+    LinkTarget::Page(LinkDest {
+        page,
+        x: None,
+        y,
+        zoom: None,
+    })
 }
 
 fn url_target(url: &str) -> LinkTarget {
@@ -113,11 +130,19 @@ fn url_target(url: &str) -> LinkTarget {
 fn sample_outline() -> Vec<OutlineNode> {
     vec![
         OutlineNode {
-            dest: Some(OutlineDest { x: None, y: Some(700.0), zoom: None }),
+            dest: Some(OutlineDest {
+                x: None,
+                y: Some(700.0),
+                zoom: None,
+            }),
             open: Some(true),
             children: vec![
                 OutlineNode {
-                    dest: Some(OutlineDest { x: Some(72.0), y: Some(650.5), zoom: Some(1.5) }),
+                    dest: Some(OutlineDest {
+                        x: Some(72.0),
+                        y: Some(650.5),
+                        zoom: Some(1.5),
+                    }),
                     ..node("1.1 배경", Some(1))
                 },
                 OutlineNode {
@@ -128,7 +153,10 @@ fn sample_outline() -> Vec<OutlineNode> {
             ],
             ..node("1장 서론", Some(0))
         },
-        OutlineNode { url: Some("https://example.com/seepdf?q=1".into()), ..node("웹 링크", None) },
+        OutlineNode {
+            url: Some("https://example.com/seepdf?q=1".into()),
+            ..node("웹 링크", None)
+        },
         node("No target", None),
         node("Last page", Some(13)),
     ]
@@ -138,17 +166,31 @@ fn sample_outline() -> Vec<OutlineNode> {
 /// way down; returns the number of items.
 fn check_outline_structure(bytes: &[u8]) -> usize {
     let doc = lopdf::Document::load_mem(bytes).expect("lopdf parses the file");
-    let root_id = doc.catalog().unwrap().get(b"Outlines").unwrap().as_reference().unwrap();
+    let root_id = doc
+        .catalog()
+        .unwrap()
+        .get(b"Outlines")
+        .unwrap()
+        .as_reference()
+        .unwrap();
     let root = doc.get_dictionary(root_id).unwrap();
     assert_eq!(root.get(b"Type").unwrap().as_name().unwrap(), b"Outlines");
     let mut seen = HashSet::new();
     let (items, visible) = check_level(&doc, root_id, &mut seen);
-    assert_eq!(root.get(b"Count").unwrap().as_i64().unwrap(), visible, "outline /Count");
+    assert_eq!(
+        root.get(b"Count").unwrap().as_i64().unwrap(),
+        visible,
+        "outline /Count"
+    );
     items
 }
 
 /// Walks the children of `parent`; returns (items at all levels, visible items when open).
-fn check_level(doc: &lopdf::Document, parent: lopdf::ObjectId, seen: &mut HashSet<lopdf::ObjectId>) -> (usize, i64) {
+fn check_level(
+    doc: &lopdf::Document,
+    parent: lopdf::ObjectId,
+    seen: &mut HashSet<lopdf::ObjectId>,
+) -> (usize, i64) {
     let dict = doc.get_dictionary(parent).unwrap();
     let Ok(first) = dict.get(b"First") else {
         assert!(!dict.has(b"Last"), "/Last without /First");
@@ -160,14 +202,26 @@ fn check_level(doc: &lopdf::Document, parent: lopdf::ObjectId, seen: &mut HashSe
     while let Some(id) = current {
         assert!(seen.insert(id), "cycle at {id:?}");
         let item = doc.get_dictionary(id).unwrap();
-        assert_eq!(item.get(b"Parent").unwrap().as_reference().unwrap(), parent, "/Parent");
-        assert_eq!(item.get(b"Prev").ok().map(|p| p.as_reference().unwrap()), previous, "/Prev");
+        assert_eq!(
+            item.get(b"Parent").unwrap().as_reference().unwrap(),
+            parent,
+            "/Parent"
+        );
+        assert_eq!(
+            item.get(b"Prev").ok().map(|p| p.as_reference().unwrap()),
+            previous,
+            "/Prev"
+        );
         let (sub_items, sub_visible) = check_level(doc, id, seen);
         items += 1 + sub_items;
         visible += 1;
         if sub_items > 0 {
             let count = item.get(b"Count").unwrap().as_i64().unwrap();
-            assert_eq!(count.abs(), sub_visible, "|/Count| of an item = its visible descendants");
+            assert_eq!(
+                count.abs(),
+                sub_visible,
+                "|/Count| of an item = its visible descendants"
+            );
             if count > 0 {
                 visible += count;
             }
@@ -177,7 +231,11 @@ fn check_level(doc: &lopdf::Document, parent: lopdf::ObjectId, seen: &mut HashSe
         previous = Some(id);
         current = item.get(b"Next").ok().map(|n| n.as_reference().unwrap());
     }
-    assert_eq!(dict.get(b"Last").unwrap().as_reference().unwrap(), previous.unwrap(), "/Last");
+    assert_eq!(
+        dict.get(b"Last").unwrap().as_reference().unwrap(),
+        previous.unwrap(),
+        "/Last"
+    );
     (items, visible)
 }
 
@@ -209,8 +267,23 @@ fn structure_outline_roundtrip() {
     // (1.2.a is hidden by the closed 1.2).
     assert_eq!(check_outline_structure(&bytes), 7);
     let parsed = lopdf::Document::load_mem(&bytes).unwrap();
-    let root_id = parsed.catalog().unwrap().get(b"Outlines").unwrap().as_reference().unwrap();
-    assert_eq!(parsed.get_dictionary(root_id).unwrap().get(b"Count").unwrap().as_i64().unwrap(), 6);
+    let root_id = parsed
+        .catalog()
+        .unwrap()
+        .get(b"Outlines")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    assert_eq!(
+        parsed
+            .get_dictionary(root_id)
+            .unwrap()
+            .get(b"Count")
+            .unwrap()
+            .as_i64()
+            .unwrap(),
+        6
+    );
 }
 
 /// The raw reader keeps Stage 2's destination mapping (STAGE1C_NOTES §7.1): TAMReview's first
@@ -226,7 +299,11 @@ fn structure_outline_reader_keeps_the_stage2_dest() {
     assert_eq!((dest.x, dest.y), (Some(0.0), Some(806.0)));
     fn walk(nodes: &[OutlineNode]) {
         for n in nodes {
-            assert_eq!(n.open.is_some(), !n.children.is_empty(), "open only on nodes with children");
+            assert_eq!(
+                n.open.is_some(),
+                !n.children.is_empty(),
+                "open only on nodes with children"
+            );
             assert!(n.url.is_none());
             walk(&n.children);
         }
@@ -244,7 +321,11 @@ fn structure_outline_undo_remove_and_validation() {
     let doc = open(name);
     let original = get_outline(&doc.doc_id);
     assert_eq!(original.len(), 3);
-    assert_eq!(original[0].open, Some(true), "the fixture's Chapter A has /Count 2");
+    assert_eq!(
+        original[0].open,
+        Some(true),
+        "the fixture's Chapter A has /Count 2"
+    );
 
     // A page past the end is refused and pushes no undo step.
     let err = set_outline(&doc.doc_id, vec![node("x", Some(6))]).expect_err("page 6 of 6");
@@ -271,7 +352,10 @@ fn structure_outline_undo_remove_and_validation() {
         .filter_map(|o| o.as_dict().ok())
         .filter(|d| d.has(b"Title"))
         .count();
-    assert_eq!(titles, 0, "the old outline items were deleted, not just unlinked");
+    assert_eq!(
+        titles, 0,
+        "the old outline items were deleted, not just unlinked"
+    );
     assert!(!reopen(bytes).info.has_outline);
 }
 
@@ -279,8 +363,18 @@ fn structure_outline_undo_remove_and_validation() {
 // Page labels
 // ---------------------------------------------------------------------------------------
 
-fn range(start: u16, style: PageLabelStyle, prefix: Option<&str>, first: Option<u32>) -> PageLabelRange {
-    PageLabelRange { start, style, prefix: prefix.map(str::to_owned), first }
+fn range(
+    start: u16,
+    style: PageLabelStyle,
+    prefix: Option<&str>,
+    first: Option<u32>,
+) -> PageLabelRange {
+    PageLabelRange {
+        start,
+        style,
+        prefix: prefix.map(str::to_owned),
+        first,
+    }
 }
 
 #[test]
@@ -297,7 +391,20 @@ fn structure_labels_roundtrip() {
     ];
     let info = set_labels(&doc.doc_id, ranges.clone()).expect("set_page_labels");
     let expected: Vec<String> = [
-        "i", "ii", "iii", "1", "2", "3", "4", "5", "6", "7", "부록-A", "부록-B", "부록-C", "Back cover",
+        "i",
+        "ii",
+        "iii",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "부록-A",
+        "부록-B",
+        "부록-C",
+        "Back cover",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -315,12 +422,19 @@ fn structure_labels_roundtrip() {
     assert_eq!(get_labels(&saved.doc_id).unwrap(), ranges);
 
     // A first range that starts later gets plain numbers in front of it; /St is honoured.
-    let info = set_labels(&doc.doc_id, vec![range(2, PageLabelStyle::Roman, Some("p."), Some(4))]).unwrap();
+    let info = set_labels(
+        &doc.doc_id,
+        vec![range(2, PageLabelStyle::Roman, Some("p."), Some(4))],
+    )
+    .unwrap();
     let labels = info.page_labels.unwrap();
     assert_eq!(&labels[..4], &["1", "2", "p.iv", "p.v"]);
     assert_eq!(
         get_labels(&doc.doc_id).unwrap(),
-        vec![range(0, PageLabelStyle::Decimal, None, None), range(2, PageLabelStyle::Roman, Some("p."), Some(4))]
+        vec![
+            range(0, PageLabelStyle::Decimal, None, None),
+            range(2, PageLabelStyle::Roman, Some("p."), Some(4))
+        ]
     );
 
     // Undo twice: back to no labels at all.
@@ -330,11 +444,18 @@ fn structure_labels_roundtrip() {
     assert!(back.pages.iter().all(|p| p.label.is_none()));
 
     // Validation.
-    let err = set_labels(&doc.doc_id, vec![range(14, PageLabelStyle::Decimal, None, None)]).unwrap_err();
+    let err = set_labels(
+        &doc.doc_id,
+        vec![range(14, PageLabelStyle::Decimal, None, None)],
+    )
+    .unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidArgument);
     let err = set_labels(
         &doc.doc_id,
-        vec![range(1, PageLabelStyle::Decimal, None, None), range(1, PageLabelStyle::Roman, None, None)],
+        vec![
+            range(1, PageLabelStyle::Decimal, None, None),
+            range(1, PageLabelStyle::Roman, None, None),
+        ],
     )
     .unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidArgument);
@@ -348,7 +469,10 @@ fn structure_labels_fixture_undo_and_remove() {
         return;
     }
     let doc = open(name);
-    let original: Vec<String> = ["i", "ii", "1", "2", "App-A", "App-B"].iter().map(|s| s.to_string()).collect();
+    let original: Vec<String> = ["i", "ii", "1", "2", "App-A", "App-B"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(doc.info.page_labels.as_ref(), Some(&original));
     assert_eq!(
         get_labels(&doc.doc_id).unwrap(),
@@ -368,7 +492,10 @@ fn structure_labels_fixture_undo_and_remove() {
 
     let back = undo(&doc.doc_id);
     assert_eq!(back.page_labels.as_ref(), Some(&original));
-    assert!(get_outline(&doc.doc_id).len() == 3, "the outline was not touched");
+    assert!(
+        get_outline(&doc.doc_id).len() == 3,
+        "the outline was not touched"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -376,16 +503,25 @@ fn structure_labels_fixture_undo_and_remove() {
 // ---------------------------------------------------------------------------------------
 
 fn find_link<'a>(annots: &'a [Annot], id: &str) -> &'a Annot {
-    annots.iter().find(|a| a.id == id).unwrap_or_else(|| panic!("link {id} not listed"))
+    annots
+        .iter()
+        .find(|a| a.id == id)
+        .unwrap_or_else(|| panic!("link {id} not listed"))
 }
 
 fn border_of(bytes: &[u8], id: &str) -> Vec<i64> {
     let doc = lopdf::Document::load_mem(bytes).unwrap();
     for object in doc.objects.values() {
         let Ok(dict) = object.as_dict() else { continue };
-        let name = dict.get(b"NM").ok().and_then(|n| lopdf::decode_text_string(n).ok());
+        let name = dict
+            .get(b"NM")
+            .ok()
+            .and_then(|n| lopdf::decode_text_string(n).ok());
         if name.as_deref() == Some(id) {
-            assert!(!(dict.has(b"Dest") && dict.has(b"A")), "a link has /Dest or /A, never both");
+            assert!(
+                !(dict.has(b"Dest") && dict.has(b"A")),
+                "a link has /Dest or /A, never both"
+            );
             return dict
                 .get(b"Border")
                 .unwrap()
@@ -403,29 +539,65 @@ fn border_of(bytes: &[u8], id: &str) -> Vec<i64> {
 fn structure_link_to_a_web_address() {
     let doc = open("tracemonkey.pdf");
     let rect = Rect::new(300.0, 556.0, 120.0, 540.0); // corners in any order
-    let result = create_link(&doc.doc_id, 0, rect, url_target("https://example.com/seepdf")).expect("create");
+    let result = create_link(
+        &doc.doc_id,
+        0,
+        rect,
+        url_target("https://example.com/seepdf"),
+    )
+    .expect("create");
     let link = result.annot.clone().expect("the new link");
     assert_eq!(link.kind, AnnotKind::Link);
     assert_eq!(link.uri.as_deref(), Some("https://example.com/seepdf"));
     assert_eq!(link.dest, None);
     assert_eq!(link.rect, Rect::new(120.0, 540.0, 300.0, 556.0));
     assert!(result.previous.is_none());
-    assert_eq!(info(&doc.doc_id).undo_label.as_deref(), Some("undo.linkCreate"));
+    assert_eq!(
+        info(&doc.doc_id).undo_label.as_deref(),
+        Some("undo.linkCreate")
+    );
 
     // Non-ASCII is percent-encoded (a URI is 7-bit).
-    let result = update_link(&doc.doc_id, 0, &link.id, None, Some(url_target("https://예.kr/a b"))).unwrap();
-    assert_eq!(result.annot.as_ref().unwrap().uri.as_deref(), Some("https://%EC%98%88.kr/a%20b"));
-    assert_eq!(result.previous.as_ref().unwrap().uri.as_deref(), Some("https://example.com/seepdf"));
+    let result = update_link(
+        &doc.doc_id,
+        0,
+        &link.id,
+        None,
+        Some(url_target("https://예.kr/a b")),
+    )
+    .unwrap();
+    assert_eq!(
+        result.annot.as_ref().unwrap().uri.as_deref(),
+        Some("https://%EC%98%88.kr/a%20b")
+    );
+    assert_eq!(
+        result.previous.as_ref().unwrap().uri.as_deref(),
+        Some("https://example.com/seepdf")
+    );
 
     let bytes = save_as(&doc.doc_id, "link-url.pdf");
-    assert_eq!(border_of(&bytes, &link.id), vec![0, 0, 0], "a link draws no box");
+    assert_eq!(
+        border_of(&bytes, &link.id),
+        vec![0, 0, 0],
+        "a link draws no box"
+    );
     let saved = reopen(bytes);
     let read = find_link(&list(&saved.doc_id, 0), &link.id).clone();
     assert_eq!(read.uri.as_deref(), Some("https://%EC%98%88.kr/a%20b"));
 
     // Validation.
-    let err = create_link(&doc.doc_id, 0, Rect::new(10.0, 10.0, 10.5, 40.0), url_target("https://x")).unwrap_err();
-    assert_eq!(err.code, ErrorCode::InvalidArgument, "a sliver is not a click area");
+    let err = create_link(
+        &doc.doc_id,
+        0,
+        Rect::new(10.0, 10.0, 10.5, 40.0),
+        url_target("https://x"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.code,
+        ErrorCode::InvalidArgument,
+        "a sliver is not a click area"
+    );
     let err = create_link(&doc.doc_id, 0, rect, url_target("   ")).unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidArgument);
     let err = update_link(&doc.doc_id, 0, "no-such-id", Some(rect), None).unwrap_err();
@@ -436,24 +608,51 @@ fn structure_link_to_a_web_address() {
 fn structure_link_to_a_page() {
     let doc = open("tracemonkey.pdf");
     let rect = Rect::new(100.0, 100.0, 220.0, 130.0);
-    let result = create_link(&doc.doc_id, 0, rect, page_target(5, Some(500.0))).expect("create page link");
+    let result =
+        create_link(&doc.doc_id, 0, rect, page_target(5, Some(500.0))).expect("create page link");
     let link = result.annot.clone().expect("the new link");
     assert_eq!(link.kind, AnnotKind::Link);
-    assert_eq!(link.dest, Some(LinkDest { page: 5, x: None, y: Some(500.0), zoom: None }));
+    assert_eq!(
+        link.dest,
+        Some(LinkDest {
+            page: 5,
+            x: None,
+            y: Some(500.0),
+            zoom: None
+        })
+    );
     assert_eq!(link.uri, None);
     let after_create = info(&doc.doc_id);
     assert_eq!(after_create.undo_label.as_deref(), Some("undo.linkCreate"));
 
     // page → web address (lopdf: /A in, /Dest out)
-    let r = update_link(&doc.doc_id, 0, &link.id, None, Some(url_target("https://example.com"))).unwrap();
+    let r = update_link(
+        &doc.doc_id,
+        0,
+        &link.id,
+        None,
+        Some(url_target("https://example.com")),
+    )
+    .unwrap();
     let now = r.annot.unwrap();
-    assert_eq!((now.uri.as_deref(), now.dest), (Some("https://example.com"), None));
+    assert_eq!(
+        (now.uri.as_deref(), now.dest),
+        (Some("https://example.com"), None)
+    );
     assert_eq!(r.previous.unwrap().dest.map(|d| d.page), Some(5));
 
     // web address → page, whole page (/Fit reads back with no position)
     let r = update_link(&doc.doc_id, 0, &link.id, None, Some(page_target(2, None))).unwrap();
     let now = r.annot.unwrap();
-    assert_eq!(now.dest, Some(LinkDest { page: 2, x: None, y: None, zoom: None }));
+    assert_eq!(
+        now.dest,
+        Some(LinkDest {
+            page: 2,
+            x: None,
+            y: None,
+            zoom: None
+        })
+    );
     assert_eq!(now.uri, None);
 
     // move only (PDFium)
@@ -462,27 +661,45 @@ fn structure_link_to_a_page() {
     let now = r.annot.unwrap();
     assert_eq!(now.rect, moved);
     assert_eq!(now.dest.map(|d| d.page), Some(2), "moving keeps the target");
-    assert_eq!(info(&doc.doc_id).undo_label.as_deref(), Some("undo.linkEdit"));
+    assert_eq!(
+        info(&doc.doc_id).undo_label.as_deref(),
+        Some("undo.linkEdit")
+    );
 
     // Save → reopen with PDFium.
     let bytes = save_as(&doc.doc_id, "link-page.pdf");
     assert_eq!(border_of(&bytes, &link.id), vec![0, 0, 0]);
     let saved = reopen(bytes);
     let read = find_link(&list(&saved.doc_id, 0), &link.id).clone();
-    assert_eq!(read.dest, Some(LinkDest { page: 2, x: None, y: None, zoom: None }));
+    assert_eq!(
+        read.dest,
+        Some(LinkDest {
+            page: 2,
+            x: None,
+            y: None,
+            zoom: None
+        })
+    );
     assert_eq!(read.rect, moved);
 
     // Delete, then undo brings it back.
     let r = delete_link(&doc.doc_id, 0, &link.id).unwrap();
     assert!(r.list.annots.iter().all(|a| a.id != link.id));
     assert_eq!(r.previous.unwrap().id, link.id);
-    assert_eq!(info(&doc.doc_id).undo_label.as_deref(), Some("undo.linkDelete"));
+    assert_eq!(
+        info(&doc.doc_id).undo_label.as_deref(),
+        Some("undo.linkDelete")
+    );
     undo(&doc.doc_id);
     assert_eq!(find_link(&list(&doc.doc_id, 0), &link.id).rect, moved);
 
     // Validation.
     let err = create_link(&doc.doc_id, 0, rect, page_target(14, None)).unwrap_err();
-    assert_eq!(err.code, ErrorCode::InvalidArgument, "target page out of range");
+    assert_eq!(
+        err.code,
+        ErrorCode::InvalidArgument,
+        "target page out of range"
+    );
     let err = create_link(&doc.doc_id, 14, rect, page_target(0, None)).unwrap_err();
     assert_eq!(err.code, ErrorCode::NotFound, "link page out of range");
 }
@@ -491,8 +708,18 @@ fn structure_link_to_a_page() {
 fn structure_link_update_refuses_other_annotations() {
     let doc = open("annotation-highlight.pdf");
     let annots = list(&doc.doc_id, 0);
-    let other = annots.iter().find(|a| a.kind != AnnotKind::Link).expect("a non-link annotation");
-    let err = update_link(&doc.doc_id, 0, &other.id, Some(Rect::new(0.0, 0.0, 50.0, 50.0)), None).unwrap_err();
+    let other = annots
+        .iter()
+        .find(|a| a.kind != AnnotKind::Link)
+        .expect("a non-link annotation");
+    let err = update_link(
+        &doc.doc_id,
+        0,
+        &other.id,
+        Some(Rect::new(0.0, 0.0, 50.0, 50.0)),
+        None,
+    )
+    .unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidArgument);
     let err = delete_link(&doc.doc_id, 0, &other.id).unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidArgument);
@@ -517,7 +744,12 @@ fn structure_failed_check_rolls_back() {
             &doc_id,
             MutateOpts::new("undo.outlineEdit", ChangeReason::Edit).all_pages(),
             |bytes, _| Ok(bytes.to_vec()),
-            |_, _| Err(EngineError::new(ErrorCode::VerifyFailed, "the check said no")),
+            |_, _| {
+                Err(EngineError::new(
+                    ErrorCode::VerifyFailed,
+                    "the check said no",
+                ))
+            },
         )
     })
     .unwrap_err();
@@ -525,7 +757,10 @@ fn structure_failed_check_rolls_back() {
     let after = info(&doc.doc_id);
     assert!(!after.can_undo && !after.dirty);
     assert_eq!(after.doc_generation, doc.info.doc_generation);
-    assert_eq!(get_outline(&doc.doc_id).len(), get_outline_len_of("tracemonkey.pdf"));
+    assert_eq!(
+        get_outline(&doc.doc_id).len(),
+        get_outline_len_of("tracemonkey.pdf")
+    );
 }
 
 fn get_outline_len_of(name: &str) -> usize {
@@ -544,10 +779,21 @@ fn structure_refused_on_encrypted() {
 
     let err = set_outline(&doc.doc_id, vec![node("x", Some(0))]).unwrap_err();
     assert_eq!(err.code, ErrorCode::Unsupported);
-    assert!(err.message.contains("remove the password first"), "{}", err.message);
-    let err = set_labels(&doc.doc_id, vec![range(0, PageLabelStyle::Roman, None, None)]).unwrap_err();
+    assert!(
+        err.message.contains("remove the password first"),
+        "{}",
+        err.message
+    );
+    let err = set_labels(
+        &doc.doc_id,
+        vec![range(0, PageLabelStyle::Roman, None, None)],
+    )
+    .unwrap_err();
     assert_eq!(err.code, ErrorCode::Unsupported);
-    assert_eq!(get_labels(&doc.doc_id).unwrap_err().code, ErrorCode::Unsupported);
+    assert_eq!(
+        get_labels(&doc.doc_id).unwrap_err().code,
+        ErrorCode::Unsupported
+    );
     let rect = Rect::new(50.0, 50.0, 150.0, 80.0);
     let err = create_link(&doc.doc_id, 0, rect, page_target(0, Some(10.0))).unwrap_err();
     assert_eq!(err.code, ErrorCode::Unsupported);

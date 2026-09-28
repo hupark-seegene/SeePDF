@@ -15,7 +15,10 @@
 //! comes back from `get_outline` with no target and is written as a title only), and item
 //! colour / style (`/C`, `/F`).
 
-use super::{dest_array, encode_uri, normalize_view, page_id, page_ids, refuse_encrypted, same_view, verify_failed};
+use super::{
+    dest_array, encode_uri, normalize_view, page_id, page_ids, refuse_encrypted, same_view,
+    verify_failed,
+};
 use crate::engine::raw;
 use crate::engine::registry::{self, MutateOpts};
 use crate::engine::types::EngineState;
@@ -89,10 +92,25 @@ pub fn normalize(
                     .with_page(p));
                 }
             }
-            let dest = if page.is_some() { normalize_view(n.dest)? } else { None };
+            let dest = if page.is_some() {
+                normalize_view(n.dest)?
+            } else {
+                None
+            };
             let children = normalize(&n.children, page_count, depth + 1)?;
-            let open = if children.is_empty() { None } else { Some(n.open.unwrap_or(true)) };
-            Ok(OutlineNode { title: n.title.clone(), page, dest, url, open, children })
+            let open = if children.is_empty() {
+                None
+            } else {
+                Some(n.open.unwrap_or(true))
+            };
+            Ok(OutlineNode {
+                title: n.title.clone(),
+                page,
+                dest,
+                url,
+                open,
+                children,
+            })
         })
         .collect()
 }
@@ -101,10 +119,18 @@ pub fn normalize(
 /// `None` when they match.
 fn first_difference(got: &[OutlineNode], want: &[OutlineNode], prefix: &str) -> Option<String> {
     if got.len() != want.len() {
-        return Some(if prefix.is_empty() { "(top level: count)".into() } else { format!("{prefix} (children)") });
+        return Some(if prefix.is_empty() {
+            "(top level: count)".into()
+        } else {
+            format!("{prefix} (children)")
+        });
     }
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
-        let here = if prefix.is_empty() { format!("{}", i + 1) } else { format!("{prefix}.{}", i + 1) };
+        let here = if prefix.is_empty() {
+            format!("{}", i + 1)
+        } else {
+            format!("{prefix}.{}", i + 1)
+        };
         let same = g.title == w.title
             && g.page == w.page
             && g.url == w.url
@@ -131,7 +157,11 @@ fn write_outline(bytes: &[u8], nodes: &[OutlineNode]) -> Result<Vec<u8>, EngineE
         .remove(b"Outlines");
     match old {
         Some(Object::Reference(root)) => {
-            let first = doc.get_dictionary(root).ok().and_then(|d| d.get(b"First").ok()).cloned();
+            let first = doc
+                .get_dictionary(root)
+                .ok()
+                .and_then(|d| d.get(b"First").ok())
+                .cloned();
             delete_items(&mut doc, first);
             doc.objects.remove(&root);
         }
@@ -158,7 +188,10 @@ fn write_outline(bytes: &[u8], nodes: &[OutlineNode]) -> Result<Vec<u8>, EngineE
 /// Deletes every item reachable from `first` through `/First` and `/Next` (a visited set stops
 /// a cyclic tree).
 fn delete_items(doc: &mut Document, first: Option<Object>) {
-    let mut stack: Vec<ObjectId> = first.and_then(|o| o.as_reference().ok()).into_iter().collect();
+    let mut stack: Vec<ObjectId> = first
+        .and_then(|o| o.as_reference().ok())
+        .into_iter()
+        .collect();
     let mut seen: HashSet<ObjectId> = HashSet::new();
     while let Some(id) = stack.pop() {
         if !seen.insert(id) {
@@ -206,7 +239,14 @@ fn write_level(
             item.set("First", Object::Reference(children.first));
             item.set("Last", Object::Reference(children.last));
             let open = node.open.unwrap_or(true);
-            item.set("Count", Object::Integer(if open { children.visible } else { -children.visible }));
+            item.set(
+                "Count",
+                Object::Integer(if open {
+                    children.visible
+                } else {
+                    -children.visible
+                }),
+            );
             if open {
                 visible += children.visible;
             }
@@ -218,7 +258,11 @@ fn write_level(
         }
         doc.objects.insert(ids[i], Object::Dictionary(item));
     }
-    Ok(Level { first: ids[0], last: ids[ids.len() - 1], visible })
+    Ok(Level {
+        first: ids[0],
+        last: ids[ids.len() - 1],
+        visible,
+    })
 }
 
 #[cfg(test)]
@@ -227,7 +271,14 @@ mod tests {
     use crate::ipc::types::OutlineDest;
 
     fn leaf(title: &str, page: u16) -> OutlineNode {
-        OutlineNode { title: title.into(), page: Some(page), dest: None, url: None, open: None, children: vec![] }
+        OutlineNode {
+            title: title.into(),
+            page: Some(page),
+            dest: None,
+            url: None,
+            open: None,
+            children: vec![],
+        }
     }
 
     #[test]
@@ -235,12 +286,20 @@ mod tests {
         let nodes = vec![OutlineNode {
             title: "A".into(),
             page: Some(0),
-            dest: Some(OutlineDest { x: None, y: None, zoom: Some(0.0) }),
+            dest: Some(OutlineDest {
+                x: None,
+                y: None,
+                zoom: Some(0.0),
+            }),
             url: None,
             open: Some(false),
             children: vec![
                 leaf("A.1", 1),
-                OutlineNode { url: Some("https://예.kr".into()), page: Some(1), ..leaf("web", 0) },
+                OutlineNode {
+                    url: Some("https://예.kr".into()),
+                    page: Some(1),
+                    ..leaf("web", 0)
+                },
             ],
         }];
         let out = normalize(&nodes, 3, 0).unwrap();
@@ -248,7 +307,10 @@ mod tests {
         assert_eq!(out[0].open, Some(false));
         assert_eq!(out[0].children[0].open, None);
         assert_eq!(out[0].children[1].page, None);
-        assert_eq!(out[0].children[1].url.as_deref(), Some("https://%EC%98%88.kr"));
+        assert_eq!(
+            out[0].children[1].url.as_deref(),
+            Some("https://%EC%98%88.kr")
+        );
         let err = normalize(&[leaf("x", 3)], 3, 0).unwrap_err();
         assert_eq!(err.code, crate::ipc::ErrorCode::InvalidArgument);
     }
@@ -261,7 +323,11 @@ mod tests {
                 open: Some(true),
                 children: vec![
                     leaf("A.1", 0),
-                    OutlineNode { open: Some(false), children: vec![leaf("A.2.a", 0)], ..leaf("A.2", 0) },
+                    OutlineNode {
+                        open: Some(false),
+                        children: vec![leaf("A.2.a", 0)],
+                        ..leaf("A.2", 0)
+                    },
                 ],
                 ..leaf("A", 0)
             },
@@ -276,7 +342,15 @@ mod tests {
         let a = doc.get_dictionary(level.first).unwrap();
         assert_eq!(a.get(b"Count").unwrap().as_i64().unwrap(), 2);
         let a2 = a.get(b"Last").unwrap().as_reference().unwrap();
-        assert_eq!(doc.get_dictionary(a2).unwrap().get(b"Count").unwrap().as_i64().unwrap(), -1);
+        assert_eq!(
+            doc.get_dictionary(a2)
+                .unwrap()
+                .get(b"Count")
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            -1
+        );
         let b = doc.get_dictionary(level.last).unwrap();
         assert!(!b.has(b"Count"), "a leaf has no /Count");
         assert_eq!(b.get(b"Prev").unwrap().as_reference().unwrap(), level.first);

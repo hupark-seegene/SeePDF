@@ -461,6 +461,10 @@ pub struct Annot {
     /// P2 link: the go-to-page target of a Link annotation (`/Dest`, or a GoTo `/A`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub dest: Option<LinkDest>,
+    /// P2 threads: the `/NM` of the annotation this one replies to (`/IRT`, `/RT /R` or no
+    /// `/RT`). Absent for a top-level annotation and for a `/RT /Group` member.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub in_reply_to: Option<AnnotId>,
     pub hidden: bool,
     pub printed: bool,
     pub locked: bool,
@@ -2092,7 +2096,10 @@ mod tests {
             "media": { "l": 0, "b": 0, "r": 612, "t": 792 }
         }))
         .unwrap();
-        assert_eq!(rect.crop, Some(Some(CropSpec::Rect(Rect::new(10.0, 20.0, 300.0, 400.0)))));
+        assert_eq!(
+            rect.crop,
+            Some(Some(CropSpec::Rect(Rect::new(10.0, 20.0, 300.0, 400.0))))
+        );
         assert_eq!(rect.media, Some(Some(Rect::new(0.0, 0.0, 612.0, 792.0))));
         let margins: PageBoxesArgs = serde_json::from_value(json!({
             "docId": "d1", "pages": "all",
@@ -2102,7 +2109,12 @@ mod tests {
         assert_eq!(
             margins.crop,
             Some(Some(CropSpec::Margins {
-                margins: Margins { top: 1.0, right: 2.0, bottom: 3.0, left: 4.0 }
+                margins: Margins {
+                    top: 1.0,
+                    right: 2.0,
+                    bottom: 3.0,
+                    left: 4.0
+                }
             }))
         );
         let named: ResizeTarget = serde_json::from_value(json!("Letter")).unwrap();

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { AudioLines, ChevronLeft, ChevronRight, Moon, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AudioLines, ChevronLeft, ChevronRight, Columns2, Link2, Moon, RotateCcw, RotateCw, Rows2, X, ZoomIn, ZoomOut } from "lucide-react";
 import { IconButton } from "./IconButton";
+import { resyncPanes } from "../viewer/panes";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
 import { useViewStore, ZOOM_STEPS } from "../store/viewStore";
@@ -32,6 +33,10 @@ export function StatusBar() {
   const cycleNight = useViewStore((s) => s.cycleNight);
   const setZoom = useViewStore((s) => s.setZoom);
   const setZoomMode = useViewStore((s) => s.setZoomMode);
+  const split = useViewStore((s) => s.split);
+  const toggleSplit = useViewStore((s) => s.toggleSplit);
+  const setSplitOrientation = useViewStore((s) => s.setSplitOrientation);
+  const setSyncScroll = useViewStore((s) => s.setSyncScroll);
   const job = useJobStore((s) => s.active);
   const speaking = useTtsStore((s) => s.speaking);
   const cancelJob = useJobStore((s) => s.cancel);
@@ -136,6 +141,36 @@ export function StatusBar() {
           size={16}
           onClick={cycleNight}
         />
+        {/* 분할 보기 (P2): the toggle, then — while split — 좌우 ⇄ 위아래 and 동기화 스크롤 */}
+        <IconButton
+          icon={Columns2}
+          label={t("view.split.label")}
+          shortcut={shortcutFor("view.split", os)}
+          active={!!split}
+          disabled={!info}
+          size={16}
+          onClick={toggleSplit}
+        />
+        {split && (
+          <>
+            <IconButton
+              icon={split.orientation === "side" ? Rows2 : Columns2}
+              label={t(split.orientation === "side" ? "view.split.stacked" : "view.split.side")}
+              size={16}
+              onClick={() => setSplitOrientation(split.orientation === "side" ? "stacked" : "side")}
+            />
+            <IconButton
+              icon={Link2}
+              label={t("view.split.sync")}
+              active={split.sync}
+              size={16}
+              onClick={() => {
+                if (!split.sync) resyncPanes();
+                setSyncScroll(!split.sync);
+              }}
+            />
+          </>
+        )}
       </div>
 
       <div className="status-centre">

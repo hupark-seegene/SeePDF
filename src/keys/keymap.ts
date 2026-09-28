@@ -74,6 +74,8 @@ export const KEYMAP: KeyBinding[] = [
   { id: "view.night", labelKey: "view.night.label", mac: ["Ctrl+Cmd+N"], win: ["Ctrl+Shift+N"], when: "doc", group: "view" },
   { id: "view.readingMode", labelKey: "menu.view.readingMode", mac: ["Ctrl+Cmd+R"], win: ["F8"], when: "doc", group: "view" },
   { id: "view.fullScreen", labelKey: "menu.view.fullScreen", mac: ["Ctrl+Cmd+F"], win: ["F11"], when: "always", group: "view" },
+  // P2 분할 보기: toggles; Esc (tool.none with nothing else to cancel) also closes it
+  { id: "view.split", labelKey: "menu.view.split", mac: ["Alt+Cmd+S"], win: ["Ctrl+Alt+S"], when: "doc", group: "view" },
 
   // Navigation ---------------------------------------------------------------
   { id: "go.nextPage", labelKey: "menu.go.nextPage", mac: ["ArrowDown", "PageDown", "Space"], win: ["ArrowDown", "PageDown", "Space"], when: "canvas", group: "go", sharesChordWith: "tool.hand" },
@@ -130,6 +132,8 @@ export const MENU_ONLY_IDS: readonly string[] = [
   "settings", "app.checkUpdates",
   // P2: 보기 ▸ 이 페이지 읽어 주기
   "view.readAloud",
+  // P2 여러 파일에서 검색… (편집 menu, ⋯, the 검색 panel)
+  "edit.findInFiles",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 

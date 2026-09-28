@@ -215,6 +215,11 @@ export interface EngineStats {
 `render_page_raw` exists for the 스냅샷 tool and the print path (regions the frontend composites itself);
 tiles never use it. Owner: S0 (render). Features F-02, F-26.
 
+**분할 보기 (P2).** The engine has one viewport per process, so the two panes of a split send **one** hint:
+`firstPage` / `lastPage` span both panes' on-screen pages, `centrePage` is the focused pane's, and `scaleKey` /
+`rotation` are those of the pane that settled. A render queued for either pane's pages is therefore never dropped
+as "scrolled away" (`Viewport::keeps`). No command changed.
+
 ---
 
 ## 6. Text, selection, search
@@ -279,6 +284,8 @@ export interface Annot {
   stampKind?: string; imageId?: string; // stamp/signature
   uri?: string;                         // link: a web address (/A /URI)
   dest?: LinkDest;                      // link: a go-to-page target (/Dest or a GoTo /A) — P2
+  inReplyTo?: AnnotId;                  // P2 threads: /IRT → the parent's /NM (/RT /R or absent; /RT /Group is not a reply)
+  replies?: Annot[];                    // P2, FRONTEND ONLY — never sent: the thread under a top-level annotation (src/annot/threads.ts)
   hidden: boolean; printed: boolean; locked: boolean;
   editable: 'full' | 'moveOnly' | 'readOnly';   // moveOnly = third-party AP we would regenerate
 }
@@ -313,6 +320,7 @@ create_annotation(a: { docId: DocId; page: PageIndex; spec: AnnotSpec; id?: Anno
 update_annotation(a: { docId: DocId; page: PageIndex; id: AnnotId; patch: AnnotPatch }): Promise<AnnotResult>
 delete_annotations(a: { docId: DocId; page: PageIndex; ids: AnnotId[] }): Promise<AnnotResult>
 set_annotations_hidden(a: { docId: DocId; page: PageIndex; ids: AnnotId[]; hidden: boolean }): Promise<{ viewNonce: number }>  // P1
+reply_annotation(a: { docId: DocId; page: PageIndex; parentId: AnnotId; contents: string; author?: string | null }): Promise<AnnotResult>  // P2
 
 export type AnnotScanEvent =
   | { type: 'page'; page: PageIndex; annots: Annot[] }
@@ -331,6 +339,25 @@ the engine snapshot (§7.8).
 | `update_annotation` | `SetAP(NULL)` → setters → next render regenerates | (a) | F-14 |
 | `delete_annotations` | `annotations_mut().get(i)` → `delete_annotation` (+ linked popup) | (a) | F-14 |
 | `set_annotations_hidden` | `FPDFAnnot_SetFlags` HIDDEN, transient: bumps `viewNonce`, **not** `docGeneration`, never dirties. Stage 6b: the viewer puts the nonce in that page's URLs (`vn`, §9) while a 선택-tool drag hides the annotation; the frontend unhides **before** the drag's `update_annotation`, so the HIDDEN bit is never in an undo snapshot | (a) | P1 |
+| `reply_annotation` | `engine/annot/reply.rs` through `registry::mutate_bytes` (lopdf — PDFium cannot write an indirect reference into an annotation), below | P2 | P2 threads |
+
+**Threads (P2).** A reply is a `Text` annotation with `/IRT` = an **indirect reference** to the parent's
+dictionary and `/RT /R` (ISO 32000-1 §12.5.6.2) — what Acrobat, Preview and pdf.js group into a thread. The
+engine reads `/IRT` with `FPDFAnnot_GetLinkedAnnot` and reports the parent's `/NM` as `inReplyTo` (list_page
+assigns missing `/NM`s in a first pass, so a reply listed before its parent still resolves). `reply_annotation`:
+refuses an encrypted document (`unsupported`, like `set_metadata`: lopdf would need the owner password), an
+unknown parent or one on another page (`notFound`), a form field or link parent (`invalidArgument`) — all before
+any work; then one `mutate_bytes` step (`undo.annotReply`): serialise → lopdf adds the reply (a parent that sits
+directly inside `/Annots` becomes an object of its own first) → PDFium reopens it → replace, generation + 1,
+`doc-changed { changedPages: [page] }`. The reply: `/Rect` a 20 pt square at the parent's top-left, `/F 28`
+(Print | NoZoom | NoRotate), `/Name /Comment`, `/Open false`, `/NM` uuid, `/T` author (blank = none), `/Contents`,
+`/CreationDate` = `/M`, `/P`, the parent's `/C` and `SeePDFC` colour mirror, and an **empty** normal appearance
+(`/AP << /N <empty Form XObject> >>`) — a conforming reader shows replies inside the thread, never as icons, and
+PDFium (which does not know threads) would otherwise draw a note icon over the parent. `update_annotation` on a
+reply writes the empty appearance back after its `SetAP(NULL)` step. `result.annot` is the reply.
+`delete_annotations` removes every reply below a deleted annotation (transitively, matched by `/NM` through
+`/IRT`) with its popups — one undo step; `update_annotation`'s delete + re-create of a text box / markup keeps the
+thread (the old dictionary with the same `/NM` stays in the file, so `/IRT` still resolves to that id).
 
 ### 7.2 Forms
 
@@ -1231,7 +1258,14 @@ export type SavedSignature =
 get_settings(): Promise<Settings>
 set_settings(a: { patch: Partial<Settings> }): Promise<Settings>
 write_signature_image(a: { bytes: number[] }): Promise<string>   // Stage 6b (P1-9): PNG → absolute path
+list_pdf_files(a: { dir: string; recursive?: boolean }): Promise<string[]>   // P2 여러 파일에서 검색 › 폴더 추가
 ```
+
+**`list_pdf_files`** (P2): every `*.pdf` (extension in any case) below `dir`, sorted by path — recursive unless
+`recursive: false`, at most 16 levels and 2 000 paths, hidden entries (`.name`) skipped, symbolic links not followed.
+File-system only, on `spawn_blocking`; no PDFium. An unreadable `dir` is `io`; an unreadable sub-directory is
+skipped. **여러 파일에서 검색** itself adds no command: the frontend opens each file with `open_document` beside the
+window's document, runs `search_start { fromPage: 0 }` to `done`, and `close_document`s it (§6).
 
 **`toolDefaults`** (Stage 6b, P1-12): keyed by tool id (`highlight`, `underline`, `strikeout`, `squiggly`,
 `note`, `pen`, `eraser`, `rectangle`, `ellipse`, `line`, `arrow`, `textbox`), each a *partial*
@@ -1309,6 +1343,8 @@ ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors:
 | `export_annotation_summary` | P2, `engine/export/summary.rs` | P2 annotation summary |
 | `tts_speak`, `tts_stop`, `tts_status` | P2, `app/tts.rs` | P2 read aloud |
 | `set_outline`, `create_link`, `update_link`, `delete_link`, `set_page_labels`, `get_page_labels` | P2, `engine/structure/` + `commands/structure.rs` | P2 outline / links / labels |
+| `reply_annotation` | P2, `engine/annot/reply.rs` (lopdf via `registry::mutate_bytes`) | P2 threads |
+| `list_pdf_files` | P2, `commands/save.rs` | P2 multi-file search |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

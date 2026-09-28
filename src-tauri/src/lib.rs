@@ -184,6 +184,8 @@ pub fn run() {
             commands::annots::update_annotation,
             commands::annots::delete_annotations,
             commands::annots::set_annotations_hidden,
+            // --- annotation threads (P2) ---
+            commands::annots::reply_annotation,
             // --- forms (Stage 1a) ---
             commands::forms::list_form_fields,
             commands::forms::set_form_field_value,
@@ -238,6 +240,8 @@ pub fn run() {
             commands::save::save_document,
             commands::save::save_document_as,
             commands::save::path_exists,
+            // --- 여러 파일에서 검색 › 폴더 추가 (P2) ---
+            commands::save::list_pdf_files,
             // --- export and print (Stage 1b) ---
             commands::export::export_images,
             commands::export::export_text,

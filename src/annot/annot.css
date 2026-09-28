@@ -239,7 +239,10 @@
 
 .annot-row {
   display: grid;
-  grid-template-columns: 16px 1fr auto;
+  grid-template-columns: 16px 1fr;
+  /* the thread badge and the delete button take implicit columns after the text */
+  grid-auto-flow: column;
+  grid-auto-columns: auto;
   align-items: start;
   gap: var(--space-2);
   padding: var(--space-2);
@@ -279,6 +282,130 @@
   font-size: var(--text-sm);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+/* ---------------------------------------------------------------- P2 threads (주석 tab) */
+
+.annot-thread-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.annot-thread-badge[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.annot-thread-replies {
+  margin: 0 0 var(--space-1) 24px;
+  padding: 0;
+  list-style: none;
+  border-inline-start: 1px solid var(--border-subtle);
+}
+
+.annot-reply-row {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: inherit;
+  text-align: start;
+}
+
+.annot-reply-row:hover {
+  background: var(--bg-hover);
+}
+
+.annot-reply-row .excerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.annot-reply-row .meta {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+/* ---------------------------------------------------------------- P2 threads (popover) */
+
+.annot-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-block-start: var(--space-2);
+  border-block-start: 1px solid var(--border-subtle);
+}
+
+.annot-replies {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 180px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.annot-reply-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+}
+
+.annot-reply-meta .grow {
+  flex: 1;
+}
+
+.annot-reply-meta .icon-btn {
+  width: 20px;
+  height: 20px;
+}
+
+.annot-reply-author {
+  font-weight: var(--weight-sm, 600);
+}
+
+.annot-reply-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.annot-reply-box {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.annot-reply-box textarea,
+.annot-reply textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 40px;
+  resize: vertical;
+  font: inherit;
+}
+
+.annot-thread-title {
+  color: var(--text-secondary);
 }
 
 /* ---------------------------------------------------------------- inspector extras */

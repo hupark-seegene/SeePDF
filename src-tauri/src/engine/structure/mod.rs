@@ -44,7 +44,8 @@ pub(crate) fn load(bytes: &[u8]) -> Result<Document, EngineError> {
 /// Writes the rewritten document back to bytes.
 pub(crate) fn write(mut doc: Document) -> Result<Vec<u8>, EngineError> {
     let mut out = Vec::new();
-    doc.save_to(&mut out).map_err(|e| save::lopdf_error("write", e))?;
+    doc.save_to(&mut out)
+        .map_err(|e| save::lopdf_error("write", e))?;
     Ok(out)
 }
 
@@ -107,14 +108,18 @@ pub fn encode_uri(url: &str) -> String {
 /// Finite, or `invalidArgument` (lopdf would write `NaN` / `inf`, which is not PDF).
 pub(crate) fn finite(value: Option<f32>, what: &str) -> Result<Option<f32>, EngineError> {
     match value {
-        Some(v) if !v.is_finite() => Err(EngineError::invalid(format!("{what} must be a finite number"))),
+        Some(v) if !v.is_finite() => Err(EngineError::invalid(format!(
+            "{what} must be a finite number"
+        ))),
         other => Ok(other),
     }
 }
 
 /// A destination view as it will read back: non-finite rejected, zoom ≤ 0 dropped ("retain"),
 /// all-absent → `None`.
-pub(crate) fn normalize_view(view: Option<OutlineDest>) -> Result<Option<OutlineDest>, EngineError> {
+pub(crate) fn normalize_view(
+    view: Option<OutlineDest>,
+) -> Result<Option<OutlineDest>, EngineError> {
     let Some(v) = view else {
         return Ok(None);
     };
@@ -153,8 +158,14 @@ mod tests {
 
     #[test]
     fn uri_is_percent_encoded_to_7_bit() {
-        assert_eq!(encode_uri("https://example.com/a?b=c"), "https://example.com/a?b=c");
-        assert_eq!(encode_uri(" https://예.kr/a b "), "https://%EC%98%88.kr/a%20b");
+        assert_eq!(
+            encode_uri("https://example.com/a?b=c"),
+            "https://example.com/a?b=c"
+        );
+        assert_eq!(
+            encode_uri(" https://예.kr/a b "),
+            "https://%EC%98%88.kr/a%20b"
+        );
         assert_eq!(encode_uri("https://x.kr/%20"), "https://x.kr/%20");
     }
 
@@ -165,7 +176,14 @@ mod tests {
             dest_array(page, None),
             Object::Array(vec![Object::Reference(page), Object::Name(b"Fit".to_vec())])
         );
-        let xyz = dest_array(page, Some(OutlineDest { x: None, y: Some(700.0), zoom: None }));
+        let xyz = dest_array(
+            page,
+            Some(OutlineDest {
+                x: None,
+                y: Some(700.0),
+                zoom: None,
+            }),
+        );
         assert_eq!(
             xyz,
             Object::Array(vec![
@@ -181,9 +199,34 @@ mod tests {
     #[test]
     fn views_normalize_like_they_read_back() {
         assert_eq!(normalize_view(None).unwrap(), None);
-        assert_eq!(normalize_view(Some(OutlineDest { x: None, y: None, zoom: Some(0.0) })).unwrap(), None);
-        let v = normalize_view(Some(OutlineDest { x: Some(1.0), y: None, zoom: Some(-1.0) })).unwrap();
-        assert_eq!(v, Some(OutlineDest { x: Some(1.0), y: None, zoom: None }));
-        assert!(normalize_view(Some(OutlineDest { x: Some(f32::NAN), y: None, zoom: None })).is_err());
+        assert_eq!(
+            normalize_view(Some(OutlineDest {
+                x: None,
+                y: None,
+                zoom: Some(0.0)
+            }))
+            .unwrap(),
+            None
+        );
+        let v = normalize_view(Some(OutlineDest {
+            x: Some(1.0),
+            y: None,
+            zoom: Some(-1.0),
+        }))
+        .unwrap();
+        assert_eq!(
+            v,
+            Some(OutlineDest {
+                x: Some(1.0),
+                y: None,
+                zoom: None
+            })
+        );
+        assert!(normalize_view(Some(OutlineDest {
+            x: Some(f32::NAN),
+            y: None,
+            zoom: None
+        }))
+        .is_err());
     }
 }

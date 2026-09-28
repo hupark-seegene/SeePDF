@@ -27,8 +27,8 @@ use crate::engine::raw;
 use crate::engine::registry::{self, MutateOpts};
 use crate::engine::types::EngineState;
 use crate::ipc::types::{
-    Annot, AnnotId, AnnotKind, AnnotList, AnnotResult, ChangeReason, LinkDest, LinkTarget, OutlineDest,
-    PageIndex, Rect,
+    Annot, AnnotId, AnnotKind, AnnotList, AnnotResult, ChangeReason, LinkDest, LinkTarget,
+    OutlineDest, PageIndex, Rect,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use lopdf::{Dictionary, Document, Object, ObjectId};
@@ -45,7 +45,9 @@ enum Target {
 }
 
 fn opts(label: &'static str, page: PageIndex) -> MutateOpts {
-    MutateOpts::new(label, ChangeReason::Edit).page(page).keeps_text()
+    MutateOpts::new(label, ChangeReason::Edit)
+        .page(page)
+        .keeps_text()
 }
 
 /// `create_link` — a Link annotation on `page` covering `rect`, going to `target`.
@@ -127,12 +129,18 @@ pub fn update_link(
             let mut a = raw::annot::get(bindings, &scratch.page, index)?;
             if let Some(r) = rect {
                 if !a.set_rect(r) {
-                    return Err(EngineError::new(ErrorCode::Pdfium, "FPDFAnnot_SetRect failed"));
+                    return Err(EngineError::new(
+                        ErrorCode::Pdfium,
+                        "FPDFAnnot_SetRect failed",
+                    ));
                 }
             }
             if let Some(url) = &url {
                 if !a.set_uri(url) {
-                    return Err(EngineError::new(ErrorCode::Pdfium, "FPDFAnnot_SetURI failed"));
+                    return Err(EngineError::new(
+                        ErrorCode::Pdfium,
+                        "FPDFAnnot_SetURI failed",
+                    ));
                 }
             }
             a.set_string("M", &annot::pdf_date_now());
@@ -182,7 +190,9 @@ pub fn result_for(
 ) -> Result<AnnotResult, EngineError> {
     let doc = st.doc_mut(doc_id)?;
     let annots = annot::list(doc, page)?;
-    let annot = id.as_ref().and_then(|id| annots.iter().find(|a| &a.id == id).cloned());
+    let annot = id
+        .as_ref()
+        .and_then(|id| annots.iter().find(|a| &a.id == id).cloned());
     Ok(AnnotResult {
         list: AnnotList {
             doc_id: doc.doc_id.clone(),
@@ -213,7 +223,9 @@ fn normalize_rect(r: Rect) -> Result<Rect, EngineError> {
     }
     let out = Rect::new(r.l.min(r.r), r.b.min(r.t), r.l.max(r.r), r.b.max(r.t));
     if out.width() < MIN_SIDE || out.height() < MIN_SIDE {
-        return Err(EngineError::invalid("a link needs a click area of at least 1 pt × 1 pt"));
+        return Err(EngineError::invalid(
+            "a link needs a click area of at least 1 pt × 1 pt",
+        ));
     }
     Ok(out)
 }
@@ -235,8 +247,18 @@ fn resolve(target: &LinkTarget, page_count: u16) -> Result<Target, EngineError> 
                 ))
                 .with_page(d.page));
             }
-            let view = normalize_view(Some(OutlineDest { x: d.x, y: d.y, zoom: d.zoom }))?.unwrap_or_default();
-            Ok(Target::Page(LinkDest { page: d.page, x: view.x, y: view.y, zoom: view.zoom }))
+            let view = normalize_view(Some(OutlineDest {
+                x: d.x,
+                y: d.y,
+                zoom: d.zoom,
+            }))?
+            .unwrap_or_default();
+            Ok(Target::Page(LinkDest {
+                page: d.page,
+                x: view.x,
+                y: view.y,
+                zoom: view.zoom,
+            }))
         }
     }
 }
@@ -256,7 +278,9 @@ fn find_link(
         .find(|a| a.id == id)
         .ok_or_else(|| EngineError::not_found(format!("annotation '{id}'")).with_page(page))?;
     if found.kind != AnnotKind::Link {
-        return Err(EngineError::invalid(format!("annotation '{id}' is not a link")));
+        return Err(EngineError::invalid(format!(
+            "annotation '{id}' is not a link"
+        )));
     }
     Ok(found)
 }
@@ -266,15 +290,30 @@ fn find_link(
 // ---------------------------------------------------------------------------------------
 
 fn rect_object(r: Rect) -> Object {
-    Object::Array(vec![Object::Real(r.l), Object::Real(r.b), Object::Real(r.r), Object::Real(r.t)])
+    Object::Array(vec![
+        Object::Real(r.l),
+        Object::Real(r.b),
+        Object::Real(r.r),
+        Object::Real(r.t),
+    ])
 }
 
 fn view_of(d: &LinkDest) -> Option<OutlineDest> {
-    Some(OutlineDest { x: d.x, y: d.y, zoom: d.zoom })
+    Some(OutlineDest {
+        x: d.x,
+        y: d.y,
+        zoom: d.zoom,
+    })
 }
 
 /// A new `/Link` with a `/Dest`, appended to the page's `/Annots`.
-fn add_link(bytes: &[u8], page: PageIndex, rect: Rect, id: &str, dest: LinkDest) -> Result<Vec<u8>, EngineError> {
+fn add_link(
+    bytes: &[u8],
+    page: PageIndex,
+    rect: Rect,
+    id: &str,
+    dest: LinkDest,
+) -> Result<Vec<u8>, EngineError> {
     let mut doc = super::load(bytes)?;
     let pages = page_ids(&doc);
     let page_obj = page_id(&pages, page)?;
@@ -285,13 +324,26 @@ fn add_link(bytes: &[u8], page: PageIndex, rect: Rect, id: &str, dest: LinkDest)
     dict.set("Type", Object::Name(b"Annot".to_vec()));
     dict.set("Subtype", Object::Name(b"Link".to_vec()));
     dict.set("Rect", rect_object(rect));
-    dict.set("Border", Object::Array(vec![Object::Integer(0), Object::Integer(0), Object::Integer(0)]));
+    dict.set(
+        "Border",
+        Object::Array(vec![
+            Object::Integer(0),
+            Object::Integer(0),
+            Object::Integer(0),
+        ]),
+    );
     // /F 4: Print (FLAT_PRINT and printing keep it).
-    dict.set("F", Object::Integer(raw::consts::FPDF_ANNOT_FLAG_PRINT as i64));
+    dict.set(
+        "F",
+        Object::Integer(raw::consts::FPDF_ANNOT_FLAG_PRINT as i64),
+    );
     dict.set("NM", Object::string_literal(id.as_bytes().to_vec()));
     dict.set("P", Object::Reference(page_obj));
     dict.set("Dest", dest_array(target, view_of(&dest)));
-    dict.set("CreationDate", Object::string_literal(now.as_bytes().to_vec()));
+    dict.set(
+        "CreationDate",
+        Object::string_literal(now.as_bytes().to_vec()),
+    );
     dict.set("M", Object::string_literal(now.as_bytes().to_vec()));
     let annot_id = doc.add_object(Object::Dictionary(dict));
 
@@ -317,7 +369,8 @@ fn add_link(bytes: &[u8], page: PageIndex, rect: Rect, id: &str, dest: LinkDest)
         _ => false,
     };
     if !appended {
-        page_dict_mut(&mut doc, page_obj)?.set("Annots", Object::Array(vec![Object::Reference(annot_id)]));
+        page_dict_mut(&mut doc, page_obj)?
+            .set("Annots", Object::Array(vec![Object::Reference(annot_id)]));
     }
     super::write(doc)
 }
@@ -384,12 +437,18 @@ fn rewrite_link(
             Object::Dictionary(d) => (None, d),
             _ => continue,
         };
-        let name = dict.get(b"NM").ok().and_then(|o| lopdf::decode_text_string(o).ok());
+        let name = dict
+            .get(b"NM")
+            .ok()
+            .and_then(|o| lopdf::decode_text_string(o).ok());
         if name.as_deref() != Some(id) {
             continue;
         }
         match indirect {
-            Some(r) => edit(doc.get_dictionary_mut(r).map_err(|e| crate::engine::save::lopdf_error("link", e))?),
+            Some(r) => edit(
+                doc.get_dictionary_mut(r)
+                    .map_err(|e| crate::engine::save::lopdf_error("link", e))?,
+            ),
             None => {
                 let annots = inline_annots_mut(&mut doc, page_obj)?;
                 if let Some(Object::Dictionary(d)) = annots.get_mut(index) {
@@ -399,15 +458,24 @@ fn rewrite_link(
         }
         return super::write(doc);
     }
-    Err(EngineError::not_found(format!("link '{id}' is not in page {page}'s /Annots")).with_page(page))
+    Err(
+        EngineError::not_found(format!("link '{id}' is not in page {page}'s /Annots"))
+            .with_page(page),
+    )
 }
 
 /// The page's `/Annots` array, wherever it lives, mutably.
 fn inline_annots_mut(doc: &mut Document, page: ObjectId) -> Result<&mut Vec<Object>, EngineError> {
-    let array_ref = page_dict_mut(doc, page)?.get(b"Annots").ok().and_then(|o| o.as_reference().ok());
+    let array_ref = page_dict_mut(doc, page)?
+        .get(b"Annots")
+        .ok()
+        .and_then(|o| o.as_reference().ok());
     let err = |e: lopdf::Error| crate::engine::save::lopdf_error("/Annots", e);
     match array_ref {
-        Some(r) => doc.get_object_mut(r).and_then(Object::as_array_mut).map_err(err),
+        Some(r) => doc
+            .get_object_mut(r)
+            .and_then(Object::as_array_mut)
+            .map_err(err),
         None => page_dict_mut(doc, page)?
             .get_mut(b"Annots")
             .and_then(Object::as_array_mut)
@@ -441,31 +509,51 @@ fn check_link(
                 return Err(verify_failed(format!("'{id}' is no longer a Link")));
             }
             if let (Some(want), Some(got)) = (rect, a.rect()) {
-                let same = [(want.l, got.l), (want.b, got.b), (want.r, got.r), (want.t, got.t)]
-                    .iter()
-                    .all(|(w, g)| same_f32(Some(*w), Some(*g)));
+                let same = [
+                    (want.l, got.l),
+                    (want.b, got.b),
+                    (want.r, got.r),
+                    (want.t, got.t),
+                ]
+                .iter()
+                .all(|(w, g)| same_f32(Some(*w), Some(*g)));
                 if !same {
-                    return Err(verify_failed(format!("the link's /Rect reads back as {got:?}")));
+                    return Err(verify_failed(format!(
+                        "the link's /Rect reads back as {got:?}"
+                    )));
                 }
             }
             let ok = match &want {
                 Target::Page(d) => a.link_dest(document).is_some_and(|got| {
                     got.page == d.page
                         && same_view(
-                            Some(OutlineDest { x: got.x, y: got.y, zoom: got.zoom }),
-                            Some(OutlineDest { x: d.x, y: d.y, zoom: d.zoom }),
+                            Some(OutlineDest {
+                                x: got.x,
+                                y: got.y,
+                                zoom: got.zoom,
+                            }),
+                            Some(OutlineDest {
+                                x: d.x,
+                                y: d.y,
+                                zoom: d.zoom,
+                            }),
                         )
                 }),
                 Target::Url(url) => {
-                    a.link_dest(document).is_none() && a.uri(document).as_deref() == Some(url.as_str())
+                    a.link_dest(document).is_none()
+                        && a.uri(document).as_deref() == Some(url.as_str())
                 }
             };
             return if ok {
                 Ok(())
             } else {
-                Err(verify_failed(format!("PDFium reads link '{id}' with another target")))
+                Err(verify_failed(format!(
+                    "PDFium reads link '{id}' with another target"
+                )))
             };
         }
-        Err(verify_failed(format!("link '{id}' is missing from page {page} of the rewrite")))
+        Err(verify_failed(format!(
+            "link '{id}' is missing from page {page} of the rewrite"
+        )))
     }
 }

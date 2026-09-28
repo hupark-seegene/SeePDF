@@ -146,6 +146,13 @@ export interface Annot {
   stampKind?: string; imageId?: string; // stamp/signature
   uri?: string;                         // link
   dest?: LinkDest;                      // link: go-to-page target (P2)
+  /** P2 threads: the id of the annotation this one replies to (`/IRT` + `/RT /R`) */
+  inReplyTo?: AnnotId;
+  /**
+   * P2 threads, **frontend only** (never sent by the engine): the replies under a thread root,
+   * flattened and oldest first — computed from the page list by `src/annot/threads.ts`.
+   */
+  replies?: Annot[];
   hidden: boolean; printed: boolean; locked: boolean;
   editable: 'full' | 'moveOnly' | 'readOnly';   // moveOnly = third-party AP we would regenerate
 }

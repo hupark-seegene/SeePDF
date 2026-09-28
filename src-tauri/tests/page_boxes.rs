@@ -16,9 +16,9 @@ use seepdf_lib::engine::render::tiles;
 use seepdf_lib::engine::stamp;
 use seepdf_lib::engine::text::layer;
 use seepdf_lib::ipc::types::{
-    AllPages, AnnotKind, AnnotSpec, ChangeReason, CropSpec, DocInfo, InkSpec, Margins,
-    MarkupSpec, PageObjectType, PageSelection, PageStampSource, PageStampSpec, PaperName, Rect,
-    ResizeMode, ResizeTarget, StampAnchor, StampRole,
+    AllPages, AnnotKind, AnnotSpec, ChangeReason, CropSpec, DocInfo, InkSpec, Margins, MarkupSpec,
+    PageObjectType, PageSelection, PageStampSource, PageStampSpec, PaperName, Rect, ResizeMode,
+    ResizeTarget, StampAnchor, StampRole,
 };
 use seepdf_lib::ipc::{EngineError, ErrorCode};
 
@@ -94,7 +94,12 @@ fn boxes_of(doc_id: &str, page: u16) -> (Rect, Rect) {
         let p = d.page(page)?;
         let read = |b: Result<PdfPageBoundaryBox, PdfiumError>| {
             let r = b.expect("box").bounds;
-            Rect::new(r.left().value, r.bottom().value, r.right().value, r.top().value)
+            Rect::new(
+                r.left().value,
+                r.bottom().value,
+                r.right().value,
+                r.top().value,
+            )
         };
         Ok((read(p.boundaries().crop()), read(p.boundaries().media())))
     })
@@ -186,24 +191,43 @@ fn crop_survives_save_and_reopen_and_content_renders_inside() {
         ((w, h), dark)
     };
     let area = Rect::new(72.0, 100.0, 540.0, 700.0);
-    let info = crop(&doc.doc_id, list(&[0]), Some(Some(CropSpec::Rect(area))), None).unwrap();
+    let info = crop(
+        &doc.doc_id,
+        list(&[0]),
+        Some(Some(CropSpec::Rect(area))),
+        None,
+    )
+    .unwrap();
     assert_eq!(info.undo_label.as_deref(), Some("undo.pageCrop"));
     assert!(info.dirty && info.can_undo);
     let g = &info.pages[0];
     assert_rect(g.crop, area, 0.01, "DocInfo crop");
     assert!(near(g.width_pt, 468.0, 0.01) && near(g.height_pt, 600.0, 0.01));
     // page 2 untouched
-    assert_rect(info.pages[1].crop, Rect::new(0.0, 0.0, 612.0, 792.0), 0.01, "page 2");
+    assert_rect(
+        info.pages[1].crop,
+        Rect::new(0.0, 0.0, 612.0, 792.0),
+        0.01,
+        "page 2",
+    );
 
     // content still renders, inside the new box
     let (w, h, dark) = render_ink(&doc.doc_id, 0, 1.0);
     assert_eq!((w, h), (468, 600));
-    assert!(dark > 1000 && dark < dark_before, "cropped render has ink: {dark} of {dark_before}");
+    assert!(
+        dark > 1000 && dark < dark_before,
+        "cropped render has ink: {dark} of {dark_before}"
+    );
 
     let reopened = reopen(save_bytes(&doc.doc_id));
     let (crop_box, media) = boxes_of(&reopened.doc_id, 0);
     assert_rect(crop_box, area, 0.01, "reopened crop box");
-    assert_rect(media, Rect::new(0.0, 0.0, 612.0, 792.0), 0.01, "media untouched");
+    assert_rect(
+        media,
+        Rect::new(0.0, 0.0, 612.0, 792.0),
+        0.01,
+        "media untouched",
+    );
     assert_rect(reopened.info.pages[0].crop, area, 0.01, "reopened DocInfo");
     // the text is all still there (a crop hides, it never deletes)
     let chars = |id: &str| {
@@ -214,7 +238,12 @@ fn crop_survives_save_and_reopen_and_content_renders_inside() {
 
     // one undo step back to the full page
     let back = undo(&doc.doc_id);
-    assert_rect(back.pages[0].crop, Rect::new(0.0, 0.0, 612.0, 792.0), 0.01, "undone");
+    assert_rect(
+        back.pages[0].crop,
+        Rect::new(0.0, 0.0, 612.0, 792.0),
+        0.01,
+        "undone",
+    );
 }
 
 #[test]
@@ -239,12 +268,22 @@ fn crop_margins_follow_the_rotation_and_reset_restores_the_media_box() {
     .unwrap();
     let g2 = &info.pages[1];
     // as seen: 20 + 40 off the width, 10 + 30 off the height
-    assert!(near(g2.width_pt, ch - 60.0, 0.01), "{} vs {}", g2.width_pt, ch - 60.0);
+    assert!(
+        near(g2.width_pt, ch - 60.0, 0.01),
+        "{} vs {}",
+        g2.width_pt,
+        ch - 60.0
+    );
     assert!(near(g2.height_pt, cw - 40.0, 0.01));
     // /Rotate 90: the displayed top is user x = l, the displayed left is user y = b
     assert_rect(
         g2.crop,
-        Rect::new(g.crop.l + 10.0, g.crop.b + 40.0, g.crop.r - 30.0, g.crop.t - 20.0),
+        Rect::new(
+            g.crop.l + 10.0,
+            g.crop.b + 40.0,
+            g.crop.r - 30.0,
+            g.crop.t - 20.0,
+        ),
         0.01,
         "rotated margins",
     );
@@ -276,7 +315,12 @@ fn a_new_media_box_clips_an_explicit_crop_box() {
     .unwrap();
     let (crop_box, media) = boxes_of(&doc.doc_id, 0);
     assert_rect(media, Rect::new(0.0, 0.0, 400.0, 600.0), 0.01, "media");
-    assert_rect(crop_box, Rect::new(50.0, 50.0, 400.0, 600.0), 0.01, "clipped crop");
+    assert_rect(
+        crop_box,
+        Rect::new(50.0, 50.0, 400.0, 600.0),
+        0.01,
+        "clipped crop",
+    );
     assert!(near(info.pages[0].width_pt, 350.0, 0.01));
 }
 
@@ -288,10 +332,7 @@ fn crop_refuses_impossible_boxes_and_changes_nothing() {
         let e = r.expect_err(what);
         assert_eq!(e.code, ErrorCode::InvalidArgument, "{what}: {e:?}");
     };
-    expect_invalid(
-        crop(&doc.doc_id, all(), None, Some(None)),
-        "media null",
-    );
+    expect_invalid(crop(&doc.doc_id, all(), None, Some(None)), "media null");
     expect_invalid(
         crop(
             &doc.doc_id,
@@ -348,7 +389,10 @@ fn crop_refuses_impossible_boxes_and_changes_nothing() {
         move |st| Ok(st.doc(&id)?.info())
     })
     .unwrap();
-    assert_eq!(now.doc_generation, generation, "no failed call bumped the generation");
+    assert_eq!(
+        now.doc_generation, generation,
+        "no failed call bumped the generation"
+    );
     assert!(!now.can_undo);
 }
 
@@ -366,7 +410,12 @@ fn resize_a4_to_letter_keeps_the_aspect_and_centres() {
         .find(|(t, _)| *t == PageObjectType::Path)
         .expect("the rectangle")
         .1;
-    assert_rect(rect_before, Rect::new(100.0, 200.0, 300.0, 500.0), TOL, "fixture rect");
+    assert_rect(
+        rect_before,
+        Rect::new(100.0, 200.0, 300.0, 500.0),
+        TOL,
+        "fixture rect",
+    );
 
     let info = resize(
         &doc.doc_id,
@@ -377,7 +426,10 @@ fn resize_a4_to_letter_keeps_the_aspect_and_centres() {
     .unwrap();
     assert_eq!(info.undo_label.as_deref(), Some("undo.pageResize"));
     let g = &info.pages[0];
-    assert!(near(g.width_pt, 612.0, 0.01) && near(g.height_pt, 792.0, 0.01), "{g:?}");
+    assert!(
+        near(g.width_pt, 612.0, 0.01) && near(g.height_pt, 792.0, 0.01),
+        "{g:?}"
+    );
     assert_rect(g.crop, Rect::new(0.0, 0.0, 612.0, 792.0), 0.01, "new crop");
 
     let s = (612.0 / A4.0).min(792.0 / A4.1);
@@ -404,7 +456,12 @@ fn resize_a4_to_letter_keeps_the_aspect_and_centres() {
     assert!(text.contains("Resize me"), "{text:?}");
     let reopened = reopen(save_bytes(&doc.doc_id));
     let (crop_box, media) = boxes_of(&reopened.doc_id, 0);
-    assert_rect(media, Rect::new(0.0, 0.0, 612.0, 792.0), 0.01, "reopened media");
+    assert_rect(
+        media,
+        Rect::new(0.0, 0.0, 612.0, 792.0),
+        0.01,
+        "reopened media",
+    );
     assert_rect(crop_box, media, 0.01, "reopened crop");
     let reopened_rect = object_rects(&reopened.doc_id, 0)
         .into_iter()
@@ -436,7 +493,10 @@ fn resize_centre_mode_keeps_the_scale() {
     )
     .unwrap();
     assert!(near(info.pages[0].width_pt, A4.0, 0.01));
-    assert!(near(info.pages[1].width_pt, 612.0, 0.01), "only page 1 resized");
+    assert!(
+        near(info.pages[1].width_pt, 612.0, 0.01),
+        "only page 1 resized"
+    );
     let (dx, dy) = ((A4.0 - 612.0) / 2.0, (A4.1 - 792.0) / 2.0);
     let after = first_char_box(&doc.doc_id, 0);
     assert_rect(
@@ -501,9 +561,20 @@ fn resize_moves_annotations_with_the_content() {
 
     let after = with_doc(&doc.doc_id, |d| annot::list(d, 0)).unwrap();
     assert_eq!(after.len(), 2);
-    let hl = after.iter().find(|a| a.kind == AnnotKind::Highlight).unwrap();
-    let hl_before = before.iter().find(|a| a.kind == AnnotKind::Highlight).unwrap();
-    assert_rect(hl.quads.as_ref().unwrap()[0], map(quad), TOL, "highlight quad");
+    let hl = after
+        .iter()
+        .find(|a| a.kind == AnnotKind::Highlight)
+        .unwrap();
+    let hl_before = before
+        .iter()
+        .find(|a| a.kind == AnnotKind::Highlight)
+        .unwrap();
+    assert_rect(
+        hl.quads.as_ref().unwrap()[0],
+        map(quad),
+        TOL,
+        "highlight quad",
+    );
     assert_rect(hl.rect, map(hl_before.rect), 1.0, "highlight rect");
     let ink = after.iter().find(|a| a.kind == AnnotKind::Ink).unwrap();
     let path = &ink.ink_paths.as_ref().unwrap()[0];
@@ -525,7 +596,10 @@ fn resize_moves_annotations_with_the_content() {
 fn resize_keeps_the_orientation_of_a_rotated_page() {
     let doc = open("rotation.pdf");
     let g = doc.info.pages[1].clone();
-    assert!(g.width_pt > g.height_pt, "rotation.pdf page 2 is landscape as seen");
+    assert!(
+        g.width_pt > g.height_pt,
+        "rotation.pdf page 2 is landscape as seen"
+    );
     let info = resize(
         &doc.doc_id,
         list(&[1]),
@@ -535,7 +609,10 @@ fn resize_keeps_the_orientation_of_a_rotated_page() {
     .unwrap();
     let g2 = &info.pages[1];
     assert_eq!(g2.rotation, 90);
-    assert!(near(g2.width_pt, A4.1, 0.01) && near(g2.height_pt, A4.0, 0.01), "{g2:?}");
+    assert!(
+        near(g2.width_pt, A4.1, 0.01) && near(g2.height_pt, A4.0, 0.01),
+        "{g2:?}"
+    );
     // an explicit size is the size as seen
     let info = resize(
         &doc.doc_id,
@@ -544,7 +621,9 @@ fn resize_keeps_the_orientation_of_a_rotated_page() {
         ResizeMode::ScaleContent,
     )
     .unwrap();
-    assert!(near(info.pages[1].width_pt, 400.0, 0.01) && near(info.pages[1].height_pt, 300.0, 0.01));
+    assert!(
+        near(info.pages[1].width_pt, 400.0, 0.01) && near(info.pages[1].height_pt, 300.0, 0.01)
+    );
     assert_eq!(info.pages[1].rotation, 90);
     let e = resize(
         &doc.doc_id,
@@ -598,6 +677,12 @@ fn resize_then_stamp_survives_save_and_reopen() {
         TOL,
         "scaled rect after a later edit",
     );
-    let text = with_doc(&reopened.doc_id, |d| Ok(layer::page_text(d, 0)?.text.clone())).unwrap();
-    assert!(text.contains("Resize me") && text.contains("Footer 1"), "{text:?}");
+    let text = with_doc(&reopened.doc_id, |d| {
+        Ok(layer::page_text(d, 0)?.text.clone())
+    })
+    .unwrap();
+    assert!(
+        text.contains("Resize me") && text.contains("Footer 1"),
+        "{text:?}"
+    );
 }

@@ -40,6 +40,8 @@ const CropDialog = lazy(() => import("../organize/CropDialog"));
 const ResizeDialog = lazy(() => import("./ResizeDialog"));
 // 페이지 레이블 (P2): rare, its own chunk.
 const PageLabelsDialog = lazy(() => import("./PageLabelsDialog"));
+// 여러 파일에서 검색 (P2): its own chunk.
+const MultiSearchDialog = lazy(() => import("../multisearch/MultiSearchDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -149,6 +151,12 @@ function Current({ entry }: { entry: DialogEntry }) {
       return (
         <Suspense fallback={null}>
           <BatchOcrDialog onClose={close} />
+        </Suspense>
+      );
+    case "multiSearch":
+      return (
+        <Suspense fallback={null}>
+          <MultiSearchDialog onClose={close} />
         </Suspense>
       );
     case "recovery":

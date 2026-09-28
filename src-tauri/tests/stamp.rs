@@ -613,7 +613,11 @@ fn stamp_bates_numbers_every_page_and_is_extractable() {
     for p in 0..14u16 {
         let text = page_text(&doc.doc_id, p);
         let expected = format!("ABC{:06}", 101 + p as u32);
-        assert!(text.contains(&expected), "page {}: {expected} missing", p + 1);
+        assert!(
+            text.contains(&expected),
+            "page {}: {expected} missing",
+            p + 1
+        );
         // exactly one Bates number per page
         assert_eq!(text.matches("ABC000").count(), 1, "page {}", p + 1);
     }
@@ -646,8 +650,14 @@ fn stamp_bates_numbers_every_page_and_is_extractable() {
     // bad options are refused before anything changes
     let mut bad = text_spec(StampRole::Footer, "{{bates}}", StampAnchor::Br);
     bad.bates.bates_digits = 0;
-    assert_eq!(add(&doc.doc_id, bad).unwrap_err().code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        add(&doc.doc_id, bad).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
     let mut bad = text_spec(StampRole::Footer, "{{bates}}", StampAnchor::Br);
     bad.bates.bates_prefix = "x".repeat(65);
-    assert_eq!(add(&doc.doc_id, bad).unwrap_err().code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        add(&doc.doc_id, bad).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
 }

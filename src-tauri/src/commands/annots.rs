@@ -178,6 +178,27 @@ pub async fn delete_annotations(
         .await
 }
 
+/// P2 threads: a reply to `parent_id` (a `Text` annotation with `/IRT` + `/RT /R`). The
+/// reference can only be written on the serialised file, so this goes through
+/// `registry::mutate_bytes` (`engine::annot::reply`) — still one undo step, `undo.annotReply`.
+#[tauri::command]
+pub async fn reply_annotation(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    parent_id: String,
+    contents: String,
+    author: Option<String>,
+) -> Result<AnnotResult, EngineError> {
+    engine
+        .call(Lane::Edit, "reply_annotation", move |st| {
+            let id =
+                annot::reply::reply(st, &doc_id, page, &parent_id, &contents, author.as_deref())?;
+            result_for(st, &doc_id, page, Some(id), None)
+        })
+        .await
+}
+
 /// P1. Transient: bumps `viewNonce`, **not** `docGeneration`, and never dirties the document.
 #[tauri::command]
 pub async fn set_annotations_hidden(

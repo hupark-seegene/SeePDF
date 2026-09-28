@@ -289,6 +289,22 @@ P2 gates (2026-09-28): `cargo check --all-targets` 0 warnings · `cargo test --r
 (3.9 kB gz), the dialog (2.0 kB gz) and the link form are lazy chunks. ⚠️ Not yet driven in the real app (dev
 bridge): only against real PDFium in cargo tests and against the mock in vitest.
 
+### P2 status — threads, multi-file search, split view
+
+✅ verified by tests (Rust against real PDFium, vitest against the mock) · ⚠️ partial, with the gap named.
+Contract: `IPC_CONTRACT.md` §5 (split viewport hint), §7.1 (threads), §11 (`list_pdf_files`); UI: `UI_SPEC.md` §4, §5,
+§7, §8, §10, §12, §13, §15.20b.
+
+| item | status | evidence |
+|---|---|---|
+| Annotation replies / threads | ✅ ⚠️ | `reply_annotation` writes a `Text` reply with `/IRT` = an indirect reference to the parent + `/RT /R` through lopdf (`registry::mutate_bytes`, one undo step `undo.annotReply`), an empty `/AP` so no viewer draws it over the parent (kept after an edit), the parent's colour, `/T` = 설정 ▸ 작성자; read back as `Annot.inReplyTo` (two-pass list, so order does not matter); `delete_annotations` takes a deleted annotation's replies with it, transitively; a rebuilt parent (text box / markup) keeps its thread. UI: the 주석 tab groups replies under their top-level annotation (count badge, fold), the 메모 popover lists the thread with edit / delete per reply and a reply box, 답글 on any other annotation opens a thread popover, 답글 in the canvas and 주석-row context menus, deleting a parent with replies asks first. `cargo test --test thread` (7: reopen with PDFium **and** lopdf → `/IRT` is the parent's reference and `/RT /R`; nested replies; invisible on the page even after an edit (pixel compare); delete a branch / the whole thread + undo; undo removes a reply; a rebuilt parent keeps its replies; a reply to a foreign highlight; errors), `threads.test.ts`, `thread.flow.test.tsx` (reply flow, edit, delete, thread popover, deletion confirm, encrypted refusal), `invokeShape.test.ts`. ⚠️ refused on encrypted documents (lopdf would need the owner password, like `set_metadata`); a reply always answers the thread root in the UI (nested replies from other apps are shown, flattened); no summary export yet |
+| Multi-file search | ✅ | 편집 ▸ 여러 파일에서 검색… / ⋯ / the 검색 panel: 파일 추가 / 폴더 추가 (`list_pdf_files`, recursive, hidden skipped, ≤ 2 000) / 목록 비우기, query + 대소문자 구분 + 단어 단위로; one `multiSearch` job in the status bar (× cancels): each file opened beside the window's document (encrypted → 암호 입력, dismiss = 건너뜀), `search_start` from page 0 to `done`, closed on success, failure and cancel; the window's own document is searched in memory; results grouped by file with counts and ±40-character context; a click opens the file through `openPath` (unsaved guard, the search's password tried first) and hands the hits to the 검색 panel (`SearchController.show`: highlights, current hit scrolled to, ⌘G). `multiSearch.flow.test.tsx` (3 files incl. an encrypted one skipped, every opened file closed, click → file open with the panel's hits; cancel mid-way closes the file being read and cancels its search job; 폴더 추가 dedup), `list_pdf_files_recurses_sorts_and_skips_hidden` lib test |
+| Split view | ✅ ⚠️ | 보기 ▸ 분할 보기 (native item), ⌥⌘S / Ctrl+Alt+S, status-bar `columns-2`: two panes of one document, 좌우 ⇄ 위아래, each with its own zoom / zoom mode / rotation / current page / scroll (`viewStore` `PaneView` ×2 — the top level is the focused pane's, so every existing reader acts on the pane in use; layout and night stay document-level), one shared `TileManager` (per-pane clients, one in-flight budget) and one engine viewport hint covering both panes; annotation / form / 편집 layers only in the focused pane (a click focuses the other); 동기화 스크롤 by page delta; Esc (nothing else to cancel), the menu or another document closes it without remounting the main pane. `viewStore.split.test.ts` (7), `split.test.ts` (TileManager clients, page-unit position, sync + viewport union), `split.flow.test.tsx` (open, second pane to page 5 while the first stays, tools follow focus, per-pane zoom, Esc closes). ⚠️ the divider is fixed at 50 %; a drawing tool needs a second click after focusing the other pane; no real-app smoke yet |
+
+P2 gates (2026-09-28): `cargo check --all-targets` 0 warnings · `cargo test --release` 294/0 (lib 100, `thread` 7) ·
+vitest 590/590 (76 files) · i18n ko/en 794 · critical path 116.4 kB gz of 120 (여러 파일에서 검색 is its own lazy chunk;
+the thread UI rides in the annotation chunks).
+
 ---
 
 ## Explicit non-goals for v1

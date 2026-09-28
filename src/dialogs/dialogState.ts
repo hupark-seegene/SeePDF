@@ -28,7 +28,9 @@ export type DialogName =
   // P2: 자르기 and 페이지 크기 변경 (페이지 mode)
   | "crop" | "resize"
   // 페이지 레이블 (P2)
-  | "pageLabels";
+  | "pageLabels"
+  // 여러 파일에서 검색 (P2)
+  | "multiSearch";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";

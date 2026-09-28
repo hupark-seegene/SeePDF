@@ -46,7 +46,10 @@ impl Speaker for FakeSpeaker {
         Some(TtsEngine::Say)
     }
 
-    fn start(&self, request: &SpeakRequest) -> Result<(Box<dyn Utterance>, Option<String>), EngineError> {
+    fn start(
+        &self,
+        request: &SpeakRequest,
+    ) -> Result<(Box<dyn Utterance>, Option<String>), EngineError> {
         self.requests.lock().unwrap().push(request.clone());
         let flag = Arc::new(AtomicBool::new(true));
         self.flags.lock().unwrap().push(flag.clone());
@@ -64,7 +67,9 @@ fn tts_speak_stop_and_status_with_a_fake_speaker() {
     assert!(idle.supported && !idle.speaking);
     assert_eq!(idle.engine, Some(TtsEngine::Say));
 
-    let status = tts.speak("첫 번째 문장", Some("ko"), Some(1.25)).expect("speak");
+    let status = tts
+        .speak("첫 번째 문장", Some("ko"), Some(1.25))
+        .expect("speak");
     assert!(status.speaking);
     assert_eq!(status.voice.as_deref(), Some("Fake-ko"));
     {
@@ -77,9 +82,16 @@ fn tts_speak_stop_and_status_with_a_fake_speaker() {
     tts.speak("second", None, Some(9.0)).expect("speak again");
     {
         let flags = speaker.flags.lock().unwrap();
-        assert!(!flags[0].load(Ordering::SeqCst), "the first utterance was stopped");
+        assert!(
+            !flags[0].load(Ordering::SeqCst),
+            "the first utterance was stopped"
+        );
         assert!(flags[1].load(Ordering::SeqCst));
-        assert_eq!(speaker.requests.lock().unwrap()[1].rate, 2.0, "rate is clamped");
+        assert_eq!(
+            speaker.requests.lock().unwrap()[1].rate,
+            2.0,
+            "rate is clamped"
+        );
     }
     assert!(tts.status().speaking);
 
@@ -97,7 +109,11 @@ fn tts_speak_stop_and_status_with_a_fake_speaker() {
     // nothing to say
     let err = tts.speak("   \n", None, None).unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidArgument);
-    assert_eq!(speaker.requests.lock().unwrap().len(), 3, "a refused request starts nothing");
+    assert_eq!(
+        speaker.requests.lock().unwrap().len(),
+        3,
+        "a refused request starts nothing"
+    );
 
     // dropping the state stops a running utterance (app exit)
     tts.speak("fourth", None, None).unwrap();
@@ -165,7 +181,8 @@ mod macos {
         // a short text runs to completion on its own and really produced audio
         let short = out_file("short.aiff");
         let tts = Tts::with_speaker(Box::new(SaySpeaker::silent(short.clone())));
-        tts.speak("짧은 문장입니다.", Some("ko-KR"), Some(1.5)).expect("say starts");
+        tts.speak("짧은 문장입니다.", Some("ko-KR"), Some(1.5))
+            .expect("say starts");
         let deadline = Instant::now() + Duration::from_secs(30);
         while tts.status().speaking {
             assert!(Instant::now() < deadline, "say did not finish");
