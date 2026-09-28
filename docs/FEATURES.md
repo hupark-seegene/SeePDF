@@ -305,6 +305,11 @@ P2 gates (2026-09-28): `cargo check --all-targets` 0 warnings · `cargo test --r
 vitest 590/590 (76 files) · i18n ko/en 794 · critical path 116.4 kB gz of 120 (여러 파일에서 검색 is its own lazy chunk;
 the thread UI rides in the annotation chunks).
 
+Integration of the three P2 branches (2026-09-28): `cargo test --release` 345 / 0 · vitest 654 / 654 (87 files) ·
+i18n ko / en 966 · critical path 108.1 kB gz of 120 (120.9 right after the merge): the viewer (scroller, tile
+manager, panes, layer slots) and the sidebar's 축소판 / 목차 / 검색 panels are lazy chunks, fetched when the window
+is idle after start-up; their CSS stays in the entry stylesheet, in its old place in the cascade.
+
 ---
 
 ## Explicit non-goals for v1

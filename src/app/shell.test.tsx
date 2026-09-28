@@ -27,7 +27,8 @@ describe("app shell", () => {
     await openSample();
 
     expect(await screen.findByRole("tab", { name: "주석" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "문서 보기 영역" })).toBeInTheDocument();
+    // the viewer is its own chunk (App.tsx): it mounts once that chunk has arrived
+    expect(await screen.findByRole("region", { name: "문서 보기 영역" })).toBeInTheDocument();
     // The Stage 1 viewer is virtualised: only the rows inside the ±1.5/2.5-screen window are
     // mounted, so the assertion is "the canvas painted pages", not "it painted all of them".
     await waitFor(() => expect(document.querySelectorAll(".page-shell").length).toBeGreaterThan(0));

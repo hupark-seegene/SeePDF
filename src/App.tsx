@@ -1,8 +1,12 @@
 import { Suspense, lazy, useEffect, useMemo } from "react";
 import { TitleBar } from "./app/TitleBar";
 import { ToolStrip } from "./app/ToolStrip";
-import { SidebarFrame } from "./app/SidebarFrame";
-import { CanvasStub } from "./app/CanvasStub";
+// The sidebar panels and the viewer are lazy (below), but their stylesheets stay in the entry CSS,
+// in the place of the cascade they always had (before tokens / base / shell, see main.tsx): the
+// 여러 파일에서 검색 dialog reuses the 검색 panel's rows with no document open, and moving them
+// after shell.css would change which of two equal-specificity rules wins.
+import "./sidebar/sidebar.css";
+import "./viewer/viewer.css";
 import { Inspector } from "./app/Inspector";
 import { StatusBar } from "./app/StatusBar";
 import { useCommands } from "./app/useCommands";
@@ -40,6 +44,24 @@ const PrintRoot = lazy(() => import("./print/PrintRoot"));
 const CompareView = lazy(() => import("./compare/CompareView"));
 // 읽어 주기 (P2): the floating 속도 / 정지 bar, only while the system voice speaks.
 const TtsBar = lazy(() => import("./tts/TtsBar"));
+// The document UI is only on screen with a document open: the viewer (scroller, tile manager,
+// text layer, 분할 보기's panes, the layer slots) and the sidebar's 축소판 / 목차 / 검색 panels.
+// Their chunks are fetched once the window is idle after start-up (`prefetchDocumentUi`), so a
+// document opened later finds them loaded.
+const loadCanvas = () => import("./app/CanvasStub");
+const loadSidebar = () => import("./app/SidebarFrame");
+const CanvasStub = lazy(() => loadCanvas().then((m) => ({ default: m.CanvasStub })));
+const SidebarFrame = lazy(() => loadSidebar().then((m) => ({ default: m.SidebarFrame })));
+
+/** After the first paint, when the window has nothing better to do: fetch the document UI. */
+function prefetchDocumentUi(): void {
+  const load = () => {
+    void loadCanvas().catch(() => undefined);
+    void loadSidebar().catch(() => undefined);
+  };
+  if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(load, { timeout: 2000 });
+  else setTimeout(load, 0);
+}
 
 /**
  * The window is closing: document B of 문서 비교 lives outside `docStore`, so release it here — the
@@ -94,6 +116,7 @@ export default function App() {
   const mode = useAppStore((s) => s.mode);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const inspectorOpen = useAppStore((s) => s.inspectorOpen);
+  const sidebarWidth = useAppStore((s) => s.sidebarWidth);
   const bootstrap = useAppStore((s) => s.bootstrap);
   const refreshRecents = useAppStore((s) => s.refreshRecents);
   const releaseMomentary = useAppStore((s) => s.releaseMomentary);
@@ -122,6 +145,7 @@ export default function App() {
   // 1. settings + recents + theme + locale, then drain anything the OS handed us before mount
   useEffect(() => {
     void bootstrap().then(async () => {
+      prefetchDocumentUi();
       // 업데이트 확인 on launch (v0.2.0): silent, main window only, never in the way of recovery
       void import("./update/launch").then((m) => m.checkOnLaunch(useAppStore.getState().settings));
       await offerRecovery();
@@ -241,7 +265,12 @@ export default function App() {
     <div className="app-shell" data-ready={ready || undefined} data-reading={reading || undefined}>
       {!reading && <TitleBar run={run} />}
       <div className="app-body">
-        {info && sidebarOpen && !organizing && !reading && <SidebarFrame />}
+        {info && sidebarOpen && !organizing && !reading && (
+          // the placeholder keeps the sidebar's width, so the canvas never lays out wider first
+          <Suspense fallback={<aside className="sidebar" style={{ width: sidebarWidth }} />}>
+            <SidebarFrame />
+          </Suspense>
+        )}
         <main className="app-main">
           {info ? (
             organizing ? (
@@ -251,7 +280,9 @@ export default function App() {
             ) : (
               <>
                 {!reading && <ToolStrip />}
-                <CanvasStub />
+                <Suspense fallback={<div className="viewer-panes" />}>
+                  <CanvasStub />
+                </Suspense>
               </>
             )
           ) : (

@@ -40,6 +40,8 @@ async function openApp() {
   await waitFor(() => expect(useAppStore.getState().ready).toBe(true));
   await useDocStore.getState().open(SAMPLE);
   await screen.findByRole("tab", { name: "주석" });
+  // the viewer is its own chunk (App.tsx): wait for it, the test compares chrome around it
+  await screen.findByRole("region", { name: "문서 보기 영역" });
   useAppStore.setState({ mode: "annotate", inspectorOpen: true });
 }
 
