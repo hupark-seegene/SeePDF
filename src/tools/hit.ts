@@ -54,9 +54,15 @@ export function handleAt(a: Annot, x: number, y: number, tolerance: number): Han
 
 /** Does the point land on the annotation's own ink / quads / rectangle? */
 export function hitsAnnot(a: Annot, x: number, y: number, tolerance: number): boolean {
+  // A line or an arrow is its stroke: a page-wide diagonal must not swallow every click in its
+  // bounding box (and the annotations underneath with it).
+  if ((a.kind === "line" || a.kind === "arrow") && (a.linePoints || a.inkPaths?.length)) {
+    const paths = a.inkPaths?.length ? a.inkPaths : [a.linePoints as number[]];
+    return paths.some((path) => distanceToPath(path, x, y) <= tolerance + a.borderWidth / 2);
+  }
   if (a.inkPaths?.length) {
     if (a.inkPaths.some((path) => distanceToPath(path, x, y) <= tolerance + a.borderWidth / 2)) return true;
-    // a closed scribble is still grabbable from inside its bounds
+    // a closed scribble (a drawn signature) is still grabbable from inside its bounds
     return rectContains(a.rect, x, y, 0) && a.kind !== "ink";
   }
   if (a.quads?.length) return a.quads.some((q) => rectContains(q, x, y, tolerance));
@@ -98,7 +104,14 @@ export function resizeRect(rect: Rect, handle: HandleId, x: number, y: number, k
   if (handle.includes("e")) r = Math.max(x, base.l + min);
   if (handle.includes("n")) t = Math.max(y, base.b + min);
   if (handle.includes("s")) b = Math.min(y, base.t - min);
-  if (keepAspect && handle !== "body") {
+  if (keepAspect && (handle === "n" || handle === "s")) {
+    // an edge that moves the height: the width follows, centred on that edge
+    const ratio = (base.r - base.l) / Math.max(1e-6, base.t - base.b);
+    const width = (t - b) * ratio;
+    const cx = (base.l + base.r) / 2;
+    l = cx - width / 2;
+    r = cx + width / 2;
+  } else if (keepAspect && handle !== "body") {
     const ratio = (base.r - base.l) / Math.max(1e-6, base.t - base.b);
     const height = (r - l) / ratio;
     if (handle.includes("s")) b = t - height;

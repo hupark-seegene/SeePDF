@@ -254,6 +254,9 @@ export default function App() {
   useKeymap({
     os,
     contexts,
+    // A modal dialog owns the keyboard: nothing may act on the document behind it (⌫ under
+    // 페이지 추출 deleted the very pages being extracted). Esc is the dialog's own.
+    enabled: !dialogOpen && !ocrOpen,
     onCommand: (id, binding, e) => run(id, { momentary: binding.momentary && !e.repeat }),
     onRelease: () => releaseMomentary(),
   });

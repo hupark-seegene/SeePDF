@@ -4,10 +4,12 @@ import {
   PAGE_GAP,
   computeLayout,
   currentPageAt,
+  fitZoomForView,
   fitZoomPercent,
   onScreenRange,
   pageRows,
   scrollTopForPage,
+  stepPage,
   visibleRange,
 } from "./layout";
 
@@ -161,5 +163,47 @@ describe("layout", () => {
     // 두 쪽 halves the available width
     expect(fitZoomPercent(A4(0), "fit-width", 0, "two", VIEWPORT)!).toBeLessThan(fitWidth);
     expect(fitZoomPercent(undefined, "fit-width", 0, "continuous", VIEWPORT)).toBeNull();
+  });
+
+  it("두 쪽: the current page is the spread's left page, so ◀ and ▶ each move one spread", () => {
+    const layout = computeLayout({
+      pages: pages(40),
+      zoomPercent: 100,
+      rotation: 0,
+      mode: "two",
+      viewport: { w: 1400, h: 800 },
+      dpr: 1,
+    });
+    expect(currentPageAt(layout, 0, 800)).toBe(0);
+    // landing on spread (10, 11) reads as page 10, not 11
+    expect(currentPageAt(layout, scrollTopForPage(layout, 10), 800)).toBe(10);
+    expect(currentPageAt(layout, scrollTopForPage(layout, 11), 800)).toBe(10);
+
+    // ◀ from spread (10, 11) lands on (8, 9); ▶ on (12, 13) — never the same spread again
+    expect(stepPage(10, -1, 40, "two")).toBe(8);
+    expect(stepPage(11, -1, 40, "two")).toBe(8);
+    expect(stepPage(10, 1, 40, "two")).toBe(12);
+    expect(stepPage(11, 1, 40, "two")).toBe(12);
+    expect(currentPageAt(layout, scrollTopForPage(layout, stepPage(10, -1, 40, "two")), 800)).toBe(8);
+    expect(currentPageAt(layout, scrollTopForPage(layout, stepPage(10, 1, 40, "two")), 800)).toBe(12);
+    // clamped at both ends; an odd page count ends on a one-page row
+    expect(stepPage(0, -1, 40, "two")).toBe(0);
+    expect(stepPage(38, 1, 40, "two")).toBe(38);
+    expect(stepPage(38, 1, 41, "two")).toBe(40);
+    // 연속 / 단일 step one page
+    expect(stepPage(10, 1, 40, "continuous")).toBe(11);
+    expect(stepPage(10, -1, 40, "single")).toBe(9);
+    expect(stepPage(39, 1, 40, "continuous")).toBe(39);
+  });
+
+  it("fitZoomForView: 연속 fits the widest page, whatever page is current", () => {
+    const mixed = [A4(0), { ...A4(1), widthPt: 842, heightPt: 595, crop: { l: 0, b: 0, r: 842, t: 595 } }, A4(2)];
+    const widest = fitZoomPercent(mixed[1], "fit-width", 0, "continuous", VIEWPORT);
+    for (const current of [0, 1, 2]) {
+      expect(fitZoomForView(mixed, "fit-width", 0, "continuous", VIEWPORT, current)).toBe(widest);
+    }
+    expect(fitZoomForView(mixed, "fit-width", 0, "single", VIEWPORT, 0)).toBe(
+      fitZoomPercent(mixed[0], "fit-width", 0, "single", VIEWPORT),
+    );
   });
 });

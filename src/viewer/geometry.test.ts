@@ -16,6 +16,7 @@ import {
   tilePriority,
   tileRect,
 } from "./geometry";
+import { makePageLayerContext } from "./PageShell";
 
 function geom(w: number, h: number, rotation: Rotation, crop = { l: 0, b: 0, r: 612, t: 792 }): PageGeom {
   return { index: 0, widthPt: w, heightPt: h, rotation, crop, label: null };
@@ -129,5 +130,38 @@ describe("geometry", () => {
   it("keeps the placeholder at 640 px of page width", () => {
     expect(placeholderScaleKey(ROT_P0, 0)).toBe(100); // 612 pt wide -> s = 1
     expect(placeholderScaleKey(geom(1224, 1584, 0), 0)).toBe(52); // 640 / 1224
+  });
+});
+
+describe("page layer context at a fractional display density", () => {
+  const A4: PageGeom = {
+    index: 0, widthPt: 595.28, heightPt: 841.89, rotation: 0, crop: { l: 0, b: 0, r: 595.28, t: 841.89 }, label: null,
+  };
+
+  it.each([
+    [1.5, 33],
+    [1.25, 37],
+    [1.5, 147],
+    [2, 100],
+  ])("dpr %s, zoom %s: the overlay matrix maps the crop box onto the bitmap's CSS box", (dpr, zoom) => {
+    for (const rotation of [0, 90] as const) {
+      const box = pageBoxCss(A4, rotation, scaleKeyFor(zoom, dpr), dpr);
+      const ctx = makePageLayerContext({
+        docId: "d1", docGeneration: 1, page: A4, rotation, zoomPercent: zoom, width: box.w, height: box.h,
+      });
+      const full = ctx.rectToBox(A4.crop);
+      expect(full.x).toBeCloseTo(0, 6);
+      expect(full.y).toBeCloseTo(0, 6);
+      expect(full.w).toBeCloseTo(box.w, 6);
+      expect(full.h).toBeCloseTo(box.h, 6);
+    }
+  });
+
+  it("falls back to the zoom when the box has no size yet", () => {
+    const ctx = makePageLayerContext({
+      docId: "d1", docGeneration: 1, page: A4, rotation: 0, zoomPercent: 150, width: 0, height: 0,
+    });
+    expect(ctx.scale).toBe(1.5);
+    expect(ctx.toDevice(A4.crop.r, A4.crop.b)[0]).toBeCloseTo(595.28 * 1.5, 6);
   });
 });

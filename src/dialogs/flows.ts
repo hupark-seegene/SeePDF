@@ -15,7 +15,7 @@ import { usePagesStore } from "../store/pagesStore";
 import { toast } from "../app/toastStore";
 import { askConfirm, askMultipleFiles, askPassword, askUnsaved, closeDialog, openDialog } from "./dialogState";
 import { autosave, markRecovered, recoveredEntry, settleRecovered } from "../app/autosave";
-import { whenDragIdle } from "../annot/dragGate";
+import { whenEditsSettled } from "../annot/dragGate";
 import { editLeaveGuard } from "../tools/commands";
 import type { DocInfo, PageIndex, PageOp, RecentEntry, RecoveryEntry } from "../ipc/types";
 
@@ -130,6 +130,8 @@ async function afterOpen(info: DocInfo): Promise<void> {
     if (typeof zoom === "number") view.setZoom(zoom);
     else view.setZoomMode(zoom === "actual" ? "actual" : zoom, zoom === "actual" ? 100 : undefined);
   }
+  // 뒤로 must not lead back into the previous document's pages
+  useViewStore.getState().resetHistory();
   await touchRecent(info);
 }
 
@@ -197,8 +199,9 @@ export async function mergePaths(
 
 /** ⌘S. Atomic on the backend; a read-only target falls through to Save As with an explanation. */
 export async function saveFlow(): Promise<boolean> {
-  // ⌘S mid-drag is queued until the drop has settled: never save the transient `/F HIDDEN`
-  await whenDragIdle();
+  // ⌘S mid-drag is queued until the drop has settled: never save the transient `/F HIDDEN`. The
+  // last nudge / slider patch still in its coalescing delay goes to the engine first.
+  await whenEditsSettled();
   const info = useDocStore.getState().info;
   if (!info) return false;
   // a 복구 copy is not the user's file: never save over it in place
@@ -224,7 +227,7 @@ export async function saveFlow(): Promise<boolean> {
 
 /** ⇧⌘S — the native save panel, then `save_document_as`. */
 export async function saveAsFlow(): Promise<boolean> {
-  await whenDragIdle();
+  await whenEditsSettled();
   const info = useDocStore.getState().info;
   if (!info) return false;
   const path = await api.saveFileDialog({ defaultPath: recoveredEntry(info.docId)?.name ?? info.name });
@@ -250,6 +253,8 @@ export async function saveAsFlow(): Promise<boolean> {
  * (close, open another file, quit, window close). `false` = the user cancelled.
  */
 export async function confirmUnsaved(): Promise<boolean> {
+  // an edit still in its coalescing delay is a change too: send it, and ask about it
+  if (await whenEditsSettled()) await useDocStore.getState().refresh().catch(() => undefined);
   const info = useDocStore.getState().info;
   if (!info || !info.dirty) return true;
   const answer = await askUnsaved(info.name);

@@ -18,11 +18,18 @@ import type { DocInfo, PageIndex } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
-import { paneView, setViewProbe, usePaneView, useViewStore, type PaneId, type ZoomMode } from "../store/viewStore";
+import {
+  paneView,
+  setViewProbe,
+  usePaneView,
+  useViewStore,
+  type PaneId,
+  type ScrollRequest,
+  type ZoomMode,
+} from "../store/viewStore";
 import { useAnnotStore } from "../store/annotStore";
 import { paneScrolled, registerPane, viewportFor } from "./panes";
 import {
-  devicePixelRatio,
   pageBoxCss,
   pagePixels,
   placeholderScaleKey,
@@ -36,7 +43,7 @@ import {
 import {
   computeLayout,
   currentPageAt,
-  fitZoomPercent,
+  fitZoomForView,
   onScreenRange,
   positionAt,
   scrollTopForPage,
@@ -44,13 +51,14 @@ import {
   visibleRange,
   type DocLayout,
 } from "./layout";
-import { anchorAt, scrollForAnchor, zoomForWheel } from "./zoom";
+import { anchorAt, clampZoom, scrollForAnchor, zoomForWheel } from "./zoom";
 import { TileManager, type TileRequest } from "./TileManager";
 import { makePageLayerContext, PageShell, type PageLayerRenderer, type PageShellProps } from "./PageShell";
 import { PageMarks } from "./text/PageMarks";
 import { ensureTextLayers, getTextLayer, invalidateTextLayers } from "./text/textLayers";
 import { useSelectionStore, type TextSelection } from "./text/selection";
 import { useSearchStore } from "./search/SearchController";
+import { useDevicePixelRatio } from "./useDevicePixelRatio";
 
 /** How far the scroll offset may drift before the mounted set is recomputed. */
 const SCROLL_COMMIT_PX = 96;
@@ -131,7 +139,11 @@ export function Scroller({
 
   const elRef = useRef<HTMLDivElement>(null);
   const viewport = useElementSize(elRef);
-  const dpr = devicePixelRatio();
+  const dpr = useDevicePixelRatio();
+  // The navigation effects below read the document through this ref: a new `info` arrives with
+  // every mutation, and must not replay the last 이동 or search jump.
+  const infoRef = useRef(info);
+  infoRef.current = info;
 
   const [scroll, setScroll] = useState<Vec2>({ x: 0, y: 0 });
   const scrollRef = useRef(scroll);
@@ -162,12 +174,14 @@ export function Scroller({
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
 
-  // 너비 맞춤 / 페이지 맞춤 resolve to a percentage as soon as the scroller has a size.
+  // 너비 맞춤 / 페이지 맞춤 resolve to a percentage as soon as the scroller has a size. Outside 단일
+  // the fit must not depend on the current page: a refit re-anchors the scroll, the scroll moves
+  // the current page onto a page of the other orientation, and the zoom would flip forever.
   useEffect(() => {
     if (zoomMode !== "fit-width" && zoomMode !== "fit-page") return;
-    const fit = fitZoomPercent(info.pages[currentPage], zoomMode, rotation, mode, viewport);
+    const fit = fitZoomForView(info.pages, zoomMode, rotation, mode, viewport, layoutPage);
     if (fit !== null && fit !== zoomPercent) setZoomMode(zoomMode, fit);
-  }, [zoomMode, zoomPercent, rotation, mode, viewport, currentPage, info.pages, setZoomMode]);
+  }, [zoomMode, zoomPercent, rotation, mode, viewport, layoutPage, info.pages, setZoomMode]);
 
   // The bitmap layer lags the live zoom by one settle, so a gesture never storms the engine.
   useEffect(() => {
@@ -383,9 +397,13 @@ export function Scroller({
     (next: number, cursor: Vec2) => {
       const el = elRef.current;
       if (!el) return;
+      // A pinch at the 25 %/400 % limit, or a delta too small to reach the next integer: nothing
+      // will relayout, so nothing may be parked for the layout effect to apply later. (This pane's
+      // zoom: under 분할 보기 the other pane may well be at another one.)
+      const view = paneNow();
+      if (clampZoom(next) === view.zoomPercent) return;
       const before = layoutRef.current;
       const anchor = anchorAt(before, { x: el.scrollLeft, y: el.scrollTop }, cursor);
-      const view = paneNow();
       const after = computeLayout({
         pages: info.pages,
         zoomPercent: next,
@@ -429,10 +447,17 @@ export function Scroller({
   }, [applyZoom, paneNow]);
 
   // 이동: the status bar, the thumbnail rail, the outline and ⌘↑/⌘↓ all go through `scrollRequest`.
+  // A request is consumed once: the document changing afterwards (an annotation, a form value,
+  // undo, save, a display-density change) must not scroll back to it. 분할 보기: each pane consumes
+  // its own slice's request; `focusPane` moves the slices without cloning them, so a focus swap is
+  // never mistaken for a new request.
+  const handledRequestRef = useRef<ScrollRequest | null>(null);
   useEffect(() => {
-    if (!scrollRequest) return;
+    if (!scrollRequest || scrollRequest === handledRequestRef.current) return;
     const el = elRef.current;
     if (!el) return;
+    handledRequestRef.current = scrollRequest;
+    const info = infoRef.current;
     let top = scrollTopForPage(layoutRef.current, scrollRequest.page);
     // An outline destination carries a y in PDF user space: land on the heading, a little below
     // the top edge, rather than on the top of the page (STAGE1C_NOTES §7.1).
@@ -456,7 +481,7 @@ export function Scroller({
     scrollRef.current = { x: el.scrollLeft, y: top };
     commitScroll(scrollRef.current);
     settle();
-  }, [scrollRequest, info, commitScroll, settle, paneNow]);
+  }, [scrollRequest, commitScroll, settle, paneNow]);
 
   // 현재 위치 (P2): the inverse of the jump above — the page under the viewport's top edge (plus
   // the same 12 px) and that edge's y in PDF user space, so a destination made here lands here.
@@ -500,17 +525,26 @@ export function Scroller({
     return () => setViewProbe(null, paneId);
   }, [info, paneId, paneNow]);
 
-  // A search hit is scrolled into view by its rectangle, not by its page — in the focused pane
-  // only (분할 보기: the other pane stays where the user left it).
+  // A search hit is scrolled into view by its rectangle, not by its page — once per ⌘G / click,
+  // and in the focused pane only. 분할 보기: the other pane stays where the user left it, but it
+  // consumes the jump all the same, so that focusing it later (and any re-run of this effect — a
+  // display-density change, a new document generation) never replays an old hit there.
   const navNonce = useSearchStore((s) => s.navNonce);
   const focusedRef = useRef(focused);
   focusedRef.current = focused;
+  const handledNavRef = useRef(0);
   useEffect(() => {
-    if (!navNonce || !focusedRef.current) return;
+    if (!navNonce || navNonce === handledNavRef.current) return;
+    if (!focusedRef.current) {
+      handledNavRef.current = navNonce;
+      return;
+    }
     const { hits, current } = useSearchStore.getState();
     const hit = hits[current];
     const el = elRef.current;
     if (!hit || !el) return;
+    handledNavRef.current = navNonce;
+    const info = infoRef.current;
     const item = layoutRef.current.byPage.get(hit.page);
     if (!item) {
       useViewStore.getState().goToPage(hit.page, undefined, paneId);
@@ -542,7 +576,7 @@ export function Scroller({
     scrollRef.current = { x: el.scrollLeft, y: el.scrollTop };
     commitScroll(scrollRef.current);
     settle();
-  }, [navNonce, info, commitScroll, settle, paneId, paneNow]);
+  }, [navNonce, commitScroll, settle, paneId, paneNow]);
 
   // ---------------------------------------------------------------- pointer
   const selecting = useRef<{ page: PageIndex; offset: number; mode: "char" | "word" | "line" } | null>(null);

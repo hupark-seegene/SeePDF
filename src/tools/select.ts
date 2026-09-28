@@ -93,6 +93,8 @@ export const selectTool: ToolModule<SelectState> = {
     }
 
     if (state.mode === "resize" && state.handle && state.targets[0]) {
+      // like a move, a resize starts only past the slop: a jitter on a handle is still a click
+      if (!state.moved && Math.hypot(dx, dy) <= DRAG_SLOP_PT / ctx.scale) return { state };
       const target = state.targets[0];
       const rect = resizeRect(target.rect, state.handle, p.pt[0], p.pt[1], ctx.modifiers.shift, 6 / ctx.scale);
       return {
@@ -122,6 +124,9 @@ export const selectTool: ToolModule<SelectState> = {
     }
 
     if (state.mode === "resize" && state.handle && state.targets[0]) {
+      // A press on a handle that never became a drag changes nothing: no update_annotation, so
+      // no 주석 편집 undo step and no dirty document for a mis-click.
+      if (!state.moved && Math.hypot(dx, dy) <= DRAG_SLOP_PT / ctx.scale) return { state: { ...EMPTY }, preview: null };
       const target = state.targets[0];
       const rect = resizeRect(target.rect, state.handle, p.pt[0], p.pt[1], ctx.modifiers.shift, 6 / ctx.scale);
       return {

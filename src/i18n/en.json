@@ -61,6 +61,7 @@
   "menu.window.zoom": "Zoom",
   "menu.help": "Help",
   "menu.help.shortcuts": "Keyboard Shortcuts",
+  "shortcuts.group.mode": "Modes",
   "menu.help.about": "About SeePDF",
   "menu.settings": "Settings…",
   "menu.quit": "Quit SeePDF",

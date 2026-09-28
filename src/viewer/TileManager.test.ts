@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_INFLIGHT, TileManager, type TileRequest } from "./TileManager";
+import { MAX_CACHED_KEYS, MAX_INFLIGHT, TileManager, type TileRequest } from "./TileManager";
 
 function tile(page: number, tx: number, ty: number, priority: number, gen = 1): TileRequest {
   return {
@@ -121,5 +121,32 @@ describe("TileManager", () => {
     off();
     manager.setDesired(1, []);
     expect(calls).toBe(1);
+  });
+
+  it("the loaded-key memory is bounded within a generation and pruned when the generation moves on", () => {
+    const manager = new TileManager({ maxInflight: 1000, maxMounted: 1000 });
+    // a long fling through a big document at 400 %: thousands of distinct tiles in one generation
+    for (let batch = 0; batch < 100; batch++) {
+      const tiles = Array.from({ length: 50 }, (_, i) => tile(batch, i, 0, i));
+      manager.setDesired(1, tiles);
+      for (const t of tiles) manager.notifyLoaded(t.key);
+    }
+    expect(manager.stats().cachedKeys).toBeLessThanOrEqual(MAX_CACHED_KEYS);
+
+    // an edit bumps the render generation: none of the old keys can ever be asked for again
+    manager.setDesired(2, grid({ tx: 4, ty: 4 }, 2));
+    expect(manager.stats().cachedKeys).toBe(0);
+  });
+
+  it("a tile that stays wanted is still treated as cached after a remount", () => {
+    const manager = new TileManager({ maxInflight: 1 });
+    const a = tile(0, 0, 0, 0);
+    const b = tile(0, 1, 0, 1);
+    manager.setDesired(1, [a]);
+    manager.notifyLoaded(a.key);
+    manager.setDesired(1, []);
+    // a is back from the webview cache: it does not take b's only in-flight slot
+    manager.setDesired(1, [a, b]);
+    expect(manager.mounted().map((t) => t.key)).toEqual([a.key, b.key]);
   });
 });

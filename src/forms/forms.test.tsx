@@ -7,7 +7,7 @@
  * `compositionend` sequence must survive without React re-rendering the field mid-composition.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import * as api from "../ipc/api";
 import { makePageLayerContext } from "../viewer";
 import { useAppStore } from "../store/appStore";
@@ -104,6 +104,42 @@ describe("forms.overlay", () => {
     fireEvent.blur(input);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][0]).toMatchObject({ page, index: 0, value: { text: "한글" } });
+  });
+
+  it("shows the engine's value again after ⌘Z / 모든 필드 지우기 re-lists the field", async () => {
+    const { ctx } = await openForm();
+    const { container } = render(<FormLayer ctx={ctx} />);
+    const input = container.querySelector<HTMLInputElement>("input.form-text");
+    if (!input) throw new Error("no text field");
+    const before = input.value;
+    fireEvent.change(input, { target: { value: "박현우" } });
+    await act(async () => {
+      fireEvent.blur(input);
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(useFormStore.getState().fields.some((f) => f.value === "박현우")).toBe(true));
+
+    // 실행 취소: the engine goes back, and the re-list at the new generation must reach the DOM
+    await act(async () => {
+      await useDocStore.getState().undo();
+      const info = useDocStore.getState().info!;
+      await loadFields(info.docId, info.docGeneration);
+    });
+    expect(useFormStore.getState().fields.some((f) => f.value === "박현우")).toBe(false);
+    const shown = container.querySelector<HTMLInputElement>("input.form-text")!;
+    expect(shown.value).toBe(before);
+  });
+
+  it("an unrelated re-list keeps what is being typed", async () => {
+    const { ctx, info } = await openForm();
+    const { container } = render(<FormLayer ctx={ctx} />);
+    const input = container.querySelector<HTMLInputElement>("input.form-text")!;
+    input.focus();
+    fireEvent.change(input, { target: { value: "입력 중" } });
+    await act(async () => {
+      await loadFields(info.docId, info.docGeneration + 1);
+    });
+    expect(container.querySelector<HTMLInputElement>("input.form-text")!.value).toBe("입력 중");
   });
 
   it("commits a checkbox immediately", async () => {

@@ -155,6 +155,15 @@ function FieldControl({ field, ctx }: { field: FormField; ctx: PageLayerContext 
   }
 }
 
+/**
+ * What a control shows. The controls are uncontrolled, so a re-list that changes it (⌘Z, 모든 필드
+ * 지우기, a value the engine truncated, the other radio of a group) must remount the control to
+ * reach the DOM; a re-list that leaves it alone keeps the control — and whatever is being typed.
+ */
+function shownValue(field: FormField): string {
+  return JSON.stringify([field.value ?? "", field.checked ?? null, (field.options ?? []).map((o) => o.selected)]);
+}
+
 export const FormLayer = memo(function FormLayer({ ctx }: { ctx: PageLayerContext }) {
   const mode = useAppStore((s) => s.mode);
   const fields = useFormStore((s) => s.fields);
@@ -164,7 +173,7 @@ export const FormLayer = memo(function FormLayer({ ctx }: { ctx: PageLayerContex
   return (
     <div className="form-layer">
       {onPage.map((field) => (
-        <FieldControl key={fieldKey(field.page, field.index)} field={field} ctx={ctx} />
+        <FieldControl key={`${fieldKey(field.page, field.index)}:${shownValue(field)}`} field={field} ctx={ctx} />
       ))}
     </div>
   );

@@ -35,7 +35,10 @@ export interface PageLayerContext {
   /** view rotation (⌘L/⌘R), *not* the page's intrinsic `/Rotate` */
   rotation: Rotation;
   zoomPercent: number;
-  /** CSS px per PDF point — `zoomPercent / 100`, display density excluded */
+  /**
+   * CSS px per PDF point, display density excluded: the page box's width over the page's width —
+   * `zoomPercent / 100` up to the device-pixel rounding of the bitmap.
+   */
   scale: number;
   /** CSS size of the page box */
   width: number;
@@ -71,8 +74,18 @@ export function makePageLayerContext(a: {
   width: number;
   height: number;
 }): PageLayerContext {
-  const scale = a.zoomPercent / 100;
-  const matrix = pageToDevice(a.page, a.rotation, scale);
+  // The page box is the bitmap's device size over the density — `round(pt × zoom × dpr) / dpr` —
+  // so at a fractional dpr (Windows 125 % / 150 %) `zoom / 100` misses it by up to a few px. The
+  // overlays must land on the pixels, so the scale comes from the box itself, per axis.
+  const fallback = a.zoomPercent / 100;
+  const swap = a.rotation === 90 || a.rotation === 270;
+  const wPt = swap ? a.page.heightPt : a.page.widthPt;
+  const hPt = swap ? a.page.widthPt : a.page.heightPt;
+  const sx = a.width > 0 && wPt > 0 ? a.width / wPt : fallback;
+  const sy = a.height > 0 && hPt > 0 ? a.height / hPt : fallback;
+  const scale = sx;
+  const [ma, mb, mc, md, me, mf] = pageToDevice(a.page, a.rotation, 1);
+  const matrix: Mat6 = [ma * sx, mb * sy, mc * sx, md * sy, me * sx, mf * sy];
   const inverse = deviceToPage(matrix);
   const { l, b, r, t } = a.page.crop;
   return {

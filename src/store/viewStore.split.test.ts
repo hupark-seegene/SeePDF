@@ -1,6 +1,6 @@
 /**
- * 분할 보기 (P2) — the viewStore refactor: zoom, zoom mode, rotation, current page and the scroll
- * request exist once per pane, layout and night mode once per document, and the top-level fields
+ * 분할 보기 (P2) — the viewStore refactor: zoom, zoom mode, rotation, current page, the scroll
+ * request and the 뒤로 / 앞으로 history exist once per pane, layout and night mode once per document, and the top-level fields
  * are always the focused pane's (so every existing reader keeps acting on the pane in use).
  */
 import { beforeEach, describe, expect, it } from "vitest";
@@ -10,15 +10,17 @@ beforeEach(() => {
   useViewStore.getState().closeSplit();
   useViewStore.setState({
     zoomPercent: 100, zoomMode: "custom", rotation: 0, layout: "continuous", currentPage: 0, scrollRequest: null,
-    night: "off", split: null, focusedPane: "main", parked: null,
+    backStack: [], forwardStack: [], night: "off", split: null, focusedPane: "main", parked: null,
   });
 });
 
 const view = (pane: "main" | "second") => paneView(useViewStore.getState(), pane);
 
 describe("viewStore — split panes", () => {
-  it("per-pane fields are exactly zoom, zoom mode, rotation, current page and the scroll request", () => {
-    expect([...PANE_FIELDS].sort()).toEqual(["currentPage", "rotation", "scrollRequest", "zoomMode", "zoomPercent"]);
+  it("per-pane fields are exactly zoom, zoom mode, rotation, current page, the scroll request and 뒤로 / 앞으로", () => {
+    expect([...PANE_FIELDS].sort()).toEqual([
+      "backStack", "currentPage", "forwardStack", "rotation", "scrollRequest", "zoomMode", "zoomPercent",
+    ]);
   });
 
   it("without a split both ids read the one view", () => {
@@ -97,6 +99,39 @@ describe("viewStore — split panes", () => {
     expect(now).toMatchObject({ split: null, parked: null, focusedPane: "main", currentPage: 2 });
     expect(useViewStore.getState().focusPane("second")).toBeUndefined();
     expect(useViewStore.getState().focusedPane).toBe("main");
+  });
+
+  it("뒤로 / 앞으로 retrace each pane's own jumps; a new pane starts with no history", () => {
+    const s = useViewStore.getState();
+    s.goToPage(4);
+    s.goToPage(8);
+    s.openSplit();
+    // the second pane opens on page 8, with nothing to go back to
+    expect(view("second")).toMatchObject({ currentPage: 8, backStack: [], forwardStack: [] });
+    s.goBack("second");
+    expect(view("second").currentPage).toBe(8);
+
+    s.goToPage(20, undefined, "second");
+    s.goToPage(30, undefined, "second");
+    // ⌘[ in the focused (main) pane walks main's history, not the second pane's
+    useViewStore.getState().goBack();
+    expect(view("main").currentPage).toBe(4);
+    expect(view("second").currentPage).toBe(30);
+
+    // focusing the second pane: ⌘[ / ⌘] now walk its history, and main's survives the swap
+    useViewStore.getState().focusPane("second");
+    useViewStore.getState().goBack();
+    expect(view("second").currentPage).toBe(20);
+    expect(view("second").scrollRequest).toMatchObject({ page: 20 });
+    useViewStore.getState().goForward();
+    expect(view("second").currentPage).toBe(30);
+    expect(view("main")).toMatchObject({ currentPage: 4, forwardStack: [8] });
+
+    // a new document forgets both panes' history
+    useViewStore.getState().resetHistory();
+    for (const pane of ["main", "second"] as const) {
+      expect(view(pane)).toMatchObject({ backStack: [], forwardStack: [] });
+    }
   });
 
   it("toggle, orientation and 동기화 스크롤", () => {

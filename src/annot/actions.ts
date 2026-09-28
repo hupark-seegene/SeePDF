@@ -18,6 +18,7 @@ import type { Annot, AnnotId, AnnotPatch, AnnotSpec, DocId, PageIndex, Rect } fr
 import { useAnnotStore } from "../store/annotStore";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
+import { registerEditFlush } from "./dragGate";
 import { boundsOfPaths, boundsOfRects } from "../tools/geometry";
 import { NOTE_SIZE_PT } from "../tools/note";
 import { askConfirm } from "../dialogs/dialogState";
@@ -140,7 +141,7 @@ export async function createAnnotation(page: PageIndex, spec: AnnotSpec, opts: C
 
 // ---------------------------------------------------------------- coalescing
 
-interface PendingPatch {
+export interface PendingPatch {
   page: PageIndex;
   id: AnnotId;
   patch: AnnotPatch;
@@ -218,13 +219,27 @@ export function patchAnnotation(page: PageIndex, id: AnnotId, patch: AnnotPatch,
 
 /** Send everything queued. Awaited by undo/redo and by save, so nothing is lost on a generation bump. */
 export function flushPatches(): Promise<void> {
+  return sendPatches(takePendingPatches());
+}
+
+/**
+ * Take everything queued out of the coalescing queue without sending it — a drag's drop owns the
+ * patches it made, so a drag that starts before that drop has settled cannot sweep them up (or
+ * have its own swept up by it).
+ */
+export function takePendingPatches(): PendingPatch[] {
   if (timer) {
     clearTimeout(timer);
     timer = null;
   }
-  if (pending.size === 0) return inFlight;
   const batch = [...pending.values()];
   pending.clear();
+  return batch;
+}
+
+/** Send a batch taken with `takePendingPatches`, after whatever is already in flight. */
+export function sendPatches(batch: PendingPatch[]): Promise<void> {
+  if (batch.length === 0) return inFlight;
   const id = docId();
   if (!id) return inFlight;
   inFlight = inFlight.then(async () => {
@@ -240,6 +255,13 @@ export function flushPatches(): Promise<void> {
   });
   return inFlight;
 }
+
+// ⌘S / 다른 이름으로 저장 / autosave drain the queue through the drag gate (entry-chunk safe).
+registerEditFlush(async () => {
+  const any = pending.size > 0;
+  await flushPatches();
+  return any;
+});
 
 /** `true` while a coalesced patch is still queued — the tests and `undo` both wait on this. */
 export function hasPendingPatches(): boolean {

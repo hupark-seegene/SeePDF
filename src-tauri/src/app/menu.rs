@@ -39,6 +39,12 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, Wry};
 /// The id of the 편집 submenu, so the history items can be found again after `build`.
 const EDIT_MENU_ID: &str = "edit";
 
+/// The app menu's 종료 (⌘Q) — the keymap's `app.quit`. A custom item, not
+/// `PredefinedMenuItem::quit`: the predefined one sends `terminate:`, which exits at once and
+/// skips every window's 저장하지 않은 변경 사항 prompt (tao has no `applicationShouldTerminate`).
+/// This one asks each window to close instead ([`quit`]).
+const QUIT_ID: &str = "app.quit";
+
 /// Every id this menu can emit. Kept public so a test (and the frontend's keymap) can assert
 /// the two tables agree.
 pub const MENU_IDS: &[&str] = &[
@@ -236,7 +242,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         )?)
         .item(&PredefinedMenuItem::show_all(app, Some(t("showAll")))?)
         .separator()
-        .item(&PredefinedMenuItem::quit(app, Some(t("quit")))?)
+        .item(
+            &MenuItemBuilder::with_id(QUIT_ID, t("quit"))
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?,
+        )
         .build()?;
 
     let file_menu = SubmenuBuilder::new(app, t("file"))
@@ -391,11 +401,31 @@ pub fn rebuild(app: &AppHandle<Wry>, locale: Locale) {
     }
 }
 
+/// 종료: every window gets an ordinary close request, so each runs its own unsaved-changes
+/// guard (`onCloseRequested` in `App.tsx`); the app exits when the last one is gone, and stays
+/// if the user cancels in any of them.
+fn quit(app: &AppHandle<Wry>) {
+    let windows = app.webview_windows();
+    if windows.is_empty() {
+        app.exit(0);
+        return;
+    }
+    for (label, window) in windows {
+        if let Err(e) = window.close() {
+            tracing::warn!("close {label} for quit failed: {e}");
+        }
+    }
+}
+
 /// Routes a menu selection to the focused window as `menu:<id>`.
 pub fn on_menu_event(app: &AppHandle<Wry>, event: MenuEvent) {
     let id = event.id().0.clone();
+    if id == QUIT_ID {
+        quit(app);
+        return;
+    }
     if !MENU_IDS.contains(&id.as_str()) {
-        return; // A predefined item (Cut/Copy/Quit/…) the OS already handled.
+        return; // A predefined item (Cut/Copy/Hide/…) the OS already handled.
     }
     // Tauri event names allow only [A-Za-z0-9-/:_]; keymap ids use dots (file.open) -> menu:file/open
     let topic = format!("menu:{}", id.replace('.', "/"));

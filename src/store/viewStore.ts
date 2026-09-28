@@ -5,13 +5,14 @@
  * What is deliberately NOT here (ARCHITECTURE §10): scroll position, the in-gesture zoom scale, the
  * tile inventory and pointer state — those live in refs/classes so React never re-renders per frame.
  *
- * **Two panes, one document (P2 split view).** Zoom, zoom mode, view rotation, current page and the
- * pending scroll request are per *pane* (`PaneView`); layout (단일 / 연속 / 두 쪽) and night mode stay
- * document-level. The top-level `PaneView` fields always describe the **focused** pane — so the
- * status bar, the keymap, the menus, the dialogs ("현재 페이지") and every existing reader keep
- * working unchanged and act on the pane the user last clicked — while the other pane's state is
- * parked in `parked`. `focusPane` swaps the two; nothing else ever copies between them. A pane's
- * scroller reads its own slice with `paneView(state, id)` / `usePaneView(id, …)`.
+ * **Two panes, one document (P2 split view).** Zoom, zoom mode, view rotation, current page, the
+ * pending scroll request and the 뒤로 / 앞으로 history are per *pane* (`PaneView`); layout
+ * (단일 / 연속 / 두 쪽) and night mode stay document-level. The top-level `PaneView` fields always
+ * describe the **focused** pane — so the status bar, the keymap, the menus, the dialogs ("현재
+ * 페이지") and every existing reader keep working unchanged and act on the pane the user last
+ * clicked — while the other pane's state is parked in `parked`. `focusPane` swaps the two; nothing
+ * else ever copies between them. A pane's scroller reads its own slice with `paneView(state, id)` /
+ * `usePaneView(id, …)`.
  */
 import { create } from "zustand";
 import type { PageIndex, Rotation, ViewLayout } from "../ipc/types";
@@ -67,6 +68,9 @@ export interface PaneView {
    * on the heading rather than on the top of the page.
    */
   scrollRequest: ScrollRequest | null;
+  /** 뒤로 / 앞으로 (⌘[ / ⌘]): the pages `goToPage` jumped away from, newest last — per pane. */
+  backStack: PageIndex[];
+  forwardStack: PageIndex[];
 }
 
 export interface SplitState {
@@ -97,6 +101,11 @@ export interface ViewState extends PaneView {
   cycleNight(): void;
   setCurrentPage(page: PageIndex, pane?: PaneId): void;
   goToPage(page: PageIndex, yPt?: number, pane?: PaneId): void;
+  /** 뒤로 / 앞으로: the pane's own jump history */
+  goBack(pane?: PaneId): void;
+  goForward(pane?: PaneId): void;
+  /** a new document starts with no 뒤로 / 앞으로 history (in either pane) */
+  resetHistory(): void;
 
   /** 보기 ▸ 분할 보기: the second pane opens on the focused pane's page and zoom */
   openSplit(orientation?: SplitOrientation): void;
@@ -109,11 +118,16 @@ export interface ViewState extends PaneView {
   focusPane(pane: PaneId): void;
 }
 
+/** 뒤로 remembers this many jumps. */
+const HISTORY_MAX = 50;
+
 function clamp(percent: number): number {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(percent)));
 }
 
-const PANE_KEYS = ["zoomPercent", "zoomMode", "rotation", "currentPage", "scrollRequest"] as const;
+const PANE_KEYS = [
+  "zoomPercent", "zoomMode", "rotation", "currentPage", "scrollRequest", "backStack", "forwardStack",
+] as const;
 
 function pick(s: PaneView): PaneView {
   return {
@@ -122,6 +136,8 @@ function pick(s: PaneView): PaneView {
     rotation: s.rotation,
     currentPage: s.currentPage,
     scrollRequest: s.scrollRequest,
+    backStack: s.backStack,
+    forwardStack: s.forwardStack,
   };
 }
 
@@ -163,6 +179,8 @@ export const useViewStore = create<ViewState>((set, get) => {
     night: "off",
     currentPage: 0,
     scrollRequest: null,
+    backStack: [],
+    forwardStack: [],
     split: null,
     focusedPane: "main",
     parked: null,
@@ -206,8 +224,40 @@ export const useViewStore = create<ViewState>((set, get) => {
       if (page !== view(pane).currentPage) write(pane, { currentPage: page });
     },
     goToPage(page, yPt, pane) {
-      const previous = view(pane).scrollRequest;
-      write(pane, { currentPage: page, scrollRequest: { page, nonce: (previous?.nonce ?? 0) + 1, yPt } });
+      const v = view(pane);
+      const from = v.currentPage;
+      write(pane, {
+        currentPage: page,
+        scrollRequest: { page, nonce: (v.scrollRequest?.nonce ?? 0) + 1, yPt },
+        ...(page !== from ? { backStack: [...v.backStack, from].slice(-HISTORY_MAX), forwardStack: [] } : {}),
+      });
+    },
+    goBack(pane) {
+      const v = view(pane);
+      const page = v.backStack[v.backStack.length - 1];
+      if (page === undefined) return;
+      write(pane, {
+        currentPage: page,
+        scrollRequest: { page, nonce: (v.scrollRequest?.nonce ?? 0) + 1 },
+        backStack: v.backStack.slice(0, -1),
+        forwardStack: [...v.forwardStack, v.currentPage].slice(-HISTORY_MAX),
+      });
+    },
+    goForward(pane) {
+      const v = view(pane);
+      const page = v.forwardStack[v.forwardStack.length - 1];
+      if (page === undefined) return;
+      write(pane, {
+        currentPage: page,
+        scrollRequest: { page, nonce: (v.scrollRequest?.nonce ?? 0) + 1 },
+        forwardStack: v.forwardStack.slice(0, -1),
+        backStack: [...v.backStack, v.currentPage].slice(-HISTORY_MAX),
+      });
+    },
+    resetHistory() {
+      const parked = get().parked;
+      const cleared = { backStack: [], forwardStack: [] };
+      set({ ...cleared, ...(parked ? { parked: { ...parked, ...cleared } } : {}) });
     },
 
     openSplit(requested) {
@@ -220,8 +270,9 @@ export const useViewStore = create<ViewState>((set, get) => {
       const here = pick(s);
       set({
         split: { orientation: orientation ?? "side", sync: false },
-        // the new pane starts on the same page, at the same zoom — and scrolls there on mount
-        parked: { ...here, scrollRequest: { page: here.currentPage, nonce: 1 } },
+        // the new pane starts on the same page, at the same zoom — and scrolls there on mount; its
+        // 뒤로 / 앞으로 history is its own, starting empty
+        parked: { ...here, scrollRequest: { page: here.currentPage, nonce: 1 }, backStack: [], forwardStack: [] },
       });
     },
     closeSplit() {

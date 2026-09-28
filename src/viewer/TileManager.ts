@@ -19,7 +19,9 @@
  * desired set under a client id (`setDesired(…, { client })`), the queue is their union (a tile
  * both panes want — same page, same zoom — is requested once), the in-flight and mounted budgets
  * are the window's, not doubled, and `mounted(client)` is the admitted tiles that client wants.
- * With one client (the default `"main"`) it behaves exactly as before.
+ * The bounded memory of cached keys is pruned per client too: one pane's zoom, rotation or edit
+ * forgets that pane's old keys, never the other pane's. With one client (the default `"main"`) it
+ * behaves exactly as before.
  */
 import type { PageIndex } from "../ipc/types";
 import type { Box } from "./geometry";
@@ -46,6 +48,12 @@ export interface TileManagerOptions {
 export const MAX_INFLIGHT = 24;
 export const FLING_INFLIGHT = 8;
 export const MAX_MOUNTED_TILES = 120;
+/**
+ * How many loaded tile keys are remembered as "in the webview cache". Least recently loaded keys
+ * go first; the webview's own cache is not much bigger, and an unbounded set grew for the life of
+ * the window (every edit bumps the generation, so old keys can never match again).
+ */
+export const MAX_CACHED_KEYS = 2048;
 
 interface Admitted {
   req: TileRequest;
@@ -64,13 +72,18 @@ export class TileManager {
   private pressure: "normal" | "high" = "normal";
 
   /** per client (a pane of 분할 보기): its viewport generation and what it wants */
-  private clients = new Map<string, { generation: number; tiles: TileRequest[] }>();
+  private clients = new Map<string, { generation: number; tiles: TileRequest[]; keys: Set<string> }>();
   /** everything the viewports want, priority-sorted, one entry per key */
   private queue: TileRequest[] = [];
   /** what is in the DOM, in admission order */
   private admitted = new Map<string, Admitted>();
-  /** keys the webview has already cached — a re-mount paints from cache, so it is not a request */
-  private everLoaded = new Set<string>();
+  /**
+   * Keys the webview has already cached — a re-mount paints from cache, so it is not a request —
+   * least recently loaded first, at most `MAX_CACHED_KEYS`. Each key carries the clients that have
+   * wanted it in their current render generation: a client's generation moving on drops only that
+   * client's claims, and a key nobody claims any more is forgotten.
+   */
+  private everLoaded = new Map<string, Set<string>>();
   private listeners = new Set<() => void>();
   private cachedMounted: TileRequest[] | null = null;
   private cachedByClient = new Map<string, TileRequest[]>();
@@ -109,10 +122,16 @@ export class TileManager {
   setDesired(generation: number, tiles: TileRequest[], opts: { fling?: boolean; client?: string } = {}): void {
     const client = opts.client ?? "main";
     const generationChanged = generation !== (this.clients.get(client)?.generation ?? 0);
-    this.clients.set(client, { generation, tiles });
-    this.fling = opts.fling ?? false;
     const mine = new Set(tiles.map((t) => t.key));
+    this.clients.set(client, { generation, tiles, keys: mine });
+    this.fling = opts.fling ?? false;
     const wanted = this.rebuildQueue();
+    // A new render generation of this client (document generation, scale key, rotation, night)
+    // never asks for its old keys again: forget them — but only this client's. 분할 보기: the other
+    // pane's tiles, visible or scrolled past, belong to its own generation and stay remembered.
+    if (generationChanged) this.forget(client, mine);
+    // a cached tile this client wants now is this client's too (it must outlive the other pane)
+    for (const key of mine) this.everLoaded.get(key)?.add(client);
 
     // Cancellation: a tile nobody wants any more is unmounted at once. On a generation bump the
     // engine has already dropped its render, so even a loaded tile would repaint stale pixels.
@@ -131,6 +150,7 @@ export class TileManager {
   /** A pane went away (분할 보기 closed): its tiles are no longer wanted on its account. */
   removeClient(client: string): void {
     if (!this.clients.delete(client)) return;
+    this.forget(client, new Set());
     const wanted = this.rebuildQueue();
     for (const key of [...this.admitted.keys()]) if (!wanted.has(key)) this.admitted.delete(key);
     this.pump(true);
@@ -162,7 +182,7 @@ export class TileManager {
     if (client === undefined) return this.cachedMounted;
     let mine = this.cachedByClient.get(client);
     if (!mine) {
-      const keys = new Set((this.clients.get(client)?.tiles ?? []).map((t) => t.key));
+      const keys = this.clients.get(client)?.keys ?? new Set<string>();
       mine = this.cachedMounted.filter((t) => keys.has(t.key));
       this.cachedByClient.set(client, mine);
     }
@@ -181,7 +201,7 @@ export class TileManager {
     const entry = this.admitted.get(key);
     if (!entry || entry.loaded) return;
     entry.loaded = true;
-    this.everLoaded.add(key);
+    this.rememberLoaded(key);
     this.pump();
   }
 
@@ -194,7 +214,14 @@ export class TileManager {
     this.pump();
   }
 
-  stats(): { generation: number; inflight: number; mounted: number; queued: number; limit: number } {
+  stats(): {
+    generation: number;
+    inflight: number;
+    mounted: number;
+    queued: number;
+    limit: number;
+    cachedKeys: number;
+  } {
     let inflight = 0;
     for (const entry of this.admitted.values()) if (!entry.loaded) inflight += 1;
     return {
@@ -203,6 +230,7 @@ export class TileManager {
       mounted: this.admitted.size,
       queued: this.queue.length,
       limit: this.inflightLimit,
+      cachedKeys: this.everLoaded.size,
     };
   }
 
@@ -215,6 +243,28 @@ export class TileManager {
   }
 
   // -------------------------------------------------------------------------
+
+  /** LRU by insertion order: a re-load moves the key to the young end. */
+  private rememberLoaded(key: string): void {
+    const owners = this.everLoaded.get(key) ?? new Set<string>();
+    this.everLoaded.delete(key);
+    for (const [id, { keys }] of this.clients) if (keys.has(key)) owners.add(id);
+    this.everLoaded.set(key, owners);
+    while (this.everLoaded.size > MAX_CACHED_KEYS) {
+      const oldest = this.everLoaded.keys().next().value;
+      if (oldest === undefined) break;
+      this.everLoaded.delete(oldest);
+    }
+  }
+
+  /** `client` moved to a new render generation (or went away): drop its claim on every key but `keep`. */
+  private forget(client: string, keep: Set<string>): void {
+    for (const [key, owners] of this.everLoaded) {
+      if (keep.has(key)) continue;
+      owners.delete(client);
+      if (owners.size === 0) this.everLoaded.delete(key);
+    }
+  }
 
   /** Admit as many queued tiles as the in-flight and mounted budgets allow. */
   private pump(force = false): boolean {

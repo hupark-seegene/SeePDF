@@ -30,7 +30,7 @@ import {
   patchAnnotation,
   specFromAnnot,
 } from "./actions";
-import { closeDialog, openDialog } from "../dialogs/dialogState";
+import { closeDialog, isDialogOpen, openDialog } from "../dialogs/dialogState";
 import { startAnnotSync } from "./sync";
 import { dragPatch, endDrag, startDragHide } from "./dragHide";
 import { startToolDefaultsSync } from "./toolDefaults";
@@ -197,7 +197,8 @@ function currentPage(): PageIndex {
 
 function onKeyDownCapture(e: KeyboardEvent): void {
   const app = useAppStore.getState();
-  if (app.mode !== "annotate") return;
+  // a modal dialog owns the keyboard: ⌫ must not delete, nor Esc deselect, behind it
+  if (app.mode !== "annotate" || isDialogOpen()) return;
   const target = e.target as HTMLElement | null;
   const tag = target?.tagName?.toLowerCase();
   if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;

@@ -33,7 +33,15 @@ import { useAnnotStore } from "../store/annotStore";
 import { useDocStore } from "../store/docStore";
 import { toolController } from "../tools/ToolController";
 import { isBuiltinStampKind } from "../tools/stampCatalog";
-import { annotsOnPage, flushPatches, holdPatchFlush, patchAnnotation } from "./actions";
+import {
+  annotsOnPage,
+  flushPatches,
+  holdPatchFlush,
+  patchAnnotation,
+  sendPatches,
+  takePendingPatches,
+  type PendingPatch,
+} from "./actions";
 import { dragBegan, dragSettled, hasPendingWrites, writesSettled } from "./dragGate";
 import { needsSnapshot, pruneSnapshots, takeSnapshots } from "./snapshots";
 
@@ -49,6 +57,8 @@ interface Session {
   closed: boolean;
   /** the page's URLs switched to the hidden render */
   applied: boolean;
+  /** the patches this drag made, taken out of the queue at its drop */
+  batch: PendingPatch[];
 }
 
 let session: Session | null = null;
@@ -91,7 +101,11 @@ function begin(page: PageIndex, ids: AnnotId[]): void {
     hide: Promise.resolve(null),
     closed: false,
     applied: false,
+    batch: [],
   };
+  // Grabbed again before the previous drop has settled: that drop must unhide and commit first,
+  // or its `update_annotation` would snapshot this drag's HIDDEN bit (⌘Z would bring it back hidden).
+  const previous = ending;
   if (s.ids.length) {
     // The pixels of what the overlay cannot draw, and any autosave write in flight, come first:
     // both must see the annotation before it is hidden.
@@ -102,7 +116,8 @@ function begin(page: PageIndex, ids: AnnotId[]): void {
         ? Promise.all([shots.length ? takeSnapshots(docId, page, rotation, shots) : undefined, writesSettled()])
         : null;
     const hide = () => api.setAnnotationsHidden({ docId, page, ids: s.ids, hidden: true });
-    s.hide = (before ? before.then(hide) : hide())
+    s.hide = previous
+      .then(() => (before ? before.then(hide) : hide()))
       .then(({ viewNonce }) => {
         // A drop that beat the answer must not switch the page to the hidden render.
         if (!s.closed) {
@@ -132,6 +147,7 @@ export function endDrag(): Promise<void> {
   if (!s) return ending;
   session = null;
   s.closed = true;
+  s.batch = takePendingPatches();
   ending = finish(s);
   return ending;
 }
@@ -157,10 +173,15 @@ async function restoreAndCommit(s: Session): Promise<void> {
   } catch {
     // the document may be gone (closed mid-drag); nothing left to restore
   } finally {
-    holdPatchFlush(false);
+    // A newer drag (grabbed before this drop settled) holds the queue now: its patches wait for
+    // its own drop.
+    if (!session) holdPatchFlush(false);
   }
-  await flushPatches().catch(() => undefined);
+  await sendPatches(s.batch).catch(() => undefined);
+  if (!session) await flushPatches().catch(() => undefined);
   const store = useAnnotStore.getState();
+  // the newer drag's ghosts of the same annotations are its own to settle
+  const regrabbed = new Set(session && session.page === s.page ? session.ids : []);
   const generation = store.pageGeneration[s.page] ?? s.generation;
   const moved = generation > s.generation;
   // Nothing committed (a failed update, a cancel before any movement) but the page did switch to
@@ -168,6 +189,7 @@ async function restoreAndCommit(s: Session): Promise<void> {
   const rerender = !moved && s.applied && restored !== null;
   if (rerender) store.setViewNonce(s.page, restored);
   for (const id of s.ids) {
+    if (regrabbed.has(id)) continue;
     // The ghost goes when a bitmap of `generation` paints — the moved one, or the re-render.
     // If the bitmap never lost the annotation, the ghost goes now.
     if (moved || rerender) store.settleGhost(id, generation);
