@@ -19,6 +19,7 @@ import { useJobStore } from "../store/jobStore";
 import { useToastStore } from "../app/toastStore";
 import { useDialogStore } from "../dialogs/dialogState";
 import type { JobEvent } from "../ipc/types";
+import { t, type TParams } from "../i18n";
 
 type Run = (id: string) => void;
 
@@ -69,6 +70,14 @@ function snapshot(): unknown {
     toasts: useToastStore.getState().toasts.map((t) => ({ tone: t.tone, key: t.messageKey, detail: t.detail })),
     dialogs: useDialogStore.getState().stack.map((d) => d.name),
   };
+}
+
+/** Toasts newer than `after` (a toast id), with their text rendered in the active locale. */
+function renderedToasts(after: number): unknown[] {
+  return useToastStore
+    .getState()
+    .toasts.filter((x) => x.id > after)
+    .map((x) => ({ tone: x.tone, key: x.messageKey, params: x.params, text: t(x.messageKey, x.params), actions: x.actions?.map((a) => t(a.labelKey)) }));
 }
 
 /** Commands that stream progress take a channel; collect it and resolve on `done`. */
@@ -299,6 +308,73 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
       const m = await import("../viewer/viewerCommands");
       const text = m.currentSelectionText();
       return { ok: m.copyToClipboard(text), chars: text.length };
+    }
+    /**
+     * Stage 9 real-app QA: the 텍스트 수정 path end to end, as a click with the tool and a 완료 would
+     * run it. `beginParagraphEdit(page, at)` opens the editor on the paragraph under `at`, then
+     * `commitSession(text)` runs the push dry run → commit, or the blocked prompt → the chosen flow →
+     * toast. `text` replaces the paragraph; without it the probe's text + `append` is written.
+     * Prompts that open meanwhile are answered from `answers` (`confirm`: the Hangul font consent,
+     * default false; `choice`: fit / overlap / keepEditing, default the prompt's cancel) and reported
+     * with their rendered text; the toasts raised by the commit come back rendered too. An editor
+     * left open (계속 편집, a declined font) is closed afterwards unless `keepOpen`.
+     */
+    case "paragraphUi": {
+      const m = await import("../edit/actions");
+      const { useEditStore } = await import("../edit/editStore");
+      const info = useDocStore.getState().info;
+      if (!info) throw new Error("no document");
+      const page = Number(cmd.page ?? 0);
+      await m.loadPage(info.docId, page, info.docGeneration);
+      const began = await m.beginParagraphEdit(page, cmd.at as [number, number]);
+      const session = useEditStore.getState().session;
+      if (!began || session?.kind !== "paragraph") return { began, toasts: renderedToasts(0), state: snapshot() };
+      const probe = session.probe;
+      const text = cmd.text !== undefined ? String(cmd.text) : probe.text + String(cmd.append ?? "");
+      const answers = (cmd.answers ?? {}) as { confirm?: boolean; choice?: string };
+      const lastToast = Math.max(0, ...useToastStore.getState().toasts.map((x) => x.id));
+      const prompts: unknown[] = [];
+      let settled = false;
+      const commit = m.commitSession(text).finally(() => {
+        settled = true;
+      });
+      while (!settled) {
+        const top = useDialogStore.getState().stack.at(-1);
+        if (top && (top.name === "confirm" || top.name === "choice")) {
+          const { resolve, ...req } = top.props as { resolve: (v: unknown) => void } & Record<string, unknown>;
+          const r = req as {
+            titleKey: string; bodyKey: string; bodyParams?: TParams; hintKey?: string; hintParams?: TParams;
+            options?: { value: string; labelKey: string; labelParams?: TParams; disabled?: boolean }[];
+            cancel?: { value: string; labelKey: string };
+          };
+          prompts.push({
+            name: top.name,
+            ...req,
+            text: {
+              title: t(r.titleKey),
+              body: t(r.bodyKey, r.bodyParams),
+              hint: r.hintKey ? t(r.hintKey, r.hintParams) : undefined,
+              options: r.options?.map((o) => `${t(o.labelKey, o.labelParams)}${o.disabled ? " (disabled)" : ""}`),
+            },
+          });
+          if (top.name === "confirm") resolve(Boolean(answers.confirm));
+          else resolve(answers.choice ?? r.cancel?.value);
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const committed = await commit;
+      await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 300)));
+      const open = useEditStore.getState().session !== null;
+      if (open && !cmd.keepOpen) m.cancelSession();
+      return {
+        began,
+        committed,
+        editorLeftOpen: open,
+        probe: { rect: probe.rect, lines: probe.lines, strategy: probe.strategy, chars: probe.text.length, fontSizePt: probe.fontSizePt, lineHeightPt: probe.lineHeightPt },
+        prompts,
+        toasts: renderedToasts(lastToast),
+        state: snapshot(),
+      };
     }
     /** Webview console errors / warnings and uncaught errors since the bridge started (or `clear`). */
     case "console": {

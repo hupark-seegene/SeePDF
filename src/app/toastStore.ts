@@ -35,7 +35,9 @@ export const useToastStore = create<ToastStore>((set, get) => ({
   toasts: [],
   push(t) {
     const id = ++nextId;
-    const toast: Toast = { timeoutMs: t.tone === "danger" ? 8000 : 4500, ...t, id };
+    // `toast()` always passes the key, often as `undefined`: a spread default would be overwritten by
+    // it, and `setTimeout(dismiss, undefined)` removes the toast on its first frame
+    const toast: Toast = { ...t, timeoutMs: t.timeoutMs ?? (t.tone === "danger" ? 8000 : 4500), id };
     set({ toasts: [...get().toasts, toast] });
     return id;
   },
