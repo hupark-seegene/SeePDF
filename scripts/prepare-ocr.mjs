@@ -85,10 +85,19 @@ function looksLikeTraineddataGz(buf) {
   }
 }
 
-async function fetchBuffer(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+/** Three attempts with a growing pause: CDN downloads fail transiently on CI runners. */
+async function fetchBuffer(url, attempts = 3) {
+  for (let i = 1; ; i++) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    } catch (e) {
+      if (i >= attempts) throw e;
+      console.warn(`[ocr] ${e.message} — retry ${i}/${attempts - 1}`);
+      await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+  }
 }
 
 /**

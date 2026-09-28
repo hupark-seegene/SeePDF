@@ -31,6 +31,22 @@ function hostTriple() {
   return `${arch}-unknown-linux-gnu`;
 }
 
+/**
+ * GitHub release downloads fail transiently on CI runners now and then (a reset connection or a
+ * 5xx from the CDN), which used to fail a whole `npm ci`. Three attempts with a growing pause.
+ */
+async function withRetry(what, fn, attempts = 3) {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= attempts) throw e;
+      console.warn(`[pdfium] ${what}: ${e.message} — retry ${i}/${attempts - 1}`);
+      await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+  }
+}
+
 async function fetchTarget(triple) {
   const t = TARGETS[triple];
   if (!t) throw new Error(`unsupported target ${triple}`);
@@ -45,9 +61,11 @@ async function fetchTarget(triple) {
   rmSync(tmpDir, { recursive: true, force: true });
   mkdirSync(tmpDir, { recursive: true });
   const tgz = join(tmpDir, "pdfium.tgz");
-  const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok) throw new Error(`download failed: ${res.status} ${res.statusText}`);
-  await pipeline(res.body, createWriteStream(tgz));
+  await withRetry(t.asset, async () => {
+    const res = await fetch(url, { redirect: "follow" });
+    if (!res.ok) throw new Error(`download failed: ${res.status} ${res.statusText}`);
+    await pipeline(res.body, createWriteStream(tgz));
+  });
   execSync(`tar -xzf "${tgz}" -C "${tmpDir}"`, { stdio: "inherit" });
   renameSync(join(tmpDir, t.inner), dest);
   rmSync(tmpDir, { recursive: true, force: true });
