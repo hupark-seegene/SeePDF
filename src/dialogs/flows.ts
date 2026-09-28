@@ -14,7 +14,8 @@ import { useJobStore } from "../store/jobStore";
 import { usePagesStore } from "../store/pagesStore";
 import { toast } from "../app/toastStore";
 import { askMultipleFiles, askPassword, askUnsaved, closeDialog, openDialog } from "./dialogState";
-import type { DocInfo, PageIndex, PageOp, RecentEntry } from "../ipc/types";
+import { autosave, markRecovered, recoveredEntry, settleRecovered } from "../app/autosave";
+import type { DocInfo, PageIndex, PageOp, RecentEntry, RecoveryEntry } from "../ipc/types";
 
 // ---------------------------------------------------------------------------
 // Opening
@@ -47,15 +48,23 @@ async function openSeparately(paths: string[]): Promise<void> {
 
 /**
  * Open one file. Retries the password prompt in place (F-01) and restores the stored reading
- * position when 마지막으로 본 위치 기억 is on.
+ * position when 마지막으로 본 위치 기억 is on. `recovery`: the file is a 복구 copy (P1-8) — it is
+ * marked so 저장 asks for a location, and it stays out of 최근 항목.
  */
-export async function openPath(path: string, opts: { guard?: boolean } = {}): Promise<DocInfo | null> {
+export async function openPath(
+  path: string,
+  opts: { guard?: boolean; recovery?: RecoveryEntry } = {},
+): Promise<DocInfo | null> {
   if (opts.guard !== false && !(await confirmUnsaved())) return null;
   const docs = useDocStore.getState();
+  const previous = docs.info;
   let password: string | undefined;
   for (;;) {
     const info = await docs.open(path, password);
     if (info) {
+      // the document this one replaced was dealt with by the unsaved gate: its copy can go
+      if (previous && previous.docId !== info.docId) await autosave.clear(previous.docId);
+      if (opts.recovery) markRecovered(info.docId, opts.recovery);
       await afterOpen(info);
       return info;
     }
@@ -99,7 +108,7 @@ async function afterOpen(info: DocInfo): Promise<void> {
 
 /** Write the current reading position back into the recents list (IPC_CONTRACT §11). */
 export async function touchRecent(info: DocInfo): Promise<void> {
-  if (!info.path) return;
+  if (!info.path || recoveredEntry(info.docId)) return;
   const view = useViewStore.getState();
   const app = useAppStore.getState();
   const previous = app.recents.find((r) => r.path === info.path);
@@ -150,11 +159,13 @@ export async function mergePaths(inputs: { path: string; range?: string }[]): Pr
 export async function saveFlow(): Promise<boolean> {
   const info = useDocStore.getState().info;
   if (!info) return false;
-  if (!info.path) return saveAsFlow();
+  // a 복구 copy is not the user's file: never save over it in place
+  if (!info.path || recoveredEntry(info.docId)) return saveAsFlow();
   const jobs = useJobStore.getState();
   try {
     await api.saveDocument({ docId: info.docId }, (e) => jobs.apply("save", "status.saving", e));
     await useDocStore.getState().refresh();
+    await autosave.clear(info.docId);
     const fresh = useDocStore.getState().info;
     if (fresh) await touchRecent(fresh);
     toast("status.saved", undefined, { tone: "success", timeoutMs: 2200 });
@@ -173,12 +184,14 @@ export async function saveFlow(): Promise<boolean> {
 export async function saveAsFlow(): Promise<boolean> {
   const info = useDocStore.getState().info;
   if (!info) return false;
-  const path = await api.saveFileDialog({ defaultPath: info.name });
+  const path = await api.saveFileDialog({ defaultPath: recoveredEntry(info.docId)?.name ?? info.name });
   if (!path) return false;
   const jobs = useJobStore.getState();
   try {
     await api.saveDocumentAs({ docId: info.docId, path }, (e) => jobs.apply("save", "status.saving", e));
     await useDocStore.getState().refresh();
+    await autosave.clear(info.docId);
+    await settleRecovered(info.docId);
     const fresh = useDocStore.getState().info;
     if (fresh) await touchRecent(fresh);
     toast("status.saved", undefined, { tone: "success", timeoutMs: 2200 });
@@ -205,7 +218,11 @@ export async function confirmUnsaved(): Promise<boolean> {
 export async function closeDocumentFlow(): Promise<boolean> {
   if (!(await confirmUnsaved())) return false;
   const info = useDocStore.getState().info;
-  if (info) await touchRecent(info).catch(() => undefined);
+  if (info) {
+    await touchRecent(info).catch(() => undefined);
+    // 저장 or 저장 안 함 (or nothing to save): a clean close, so the recovery copy goes
+    await autosave.clear(info.docId);
+  }
   usePagesStore.getState().reset();
   await useDocStore.getState().close();
   return true;

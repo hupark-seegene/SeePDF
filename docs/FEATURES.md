@@ -204,6 +204,15 @@ Details in `docs/STAGE4_NOTES.md`.
 | P1-4 | ✅ | 도구 → 워터마크 / 머리글·바닥글 (⌥⌘W): text with `{{page}}`/`{{total}}`/`{{date}}`/`{{filename}}`, multi-line, Hangul font, or a PNG/JPEG shared as one Form XObject; 9 anchors + margin, rotation, opacity, page range; upright on `/Rotate` pages; objects tagged `SeePDF:Stamp`; one undo step; `cargo test --test stamp` (6), `stamp.test.ts`, `stamp.flow.test.tsx`. ⚠️ no "remove stamps" command yet; a rotated stamp near an edge can be clipped |
 | P1-5 | ✅ ⚠️ | 도구 → 압축: 300/150/96 DPI presets, cancellable estimate on a scratch copy, measured before/after + amber "no gain" warning, apply = one undo step (`stale` if the document changed); JPEG sources re-encoded as JPEG only when smaller; `cargo test --test compress` (5), `compress.flow.test.tsx`. ⚠️ images in Form XObjects / with SMask / shared between pages are skipped; non-JPEG images go through Flate and can grow; untested on encrypted documents |
 
+### P1 status — Stage 5
+
+Details in `docs/STAGE5_NOTES.md`.
+
+| id | status | evidence |
+|---|---|---|
+| P1-6 | ✅ | 도구 → 문서 비교…: pick file B, 대소문자 무시, cancellable job (one progress per page pair); word-level Myers diff per page pair (pages paired by index), adjacent delete + insert = replace, one rect per line; full-window side-by-side view with red (A) / green (B) marks, 이전/다음 변경, 변경만 보기; B is closed on 닫기, Esc, window close and when A is replaced; `cargo test --test compare` (6) + lib diff tests (LCS vs brute force), `compare.flow.test.tsx`, `model.test.ts`. ⚠️ text only (no pixel diff, scanned pages have no words); pages paired by index, no page-insertion alignment; >2000 edits on one page collapse to one replace |
+| P1-8 | ✅ | 설정 → 자동 저장 간격 (끄기 / 30초 / 1분 / 5분, default 1분): while dirty, a copy of the current state (appearance streams, encryption kept) goes to `$APPDATA/SeePDF/recovery/<uuid>.pdf` + `.json`, atomically, only when the generation moved; cleared on 저장 / 다른 이름으로 저장 / clean close; next launch offers 복구 (열기 / 삭제 / 모두 삭제 / 나중에), a recovered document saves via 다른 이름으로 저장 and is kept out of 최근 항목; copies of open documents are not offered; `cargo test --test recovery` (7), `autosave.test.ts` (fake timers), `recovery.flow.test.tsx`. ⚠️ recovered document's title shows the uuid file name until saved |
+
 ## P2 — after v1
 
 Paragraph reflow when editing text · document tabs in one window · link creation and go-to-page

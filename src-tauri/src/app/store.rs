@@ -23,6 +23,12 @@ pub fn thumbs_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     Some(dir)
 }
 
+/// `$APPDATA/SeePDF/recovery/`, where autosave copies live. Not created here — the first
+/// `write_recovery` creates it, and `list_recovery` treats a missing directory as empty.
+pub fn recovery_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    Some(app.path().app_data_dir().ok()?.join("recovery"))
+}
+
 /// `$TEMP/seepdf-history/`, where undo snapshots spill.
 pub fn history_spill_dir<R: Runtime>(app: Option<&AppHandle<R>>) -> PathBuf {
     let base = app

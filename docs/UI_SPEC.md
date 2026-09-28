@@ -45,7 +45,7 @@ One document per window; the first window shows the welcome screen.
 | left group | `☰` sidebar toggle · `↶` undo · `↷` redo (undo/redo only when a document is open) |
 | centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty |
 | centre | **mode switcher**: 읽기 · 주석 · 편집 · 페이지 · 양식 (segmented, ⌘1–⌘5) |
-| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, OCR, 문서 정보, 설정) |
+| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 합치기, 분할, 문서 정보, 설정) |
 
 Changing mode changes four things at once: the tool strip, the default canvas cursor, the properties
 panel content, and what a click on the page does.
@@ -189,6 +189,28 @@ tokens expanded). 적용 → one undo step (`undo.watermark` / `undo.headerFoote
 amber and an amber note advises against applying. 적용 (disabled until an estimate exists) replaces the document
 as one `undo.compress` step and toasts `before → after` with 실행 취소. Changing an option, 다시 예상 or closing
 the dialog discards the pending result.
+
+**문서 비교** (P1-6, 480 px, 도구 ▸ 문서 비교… or ⋯): 현재 문서 (A) · 비교할 파일 (B) + 찾아보기… · 대소문자 무시 ·
+비교 opens B with `open_document` **beside** the window's document (never replacing it; an encrypted B goes
+through 암호 입력 and the dialog comes back with its state), runs `compare_documents` with an inline progress bar
+(`비교 중… 3/12`) and 취소 (which also closes B), then switches to the **compare view**: full window over the shell
+(under dialogs and toasts), a header with 변경된 페이지 N · 삽입 N단어 · 삭제 N단어, 이전 변경 / 다음 변경 (no
+wrap-around; disabled at the ends), 변경만 보기 and 닫기; column captions A / B with the file names; one scroller
+in which every row holds one page pair (A left, B right, each fit to half the width), so both sides scroll together
+by construction. Row caption `A 3쪽 · B 3쪽` with `+N −N` or 변경 없음; a missing side is a dashed placeholder
+페이지 없음. Deleted / replaced words are tinted red on A, inserted / replaced words green on B (one rect per
+line fragment, PDF points mapped through the crop box and `/Rotate` like the viewer). 닫기 or Esc closes the
+view and B, and so does closing the window or replacing the window's document; the document shortcuts are off
+while it is open.
+
+**복구** (P1-8, 640 px, at launch in the main window only when `list_recovery` is non-empty): intro line, a table
+이름 / 저장 시각 (locale date + time) / 페이지 / 크기 with 열기 and 삭제 per row, footer 모두 삭제 (danger, left) and
+나중에 (keeps the copies for the next launch). 열기 opens the copy through the normal open path (password retry
+included) and toasts 복구 사본입니다. 다른 이름으로 저장하세요; that document's 저장 goes to 다른 이름으로 저장
+(suggesting the original name), its recovery path never enters 최근 항목, and saving it elsewhere discards the entry.
+**자동 저장**: every `autosaveSec` (설정 ▸ 일반 ▸ 자동 저장 간격 끄기 / 30초 / 1분 (default) / 5분) a dirty
+document whose generation moved since the last copy is written with `write_recovery`; 저장, 다른 이름으로 저장
+and a clean close (저장 / 저장 안 함 / nothing to save) call `clear_recovery`. A failed copy toasts once per document.
 
 **Others**: 암호 입력 (on `passwordRequired`, retries in place) · 저장하지 않은 변경 사항 (저장 / 저장 안 함 /
 취소) · 파일 합치기 (ordered list with drag, per-file range field, warnings for forms/outline) ·
@@ -435,6 +457,7 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `menu.tools.security` | 보안… | Security… |
 | `menu.tools.redact` | 영역 표시 | Redact |
 | `menu.tools.compress` | 압축… | Compress… |
+| `menu.tools.compare` | 문서 비교… | Compare Documents… |
 | `menu.tools.merge` | 파일 합치기… | Merge Files… |
 | `menu.window` | 윈도우 | Window |
 | `menu.window.minimize` | 최소화 | Minimize |
@@ -749,6 +772,7 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `settings.theme.dark` | 어둡게 | Dark |
 | `settings.defaultView` | 기본 보기 | Default view |
 | `settings.restorePosition` | 마지막으로 본 위치 기억 | Remember last reading position |
+| `settings.autosave` | 자동 저장 간격 | Autosave interval |
 | `settings.authorName` | 주석 작성자 이름 | Annotation author name |
 | `settings.renderQuality` | 렌더링 품질 | Rendering quality |
 | `settings.cacheSize` | 캐시 크기 | Cache size |

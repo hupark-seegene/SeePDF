@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
 import { Dialog, Row } from "./Dialog";
+import { AUTOSAVE_CHOICES, autosaveSecOf } from "../app/autosave";
 import type { Locale } from "../i18n";
 import type { Settings, ThemePref, ViewLayout } from "../ipc/types";
 
@@ -121,6 +122,23 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                 />
                 <span>{t("settings.restorePosition")}</span>
               </label>
+              <Row labelKey="settings.autosave" hintKey="settings.autosave.hint">
+                <div className="segmented" role="radiogroup" aria-label={t("settings.autosave")}>
+                  {AUTOSAVE_CHOICES.map((sec) => (
+                    <button
+                      key={sec}
+                      type="button"
+                      role="radio"
+                      className="segment"
+                      aria-checked={autosaveSecOf(settings) === sec}
+                      data-active={autosaveSecOf(settings) === sec || undefined}
+                      onClick={() => void patch({ autosaveSec: sec })}
+                    >
+                      {t(`settings.autosave.${sec}`)}
+                    </button>
+                  ))}
+                </div>
+              </Row>
               <Row labelKey="settings.recentsCount">
                 <input
                   className="field num"

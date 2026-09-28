@@ -1,0 +1,66 @@
+/* 문서 비교 view (P1-6) — full window over the shell, under dialogs (40) and toasts (45). */
+.cmp-root {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-canvas);
+}
+.cmp-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--h-titlebar);
+  padding: var(--space-1) var(--space-4) var(--space-1) max(var(--space-4), var(--titlebar-gutter));
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+:root[data-os="macos"] .cmp-head { padding-inline-start: 78px; }
+.cmp-title { margin: 0; }
+.cmp-summary { display: flex; gap: var(--space-3); margin: 0 0 0 var(--space-3); color: var(--text-secondary); }
+.cmp-spacer { flex: 1; }
+.cmp-toggle { margin-inline: var(--space-2); }
+.cmp-ins { color: var(--success); }
+.cmp-del { color: var(--danger); }
+.cmp-columns {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  padding: var(--space-2) 24px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.cmp-colname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.cmp-colname b { color: var(--text-primary); margin-inline-end: var(--space-1); }
+.cmp-scroller { flex: 1; overflow: auto; padding: 12px 24px 48px; }
+.cmp-row { margin-block-end: 24px; content-visibility: auto; contain-intrinsic-size: auto 900px; }
+.cmp-row-head {
+  display: flex;
+  justify-content: space-between;
+  width: calc(2 * var(--cmp-col, 420px) + 24px);
+  max-width: 100%;
+  margin: 0 auto var(--space-1);
+  color: var(--text-inverse);
+  opacity: 0.85;
+}
+.cmp-row[data-current] .cmp-row-head { opacity: 1; font-weight: 600; }
+.cmp-badge { display: inline-flex; gap: var(--space-2); padding: 0 var(--space-2); border-radius: var(--radius-sm); background: var(--bg-panel); }
+.cmp-same { opacity: 0.8; }
+.cmp-pair { display: flex; justify-content: center; align-items: flex-start; gap: 24px; }
+.cmp-page { position: relative; flex: none; background: var(--page-paper); box-shadow: var(--page-shadow); }
+.cmp-page img { display: block; width: 100%; height: 100%; user-select: none; }
+.cmp-missing {
+  display: grid;
+  place-items: center;
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed rgb(255 255 255 / 0.55);
+  border-radius: var(--radius-md);
+  color: var(--text-inverse);
+}
+.cmp-mark { position: absolute; border-radius: 2px; mix-blend-mode: multiply; pointer-events: none; }
+.cmp-mark.del { background: rgb(217 63 63 / 0.28); box-shadow: inset 0 -2px 0 var(--danger); }
+.cmp-mark.ins { background: rgb(46 158 91 / 0.28); box-shadow: inset 0 -2px 0 var(--success); }
+.cmp-empty { color: var(--text-inverse); text-align: center; margin-top: var(--space-12); }

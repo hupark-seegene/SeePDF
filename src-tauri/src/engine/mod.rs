@@ -9,6 +9,7 @@
 //! * [`raw`] — the only `unsafe` in the tree.
 
 pub mod annot;
+pub mod compare;
 pub mod compress;
 pub mod export;
 pub mod fonts;
@@ -20,6 +21,7 @@ pub mod ocr;
 pub mod page_lru;
 pub mod pages;
 pub mod raw;
+pub mod recovery;
 pub mod redact;
 pub mod registry;
 pub mod render;

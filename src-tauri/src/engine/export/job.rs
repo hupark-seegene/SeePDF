@@ -11,7 +11,7 @@
 //! under `cargo test` (a closure collecting events) and in the app (the command's channel).
 
 use crate::engine::jobs::Jobs;
-use crate::ipc::types::{CompressReport, JobEvent, JobId, PageIndex};
+use crate::ipc::types::{CompareReport, CompressReport, JobEvent, JobId, PageIndex};
 use crate::ipc::EngineError;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -100,6 +100,7 @@ impl JobReporter {
             elapsed_ms: self.started.elapsed().as_secs_f64() * 1000.0,
             outputs: Some(outputs),
             report: None,
+            compare: None,
         });
         self.jobs.finish(self.job_id);
     }
@@ -115,6 +116,7 @@ impl JobReporter {
             elapsed_ms: self.started.elapsed().as_secs_f64() * 1000.0,
             outputs: Some(outputs),
             report: None,
+            compare: None,
         });
         self.jobs.finish(self.job_id);
     }
@@ -129,6 +131,22 @@ impl JobReporter {
             elapsed_ms: self.started.elapsed().as_secs_f64() * 1000.0,
             outputs: None,
             report: Some(report),
+            compare: None,
+        });
+        self.jobs.finish(self.job_id);
+    }
+
+    /// Sends `done` carrying a `compare_documents` report (no output files).
+    pub fn finish_with_compare(&self, compare: CompareReport) {
+        if !self.claim() {
+            return;
+        }
+        (self.channel)(JobEvent::Done {
+            job_id: self.job_id,
+            elapsed_ms: self.started.elapsed().as_secs_f64() * 1000.0,
+            outputs: None,
+            report: None,
+            compare: Some(compare),
         });
         self.jobs.finish(self.job_id);
     }

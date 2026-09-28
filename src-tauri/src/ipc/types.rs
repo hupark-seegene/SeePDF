@@ -1118,6 +1118,93 @@ pub struct CompressReport {
 }
 
 // ---------------------------------------------------------------------------------------
+// Stage 5 — compare two documents (P1-6), autosave / crash recovery (P1-8)
+// ---------------------------------------------------------------------------------------
+
+/// `compare_documents`' options. Page lists pair by position; the longer list's extra pages
+/// become rows with the other side `null`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareOptions {
+    /// Default: every page of A.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pages_a: Option<Vec<PageIndex>>,
+    /// Default: every page of B.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pages_b: Option<Vec<PageIndex>>,
+    #[serde(default)]
+    pub ignore_case: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffKind {
+    Equal,
+    Insert,
+    Delete,
+    Replace,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffOp {
+    pub kind: DiffKind,
+    /// Words on the A side for equal / delete / replace, on the B side for insert.
+    pub words: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub text_a: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub text_b: Option<String>,
+    /// PDF points on page A, one rect per line fragment.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rects_a: Option<Vec<Rect>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rects_b: Option<Vec<Rect>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComparePage {
+    pub page_a: Option<PageIndex>,
+    pub page_b: Option<PageIndex>,
+    pub changed: bool,
+    pub words_a: u32,
+    pub words_b: u32,
+    pub ops: Vec<DiffOp>,
+}
+
+/// Rides on the `done` job event of `compare_documents`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareReport {
+    pub doc_a: DocId,
+    pub doc_b: DocId,
+    pub pages: Vec<ComparePage>,
+    pub changed_pages: u32,
+    /// Word counts; a replace counts on both.
+    pub inserted: u32,
+    pub deleted: u32,
+    pub elapsed_ms: f64,
+}
+
+/// One autosaved copy in the recovery directory. The `<id>.json` sidecar is this, verbatim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryEntry {
+    /// uuid v4; also the file stem in the recovery directory.
+    pub id: String,
+    /// `None` for a never-saved document.
+    pub original_path: Option<String>,
+    pub name: String,
+    /// ISO-8601 (RFC 3339, UTC).
+    pub saved_at: String,
+    pub bytes: u64,
+    pub pages: u16,
+    /// Absolute path of the `.pdf` copy.
+    pub recovery_path: String,
+}
+
+// ---------------------------------------------------------------------------------------
 // §8 Events and progress
 // ---------------------------------------------------------------------------------------
 
@@ -1145,6 +1232,9 @@ pub enum JobEvent {
         /// `compress_estimate` only.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         report: Option<CompressReport>,
+        /// `compare_documents` only.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        compare: Option<CompareReport>,
     },
     Cancelled {
         job_id: JobId,
@@ -1323,6 +1413,14 @@ pub struct Settings {
     pub ocr_languages: Vec<String>,
     pub ocr_dpi: OcrDpi,
     pub tool_defaults: serde_json::Map<String, serde_json::Value>,
+    /// Autosave (crash recovery) interval in seconds; 0 = off. Stage 5, `serde(default)` so
+    /// settings files written before it still load.
+    #[serde(default = "default_autosave_sec")]
+    pub autosave_sec: u32,
+}
+
+fn default_autosave_sec() -> u32 {
+    60
 }
 
 fn default_recents_count() -> u32 {
@@ -1345,6 +1443,7 @@ impl Default for Settings {
             ocr_languages: vec!["kor".into(), "eng".into()],
             ocr_dpi: OcrDpi::Auto(OcrDpiAuto::Auto),
             tool_defaults: serde_json::Map::new(),
+            autosave_sec: default_autosave_sec(),
         }
     }
 }
@@ -1575,6 +1674,7 @@ mod tests {
                 elapsed_ms: 12.5,
                 outputs: None,
                 report: Some(report),
+                compare: None,
             })
             .unwrap(),
             json!({
@@ -1591,11 +1691,126 @@ mod tests {
             elapsed_ms: 1.0,
             outputs: Some(vec!["/a.png".into()]),
             report: None,
+            compare: None,
         })
         .unwrap();
         assert!(done.get("report").is_none());
 
         assert_eq!(serde_json::to_value(SecurityRevision::R5).unwrap(), json!("r5"));
         assert_eq!(serde_json::to_value(SecurityRevision::R6).unwrap(), json!("r6"));
+    }
+
+    #[test]
+    fn stage5_compare_and_recovery_shapes() {
+        let options: CompareOptions = serde_json::from_value(json!({})).expect("empty options");
+        assert!(options.pages_a.is_none() && options.pages_b.is_none() && !options.ignore_case);
+        let options: CompareOptions =
+            serde_json::from_value(json!({ "pagesA": [0, 2], "pagesB": [1], "ignoreCase": true }))
+                .unwrap();
+        assert_eq!(options.pages_a, Some(vec![0, 2]));
+        assert_eq!(options.pages_b, Some(vec![1]));
+        assert!(options.ignore_case);
+
+        let report = CompareReport {
+            doc_a: "d1".into(),
+            doc_b: "d2".into(),
+            pages: vec![
+                ComparePage {
+                    page_a: Some(0),
+                    page_b: Some(0),
+                    changed: true,
+                    words_a: 3,
+                    words_b: 4,
+                    ops: vec![
+                        DiffOp {
+                            kind: DiffKind::Equal,
+                            words: 2,
+                            text_a: None,
+                            text_b: None,
+                            rects_a: None,
+                            rects_b: None,
+                        },
+                        DiffOp {
+                            kind: DiffKind::Replace,
+                            words: 1,
+                            text_a: Some("old".into()),
+                            text_b: Some("new text".into()),
+                            rects_a: Some(vec![Rect::new(1.0, 2.0, 3.0, 4.0)]),
+                            rects_b: Some(vec![Rect::new(5.0, 6.0, 7.0, 8.0)]),
+                        },
+                    ],
+                },
+                ComparePage {
+                    page_a: None,
+                    page_b: Some(1),
+                    changed: false,
+                    words_a: 0,
+                    words_b: 0,
+                    ops: vec![],
+                },
+            ],
+            changed_pages: 1,
+            inserted: 2,
+            deleted: 1,
+            elapsed_ms: 3.5,
+        };
+        assert_eq!(
+            serde_json::to_value(JobEvent::Done {
+                job_id: 4,
+                elapsed_ms: 3.5,
+                outputs: None,
+                report: None,
+                compare: Some(report.clone()),
+            })
+            .unwrap(),
+            json!({
+                "type": "done", "jobId": 4, "elapsedMs": 3.5,
+                "compare": {
+                    "docA": "d1", "docB": "d2",
+                    "pages": [
+                        { "pageA": 0, "pageB": 0, "changed": true, "wordsA": 3, "wordsB": 4, "ops": [
+                            { "kind": "equal", "words": 2 },
+                            { "kind": "replace", "words": 1, "textA": "old", "textB": "new text",
+                              "rectsA": [{ "l": 1.0, "b": 2.0, "r": 3.0, "t": 4.0 }],
+                              "rectsB": [{ "l": 5.0, "b": 6.0, "r": 7.0, "t": 8.0 }] }
+                        ] },
+                        { "pageA": null, "pageB": 1, "changed": false, "wordsA": 0, "wordsB": 0, "ops": [] }
+                    ],
+                    "changedPages": 1, "inserted": 2, "deleted": 1, "elapsedMs": 3.5
+                }
+            })
+        );
+        for (kind, wire) in [
+            (DiffKind::Equal, "equal"),
+            (DiffKind::Insert, "insert"),
+            (DiffKind::Delete, "delete"),
+            (DiffKind::Replace, "replace"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
+        }
+
+        let entry = RecoveryEntry {
+            id: "0f8fad5b-d9cb-469f-a165-70867728950e".into(),
+            original_path: None,
+            name: "제목 없음".into(),
+            saved_at: "2026-09-28T01:02:03.000Z".into(),
+            bytes: 1234,
+            pages: 3,
+            recovery_path: "/r/0f8fad5b-d9cb-469f-a165-70867728950e.pdf".into(),
+        };
+        let wire = json!({
+            "id": "0f8fad5b-d9cb-469f-a165-70867728950e", "originalPath": null, "name": "제목 없음",
+            "savedAt": "2026-09-28T01:02:03.000Z", "bytes": 1234, "pages": 3,
+            "recoveryPath": "/r/0f8fad5b-d9cb-469f-a165-70867728950e.pdf"
+        });
+        assert_eq!(serde_json::to_value(&entry).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<RecoveryEntry>(wire).unwrap(), entry);
+
+        // Settings written before Stage 5 have no autosaveSec: it defaults to 60.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(old["autosaveSec"], json!(60));
+        old.as_object_mut().unwrap().remove("autosaveSec");
+        let back: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(back.autosave_sec, 60);
     }
 }

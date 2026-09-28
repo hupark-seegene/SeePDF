@@ -9,6 +9,7 @@
   "tileCacheMb": 64,
   "recentsCount": 20,
   "backupsEnabled": true,
+  "autosaveSec": 60,
   "ocrLanguages": [
     "kor",
     "eng"

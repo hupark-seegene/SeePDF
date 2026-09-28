@@ -75,6 +75,7 @@ pub async fn ocr_apply(
                 elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
                 outputs: None,
                 report: None,
+                compare: None,
             });
         }
         Err(error) => {

@@ -381,3 +381,16 @@ p.compress-warn {
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
+
+/* 문서 비교 (P1-6) dialog */
+.cmp-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-file[data-empty] { color: var(--text-tertiary); }
+
+/* 복구 (P1-8) */
+.recovery-table { width: 100%; border-collapse: collapse; margin-top: var(--space-2); }
+.recovery-table th { color: var(--text-secondary); font-weight: normal; text-align: start; padding-block: var(--space-1); }
+.recovery-table td { padding-block: var(--space-1); border-top: 1px solid var(--border-subtle); }
+.recovery-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recovery-actions { text-align: end; white-space: nowrap; }
+.recovery-actions .btn + .btn { margin-inline-start: var(--space-1); }
+.dlg-foot .btn.quiet[data-danger] { color: var(--danger); }

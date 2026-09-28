@@ -103,6 +103,9 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "tools.compress":
         if (info) openDialog("compress");
         return;
+      case "tools.compare":
+        if (info) openDialog("compare");
+        return;
       case "file.reveal":
         if (info?.path) void api.revealInFileManager({ path: info.path });
         return;
@@ -323,7 +326,7 @@ function openRecentMenu(): void {
   openContextMenu({ x: 96, y: 52, labelKey: "menu.file.openRecent", items });
 }
 
-/** ⋯ — 인쇄, 보안, 워터마크, 압축, OCR, 문서 정보, 설정 (UI_SPEC §2). */
+/** ⋯ — 인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 문서 정보, 설정 (UI_SPEC §2). */
 function openOverflowMenu(): void {
   const info = useDocStore.getState().info;
   openContextMenu({
@@ -335,6 +338,7 @@ function openOverflowMenu(): void {
       { id: "security", labelKey: "menu.tools.security", disabled: !info, onSelect: () => openDialog("security") },
       { id: "stamp", labelKey: "menu.tools.stamp", disabled: !info, onSelect: () => openDialog("stamp") },
       { id: "compress", labelKey: "menu.tools.compress", disabled: !info, onSelect: () => openDialog("compress") },
+      { id: "compare", labelKey: "menu.tools.compare", disabled: !info, onSelect: () => openDialog("compare") },
       {
         id: "ocr",
         labelKey: "menu.tools.ocr",

@@ -10,6 +10,7 @@ export type OsName = "macos" | "windows" | "linux";
 interface TauriInternals {
   convertFileSrc?: (path: string, protocol: string) => string;
   invoke?: unknown;
+  metadata?: { currentWindow?: { label?: string } };
 }
 
 export function tauriInternals(): TauriInternals | undefined {
@@ -18,6 +19,11 @@ export function tauriInternals(): TauriInternals | undefined {
 
 export function isTauri(): boolean {
   return tauriInternals() !== undefined;
+}
+
+/** This webview's window label (`main`, `doc-2`, …); `main` outside Tauri. */
+export function windowLabel(): string {
+  return tauriInternals()?.metadata?.currentWindow?.label ?? "main";
 }
 
 /** True when the frontend must talk to the mock adapter instead of the engine. */

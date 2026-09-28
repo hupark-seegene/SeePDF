@@ -15,7 +15,7 @@ import { SettingsDialog } from "./SettingsDialog";
 import { DocInfoDialog } from "./DocInfoDialog";
 import { ExtractDialog, InsertFromDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
 import type { MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
-import type { PageIndex, StampRole } from "../ipc/types";
+import type { PageIndex, RecoveryEntry, StampRole } from "../ipc/types";
 import type { DrawnSignature } from "./SignatureDialog";
 
 const OcrDialog = lazy(() => import("../ocr").then((m) => ({ default: m.OcrDialog })));
@@ -26,6 +26,9 @@ const SecurityDialog = lazy(() => import("./SecurityDialog"));
 // 워터마크 / 머리글·바닥글 and 압축 (Stage 4): rare, each in its own chunk.
 const StampDialog = lazy(() => import("./StampDialog"));
 const CompressDialog = lazy(() => import("./CompressDialog"));
+// 문서 비교 and 복구 (Stage 5): rare, each in its own chunk.
+const CompareDialog = lazy(() => import("../compare/CompareDialog"));
+const RecoveryDialog = lazy(() => import("./RecoveryDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -97,6 +100,18 @@ function Current({ entry }: { entry: DialogEntry }) {
       return (
         <Suspense fallback={null}>
           <CompressDialog onClose={close} />
+        </Suspense>
+      );
+    case "compare":
+      return (
+        <Suspense fallback={null}>
+          <CompareDialog onClose={close} />
+        </Suspense>
+      );
+    case "recovery":
+      return (
+        <Suspense fallback={null}>
+          <RecoveryDialog onClose={close} entries={(p.entries as RecoveryEntry[] | undefined) ?? []} />
         </Suspense>
       );
     case "signature":

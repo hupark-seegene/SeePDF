@@ -57,6 +57,7 @@ async fn run_save(
                 elapsed_ms: saved.elapsed_ms,
                 outputs: Some(vec![saved.path.clone()]),
                 report: None,
+                compare: None,
             });
         }
         Err(error) => {

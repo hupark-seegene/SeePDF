@@ -255,6 +255,47 @@ export interface CompressReport {
 }
 
 // ---------------------------------------------------------------------------
+// 7.5c Compare (P1-6 문서 비교) and autosave / crash recovery (P1-8) — Stage 5 contract
+// ---------------------------------------------------------------------------
+
+export interface CompareOptions {
+  pagesA?: PageIndex[];        // default all pages of A
+  pagesB?: PageIndex[];        // default all pages of B; paired with pagesA by position; the longer list's
+                               // extra pages become ComparePage rows with pageA/pageB = null
+  ignoreCase?: boolean;        // default false; whitespace runs are always normalised
+}
+export type DiffKind = 'equal' | 'insert' | 'delete' | 'replace';
+export interface DiffOp {
+  kind: DiffKind;
+  words: number;               // words on the A side for equal/delete/replace, B side for insert
+  textA?: string;              // omitted for equal and insert
+  textB?: string;              // omitted for equal and delete
+  rectsA?: Rect[];             // PDF points on page A (y-up), one rect per line fragment; omitted for equal/insert
+  rectsB?: Rect[];             // same on page B; omitted for equal/delete
+}
+export interface ComparePage {
+  pageA: PageIndex | null; pageB: PageIndex | null;
+  changed: boolean;            // any op that is not equal (a null side counts as changed if the other has words)
+  wordsA: number; wordsB: number;
+  ops: DiffOp[];
+}
+export interface CompareReport {
+  docA: DocId; docB: DocId;
+  pages: ComparePage[];
+  changedPages: number; inserted: number; deleted: number;   // word counts (replace counts on both)
+  elapsedMs: number;
+}
+
+export interface RecoveryEntry {
+  id: string;                   // uuid v4, also the file stem in the recovery dir
+  originalPath: string | null;  // null for a never-saved document
+  name: string;                 // display name (file name or 제목 없음)
+  savedAt: string;              // ISO-8601
+  bytes: number; pages: number;
+  recoveryPath: string;         // absolute path of the .pdf copy
+}
+
+// ---------------------------------------------------------------------------
 // 7.6 Save
 // ---------------------------------------------------------------------------
 
@@ -303,7 +344,7 @@ export interface EnginePressureEvent { level: 'normal' | 'high' }
 export type JobEvent =
   | { type: 'started'; jobId: JobId; total: number }
   | { type: 'progress'; jobId: JobId; done: number; total: number; page?: PageIndex; note?: string }
-  | { type: 'done'; jobId: JobId; elapsedMs: number; outputs?: string[]; report?: CompressReport }
+  | { type: 'done'; jobId: JobId; elapsedMs: number; outputs?: string[]; report?: CompressReport; compare?: CompareReport }
   | { type: 'cancelled'; jobId: JobId; done: number }
   | { type: 'error'; jobId: JobId; error: EngineError };
 
@@ -323,6 +364,7 @@ export interface Settings {
   restorePosition: boolean; author: string; renderQuality: 'balanced' | 'high';
   tileCacheMb: number; recentsCount: number;   // Stage 2: no longer inside `toolDefaults`
   backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
+  autosaveSec: number;          // Stage 5 (P1-8): 0 = off; default 60
   toolDefaults: Record<string, unknown>;
 }
 

@@ -11,7 +11,7 @@ import { create } from "zustand";
 import * as api from "../ipc/api";
 import type { JobEvent, JobId } from "../ipc/types";
 
-export type JobKind = "search" | "export" | "save" | "split" | "ocr" | "scan" | "print";
+export type JobKind = "search" | "export" | "save" | "split" | "ocr" | "scan" | "print" | "compare";
 export type JobState = "running" | "done" | "cancelled" | "error";
 
 export interface Job {

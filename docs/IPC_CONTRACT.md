@@ -527,6 +527,84 @@ page, then `done{elapsedMs, report}` — or `cancelled` / `error`. The open docu
   and the returned `DocInfo.undoLabel` is `undo.compress`. `compress_discard` of an unknown token is a
   no-op. Cancel with `cancel_job`.
 
+### 7.6b Compare two documents (P1-6, Stage 5)
+
+```ts
+export interface CompareOptions {
+  pagesA?: PageIndex[];        // default all pages of A
+  pagesB?: PageIndex[];        // default all pages of B; paired with pagesA by position; the longer list's
+                               // extra pages become ComparePage rows with pageA/pageB = null
+  ignoreCase?: boolean;        // default false; whitespace runs are always normalised
+}
+export type DiffKind = 'equal' | 'insert' | 'delete' | 'replace';
+export interface DiffOp {
+  kind: DiffKind;
+  words: number;               // words on the A side for equal/delete/replace, B side for insert
+  textA?: string;              // omitted for equal and insert (words joined by one space)
+  textB?: string;              // omitted for equal and delete
+  rectsA?: Rect[];             // PDF points on page A (y-up), one rect per line fragment; omitted for equal/insert
+  rectsB?: Rect[];             // same on page B; omitted for equal/delete
+}
+export interface ComparePage {
+  pageA: PageIndex | null; pageB: PageIndex | null;
+  changed: boolean;            // any op that is not equal (a null side counts as changed if the other has words)
+  wordsA: number; wordsB: number;
+  ops: DiffOp[];
+}
+export interface CompareReport {
+  docA: DocId; docB: DocId;
+  pages: ComparePage[];
+  changedPages: number; inserted: number; deleted: number;   // word counts (replace counts on both sides)
+  elapsedMs: number;
+}
+compare_documents(a: { docA: DocId; docB: DocId; options: CompareOptions }, onProgress: Channel<JobEvent>): Promise<JobId>
+```
+
+Engine: `engine/compare.rs`. Both documents must already be open (the frontend opens B with
+`open_document`). Validation runs before the job id is returned: unknown doc → `notFound`, docA == docB or
+a page out of range → `invalidArgument` (promise rejected, no job). Events: `started{total = pairs}`, one
+`progress{done, page = index into pages[]}` per pair, then `done{elapsedMs, compare}` — or `cancelled` /
+`error`. One `Lane::Background` command per pair; Cancel (`cancel_job`) is observed between pairs.
+* Words: text-layer chars split on Unicode whitespace and PDFium-generated chars; with `ignoreCase` each
+  char is case-folded (`text::layer::fold`) before comparison; reported text is the original.
+* Diff: Myers O(ND) on interned words after trimming the common prefix/suffix; adjacent delete+insert
+  collapse into `replace`. Beyond 2,000 edits on one page pair the untrimmed middle is reported as one
+  `replace` (bounded memory).
+* Rects: `TextLayer::range_rects` over the run's code-point span — one rect per line fragment.
+* A page without text (scanned) has 0 words, no error. Neither document is modified.
+
+### 7.6c Autosave / crash recovery (P1-8, Stage 5)
+
+```ts
+export interface RecoveryEntry {
+  id: string;                   // uuid v4, also the file stem in the recovery dir
+  originalPath: string | null;  // null for a never-saved document
+  name: string;                 // file name, or "제목 없음" for a never-saved document
+  savedAt: string;              // ISO-8601 / RFC 3339, UTC with milliseconds ("2026-09-28T01:02:03.456Z")
+  bytes: number; pages: number;
+  recoveryPath: string;         // absolute path of the .pdf copy
+}
+write_recovery(a: { docId: DocId }): Promise<RecoveryEntry>
+clear_recovery(a: { docId: DocId }): Promise<void>
+list_recovery(): Promise<RecoveryEntry[]>
+discard_recovery(a: { id: string }): Promise<void>
+```
+
+Engine: `engine/recovery.rs`, commands `commands/recovery.rs`. The directory is `app_data_dir()/recovery/`
+(macOS `~/Library/Application Support/com.seepdf.desktop/recovery/`), created lazily by the first write.
+* `write_recovery`: `save::serialize` on the engine thread (appearance streams included, encryption kept,
+  generation / dirty unchanged), then on the command task `<id>.pdf` and then `<id>.json` (the sidecar is
+  the `RecoveryEntry`), each atomically (temp + fsync + rename). One id per open document (kept on the
+  `OpenDoc`, assigned on first write); repeated calls overwrite the pair. The user's file is never touched.
+  Allowed on a clean document. Unknown doc → `notFound`.
+* `clear_recovery`: removes this document's pair; no-op if it never wrote one. Also works after
+  `close_document` (the command remembers docId → id). `close_document` itself never deletes recovery files.
+* `list_recovery`: sidecars newest first (by `savedAt`); a sidecar whose pdf is missing, or that does not
+  parse, is deleted and skipped. Missing directory → `[]`. Copies that belong to a document open right
+  now (any window) are live autosaves and are left out.
+* `discard_recovery`: deletes one pair; unknown id → no-op; an id that is not a uuid → `invalidArgument`
+  (it would otherwise name a path).
+
 ### 7.7 Export and print
 
 ```ts
@@ -602,13 +680,14 @@ Feature F-21.
 export type JobEvent =
   | { type: 'started'; jobId: JobId; total: number }
   | { type: 'progress'; jobId: JobId; done: number; total: number; page?: PageIndex; note?: string }
-  | { type: 'done'; jobId: JobId; elapsedMs: number; outputs?: string[]; report?: CompressReport }   // report: compress_estimate only
+  | { type: 'done'; jobId: JobId; elapsedMs: number; outputs?: string[]; report?: CompressReport;
+      compare?: CompareReport }   // report: compress_estimate only; compare: compare_documents only
   | { type: 'cancelled'; jobId: JobId; done: number }
   | { type: 'error'; jobId: JobId; error: EngineError };
 ```
 
 Channels are used by `search_start` (own event type), `export_images`, `export_flattened`,
-`split_document`, `ocr_apply`, `scan_annotations`, `save_document`, `compress_estimate`. Every job id can be cancelled with
+`split_document`, `ocr_apply`, `scan_annotations`, `save_document`, `compress_estimate`, `compare_documents`. Every job id can be cancelled with
 `cancel_job`. Measured headroom: Channel ≥ 42k msg/s, `emit` ≥ 60k msg/s — both far above the ≤ 100 msg/s
 this contract produces.
 
@@ -719,6 +798,7 @@ export interface Settings {
   tileCacheMb: number; recentsCount: number;   // Stage 2: first-class, was `toolDefaults.recentsCount`
   backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
   toolDefaults: Record<string, unknown>;
+  autosaveSec: number;          // Stage 5: autosave interval in seconds, 0 = off; default 60 (absent in old files → 60)
 }
 get_settings(): Promise<Settings>
 set_settings(a: { patch: Partial<Settings> }): Promise<Settings>
@@ -754,6 +834,8 @@ paths to the fs scope automatically.
 | `remove_password`, `set_password`, `remove_metadata`, `set_metadata`, `ocr_recognize_native` | (b), P1 | P1-1, P1-2, P1-3, P1-11 |
 | `add_stamp` | Stage 4, `engine/stamp.rs` | P1-4 |
 | `compress_estimate`, `compress_apply`, `compress_discard` | Stage 4, `engine/compress.rs` | P1-5 |
+| `compare_documents` | Stage 5, `engine/compare.rs` | P1-6 |
+| `write_recovery`, `clear_recovery`, `list_recovery`, `discard_recovery` | Stage 5, `engine/recovery.rs` | P1-8 |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

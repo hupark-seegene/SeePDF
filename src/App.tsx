@@ -14,6 +14,8 @@ import { useMock } from "./ipc/env";
 import { useAppStore } from "./store/appStore";
 import { useDocStore } from "./store/docStore";
 import { useDialogStore } from "./dialogs/dialogState";
+import { autosave, offerRecovery, useAutosave } from "./app/autosave";
+import { useCompareStore } from "./compare/state";
 import { useOcrDialogOpen } from "./ocr/dialogState";
 import { useToastStore } from "./app/toastStore";
 import { useContextMenuStore } from "./app/contextMenuStore";
@@ -31,6 +33,20 @@ const ContextMenu = lazy(() => import("./app/ContextMenu"));
 // F-26: the print-only DOM. Mounted only while a print job is in flight, so its page images
 // (one `<img>` per printed page at 150 DPI) exist for exactly as long as the print panel does.
 const PrintRoot = lazy(() => import("./print/PrintRoot"));
+// 문서 비교 (P1-6): the full-window side-by-side view, only while compare mode is on.
+const CompareView = lazy(() => import("./compare/CompareView"));
+
+/**
+ * The window is closing: document B of 문서 비교 lives outside `docStore`, so release it here — the
+ * engine does not close a gone window's documents on its own. A run still in the dialog is cancelled.
+ */
+async function leaveCompare(): Promise<void> {
+  const running = useDialogStore.getState().stack.some((e) => e.name === "compare");
+  if (!running && !useCompareStore.getState().session) return;
+  const { useCompareRun, cancelCompare } = await import("./compare/flow");
+  if (useCompareRun.getState().phase !== "idle") cancelCompare();
+  await useCompareStore.getState().exit();
+}
 
 /** Cheap synchronous test so the default menu is only suppressed over a page (the import is async). */
 function pageLike(target: EventTarget | null): boolean {
@@ -56,10 +72,15 @@ export default function App() {
   const hasToasts = useToastStore((s) => s.toasts.length > 0);
   const menuOpen = useContextMenuStore((s) => s.menu !== null);
   const printing = usePrintStore((s) => s.job !== null);
+  const comparing = useCompareStore((s) => s.session !== null);
+
+  // P1-8: recovery copies of the dirty document on a timer
+  useAutosave();
 
   // 1. settings + recents + theme + locale, then drain anything the OS handed us before mount
   useEffect(() => {
     void bootstrap().then(async () => {
+      await offerRecovery();
       const pending = await api.takePendingOpens().catch(() => []);
       if (pending.length) {
         const { openPaths } = await import("./dialogs/flows");
@@ -93,11 +114,18 @@ export default function App() {
             event.preventDefault();
             if (await flows.confirmUnsaved()) {
               if (current) await flows.touchRecent(useDocStore.getState().info ?? current).catch(() => undefined);
+              // 저장 or 저장 안 함: a clean close, the recovery copy goes (P1-8)
+              if (current) await autosave.clear(current.docId);
+              await leaveCompare();
               await win.destroy();
             }
             return;
           }
-          if (current) await flows.touchRecent(current).catch(() => undefined);
+          if (current) {
+            await flows.touchRecent(current).catch(() => undefined);
+            await autosave.clear(current.docId);
+          }
+          await leaveCompare();
         });
       })
       .then((fn) => {
@@ -141,12 +169,13 @@ export default function App() {
 
   const contexts = useMemo<KeyContext[]>(() => {
     const list: KeyContext[] = ["always"];
-    if (info) {
+    // compare mode covers the document: none of its shortcuts may act on it unseen
+    if (info && !comparing) {
       // 페이지 mode owns the arrow keys, ⌫ and the tool letters: the grid is not the canvas
       list.push("doc", mode === "pages" ? "pages" : "canvas");
     }
     return list;
-  }, [info, mode]);
+  }, [info, mode, comparing]);
 
   useKeymap({
     os,
@@ -184,6 +213,11 @@ export default function App() {
         {info && inspectorOpen && mode !== "read" && !organizing && <Inspector />}
       </div>
       <StatusBar />
+      {comparing && (
+        <Suspense fallback={null}>
+          <CompareView />
+        </Suspense>
+      )}
       {(dialogOpen || ocrOpen) && (
         <Suspense fallback={null}>
           <DialogHost />

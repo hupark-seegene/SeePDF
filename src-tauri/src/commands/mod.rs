@@ -7,12 +7,14 @@
 
 pub mod annots;
 pub mod app;
+pub mod compare;
 pub mod documents;
 pub mod export;
 pub mod forms;
 pub mod objects;
 pub mod ocr;
 pub mod pages;
+pub mod recovery;
 pub mod save;
 pub mod security;
 pub mod stamp;

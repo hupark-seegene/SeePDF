@@ -11,9 +11,9 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { useMock } from "./env";
 import { parseRawPage, parseTextLayer, type RawPage, type TextLayerView } from "./binary";
 import type {
-  Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
+  Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, CompareOptions, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
   EngineError, EngineStats, ErrorCode, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, ObjectId,
-  ObjectsResult, OcrEngine, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, Rect,
+  ObjectsResult, OcrEngine, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
   RedactPreview, Rgb, SaveResult, SearchEvent, Settings, StampResult, StampSpec, TextEditProbe, ViewportHint,
 } from "./types";
 
@@ -376,6 +376,40 @@ export function compressApply(a: { docId: DocId; token: number }): Promise<DocIn
 
 export function compressDiscard(a: { docId: DocId; token: number }): Promise<void> {
   return call("compress_discard", a, (mock) => mock.compressDiscard(a));
+}
+
+// ---------------------------------------------------------------------------
+// 7.5c Compare and crash recovery (Stage 5: P1-6 / P1-8)
+// ---------------------------------------------------------------------------
+
+/**
+ * 문서 비교: a job over the page pairs of two **open** documents. The `CompareReport` rides on the
+ * final `done` event (`e.compare`).
+ */
+export function compareDocuments(
+  a: { docA: DocId; docB: DocId; options: CompareOptions },
+  onEvent: (e: JobEvent) => void,
+): Promise<JobId> {
+  return call("compare_documents", { ...a, onProgress: channel(onEvent) }, (mock) => mock.compareDocuments(a, onEvent));
+}
+
+/** Serialise the current state of `docId` to the recovery dir (the user's file is never touched). */
+export function writeRecovery(a: { docId: DocId }): Promise<RecoveryEntry> {
+  return call("write_recovery", a, (mock) => mock.writeRecovery(a));
+}
+
+/** Drop `docId`'s recovery pair — after a successful save or a clean close. No-op if none. */
+export function clearRecovery(a: { docId: DocId }): Promise<void> {
+  return call("clear_recovery", a, (mock) => mock.clearRecovery(a));
+}
+
+/** Recovery copies left behind by a crash, newest first. */
+export function listRecovery(): Promise<RecoveryEntry[]> {
+  return call("list_recovery", {}, (mock) => mock.listRecovery());
+}
+
+export function discardRecovery(a: { id: string }): Promise<void> {
+  return call("discard_recovery", a, (mock) => mock.discardRecovery(a));
 }
 
 // ---------------------------------------------------------------------------

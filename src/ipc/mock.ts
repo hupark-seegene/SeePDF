@@ -17,6 +17,7 @@ import type {
   EngineStats, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, Mat6, MergeWarning, OcrPage, OutlineNode,
   PageGeom, PageIndex, Permissions, PageObject, PageOp, RecentEntry, Rect, RedactPreview, SaveResult, SearchEvent, SearchHit,
   Settings, StampResult, StampSpec, TextEditProbe, ViewportHint, CompressOptions, CompressReport,
+  CompareOptions, CompareReport, ComparePage, DiffOp, RecoveryEntry,
 } from "./types";
 
 import documentFixture from "../test/ipc-samples/document.json";
@@ -50,6 +51,10 @@ const jobs = new Map<JobId, { cancel: () => void }>();
 /** 압축 예상 results waiting for 적용 / 취소: at most one per document, like the engine. */
 const pendingCompress = new Map<DocId, { token: number; afterBytes: number }>();
 let nextCompressToken = 1;
+/** Recovery copies (P1-8): what `$APPDATA/SeePDF/recovery` would hold, and each open doc's id. */
+const recoveryFiles = new Map<string, RecoveryEntry>();
+const recoveryIdOf = new Map<DocId, string>();
+let nextRecovery = 1;
 let nextDoc = 1;
 let nextJob = 1;
 let nextAnnot = 1;
@@ -346,6 +351,7 @@ function runJob(
   opts: {
     stepMs?: number; note?: (done: number) => string; outputs?: string[]; onDone?: () => void;
     report?: (elapsedMs: number) => CompressReport;
+    compare?: (elapsedMs: number) => CompareReport;
   } = {},
 ): JobId {
   const jobId = nextJob++;
@@ -362,7 +368,10 @@ function runJob(
       jobs.delete(jobId);
       opts.onDone?.();
       const elapsedMs = Date.now() - started;
-      onEvent({ type: "done", jobId, elapsedMs, outputs: opts.outputs, report: opts.report?.(elapsedMs) });
+      onEvent({
+        type: "done", jobId, elapsedMs, outputs: opts.outputs, report: opts.report?.(elapsedMs),
+        compare: opts.compare?.(elapsedMs),
+      });
       return;
     }
     onEvent({ type: "progress", jobId, done, total, page: done, note: opts.note?.(done) });
@@ -788,6 +797,50 @@ export const mock = {
     if (pending?.token === a.token) pendingCompress.delete(a.docId);
   },
 
+  // 7.5c compare / recovery (Stage 5) -------------------------------------------
+  async compareDocuments(
+    a: { docA: DocId; docB: DocId; options: CompareOptions },
+    onEvent: (e: JobEvent) => void,
+  ): Promise<JobId> {
+    const dA = doc(a.docA);
+    const dB = doc(a.docB);
+    if (a.docA === a.docB) throw err("invalidArgument", "cannot compare a document with itself");
+    const pagesA = a.options.pagesA ?? dA.info.pages.map((_, i) => i);
+    const pagesB = a.options.pagesB ?? dB.info.pages.map((_, i) => i);
+    const pairs = Math.max(pagesA.length, pagesB.length);
+    return runJob(Math.max(1, pairs), onEvent, {
+      stepMs: 40,
+      compare: (elapsedMs) => mockCompare(dA, dB, pagesA, pagesB, Boolean(a.options.ignoreCase), elapsedMs),
+    });
+  },
+  async writeRecovery(a: { docId: DocId }): Promise<RecoveryEntry> {
+    const d = doc(a.docId);
+    let id = recoveryIdOf.get(a.docId);
+    if (!id) {
+      id = `00000000-0000-4000-8000-${String(nextRecovery++).padStart(12, "0")}`;
+      recoveryIdOf.set(a.docId, id);
+    }
+    const entry: RecoveryEntry = {
+      id, originalPath: d.info.path, name: d.info.name, savedAt: new Date().toISOString(),
+      bytes: d.info.bytes, pages: d.info.pageCount,
+      recoveryPath: `/Users/veri/Library/Application Support/SeePDF/recovery/${id}.pdf`,
+    };
+    recoveryFiles.set(id, entry);
+    return delay(structuredClone(entry), 8);
+  },
+  async clearRecovery(a: { docId: DocId }): Promise<void> {
+    doc(a.docId);
+    const id = recoveryIdOf.get(a.docId);
+    if (id) recoveryFiles.delete(id);
+  },
+  async listRecovery(): Promise<RecoveryEntry[]> {
+    const list = [...recoveryFiles.values()].sort((x, y) => y.savedAt.localeCompare(x.savedAt));
+    return delay(structuredClone(list), 8);
+  },
+  async discardRecovery(a: { id: string }): Promise<void> {
+    recoveryFiles.delete(a.id);
+  },
+
   // 7.6 save -----------------------------------------------------------------
   async saveDocument(a: { docId: DocId }, onProgress: (e: JobEvent) => void): Promise<SaveResult> {
     const d = doc(a.docId);
@@ -1115,11 +1168,131 @@ function boundsOfPaths(paths: number[][]): Rect {
   return Number.isFinite(box.l) ? box : { l: 0, b: 0, r: 0, t: 0 };
 }
 
+// ---------------------------------------------------------------------------
+// 문서 비교 in the mock: page B is a deterministic "revision" of its fixture text
+// ---------------------------------------------------------------------------
+
+interface MockWord { text: string; rect: Rect; line: number }
+
+function mockWords(d: MockDoc, page: PageIndex | null): MockWord[] {
+  if (page === null || page < 0 || page >= d.info.pageCount) return [];
+  const tp = textPage(d, page);
+  return tp.words.map((w) => {
+    let text = "";
+    for (let i = w.firstChar; i < w.firstChar + w.charCount; i++) text += String.fromCodePoint(tp.chars[i].code);
+    return { text, rect: boxOfRange(tp, w.firstChar, w.charCount), line: w.lineIndex };
+  });
+}
+
+/** Pair 0, 3, 6… equal; 1, 4… one word replaced + one inserted; 2, 5… two words deleted. */
+function revise(words: MockWord[], pair: number): MockWord[] {
+  switch (pair % 3) {
+    case 1: {
+      const out = words.slice();
+      if (out[1]) out[1] = { ...out[1], text: `${out[1].text}(개정)` };
+      if (out.length > 4) out.splice(5, 0, { ...out[4], text: "추가됨" });
+      return out;
+    }
+    case 2:
+      return words.filter((_, i) => i !== 2 && i !== 3);
+    default:
+      return words;
+  }
+}
+
+/** One rect per line: the union of the words' boxes on each line. */
+function lineRects(words: MockWord[]): Rect[] {
+  const byLine = new Map<number, Rect>();
+  for (const w of words) {
+    const r = byLine.get(w.line);
+    byLine.set(w.line, r
+      ? { l: Math.min(r.l, w.rect.l), b: Math.min(r.b, w.rect.b), r: Math.max(r.r, w.rect.r), t: Math.max(r.t, w.rect.t) }
+      : { ...w.rect });
+  }
+  return [...byLine.values()];
+}
+
+/** Word LCS → equal / delete / insert runs, adjacent delete+insert collapsed into replace. */
+function diffWords(a: MockWord[], b: MockWord[], fold: (s: string) => string): DiffOp[] {
+  const A = a.map((w) => fold(w.text));
+  const B = b.map((w) => fold(w.text));
+  const n = A.length;
+  const m = B.length;
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) lcs[i][j] = A[i] === B[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  }
+  type Run = { kind: "equal" | "delete" | "insert"; a: MockWord[]; b: MockWord[] };
+  const runs: Run[] = [];
+  const push = (kind: Run["kind"], wa?: MockWord, wb?: MockWord) => {
+    let last = runs[runs.length - 1];
+    if (!last || last.kind !== kind) runs.push((last = { kind, a: [], b: [] }));
+    if (wa) last.a.push(wa);
+    if (wb) last.b.push(wb);
+  };
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && A[i] === B[j]) push("equal", a[i++], b[j++]);
+    else if (j < m && (i >= n || lcs[i][j + 1] >= lcs[i + 1][j])) push("insert", undefined, b[j++]);
+    else push("delete", a[i++]);
+  }
+  const ops: DiffOp[] = [];
+  const text = (ws: MockWord[]) => ws.map((w) => w.text).join(" ");
+  for (let k = 0; k < runs.length; k++) {
+    const r = runs[k];
+    const next = runs[k + 1];
+    if ((r.kind === "delete" && next?.kind === "insert") || (r.kind === "insert" && next?.kind === "delete")) {
+      const del = r.kind === "delete" ? r : next;
+      const ins = r.kind === "insert" ? r : next;
+      ops.push({ kind: "replace", words: del.a.length, textA: text(del.a), textB: text(ins.b), rectsA: lineRects(del.a), rectsB: lineRects(ins.b) });
+      k += 1;
+    } else if (r.kind === "equal") ops.push({ kind: "equal", words: r.a.length });
+    else if (r.kind === "delete") ops.push({ kind: "delete", words: r.a.length, textA: text(r.a), rectsA: lineRects(r.a) });
+    else ops.push({ kind: "insert", words: r.b.length, textB: text(r.b), rectsB: lineRects(r.b) });
+  }
+  return ops;
+}
+
+function mockCompare(
+  dA: MockDoc, dB: MockDoc, pagesA: PageIndex[], pagesB: PageIndex[], ignoreCase: boolean, elapsedMs: number,
+): CompareReport {
+  const fold = ignoreCase ? (s: string) => s.toLowerCase() : (s: string) => s;
+  const pages: ComparePage[] = [];
+  let inserted = 0;
+  let deleted = 0;
+  for (let k = 0; k < Math.max(pagesA.length, pagesB.length); k++) {
+    const pageA = pagesA[k] ?? null;
+    const pageB = pagesB[k] ?? null;
+    const wa = mockWords(dA, pageA);
+    const wb = pageB === null ? [] : revise(mockWords(dB, pageB), k);
+    const ops = diffWords(wa, wb, fold);
+    for (const op of ops) {
+      if (op.kind === "delete" || op.kind === "replace") deleted += op.words;
+      if (op.kind === "insert") inserted += op.words;
+      if (op.kind === "replace") inserted += op.textB ? op.textB.split(" ").length : 0;
+    }
+    pages.push({ pageA, pageB, changed: ops.some((o) => o.kind !== "equal"), wordsA: wa.length, wordsB: wb.length, ops });
+  }
+  return {
+    docA: dA.info.docId, docB: dB.info.docId, pages,
+    changedPages: pages.filter((p) => p.changed).length, inserted, deleted, elapsedMs,
+  };
+}
+
+/** Test helper: pretend a previous session crashed and left these recovery copies behind. */
+export function seedRecovery(entries: RecoveryEntry[]): void {
+  for (const e of entries) recoveryFiles.set(e.id, structuredClone(e));
+}
+
 /** Test helper: forget every open document, job and cached image. */
 export function resetMock(): void {
   docs.clear();
   pendingCompress.clear();
   nextCompressToken = 1;
+  recoveryFiles.clear();
+  recoveryIdOf.clear();
+  nextRecovery = 1;
   for (const job of jobs.values()) job.cancel();
   jobs.clear();
   textCache.clear();

@@ -124,7 +124,9 @@ export const KEYMAP_BY_ID: Record<string, KeyBinding> = Object.fromEntries(KEYMA
  * Native-menu items with no shortcut row above (the 도구 menu in `src-tauri/src/app/menu.rs`).
  * Without them here `menu:tools/…` would never reach the dispatcher.
  */
-export const MENU_ONLY_IDS: readonly string[] = ["tools.ocr", "tools.security", "tools.compress", "tools.merge"];
+export const MENU_ONLY_IDS: readonly string[] = [
+  "tools.ocr", "tools.security", "tools.compress", "tools.compare", "tools.merge",
+];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 
 export function chordsFor(binding: KeyBinding, os: OsName): string[] {

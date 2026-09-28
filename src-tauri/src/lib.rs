@@ -100,6 +100,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(PendingOpens::default())
         .manage(WindowDocs::default())
+        .manage(commands::recovery::RecoveryIds::default())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -190,6 +191,12 @@ pub fn run() {
             commands::stamp::compress_estimate,
             commands::stamp::compress_apply,
             commands::stamp::compress_discard,
+            // --- compare and autosave recovery (Stage 5) ---
+            commands::compare::compare_documents,
+            commands::recovery::write_recovery,
+            commands::recovery::clear_recovery,
+            commands::recovery::list_recovery,
+            commands::recovery::discard_recovery,
             // --- pages (Stage 1b) ---
             commands::pages::page_ops,
             commands::pages::extract_pages,

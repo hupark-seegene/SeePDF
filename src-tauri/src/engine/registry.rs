@@ -94,6 +94,10 @@ pub struct OpenDoc<'p> {
     /// The finished `compress_estimate` result waiting for `compress_apply` /
     /// `compress_discard`. At most one per document; dropped by [`replace`] and on close.
     pub compress_pending: Option<crate::engine::compress::Pending>,
+    /// Stage 5 autosave: this document's id in the recovery directory, assigned on the first
+    /// `write_recovery` and kept for the document's lifetime (reloads keep it). `close` does
+    /// not delete the files — `clear_recovery` does.
+    pub recovery_id: Option<String>,
 }
 
 impl<'p> OpenDoc<'p> {
@@ -409,6 +413,7 @@ pub fn open<'p>(
         has_outline,
         compress_work: None,
         compress_pending: None,
+        recovery_id: None,
     };
 
     // Exact geometry (rotation, crop box, label) for as many pages as the budget allows.
