@@ -29,8 +29,7 @@ fn out_dir() -> PathBuf {
 /// front of the string.
 fn page_number(doc_id: &str, page: u16) -> String {
     let text = page_text(doc_id, page);
-    let mut chars = text.char_indices().peekable();
-    while let Some((i, _)) = chars.next() {
+    for (i, _) in text.char_indices() {
         if text[i..].starts_with("Page ") {
             let digits: String = text[i + 5..]
                 .chars()

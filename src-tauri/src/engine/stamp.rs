@@ -822,10 +822,8 @@ mod tests {
                 for (u, v) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
                     let (x, y) = apply(m, u, v);
                     assert!(
-                        x >= 20.0 - 1e-2
-                            && x <= 580.0 + 1e-2
-                            && y >= 20.0 - 1e-2
-                            && y <= 780.0 + 1e-2,
+                        (20.0 - 1e-2..=580.0 + 1e-2).contains(&x)
+                            && (20.0 - 1e-2..=780.0 + 1e-2).contains(&y),
                         "{anchor:?} {deg}°: corner ({x}, {y}) outside the margin"
                     );
                 }

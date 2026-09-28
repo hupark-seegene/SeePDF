@@ -316,7 +316,7 @@ impl<'p> OpenDoc<'p> {
     /// destination mapping is unchanged since Stage 2 (`STAGE1C_NOTES.md` §7.1): document-level
     /// calls only, no `FPDF_LoadPage`, so it stays affordable for every node at open.
     pub fn outline(&self) -> Vec<OutlineNode> {
-        raw::outline::read(self.bindings, self.doc.raw_handle())
+        raw::outline::read(self.bindings, &self.doc)
     }
 }
 

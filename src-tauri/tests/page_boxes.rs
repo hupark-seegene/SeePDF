@@ -512,7 +512,7 @@ fn resize_moves_annotations_with_the_content() {
     let doc = a4_doc();
     let id = doc.doc_id.clone();
     let quad = Rect::new(100.0, 695.0, 220.0, 722.0);
-    let stroke = vec![100.0, 100.0, 200.0, 150.0, 300.0, 120.0];
+    let stroke = [100.0, 100.0, 200.0, 150.0, 300.0, 120.0];
     with_state(move |st| {
         registry::mutate(
             st,

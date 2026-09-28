@@ -431,10 +431,7 @@ fn widget_count(doc: &PdfDocument) -> usize {
 }
 
 fn annotation_count(doc: &PdfDocument) -> usize {
-    doc.pages()
-        .iter()
-        .map(|p| p.annotations().len() as usize)
-        .sum()
+    doc.pages().iter().map(|p| p.annotations().len()).sum()
 }
 
 fn section_2_merge_split(pdfium: &Pdfium) -> R<()> {
@@ -490,7 +487,7 @@ fn section_2_merge_split(pdfium: &Pdfium) -> R<()> {
         );
         for (i, page) in m.pages().iter().enumerate() {
             let annots = page.annotations();
-            if annots.len() > 0 {
+            if !annots.is_empty() {
                 let types: Vec<String> = annots
                     .iter()
                     .map(|a| format!("{:?}", a.annotation_type()))

@@ -1770,11 +1770,7 @@ mod tests {
             &m,
             frame(ParagraphAlign::Justify),
         );
-        let last_on_first = placed
-            .iter()
-            .filter(|p| p.baseline == 700.0)
-            .last()
-            .unwrap();
+        let last_on_first = placed.iter().rfind(|p| p.baseline == 700.0).unwrap();
         assert!((last_on_first.x + 20.0 - 200.0).abs() < 1e-3);
     }
 

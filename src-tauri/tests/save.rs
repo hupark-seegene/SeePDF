@@ -186,15 +186,13 @@ fn save_atomic_abort() {
     let before = std::fs::read(&target).expect("read original");
 
     let doc = open_path(&target, None);
-    let mut permissions = std::fs::metadata(&dir).expect("metadata").permissions();
+    let original = std::fs::metadata(&dir).expect("metadata").permissions();
+    let mut permissions = original.clone();
     permissions.set_readonly(true);
     std::fs::set_permissions(&dir, permissions).expect("make the directory read-only");
 
     let failed = save_to(&doc.doc_id, None);
-    let restore = std::fs::metadata(&dir).expect("metadata").permissions();
-    let mut restore = restore;
-    restore.set_readonly(false);
-    std::fs::set_permissions(&dir, restore).expect("restore permissions");
+    std::fs::set_permissions(&dir, original).expect("restore permissions");
 
     let err = failed.expect_err("a read-only directory cannot be saved into");
     assert!(

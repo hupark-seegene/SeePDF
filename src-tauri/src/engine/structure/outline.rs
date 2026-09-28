@@ -50,7 +50,7 @@ pub fn set_outline(
         opts,
         |bytes, _| write_outline(bytes, &normalized),
         move |bindings, reopened| {
-            let got = raw::outline::read(bindings, reopened.raw_handle());
+            let got = raw::outline::read(bindings, reopened);
             match first_difference(&got, &expected, "") {
                 None => Ok(()),
                 Some(at) => Err(verify_failed(format!(

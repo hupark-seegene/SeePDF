@@ -196,7 +196,7 @@ fn annots_of(doc: &lopdf::Document, page_id: ObjectId) -> Result<Vec<Object>, En
         Ok(Object::Reference(id)) => Ok(doc
             .get_object(*id)
             .and_then(Object::as_array)
-            .map(|a| a.clone())
+            .cloned()
             .unwrap_or_default()),
         _ => Ok(Vec::new()),
     }

@@ -9,8 +9,8 @@
 
 use crate::ipc::types::{LinkDest, OutlineDest, OutlineNode};
 use pdfium_render::prelude::{
-    PdfiumLibraryBindings, FPDF_ACTION, FPDF_BOOKMARK, FPDF_BOOL, FPDF_DEST, FPDF_DOCUMENT,
-    FS_FLOAT,
+    PdfDocument, PdfiumLibraryBindings, FPDF_ACTION, FPDF_BOOKMARK, FPDF_BOOL, FPDF_DEST,
+    FPDF_DOCUMENT, FS_FLOAT,
 };
 use std::collections::HashSet;
 use std::os::raw::{c_ulong, c_void};
@@ -21,7 +21,6 @@ pub const MAX_DEPTH: usize = 32;
 pub const MAX_NODES: usize = 20_000;
 
 // `FPDFAction_GetType` / `FPDFDest_GetView` values (bindgen 7881; not in the prelude).
-const PDFACTION_GOTO: c_ulong = 1;
 const PDFACTION_URI: c_ulong = 3;
 const PDFDEST_VIEW_XYZ: c_ulong = 1;
 const PDFDEST_VIEW_FITH: c_ulong = 3;
@@ -35,10 +34,11 @@ const PDFDEST_VIEW_FITBV: c_ulong = 8;
 /// * `page` / `dest`: `FPDFBookmark_GetDest`, which already falls back to a GoTo action;
 /// * `url`: a URI action (`FPDFAction_GetURIPath`), with `page` `None`;
 /// * `open`: `Some(/Count > 0)` for a node with children, `None` for a leaf.
-pub fn read(bindings: &dyn PdfiumLibraryBindings, document: FPDF_DOCUMENT) -> Vec<OutlineNode> {
+pub fn read(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>) -> Vec<OutlineNode> {
+    let document = doc.raw_handle();
     let mut seen: HashSet<usize> = HashSet::new();
     let mut budget = MAX_NODES;
-    // SAFETY: `document` is live for the caller's borrow; a null parent asks for the first
+    // SAFETY: `document` is live for the `doc` borrow; a null parent asks for the first
     // top-level bookmark.
     let first = unsafe { bindings.FPDFBookmark_GetFirstChild(document, std::ptr::null_mut()) };
     level(bindings, document, first, 0, &mut seen, &mut budget)
@@ -125,7 +125,7 @@ fn title(bindings: &dyn PdfiumLibraryBindings, bookmark: FPDF_BOOKMARK) -> Optio
 }
 
 /// A URI action's target, `None` for anything else (GoTo, Launch, JavaScript, …).
-pub fn uri_of(
+fn uri_of(
     bindings: &dyn PdfiumLibraryBindings,
     document: FPDF_DOCUMENT,
     action: FPDF_ACTION,
@@ -155,14 +155,8 @@ pub fn uri_of(
     }
 }
 
-/// Whether `action` is a same-document GoTo.
-pub fn is_goto(bindings: &dyn PdfiumLibraryBindings, action: FPDF_ACTION) -> bool {
-    // SAFETY: checked for null; `FPDFAction_GetType` only reads the dictionary.
-    !action.is_null() && unsafe { bindings.FPDFAction_GetType(action) } == PDFACTION_GOTO
-}
-
 /// `FPDFDest_GetDestPageIndex`, `None` when the destination names no page of this document.
-pub fn dest_page(
+fn dest_page(
     bindings: &dyn PdfiumLibraryBindings,
     document: FPDF_DOCUMENT,
     dest: FPDF_DEST,
@@ -179,7 +173,7 @@ pub fn dest_page(
 /// * `/FitH top`, `/FitBH top` → y; `/FitV left`, `/FitBV left` → x;
 /// * `/FitR l b r t` → x = l, y = t;
 /// * `/Fit`, `/FitB`, anything unknown, or every value absent → `None` (a plain page jump).
-pub fn dest_view(bindings: &dyn PdfiumLibraryBindings, dest: FPDF_DEST) -> Option<OutlineDest> {
+fn dest_view(bindings: &dyn PdfiumLibraryBindings, dest: FPDF_DEST) -> Option<OutlineDest> {
     let (mut has_x, mut has_y, mut has_zoom): (FPDF_BOOL, FPDF_BOOL, FPDF_BOOL) = (0, 0, 0);
     let (mut x, mut y, mut zoom): (FS_FLOAT, FS_FLOAT, FS_FLOAT) = (0.0, 0.0, 0.0);
     // SAFETY: `dest` is live; every out-parameter is a valid local.

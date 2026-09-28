@@ -17,7 +17,7 @@ use image::{Rgba, RgbaImage};
 use pdfium_render::prelude::*;
 use std::ffi::c_void;
 use std::os::raw::{c_int, c_ulong};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 type R<T> = Result<T, String>;
@@ -619,7 +619,7 @@ fn describe_annotation(i: usize, a: &PdfPageAnnotation) -> String {
     )
 }
 
-fn raw_describe_page(raw: Raw, path: &PathBuf, page_index: i32) -> R<Vec<String>> {
+fn raw_describe_page(raw: Raw, path: &Path, page_index: i32) -> R<Vec<String>> {
     let mut lines = vec![];
     unsafe {
         let doc = raw.b().FPDF_LoadDocument(path.to_str().unwrap(), None);
