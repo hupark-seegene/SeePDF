@@ -120,7 +120,7 @@ jobs:
       - name: cargo test --release
         working-directory: src-tauri
         shell: bash
-        run: bash ../scripts/ci-run.sh "cargo test" cargo test --release --target ${{ matrix.target }}
+        run: bash ../scripts/ci-run.sh "cargo test" cargo test --release --no-fail-fast --target ${{ matrix.target }}
 
       - name: tauri build --debug
         shell: bash
