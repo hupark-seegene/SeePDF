@@ -23,7 +23,11 @@ use std::sync::Arc;
 /// PDF 2.0 §7.6.4.3.3: an R6 password is at most 127 UTF-8 bytes after SASLprep.
 const MAX_PASSWORD_BYTES: usize = 127;
 
-fn refuse_encrypted(st: &EngineState<'_>, doc_id: &str) -> Result<(), EngineError> {
+/// `unsupported` for a password-protected document: every lopdf rewrite (metadata, and the P2
+/// outline / page labels / go-to-page links in `engine::structure`) would have to re-encrypt
+/// with the owner password, which a user-password open does not give us. Checked before any
+/// undo entry is pushed.
+pub(crate) fn refuse_encrypted(st: &EngineState<'_>, doc_id: &str) -> Result<(), EngineError> {
     let doc = st.doc(doc_id)?;
     if doc.encrypted || doc.password.is_some() {
         return Err(EngineError::new(

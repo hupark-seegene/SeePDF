@@ -1,18 +1,24 @@
 /**
  * 목차 sidebar (F-05, UI_SPEC §4): the outline tree with disclosure triangles, the section
- * containing the current page highlighted, and a click that navigates.
+ * containing the current page highlighted, and a click that navigates — to the heading's own
+ * position when the destination carries one (`OutlineNode.dest`), or opens a web node's address
+ * after a confirm.
  *
- * `OutlineNode` carries only a page index (IPC_CONTRACT §4) — there is no destination rectangle in
- * v1, so "go to dest with position" is a page jump; the note in `docs/STAGE1C_NOTES.md` records
- * that gap.
+ * P2: 편집 swaps the tree for `OutlineEditor` (its own lazy chunk) — add / rename / delete /
+ * indent / reorder, then 완료 writes the whole tree with `set_outline` (one undo step). Page numbers
+ * show the document's page labels when it has them, and a node written closed (`open: false`)
+ * starts collapsed.
  */
-import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, Globe } from "lucide-react";
 import type { OutlineNode, PageIndex } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
+import { displayLabel } from "../viewer/pageLabel";
 import "./sidebar.css";
+
+const OutlineEditor = lazy(() => import("./OutlineEditor"));
 
 interface Flat {
   key: string;
@@ -31,14 +37,25 @@ function flatten(nodes: OutlineNode[], depth = 0, parentKey: string | null = nul
   return out;
 }
 
+/** The keys of the nodes the file says start closed (`/Count` < 0). */
+function closedKeys(flat: Flat[]): Set<string> {
+  return new Set(flat.filter((row) => row.hasChildren && row.node.open === false).map((row) => row.key));
+}
+
 export function Outline() {
   const t = useT();
   const outline = useDocStore((s) => s.outline);
+  const info = useDocStore((s) => s.info);
   const currentPage = useViewStore((s) => s.currentPage);
   const goToPage = useViewStore((s) => s.goToPage);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [editing, setEditing] = useState(false);
 
   const flat = useMemo(() => flatten(outline), [outline]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => closedKeys(flat));
+  // a new outline (another document, an edit, an undo) starts from the file's own open flags
+  useEffect(() => setCollapsed(closedKeys(flat)), [flat]);
+  // the editor belongs to one document
+  useEffect(() => setEditing(false), [info?.docId]);
 
   const visible = useMemo(() => {
     const hidden = new Set<string>();
@@ -62,49 +79,91 @@ export function Outline() {
     return best?.key ?? null;
   }, [flat, currentPage]);
 
-  if (outline.length === 0) return <p className="empty">{t("sidebar.outline.empty")}</p>;
+  if (editing && info) {
+    return (
+      <Suspense fallback={<p className="empty">{t("common.loading")}</p>}>
+        <OutlineEditor onDone={() => setEditing(false)} />
+      </Suspense>
+    );
+  }
+
+  const head = info && (
+    <div className="outline-head">
+      <span className="text-xs dim">{t("sidebar.tab.outline")}</span>
+      <button
+        type="button"
+        className="btn quiet outline-edit-btn text-sm"
+        disabled={info.encrypted}
+        title={info.encrypted ? t("structure.encrypted") : undefined}
+        onClick={() => setEditing(true)}
+      >
+        {t("outline.edit")}
+      </button>
+    </div>
+  );
+
+  if (outline.length === 0) {
+    return (
+      <>
+        {head}
+        <p className="empty">{t("sidebar.outline.empty")}</p>
+      </>
+    );
+  }
+
+  const open = (node: OutlineNode) => {
+    if (node.page !== null) goToPage(node.page, node.dest?.y);
+    else if (node.url) void import("../annot/links").then((m) => m.openWebLink(node.url!));
+  };
 
   return (
-    <ul className="outline" role="tree" aria-label={t("sidebar.tab.outline")}>
-      {visible.map((row) => {
-        const isCollapsed = collapsed.has(row.key);
-        return (
-          <li key={row.key} role="treeitem" aria-expanded={row.hasChildren ? !isCollapsed : undefined}>
-            <div className="outline-row" style={{ paddingInlineStart: row.depth * 12 }}>
-              {row.hasChildren ? (
+    <>
+      {head}
+      <ul className="outline" role="tree" aria-label={t("sidebar.tab.outline")}>
+        {visible.map((row) => {
+          const isCollapsed = collapsed.has(row.key);
+          return (
+            <li key={row.key} role="treeitem" aria-expanded={row.hasChildren ? !isCollapsed : undefined}>
+              <div className="outline-row" style={{ paddingInlineStart: row.depth * 12 }}>
+                {row.hasChildren ? (
+                  <button
+                    type="button"
+                    className="outline-twisty"
+                    aria-label={row.node.title}
+                    aria-expanded={!isCollapsed}
+                    onClick={() =>
+                      setCollapsed((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(row.key)) next.delete(row.key);
+                        else next.add(row.key);
+                        return next;
+                      })
+                    }
+                  >
+                    {isCollapsed ? <ChevronRight size={14} strokeWidth={1.75} /> : <ChevronDown size={14} strokeWidth={1.75} />}
+                  </button>
+                ) : (
+                  <span className="outline-twisty" aria-hidden="true" />
+                )}
                 <button
                   type="button"
-                  className="outline-twisty"
-                  aria-label={row.node.title}
-                  aria-expanded={!isCollapsed}
-                  onClick={() =>
-                    setCollapsed((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(row.key)) next.delete(row.key);
-                      else next.add(row.key);
-                      return next;
-                    })
-                  }
+                  className="outline-item"
+                  data-active={row.key === activeKey || undefined}
+                  disabled={row.node.page === null && !row.node.url}
+                  title={row.node.url}
+                  onClick={() => open(row.node)}
                 >
-                  {isCollapsed ? <ChevronRight size={14} strokeWidth={1.75} /> : <ChevronDown size={14} strokeWidth={1.75} />}
+                  <span className="outline-title">{row.node.title}</span>
+                  {row.node.page !== null && (
+                    <span className="outline-page text-xs mono dim">{displayLabel(info?.pageLabels, row.node.page)}</span>
+                  )}
+                  {row.node.url && <Globe className="outline-page dim" size={12} strokeWidth={1.75} aria-hidden />}
                 </button>
-              ) : (
-                <span className="outline-twisty" aria-hidden="true" />
-              )}
-              <button
-                type="button"
-                className="outline-item"
-                data-active={row.key === activeKey || undefined}
-                disabled={row.node.page === null}
-                onClick={() => row.node.page !== null && goToPage(row.node.page, row.node.dest?.y)}
-              >
-                <span className="outline-title">{row.node.title}</span>
-                {row.node.page !== null && <span className="outline-page text-xs mono dim">{row.node.page + 1}</span>}
-              </button>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }

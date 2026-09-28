@@ -9,6 +9,7 @@ import { useAppStore } from "../store/appStore";
 import { shortcutFor } from "../keys/keymap";
 import { useTtsStore } from "../tts/ttsStore";
 import type { ViewLayout } from "../ipc/types";
+import { displayLabel, pageForEntry } from "../viewer/pageLabel";
 
 const LAYOUTS: { id: ViewLayout; labelKey: string; keyId: string }[] = [
   { id: "single", labelKey: "view.layout.single", keyId: "view.layout.single" },
@@ -35,8 +36,10 @@ export function StatusBar() {
   const speaking = useTtsStore((s) => s.speaking);
   const cancelJob = useJobStore((s) => s.cancel);
 
-  const [pageField, setPageField] = useState(String(currentPage + 1));
-  useEffect(() => setPageField(String(currentPage + 1)), [currentPage]);
+  // P2: with page labels the box shows the current page's label and accepts a label or a number
+  const labels = info?.pageLabels;
+  const [pageField, setPageField] = useState(displayLabel(labels, currentPage));
+  useEffect(() => setPageField(displayLabel(labels, currentPage)), [currentPage, labels]);
 
   const total = info?.pageCount ?? 0;
   const zoomLabel = zoomMode === "fit-width"
@@ -60,21 +63,24 @@ export function StatusBar() {
           className="page-jump"
           onSubmit={(e) => {
             e.preventDefault();
-            const n = Number(pageField);
-            if (Number.isFinite(n) && n >= 1 && n <= total) goToPage(n - 1);
-            else setPageField(String(currentPage + 1));
+            const page = pageForEntry(pageField, labels, total);
+            if (page !== null) goToPage(page);
+            else setPageField(displayLabel(labels, currentPage));
           }}
         >
           <input
             className="page-input mono text-sm"
+            data-labels={labels ? "" : undefined}
             value={pageField}
-            inputMode="numeric"
+            inputMode={labels ? "text" : "numeric"}
             aria-label={t("view.goToPage.placeholder")}
             disabled={!info}
-            onChange={(e) => setPageField(e.target.value.replace(/[^\d]/g, ""))}
-            onBlur={() => setPageField(String(currentPage + 1))}
+            onChange={(e) => setPageField(labels ? e.target.value : e.target.value.replace(/[^\d]/g, ""))}
+            onBlur={() => setPageField(displayLabel(labels, currentPage))}
           />
-          <span className="text-sm dim">/ {total || "—"}</span>
+          <span className="text-sm dim">
+            {labels ? `(${currentPage + 1} / ${total})` : `/ ${total || "—"}`}
+          </span>
         </form>
         <IconButton
           icon={ChevronRight}

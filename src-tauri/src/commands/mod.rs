@@ -18,6 +18,7 @@ pub mod recovery;
 pub mod save;
 pub mod security;
 pub mod stamp;
+pub mod structure;
 pub mod text;
 pub mod tts;
 

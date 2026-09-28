@@ -13,6 +13,8 @@ import { unionRects } from "../../edit/geometry";
 import { Swatches } from "../Swatches";
 import { useAppStore } from "../../store/appStore";
 import { RedactPanel } from "./RedactPanel";
+import { LinkPanel } from "../../edit/LinkPanel";
+import { useLinkStore } from "../../edit/linkActions";
 
 const FONT_SIZES = [8, 10, 11, 12, 14, 18, 24, 36];
 const NONE: PageObject[] = [];
@@ -21,11 +23,17 @@ function fmt(v: number): string {
   return (Math.round(v * 10) / 10).toString();
 }
 
-/** 영역 표시 armed or marks pending: the redaction section first, then the object selection. */
+/**
+ * 영역 표시 armed or marks pending: the redaction section first, then the object selection.
+ * 링크 armed (P2): the selected link's target.
+ */
 export function EditPanel() {
   const redacting = useAppStore((s) => s.tool === "redact");
+  const linking = useAppStore((s) => s.tool === "link");
+  const link = useLinkStore((s) => s.selected);
   const pending = useEditStore((s) => s.marks.length > 0);
   if (redacting) return <RedactPanel />;
+  if (linking) return <LinkPanel link={link} />;
   return (
     <>
       {pending && <RedactPanel />}

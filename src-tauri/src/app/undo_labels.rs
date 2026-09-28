@@ -114,6 +114,11 @@ mod tests {
             "undo.pageDuplicate",
             "undo.pageInsertFrom",
             "undo.pageReverse",
+            "undo.outlineEdit",
+            "undo.linkCreate",
+            "undo.linkEdit",
+            "undo.linkDelete",
+            "undo.pageLabels",
         ];
         for key in keys {
             for locale in [Locale::Ko, Locale::En] {

@@ -15,8 +15,9 @@ import type {
   DuplicateObjectsResult, RedactBatchMark, RedactBatchResult,
   EngineError, EngineStats, ErrorCode, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, ObjectId,
   ObjectsResult, OcrApplyPage, OcrEngine, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
-  RedactPreview, RemoveStampsResult, ResizeMode, ResizeTarget, Rgb, SaveResult, SearchEvent, SetPageBoxesArgs, Settings, StampResult, StampRole,
-  StampSpec, SummaryFormat, TextEditProbe, TtsStatus, ViewportHint,
+  RedactPreview, RemoveStampsResult, ResizeMode, ResizeTarget, Rgb, SaveResult, SearchEvent,
+  SetPageBoxesArgs, Settings, StampResult, StampRole, StampSpec, SummaryFormat, TextEditProbe, TtsStatus,
+  ViewportHint, LinkTarget, PageLabelRange,
 } from "./types";
 
 export { parseTextLayer, parseRawPage };
@@ -141,6 +142,24 @@ export function getOutline(a: { docId: DocId }): Promise<OutlineNode[]> {
   return call("get_outline", a, (mock) => mock.getOutline(a));
 }
 
+/**
+ * P2 목차 편집: replaces the whole outline (`[]` removes it) — one undo step `undo.outlineEdit`.
+ * `unsupported` on an encrypted document.
+ */
+export function setOutline(a: { docId: DocId; nodes: OutlineNode[] }): Promise<DocInfo> {
+  return call("set_outline", a, (mock) => mock.setOutline(a));
+}
+
+/** P2 페이지 레이블: the /PageLabels ranges (`[]` removes them) — one undo step `undo.pageLabels`. */
+export function setPageLabels(a: { docId: DocId; ranges: PageLabelRange[] }): Promise<DocInfo> {
+  return call("set_page_labels", a, (mock) => mock.setPageLabels(a));
+}
+
+/** The document's /PageLabels ranges as written (the dialog's starting rows); `[]` when none. */
+export function getPageLabels(a: { docId: DocId }): Promise<PageLabelRange[]> {
+  return call("get_page_labels", a, (mock) => mock.getPageLabels(a));
+}
+
 export function takePendingOpens(): Promise<OpenRequest[]> {
   return call("take_pending_opens", {}, (mock) => mock.takePendingOpens());
 }
@@ -230,6 +249,37 @@ export function setAnnotationsHidden(
   a: { docId: DocId; page: PageIndex; ids: string[]; hidden: boolean },
 ): Promise<{ viewNonce: number }> {
   return call("set_annotations_hidden", a, (mock) => mock.setAnnotationsHidden(a));
+}
+
+// P2 links: a Link annotation that goes to a page (/Dest, written with lopdf) or a web address
+// (/A /URI, written by PDFium). Each call is one undo step; the result is the page's new list.
+
+export function createLink(a: { docId: DocId; page: PageIndex; rect: Rect; target: LinkTarget }): Promise<AnnotResult> {
+  return call("create_link", a, (mock) => mock.createLink(a));
+}
+
+export function updateLink(
+  a: { docId: DocId; page: PageIndex; id: string; rect?: Rect; target?: LinkTarget },
+): Promise<AnnotResult> {
+  return call("update_link", a, (mock) => mock.updateLink(a));
+}
+
+export function deleteLink(a: { docId: DocId; page: PageIndex; id: string }): Promise<AnnotResult> {
+  return call("delete_link", a, (mock) => mock.deleteLink(a));
+}
+
+/** A link's web address in the default browser (the opener plugin; the caller confirms first). */
+export async function openUrl(url: string): Promise<void> {
+  if (useMock()) {
+    await loadMock().then((m) => m.openUrl({ url }));
+    return;
+  }
+  try {
+    const { openUrl: open } = await import("@tauri-apps/plugin-opener");
+    await open(url);
+  } catch (e) {
+    throw toSeePdfError(e);
+  }
 }
 
 // ---------------------------------------------------------------------------

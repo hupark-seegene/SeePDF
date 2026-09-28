@@ -26,6 +26,7 @@ pub mod doc;
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod form;
 pub mod object;
+pub mod outline;
 pub mod page;
 pub mod render;
 pub mod save;

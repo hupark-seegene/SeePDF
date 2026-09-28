@@ -11,7 +11,8 @@
 .edit-surface[data-tool="editText"][data-hover="text"] { cursor: text; }
 .edit-surface[data-tool="addText"],
 .edit-surface[data-tool="addImage"],
-.edit-surface[data-tool="redact"] { cursor: crosshair; }
+.edit-surface[data-tool="redact"],
+.edit-surface[data-tool="link"] { cursor: crosshair; }
 .edit-surface[data-tool="select"][data-hover] { cursor: move; }
 
 .edit-outline {
@@ -266,3 +267,39 @@
 
 .edit-geom-field > span { flex: none; min-width: 2.2em; }
 .edit-geom-field > input { flex: 1; min-width: 0; width: 100%; }
+
+/* ------------------------------------------------------------ 링크 tool (P2) */
+
+.edit-link {
+  position: absolute;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.edit-link[data-kind="url"] {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 6%, transparent);
+}
+
+.edit-link[data-selected] {
+  border-style: solid;
+  border-width: 1.5px;
+}
+
+.edit-link[data-draft] {
+  background: var(--accent-subtle);
+}
+
+.link-popover {
+  position: absolute;
+  z-index: 3;
+  width: 272px;
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: var(--elevation-2);
+  cursor: default;
+}

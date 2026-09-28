@@ -145,6 +145,22 @@ pub fn verify_bytes(
     expected_pages: u16,
     password: Option<String>,
 ) -> Result<(), EngineError> {
+    verify_bytes_with(st, bytes, expected_pages, password, |_, _| Ok(()))
+}
+
+/// [`verify_bytes`] plus `check` on the reopened document (P2 structure rewrites compare
+/// what PDFium reads back — outline, page labels, a link's destination — with what was
+/// meant). `check` runs only after the page count and sizes passed.
+pub fn verify_bytes_with(
+    st: &EngineState<'_>,
+    bytes: &[u8],
+    expected_pages: u16,
+    password: Option<String>,
+    check: impl FnOnce(
+        &'static dyn pdfium_render::prelude::PdfiumLibraryBindings,
+        &pdfium_render::prelude::PdfDocument<'_>,
+    ) -> Result<(), EngineError>,
+) -> Result<(), EngineError> {
     let reopened = st
         .pdfium
         .load_pdf_from_byte_slice(bytes, password.as_deref())
@@ -167,7 +183,7 @@ pub fn verify_bytes(
             "the saved document's page sizes could not be read",
         ));
     }
-    Ok(())
+    check(raw::bindings(st.pdfium), &reopened)
 }
 
 /// `readOnly` when the target file (or, for a new file, its directory) cannot be written.

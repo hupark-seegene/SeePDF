@@ -13,6 +13,7 @@ import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
 import { devicePixelRatio } from "../viewer/geometry";
+import { displayLabel } from "../viewer/pageLabel";
 import "./sidebar.css";
 
 const GAP = 12;
@@ -138,7 +139,9 @@ export function Thumbnails() {
                 draggable={false}
               />
             </span>
-            <span className="thumb-num text-xs mono">{row.page + 1}</span>
+            <span className="thumb-num text-xs mono" title={info.pageLabels?.[row.page] ? String(row.page + 1) : undefined}>
+              {displayLabel(info.pageLabels, row.page)}
+            </span>
           </button>
         ))}
       </div>

@@ -117,6 +117,26 @@ export const useViewStore = create<ViewState>((set, get) => ({
   },
 }));
 
+/**
+ * "현재 위치" (P2 목차 / 링크 destinations): the page under the top of the viewport and the PDF
+ * user-space y of that edge. The scroller registers the probe (scroll offsets live in its refs,
+ * never in a store); without one — no document, tests — it is the current page, no position.
+ */
+export interface ViewTarget {
+  page: PageIndex;
+  y?: number;
+}
+
+let viewProbe: (() => ViewTarget | null) | null = null;
+
+export function setViewProbe(probe: (() => ViewTarget | null) | null): void {
+  viewProbe = probe;
+}
+
+export function currentViewTarget(): ViewTarget {
+  return viewProbe?.() ?? { page: useViewStore.getState().currentPage };
+}
+
 // Settings arrive once per window (`appStore.bootstrap`): start in the remembered 야간 모드.
 useAppStore.subscribe((s, prev) => {
   if (s.settings && !prev.settings) useViewStore.setState({ night: readNight(s.settings.night) });

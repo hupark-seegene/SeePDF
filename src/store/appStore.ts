@@ -16,7 +16,7 @@ export type ToolId =
   | "select" | "hand" | "snapshot"
   | "highlight" | "underline" | "strikeout" | "squiggly" | "note" | "pen" | "eraser"
   | "rectangle" | "ellipse" | "line" | "arrow" | "textbox" | "stamp" | "signature"
-  | "editText" | "addText" | "addImage" | "redact"
+  | "editText" | "addText" | "addImage" | "redact" | "link"
   | "fillForm" | "highlightFields";
 
 export interface AppState {

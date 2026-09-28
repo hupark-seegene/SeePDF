@@ -650,11 +650,35 @@ impl AnnotRef<'_> {
     }
 
     /// `FPDFAnnot_SetURI` — a `/Link` annotation's URI action. Go-to-page destinations
-    /// cannot be created through PDFium's public API.
+    /// cannot be created through PDFium's public API (`engine::structure::links` writes them
+    /// with lopdf).
     pub fn set_uri(&mut self, uri: &str) -> bool {
         // SAFETY: `self.handle` is live; the binding converts `uri` itself.
         let ok = unsafe { self.bindings.FPDFAnnot_SetURI(self.handle, uri) };
         self.bindings.is_true(ok)
+    }
+
+    /// `FPDFAnnot_SetBorder(0, 0, 0)` → `/Border [0 0 0]`: a link draws no box. Without it the
+    /// PDF default `[0 0 1]` applies and several viewers stroke a 1 pt border round the link.
+    pub fn set_no_border(&mut self) -> bool {
+        // SAFETY: `self.handle` is live; the call takes plain floats.
+        let ok = unsafe { self.bindings.FPDFAnnot_SetBorder(self.handle, 0.0, 0.0, 0.0) };
+        self.bindings.is_true(ok)
+    }
+
+    /// The go-to-page target of a Link annotation: `FPDFAnnot_GetLink` → `FPDFLink_GetDest`,
+    /// which reads `/Dest` (named destinations resolved) and falls back to a GoTo `/A`.
+    /// `None` for a URI link, or a destination that names no page of this document.
+    pub fn link_dest(&self, document: FPDF_DOCUMENT) -> Option<crate::ipc::types::LinkDest> {
+        // SAFETY: `self.handle` is live; a non-Link annotation yields a null FPDF_LINK.
+        let dest = unsafe {
+            let link = self.bindings.FPDFAnnot_GetLink(self.handle);
+            if link.is_null() {
+                return None;
+            }
+            self.bindings.FPDFLink_GetDest(document, link)
+        };
+        super::outline::link_dest(self.bindings, document, dest)
     }
 
     /// The `/A <</S /URI …>>` target of a Link annotation, via `FPDFAnnot_GetLink` →

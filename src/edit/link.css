@@ -1,0 +1,59 @@
+/* A link's target form (P2) — the 링크 popover and the inspector's 링크 section. Tokens only. */
+
+.link-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.link-form .link-kind {
+  align-self: flex-start;
+}
+
+.link-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.link-page-input {
+  width: 64px;
+  flex: none;
+}
+
+.link-page-input[aria-invalid] {
+  border-color: var(--danger);
+}
+
+.link-row .link-here {
+  margin-inline-start: auto;
+  white-space: nowrap;
+}
+
+.link-hint {
+  margin: 0;
+}
+
+.link-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.link-summary {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-panel-actions {
+  display: flex;
+  gap: var(--space-2);
+}

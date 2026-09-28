@@ -38,6 +38,8 @@ const UpdateDialog = lazy(() => import("../update/UpdateDialog"));
 // 자르기 / 페이지 크기 변경 (P2): 페이지 mode only, each in its own chunk.
 const CropDialog = lazy(() => import("../organize/CropDialog"));
 const ResizeDialog = lazy(() => import("./ResizeDialog"));
+// 페이지 레이블 (P2): rare, its own chunk.
+const PageLabelsDialog = lazy(() => import("./PageLabelsDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -170,6 +172,12 @@ function Current({ entry }: { entry: DialogEntry }) {
       return (
         <Suspense fallback={null}>
           <UpdateDialog onClose={close} />
+        </Suspense>
+      );
+    case "pageLabels":
+      return (
+        <Suspense fallback={null}>
+          <PageLabelsDialog onClose={close} />
         </Suspense>
       );
     case "stampPicker":

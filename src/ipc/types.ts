@@ -53,7 +53,7 @@ export type Point = [x: number, y: number];
 
 export interface PageGeom {
   index: PageIndex; widthPt: number; heightPt: number;   // display size (rotation applied)
-  rotation: Rotation; crop: Rect; label: string | null;  // label from /PageLabels, read-only in v1
+  rotation: Rotation; crop: Rect; label: string | null;  // label from /PageLabels (written by set_page_labels, P2)
 }
 export interface Permissions {
   print: boolean; modify: boolean; extractText: boolean; annotate: boolean;
@@ -70,15 +70,27 @@ export interface DocInfo {
   canUndo: boolean; canRedo: boolean; undoLabel: string | null; redoLabel: string | null;  // i18n keys
   encrypted: boolean; permissions: Permissions; hasForm: boolean; xfa: boolean;
   hasOutline: boolean; meta: DocMeta; pdfVersion: string; tagged: boolean;
+  /** P2: every page's /PageLabels label ("" where a page has none); absent when no page has one */
+  pageLabels?: string[];
 }
 /** Where on the page a `/Dest` points, PDF user space. Absent for a plain page reference. */
 export interface OutlineDest { x?: number; y?: number; zoom?: number }
 export interface OutlineNode {
   title: string; page: PageIndex | null;
   dest?: OutlineDest;                     // Stage 2: scroll to the heading, not to the page top
+  url?: string;                           // P2: a web link (/A /URI) instead of a page; page is then null
+  open?: boolean;                         // P2: children start expanded (/Count > 0); only on nodes with children
   children: OutlineNode[];
 }
 export interface OpenRequest { path: string; source: 'argv' | 'macos-opened' | 'drop' | 'dialog' | 'recent' }
+
+/** P2 page labels: one /PageLabels entry; the range runs from `start` (0-based) to the next range. */
+export type PageLabelStyle = 'decimal' | 'roman' | 'romanUpper' | 'alpha' | 'alphaUpper' | 'none';
+export interface PageLabelRange {
+  start: PageIndex; style: PageLabelStyle;
+  prefix?: string;                        // /P
+  first?: number;                         // /St, the number of the range's first page (≥ 1)
+}
 
 // ---------------------------------------------------------------------------
 // 5. View, render control, statistics
@@ -133,9 +145,14 @@ export interface Annot {
   text?: string; fontSize?: number;     // textbox
   stampKind?: string; imageId?: string; // stamp/signature
   uri?: string;                         // link
+  dest?: LinkDest;                      // link: go-to-page target (P2)
   hidden: boolean; printed: boolean; locked: boolean;
   editable: 'full' | 'moveOnly' | 'readOnly';   // moveOnly = third-party AP we would regenerate
 }
+/** P2 go-to-page target: the page plus the optional /XYZ left, top (PDF user space) and zoom factor. */
+export interface LinkDest { page: PageIndex; x?: number; y?: number; zoom?: number }
+/** `create_link` / `update_link` target: a page in this document, or a web address. */
+export type LinkTarget = LinkDest | { url: string };
 export interface AnnotList { docId: DocId; page: PageIndex; docGeneration: DocGeneration; annots: Annot[] }
 export interface AnnotResult { list: AnnotList; annot: Annot | null; previous: Annot | null }
 

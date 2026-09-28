@@ -142,7 +142,9 @@ consistent: a command with no feature is out of scope, a feature with no command
 
 The five remaining commands of the contract belong to P1 rows: `set_metadata` + `remove_metadata` → P1-1,
 `remove_password` → P1-2, `set_password` → P1-3, `ocr_recognize_native` → P1-11. They are stubbed in
-Stage 0 and return `unsupported` until their row is scheduled.
+Stage 0 and return `unsupported` until their row is scheduled. The six P2 commands (`set_outline`,
+`create_link`, `update_link`, `delete_link`, `set_page_labels`, `get_page_labels`) belong to the rows of
+"P2 status" below.
 
 ---
 
@@ -249,8 +251,8 @@ critical path 112.9 kB gz; the redaction flows are their own lazy chunk (3.4 kB 
 
 ## P2 — after v1
 
-document tabs in one window · link creation and go-to-page
-destinations (needs `lopdf`) · outline/bookmark editing (needs `lopdf`) · page labels · crop and resize
+document tabs in one window · ~~link creation and go-to-page
+destinations~~ · ~~outline/bookmark editing~~ · ~~page labels~~ (all three landed — see "P2 status") · crop and resize
 pages · form field authoring · word-level redaction (re-creating surviving glyphs) and the raster
 fallback for XObject text · glyphless CID OCR font (`FPDFText_LoadCidType2Font`) instead of the bundled
 subset · incremental save · Windows.Media.Ocr opportunistic path · export to Word/hwp (third-party
@@ -269,6 +271,23 @@ Contract: `IPC_CONTRACT.md` §7.3a, §7.4a, §7.7a, §11a; UI: `UI_SPEC.md` §8�
 | **Bates numbering** | ✅ | `{{bates}}` token + `batesStart` / `batesDigits` / `batesPrefix` / `batesSuffix` on `StampSpec` (serde defaults, not serialised at default), one-pass token expansion, numbers count the stamped pages; 워터마크 / 머리글·바닥글 dialog: Bates 번호 매기기 preset (footer / 오른쪽 아래, or header / 오른쪽 위), token chip, 시작 번호 / 자릿수 / 접두어 / 접미어, sample over the range, preview; `remove_stamps` by role unchanged. `cargo test --test stamp stamp_bates_numbers_every_page_and_is_extractable` (14 pages ABC000101…ABC000114, one per page, extractable after save → reopen, range 3–5 → 000001-K…000003-K, footer removal, bad digits / prefix refused), `stamp` lib tests, `bates.test.tsx` |
 | **Annotation summary export** | ✅ | `export_annotation_summary` TXT / CSV / Markdown: page, label, kind (i18n), author, created / modified (local time), colour, contents, quoted text of markups from the cached text layer; CSV RFC 4180 + UTF-8 BOM + formula guard; 주석 sidebar 내보내기… and 내보내기 ▸ 주석 목록 (range, format, `<name>-주석 목록.<ext>`). `cargo test --test annot_summary` (5 annotations created out of order → 5 rows in page order, `Trace-based` quoted, Korean note with comma / quotes / line break round-trips, BOM, page filter, third-party highlight), `summary` lib tests, `annotSummary.flow.test.tsx` |
 | **Read aloud (TTS)** | ✅ ⚠️ | `tts_speak` / `tts_stop` / `tts_status`: macOS `say` (stdin, Yuna for Korean, `-r`), Windows PowerShell `System.Speech` (UTF-8 stdin, culture voice, no window), `unsupported` elsewhere; one utterance app-wide, killed on stop, on a new speak, on window close and on `RunEvent::Exit`. UI: 읽어 주기 in the text-selection menu, 이 페이지 읽어 주기 (canvas menu, 보기 menu, ⋯), floating bar 속도 (restarts) / 정지, status-bar indicator, polling ends it. `cargo test --test tts` (fake speaker: speak / replace / stop / finish / drop / unsupported; macOS: `say -v ?` lists a Korean voice, a long text speaks and stops, a short one renders audio to a file — silent), `tts` lib tests, `tts.flow.test.tsx`. ⚠️ the Windows path is compiled and unit-tested (script, base64, rate) but not run on Windows yet; no word highlighting; 속도 restarts from the beginning |
+### P2 status — outline editing, links, page labels
+
+✅ verified by tests against real PDFium (write → save → reopen → read back) and the mock-backed UI flows ·
+⚠️ partial, with the gap named. Contract `IPC_CONTRACT.md` §7.10, UI `UI_SPEC.md` §4.1 / §6 / §7 / §8 / §10,
+design `ARCHITECTURE.md` §6.7. All three are lopdf rewrites checked by PDFium's own readers (one undo step each).
+
+| item | status | evidence |
+|---|---|---|
+| 목차 편집 (`set_outline`, `undo.outlineEdit`) | ✅ | 목차 tab → 편집: 현재 페이지 추가 (page + y of the current view), rename inline (Enter / double-click), delete (Delete / ⌫, subtree included), 들여쓰기 / 내어쓰기 (Tab / ⇧Tab), ⌥↑ / ⌥↓ and drag (before / after / inside), 목적지를 현재 보기로; 완료 = one call with the whole tree, 취소 = nothing written, toast + 실행 취소. Engine: old items deleted, `/Count` (+open / −closed) and `/First` `/Last` `/Prev` `/Next` `/Parent` consistent (inspected with lopdf), Hangul titles UTF-16BE, `/XYZ` or `/Fit` dests, `/A /URI` web nodes; `get_outline` (now a raw `FPDFBookmark_*` walk) reads back exactly what was written, `open` and `url` included; TAMReview's heading dest still `{x:0,y:806}`; undo restores `outline-labels.pdf`'s 7 nodes; `[]` removes `/Outlines`. `cargo test --test structure structure_outline_*` (3), `outlineEdit.test.ts` (6), `outline.flow.test.tsx` (5). ⚠️ named destinations become explicit, non-GoTo/URI actions become title-only, item colour/style dropped; no multi-select in the editor |
+| 링크 (`create_link` / `update_link` / `delete_link`, `kind: 'link'` with `uri` / `dest`) | ✅ | 편집 → 링크 (`link-2`): drag ≥ 4 pt → popover 페이지로 이동 (label or number, 현재 위치 사용) \| 웹 주소 → one `create_link`; click selects, the panel re-targets (`update_link`) / 링크 열기 / 삭제, ⌫ deletes; a link selected in 주석 mode gets the same panel; 읽기 mode: hover outline + tooltip, click → page jump or confirm → opener plugin (http(s) / mailto only). Engine: web links through PDFium (`FPDFAnnot_SetURI`, `/Border [0 0 0]`, `/F 4`, `/NM`), page links and anything that adds / drops a `/Dest` through lopdf, checked with `FPDFLink_GetDest`; reads `Annot.dest` via `FPDFLink_GetDest`; save → reopen → read back; undo per step. `cargo test --test structure structure_link_*` (3), `links.flow.test.tsx` (6). ⚠️ links are drawn with no border (other viewers show nothing until hovered); no multi-rect (`/QuadPoints`) links from the UI; 읽기-mode clicks rely on the annotation list of the page being loaded |
+| 페이지 레이블 (`set_page_labels` / `get_page_labels`, `DocInfo.pageLabels`) | ✅ | 페이지 mode rail and 문서 정보 → 페이지 레이블…: rows 시작 페이지 · 스타일 (decimal / roman / ROMAN / alpha / ALPHA / 번호 없음) · 접두사 · 시작 번호, inline errors, live preview of every page, 모두 제거; 적용 = one call, toast + 실행 취소. Shown in 축소판, 페이지 mode chips, 목차's page column, the link form and the status-bar box (label or number accepted; `(n / total)` beside it). Engine: `/PageLabels /Nums` (leading decimal range added when needed, `/St` omitted when 1), every page checked against `FPDF_GetPageLabel`; `get_page_labels` reads `/Nums` and `/Kids`; save → reopen → labels; undo restores the fixture's `i, ii, 1, 2, App-A, App-B`; `[]` removes. `cargo test --test structure structure_labels_*` (2) + 8 formatter / tree unit tests, `pageLabels.test.ts` (6), `pageLabels.flow.test.tsx` (2) |
+| encrypted documents | ✅ | `set_outline`, `set_page_labels`, `get_page_labels` and every `/Dest` link change answer `unsupported` with no undo entry (like metadata); web links, rect moves and deletes still work; a failed PDFium check rolls back (`structure_refused_on_encrypted`, `structure_failed_check_rolls_back`). UI: 편집 disabled, the dialog read-only, 페이지로 이동 disabled, each with `structure.encrypted` |
+
+P2 gates (2026-09-28): `cargo check --all-targets` 0 warnings · `cargo test --release` 303 / 0 (`tests/structure.rs`
+10) · vitest 583 / 583 (75 files) · i18n ko 820 / en 820 · critical path 115.7 kB gz of 120 (was 113.2); the editor
+(3.9 kB gz), the dialog (2.0 kB gz) and the link form are lazy chunks. ⚠️ Not yet driven in the real app (dev
+bridge): only against real PDFium in cargo tests and against the mock in vitest.
 
 ---
 
@@ -283,7 +302,7 @@ Contract: `IPC_CONTRACT.md` §7.3a, §7.4a, §7.7a, §11a; UI: `UI_SPEC.md` §8�
 | Form field authoring, JavaScript actions, field calculation | pdfium exposes no authoring API and no JS engine is shipped |
 | Document tabs | one window per document has the same capability and no tab-state code |
 | Cloud sync, accounts, telemetry, AI features | the product promise is a local, offline, quiet tool |
-| Bookmark/outline editing, metadata writing, page labels in P0 | pdfium cannot write any of them; deferred until `lopdf` lands (P1) |
+| Bookmark/outline editing, metadata writing, page labels in P0 | pdfium cannot write any of them; deferred until `lopdf` lands (P1). Metadata landed in Stage 3 (P1-1); outline editing, link destinations and page labels landed as P2 (see "P2 status") |
 | Incremental save | a second save path for a ≤ 5 ms/MB win; the full rewrite already meets the target |
 | Polygon / polyline / cloud / callout / measurement annotations | `FPDFPage_CreateAnnot` returns NULL for Polygon and Polyline |
 | Real `/Line` annotations | same reason; v1 writes Ink with a `/Subj` tag and says so in the docs |

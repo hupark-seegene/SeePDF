@@ -29,6 +29,7 @@ pub mod save;
 pub mod security;
 pub mod stamp;
 pub mod stats;
+pub mod structure;
 pub mod text;
 pub mod thread;
 pub mod types;

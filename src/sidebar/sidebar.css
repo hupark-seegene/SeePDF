@@ -124,6 +124,20 @@ button.outline-twisty:hover {
   padding-inline-start: var(--space-2);
 }
 
+/* P2: the 목차 tab's header — its name and 편집 */
+.outline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-1) var(--space-1) var(--space-2);
+}
+
+.outline-head .outline-edit-btn {
+  height: 24px;
+  padding: 0 var(--space-2);
+}
+
 /* ----------------------------------------------------------------- search */
 
 .search-panel {

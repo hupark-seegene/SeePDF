@@ -20,9 +20,10 @@ import type {
   Settings, StampResult, StampSpec, StampRole, RemoveStampsResult, TextEditProbe, ViewportHint, CompressOptions, CompressReport,
   ObjectId, ObjectsResult, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, Rgb,
   CompareOptions, CompareReport, ComparePage, DiffOp, RecoveryEntry,
-  DuplicateObjectsResult, RedactBatchMark, RedactBatchResult,
-  AnnotationSummaryResult, ResizeMode, ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus,
+  DuplicateObjectsResult, RedactBatchMark, RedactBatchResult, AnnotationSummaryResult, ResizeMode,
+  ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus, LinkTarget, PageLabelRange,
 } from "./types";
+import { labelsFor, normalizeRanges } from "../dialogs/pageLabels";
 
 import documentFixture from "../test/ipc-samples/document.json";
 import textFixture from "../test/ipc-samples/text.json";
@@ -42,11 +43,16 @@ export const mockEvents = appBus;
 /** A page object without its id: ids are array positions, renumbered on every list (like PDFium). */
 type MockObj = Omit<PageObject, "objectId">;
 
-interface Snapshot { info: DocInfo; annots: [PageIndex, Annot[]][]; fields: FormField[]; objects: [PageIndex, MockObj[]][] }
+interface Snapshot {
+  info: DocInfo; annots: [PageIndex, Annot[]][]; fields: FormField[]; objects: [PageIndex, MockObj[]][];
+  outline: OutlineNode[]; labelRanges: PageLabelRange[];
+}
 
 interface MockDoc {
   info: DocInfo;
   outline: OutlineNode[];
+  /** P2: the /PageLabels ranges as written (`info.pageLabels` is derived from them) */
+  labelRanges: PageLabelRange[];
   annots: Map<PageIndex, Annot[]>;
   fields: FormField[];
   /** page objects (편집 mode), seeded lazily from the fake text layer on first list */
@@ -115,6 +121,8 @@ function snapshot(d: MockDoc): Snapshot {
     annots: [...d.annots.entries()].map(([p, a]) => [p, structuredClone(a)] as [PageIndex, Annot[]]),
     fields: structuredClone(d.fields),
     objects: [...d.objects.entries()].map(([p, o]) => [p, structuredClone(o)] as [PageIndex, MockObj[]]),
+    outline: structuredClone(d.outline),
+    labelRanges: structuredClone(d.labelRanges),
   };
 }
 
@@ -123,6 +131,78 @@ function restore(d: MockDoc, s: Snapshot): void {
   d.annots = new Map(s.annots.map(([p, a]) => [p, structuredClone(a)]));
   d.fields = structuredClone(s.fields);
   d.objects = new Map(s.objects.map(([p, o]) => [p, structuredClone(o)]));
+  d.outline = structuredClone(s.outline);
+  d.labelRanges = structuredClone(s.labelRanges);
+}
+
+/** Like the engine: `pages[i].label` and `pageLabels` follow the /PageLabels ranges. */
+function applyLabels(d: MockDoc): void {
+  const labels = labelsFor(d.labelRanges, d.info.pageCount);
+  d.info.pages = d.info.pages.map((p, i) => ({ ...p, label: labels.length && labels[i] ? labels[i] : null }));
+  if (labels.length) d.info.pageLabels = labels;
+  else delete d.info.pageLabels;
+}
+
+/** The engine refuses the lopdf rewrites (outline, page labels, page links) on an encrypted file. */
+function refuseEncrypted(d: MockDoc): void {
+  if (d.info.encrypted) throw err("unsupported", "this document is encrypted: remove the password first");
+}
+
+function outlineHas(nodes: OutlineNode[]): boolean {
+  return nodes.length > 0;
+}
+
+function validateOutline(d: MockDoc, nodes: OutlineNode[], depth = 0): void {
+  if (depth > 32) throw err("invalidArgument", "outline deeper than 32 levels");
+  for (const n of nodes) {
+    if (n.page !== null && n.page !== undefined && (n.page < 0 || n.page >= d.info.pageCount)) {
+      throw err("invalidArgument", `outline page ${n.page} out of range`);
+    }
+    validateOutline(d, n.children ?? [], depth + 1);
+  }
+}
+
+/** What `get_outline` reads back after a write: `open` only on nodes with children. */
+function normalizeOutline(nodes: OutlineNode[]): OutlineNode[] {
+  return nodes.map((n) => {
+    const children = normalizeOutline(n.children ?? []);
+    const out: OutlineNode = { title: n.title, page: n.url ? null : n.page ?? null, children };
+    if (n.dest && out.page !== null && (n.dest.x !== undefined || n.dest.y !== undefined || n.dest.zoom !== undefined)) {
+      out.dest = { ...n.dest };
+    }
+    if (n.url) out.url = n.url;
+    if (children.length) out.open = n.open ?? true;
+    return out;
+  });
+}
+
+let openedUrls: string[] = [];
+
+/** Test seam: the web addresses `openUrl` was asked to open. */
+export function mockOpenedUrls(): string[] {
+  return [...openedUrls];
+}
+
+function linkAnnot(page: PageIndex, id: string, rect: Rect, target: LinkTarget): Annot {
+  const r = { l: Math.min(rect.l, rect.r), b: Math.min(rect.b, rect.t), r: Math.max(rect.l, rect.r), t: Math.max(rect.b, rect.t) };
+  const now = new Date().toISOString();
+  return {
+    id, page, kind: "link", subtype: "Link", rect: r, color: [0, 0, 0], fillColor: null, opacity: 1, borderWidth: 0,
+    contents: "", author: null, created: now, modified: now,
+    ...("url" in target ? { uri: target.url } : { dest: { ...target } }),
+    hidden: false, printed: true, locked: false, editable: "full",
+  };
+}
+
+function validateLink(d: MockDoc, page: PageIndex, rect: Rect | undefined, target: LinkTarget | undefined): void {
+  if (page < 0 || page >= d.info.pageCount) throw err("notFound", `page ${page}`);
+  if (rect && (Math.abs(rect.r - rect.l) < 1 || Math.abs(rect.t - rect.b) < 1)) throw err("invalidArgument", "link rect too small");
+  if (!target) return;
+  if ("url" in target) {
+    if (!target.url.trim()) throw err("invalidArgument", "empty url");
+  } else if (target.page < 0 || target.page >= d.info.pageCount) {
+    throw err("invalidArgument", `target page ${target.page} out of range`);
+  }
 }
 
 type ChangeReason = "edit" | "undo" | "redo" | "save" | "pages" | "ocr" | "redact";
@@ -201,6 +281,7 @@ function makeDoc(path: string, pageCount = BASE_DOC.pageCount): MockDoc {
   return {
     info,
     outline: structuredClone(outlineFixture) as unknown as OutlineNode[],
+    labelRanges: [],
     annots,
     fields: (structuredClone(fieldsFixture) as unknown as FormField[]).filter((f) => f.page < pageCount),
     objects: new Map(),
@@ -442,6 +523,8 @@ export const mock = {
     const d = makeDoc(a.path, recent?.pages ?? BASE_DOC.pageCount);
     // Stage 8: a recovered copy reports the original name, not `<uuid>.pdf`
     if (a.displayName) d.info.name = a.displayName;
+    // like the engine (`encrypted = revision != -1 || password.is_some()`): P2's lopdf rewrites refuse it
+    if (a.password) d.info.encrypted = true;
     docs.set(d.info.docId, d);
     const entry: RecentEntry = recent ?? {
       path: a.path, name: baseName(a.path), dir: dirName(a.path), pages: d.info.pageCount, bytes: d.info.bytes,
@@ -463,6 +546,38 @@ export const mock = {
   },
   async getOutline(a: { docId: DocId }): Promise<OutlineNode[]> {
     return delay(structuredClone(doc(a.docId).outline), 20);
+  },
+  async setOutline(a: { docId: DocId; nodes: OutlineNode[] }): Promise<DocInfo> {
+    const d = doc(a.docId);
+    refuseEncrypted(d);
+    validateOutline(d, a.nodes);
+    mutate(d, { reason: "edit", pages: "all", undoLabel: "undo.outlineEdit" }, () => {
+      d.outline = normalizeOutline(a.nodes);
+      d.info.hasOutline = outlineHas(d.outline);
+    });
+    // after the bump: the returned DocInfo carries the new generation, like the engine's
+    return structuredClone(d.info);
+  },
+  async setPageLabels(a: { docId: DocId; ranges: PageLabelRange[] }): Promise<DocInfo> {
+    const d = doc(a.docId);
+    refuseEncrypted(d);
+    const starts = new Set<number>();
+    for (const r of a.ranges) {
+      if (r.start < 0 || r.start >= d.info.pageCount) throw err("invalidArgument", `range start ${r.start} out of range`);
+      if (starts.has(r.start)) throw err("invalidArgument", `two ranges start at ${r.start}`);
+      if (r.first !== undefined && (r.first < 1 || r.first > 1_000_000)) throw err("invalidArgument", "first must be 1..1000000");
+      starts.add(r.start);
+    }
+    mutate(d, { reason: "edit", pages: "all", undoLabel: "undo.pageLabels" }, () => {
+      d.labelRanges = normalizeRanges(a.ranges, d.info.pageCount);
+      applyLabels(d);
+    });
+    return structuredClone(d.info);
+  },
+  async getPageLabels(a: { docId: DocId }): Promise<PageLabelRange[]> {
+    const d = doc(a.docId);
+    refuseEncrypted(d);
+    return delay(structuredClone(d.labelRanges), 10);
   },
   async takePendingOpens() {
     return pendingOpens.splice(0, pendingOpens.length);
@@ -611,6 +726,52 @@ export const mock = {
   async setAnnotationsHidden(_a: { docId: DocId; page: PageIndex; ids: string[]; hidden: boolean }) {
     return { viewNonce: Date.now() };
   },
+  // P2 links ------------------------------------------------------------------
+  async createLink(a: { docId: DocId; page: PageIndex; rect: Rect; target: LinkTarget }): Promise<AnnotResult> {
+    const d = doc(a.docId);
+    validateLink(d, a.page, a.rect, a.target);
+    // a go-to-page link is a lopdf rewrite in the engine: refused on an encrypted file
+    if (!("url" in a.target)) refuseEncrypted(d);
+    const annot = linkAnnot(a.page, `mock-link-${nextAnnot++}`, a.rect, a.target);
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.linkCreate" }, () => {
+      d.annots.set(a.page, [...(d.annots.get(a.page) ?? []), annot]);
+      return { list: listOf(d, a.page), annot: structuredClone(annot), previous: null };
+    });
+  },
+  async updateLink(a: { docId: DocId; page: PageIndex; id: string; rect?: Rect; target?: LinkTarget }): Promise<AnnotResult> {
+    const d = doc(a.docId);
+    const list = d.annots.get(a.page) ?? [];
+    const idx = list.findIndex((x) => x.id === a.id);
+    if (idx < 0) throw err("notFound", `annotation ${a.id}`);
+    if (list[idx].kind !== "link") throw err("invalidArgument", `${a.id} is not a link`);
+    if (!a.rect && !a.target) throw err("invalidArgument", "update_link needs a rect or a target");
+    validateLink(d, a.page, a.rect, a.target);
+    const previous = structuredClone(list[idx]);
+    const wasPage = previous.dest !== undefined;
+    if (a.target && (!("url" in a.target) || wasPage)) refuseEncrypted(d);
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.linkEdit" }, () => {
+      const target: LinkTarget = a.target ?? (previous.uri !== undefined ? { url: previous.uri } : { ...previous.dest! });
+      const next = linkAnnot(a.page, a.id, a.rect ?? previous.rect, target);
+      next.created = previous.created;
+      list[idx] = next;
+      d.annots.set(a.page, list);
+      return { list: listOf(d, a.page), annot: structuredClone(next), previous };
+    });
+  },
+  async deleteLink(a: { docId: DocId; page: PageIndex; id: string }): Promise<AnnotResult> {
+    const d = doc(a.docId);
+    const list = d.annots.get(a.page) ?? [];
+    const found = list.find((x) => x.id === a.id);
+    if (!found) throw err("notFound", `annotation ${a.id}`);
+    if (found.kind !== "link") throw err("invalidArgument", `${a.id} is not a link`);
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.linkDelete" }, () => {
+      d.annots.set(a.page, list.filter((x) => x.id !== a.id));
+      return { list: listOf(d, a.page), annot: null, previous: structuredClone(found) };
+    });
+  },
+  async openUrl(a: { url: string }): Promise<void> {
+    openedUrls.push(a.url);
+  },
 
   // 7.2 forms ----------------------------------------------------------------
   async listFormFields(a: { docId: DocId; page?: PageIndex }): Promise<FormField[]> {
@@ -650,6 +811,8 @@ export const mock = {
       for (const op of a.ops) applyPageOp(d, op);
       d.info.pages = d.info.pages.map((p, index) => ({ ...p, index }));
       d.info.pageCount = d.info.pages.length;
+      // /PageLabels are by page index and page ops do not rewrite them (neither does PDFium)
+      if (d.labelRanges.length) applyLabels(d);
       return structuredClone(d.info);
     });
   },
@@ -2024,6 +2187,7 @@ export function resetMock(): void {
   nextDoc = 1;
   nextJob = 1;
   nextAnnot = 1;
+  openedUrls = [];
   recents = structuredClone(recentsFixture) as unknown as RecentEntry[];
   settings = structuredClone(settingsFixture) as unknown as Settings;
 }

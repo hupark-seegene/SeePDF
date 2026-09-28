@@ -9,7 +9,7 @@
  */
 import { useMemo } from "react";
 import {
-  Circle, Download, Highlighter, MessageSquarePlus, Minus, MoveUpRight, PenLine, Signature, Square,
+  Circle, Download, Highlighter, MessageSquarePlus, Minus, MoveUpRight, PenLine, Signature, Square, Link2,
   Stamp, Sticker, Strikethrough, Trash2, Type, Underline, Waves,
 } from "lucide-react";
 import { openDialog } from "../dialogs/dialogState";
@@ -37,6 +37,7 @@ const ICONS: Partial<Record<AnnotKind, ComponentType<IconProps>>> = {
   textbox: Type,
   stamp: Stamp,
   signature: Signature,
+  link: Link2,
 };
 
 /** The chips of UI_SPEC §4 — the kinds worth filtering by, in tool-strip order. */
@@ -66,6 +67,7 @@ export function annotLabel(a: Annot, t: (key: string) => string): string {
     case "textbox": return t("annot.kind.textbox");
     case "stamp": return t("tool.stamp");
     case "signature": return t("tool.signature");
+    case "link": return t("tool.link");
     default: return a.subtype;
   }
 }

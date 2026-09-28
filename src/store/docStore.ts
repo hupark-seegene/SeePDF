@@ -37,6 +37,8 @@ export interface DocState {
   adopt(info: DocInfo): void;
   close(): Promise<void>;
   refresh(): Promise<void>;
+  /** Re-read the outline (`get_outline`) — after 목차 편집, undo / redo and structural changes. */
+  reloadOutline(): Promise<void>;
   applyDocChanged(e: DocChangedEvent): void;
   undo(): Promise<void>;
   redo(): Promise<void>;
@@ -100,6 +102,15 @@ export const useDocStore = create<DocState>((set, get) => ({
     if (!docId) return;
     const info = await api.getDocument({ docId }).catch(() => null);
     if (info) set({ info });
+    // a structural change (page ops, undo / redo of a 목차 편집) can change the outline too
+    if (info) await get().reloadOutline();
+  },
+
+  async reloadOutline() {
+    const info = get().info;
+    if (!info) return;
+    const outline = info.hasOutline ? await api.getOutline({ docId: info.docId }).catch(() => null) : [];
+    if (outline && get().info?.docId === info.docId) set({ outline });
   },
 
   applyDocChanged(e) {
@@ -131,6 +142,7 @@ export const useDocStore = create<DocState>((set, get) => ({
     if (!docId) return;
     const info = await api.undo({ docId }).catch(() => null);
     if (info) set({ info });
+    if (info) await get().reloadOutline();
   },
 
   async redo() {
@@ -138,5 +150,6 @@ export const useDocStore = create<DocState>((set, get) => ({
     if (!docId) return;
     const info = await api.redo({ docId }).catch(() => null);
     if (info) set({ info });
+    if (info) await get().reloadOutline();
   },
 }));

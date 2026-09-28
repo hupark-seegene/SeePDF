@@ -12,7 +12,8 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeftRight, Copy, Crop, FilePlus2, Plus, RotateCcw, RotateCw, Scaling, Scissors, SplitSquareHorizontal, Trash2,
+  ArrowLeftRight, Copy, Crop, FilePlus2, Plus, RotateCcw, RotateCw, Scaling, Scissors, SplitSquareHorizontal,
+  Trash2, Tags,
 } from "lucide-react";
 import { useT } from "../i18n/useT";
 import { thumbUrl } from "../ipc/protocol";
@@ -22,6 +23,7 @@ import { useAppStore } from "../store/appStore";
 import { usePagesStore, THUMB_SIZES, type ThumbSize } from "../store/pagesStore";
 import { openContextMenu } from "../app/contextMenuStore";
 import { openDialog } from "../dialogs/dialogState";
+import { displayLabel } from "../viewer/pageLabel";
 import { boxFromPoints, boxesIntersect, marqueeSelect, pressSelect, stepFocus, type Box } from "./selection";
 import { applyMove, identityOrder, moveOpFor } from "./moveOp";
 import type { PageGeom, PageIndex, PageOp } from "../ipc/types";
@@ -400,7 +402,9 @@ export function Organizer() {
                     </button>
                   </span>
                 </span>
-                <span className="org-num text-xs mono">{page + 1}</span>
+                <span className="org-num text-xs mono" title={info.pageLabels?.[page] ? String(page + 1) : undefined}>
+                  {displayLabel(info.pageLabels, page)}
+                </span>
                 <button
                   type="button"
                   className="org-insert"
@@ -434,6 +438,8 @@ export function Organizer() {
         <RailButton icon={SplitSquareHorizontal} labelKey="pages.split" onSelect={actions.split} />
         <RailButton icon={Crop} labelKey="pages.crop" onSelect={actions.crop} />
         <RailButton icon={Scaling} labelKey="pages.resize" onSelect={actions.resize} />
+        {/* P2 */}
+        <RailButton icon={Tags} labelKey="pageLabels.open" onSelect={() => openDialog("pageLabels")} />
 
         <span className="rail-spacer" />
         <label className="org-size text-xs dim">
