@@ -2,18 +2,22 @@
  * The lazy entry of 편집 mode (Stage 7). `annot/bridge.tsx` imports this chunk the first time the
  * mode is entered and puts `renderSurface` into every page's `surface` slot while 편집 is active.
  *
- * `start()` binds the store to the open document and owns the mode's keys — ⌫ / ⌦ delete, arrows
- * nudge (⇧ × 10), Esc closes the editor / deselects / returns to 선택 — but only while no text
- * field has focus. Undo / redo stay global.
+ * `start()` binds the store to the open document and owns the mode's keys — ⌫ / ⌦ delete (the
+ * selected object, or the selected 영역 표시 mark), arrows nudge (⇧ × 10), Esc closes the editor /
+ * deselects / returns to 선택 — but only while no text field has focus. Undo / redo stay global.
+ * It also runs the 영역 표시 lifecycle (`redact.ts`): previews while marks change, the leave guard,
+ * and dropping the marks when the document moves under them or the mode is left.
  */
 import type { PageLayerContext } from "../viewer";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
-import { setEditCommandHandler } from "../tools/commands";
+import { onDocChanged } from "../ipc/events";
+import { setEditCommandHandler, setEditLeaveGuard } from "../tools/commands";
 import { toolController } from "../tools/ToolController";
 import { useEditStore } from "./editStore";
 import { cancelSession, commitSession, deleteSelection, moveObjects } from "./actions";
 import { EditLayer } from "./EditLayer";
+import { confirmLeave, dropMarks, onDocChangedForMarks, watchMarks } from "./redact";
 import "./edit.css";
 
 function typing(target: EventTarget | null): boolean {
@@ -34,6 +38,10 @@ export function onEditKeyDown(e: KeyboardEvent): void {
       cancelSession();
       return claim();
     }
+    if (store.markSel !== null) {
+      store.selectMark(null);
+      return claim();
+    }
     if (store.selection) {
       store.clearSelection();
       return claim();
@@ -44,6 +52,11 @@ export function onEditKeyDown(e: KeyboardEvent): void {
       toolController.arm("select");
       return claim();
     }
+    return;
+  }
+  if (store.markSel !== null && !store.session && (e.key === "Backspace" || e.key === "Delete")) {
+    claim();
+    store.removeMark(store.markSel);
     return;
   }
   const sel = store.selection;
@@ -80,16 +93,29 @@ function start(): () => void {
   window.addEventListener("keydown", onEditKeyDown, true);
   setEditCommandHandler((id) => {
     if (useAppStore.getState().mode !== "edit") return false;
-    if (id === "edit.delete" && useEditStore.getState().selection && !useEditStore.getState().session) {
+    const store = useEditStore.getState();
+    if (id === "edit.delete" && store.markSel !== null && !store.session) {
+      store.removeMark(store.markSel);
+      return true;
+    }
+    if (id === "edit.delete" && store.selection && !store.session) {
       void deleteSelection();
       return true;
     }
     return false;
   });
+  setEditLeaveGuard(confirmLeave);
+  const offMarks = watchMarks();
+  const offChanged = onDocChanged(onDocChangedForMarks);
   return () => {
     window.removeEventListener("keydown", onEditKeyDown, true);
     setEditCommandHandler(null);
+    setEditLeaveGuard(null);
+    offMarks();
+    offChanged();
     offDoc();
+    // pending marks never outlive the mode (the leave guard asked, where it could)
+    dropMarks();
     // leaving 편집 keeps what was typed
     if (useEditStore.getState().session) void commitSession();
     useEditStore.getState().clearSelection();

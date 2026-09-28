@@ -107,6 +107,8 @@ export interface ConfirmRequest {
   bodyKey: string;
   bodyParams?: Record<string, string | number>;
   confirmKey?: string;
+  /** a destructive primary button (영역 표시 적용) */
+  danger?: boolean;
 }
 
 export function askConfirm(req: ConfirmRequest): Promise<boolean> {

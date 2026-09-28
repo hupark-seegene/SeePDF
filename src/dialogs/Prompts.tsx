@@ -59,12 +59,14 @@ export function ConfirmDialog({
   bodyKey,
   bodyParams,
   confirmKey,
+  danger,
   resolve,
 }: {
   titleKey: string;
   bodyKey: string;
   bodyParams?: Record<string, string | number>;
   confirmKey?: string;
+  danger?: boolean;
   resolve(value: boolean): void;
 }) {
   const t = useT();
@@ -73,7 +75,7 @@ export function ConfirmDialog({
       titleKey={titleKey}
       size="sm"
       onClose={() => resolve(false)}
-      primary={{ labelKey: confirmKey ?? "common.ok", onSelect: () => resolve(true) }}
+      primary={{ labelKey: confirmKey ?? "common.ok", onSelect: () => resolve(true), danger }}
     >
       <p className="text-base">{t(bodyKey, bodyParams)}</p>
     </Dialog>

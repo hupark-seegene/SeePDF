@@ -37,3 +37,17 @@ export function runAnnotCommand(id: string, arg?: unknown): boolean {
   if (handler?.(id, arg)) return true;
   return editHandler ? editHandler(id, arg) : false;
 }
+
+/**
+ * 편집 mode's pending work (영역 표시 marks, F-22) before the mode is left: the guard returns `null`
+ * when nothing is pending, else a promise that resolves `true` once leaving may proceed.
+ */
+let leaveGuard: (() => Promise<boolean> | null) | null = null;
+
+export function setEditLeaveGuard(fn: (() => Promise<boolean> | null) | null): void {
+  leaveGuard = fn;
+}
+
+export function editLeaveGuard(): Promise<boolean> | null {
+  return leaveGuard ? leaveGuard() : null;
+}

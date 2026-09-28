@@ -15,6 +15,8 @@ import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
 import { usePagesStore } from "../store/pagesStore";
+import { editLeaveGuard } from "../tools/commands";
+import { isEmptySelection, useSelectionStore } from "../viewer";
 import type { PageIndex, PageOp } from "../ipc/types";
 
 /** The page a context-menu event happened on, or `null` when it was not over a page. */
@@ -92,13 +94,35 @@ export function openPageContextMenu(page: PageIndex, source: "canvas" | "thumbna
         openDialog("export");
       },
     },
-    { id: "organize", labelKey: "pages.title", onSelect: () => app.setMode("pages") },
+    {
+      id: "organize",
+      labelKey: "pages.title",
+      onSelect: () => {
+        const pending = app.mode === "edit" ? editLeaveGuard() : null;
+        if (!pending) return app.setMode("pages");
+        void pending.then((ok) => ok && useAppStore.getState().setMode("pages"));
+      },
+    },
   ];
+
+  // UI_SPEC §12 text selection: 영역 표시로 표시 → 편집 · 영역 표시 with the selection's line rects
+  const selection = useSelectionStore.getState().selection;
+  const textItems: MenuEntry[] =
+    source === "canvas" && selection?.docId === info.docId && !isEmptySelection(selection)
+      ? [
+          {
+            id: "redactSelection",
+            labelKey: "redact.markSelection",
+            onSelect: () => void import("../edit/redact").then((m) => m.markTextSelection()),
+          },
+          { id: "sep0", separator: true },
+        ]
+      : [];
 
   openContextMenu({
     x,
     y,
     labelKey: source === "thumbnail" ? "sidebar.tab.thumbnails" : "a11y.canvas",
-    items: source === "thumbnail" ? [...shared, ...editing] : [...shared, ...canvasOnly],
+    items: source === "thumbnail" ? [...shared, ...editing] : [...textItems, ...shared, ...canvasOnly],
   });
 }

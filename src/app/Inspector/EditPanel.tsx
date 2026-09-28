@@ -8,6 +8,8 @@ import type { PageObject } from "../../ipc/types";
 import { useEditStore } from "../../edit/editStore";
 import { deleteSelection, reasonKey, restyleText } from "../../edit/actions";
 import { Swatches } from "../Swatches";
+import { useAppStore } from "../../store/appStore";
+import { RedactPanel } from "./RedactPanel";
 
 const FONT_SIZES = [8, 10, 11, 12, 14, 18, 24, 36];
 const NONE: PageObject[] = [];
@@ -16,13 +18,26 @@ function fmt(v: number): string {
   return (Math.round(v * 10) / 10).toString();
 }
 
+/** 영역 표시 armed or marks pending: the redaction section first, then the object selection. */
 export function EditPanel() {
+  const redacting = useAppStore((s) => s.tool === "redact");
+  const pending = useEditStore((s) => s.marks.length > 0);
+  if (redacting) return <RedactPanel />;
+  return (
+    <>
+      {pending && <RedactPanel />}
+      <ObjectPanel hideEmpty={pending} />
+    </>
+  );
+}
+
+function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
   const t = useT();
   const selection = useEditStore((s) => s.selection);
   const objects = useEditStore((s) => (s.selection ? s.pages[s.selection.page]?.objects ?? NONE : NONE));
   const chosen = selection ? objects.filter((o) => selection.ids.includes(o.objectId)) : NONE;
 
-  if (!selection || chosen.length === 0) return <p className="empty">{t("edit.empty")}</p>;
+  if (!selection || chosen.length === 0) return hideEmpty ? null : <p className="empty">{t("edit.empty")}</p>;
   const one = chosen.length === 1 ? chosen[0] : null;
   const canDelete = chosen.every((o) => o.editable !== "readOnly");
 

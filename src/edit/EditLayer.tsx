@@ -8,11 +8,15 @@
  *   텍스트 수정  click → `probe_paragraph` → the editing box
  *   텍스트 추가  click → an empty editing box
  *   이미지 추가  click or drag a box → file picker → `add_image_object`
+ *   영역 표시    drag marks an area · click on text marks that run · click a mark selects it (× / ⌫
+ *               removes it). Marks show hatched in every 편집 tool; the text the preview says
+ *               will go although it reaches outside the marks is outlined amber (`redact.ts`).
  *
  * The page's objects are listed on mount and again whenever the document generation moves past
  * the one we hold (object ids are per-generation, IPC_CONTRACT §7.4).
  */
 import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import type { ObjectId, PageObject, Point, Rect } from "../ipc/types";
 import type { PageLayerContext } from "../viewer";
 import { useT } from "../i18n/useT";
@@ -25,16 +29,19 @@ import {
   CORNERS, cornerPoint, deltaToPage, hitObject, imageRectAt, rectFromPoints, resizeRect, type Corner,
 } from "./geometry";
 import { TextEditor } from "./TextEditor";
+import { markArea, markAt, markTextRunAt } from "./redact";
+import type { RedactMark } from "./editStore";
 
 const EMPTY: ObjectId[] = [];
 const NO_OBJECTS: PageObject[] = [];
+const NO_MARKS: RedactMark[] = [];
 /** CSS px a press must travel before it is a drag rather than a click */
 const DRAG_PX = 3;
 
 type Drag =
   | { kind: "move"; ids: ObjectId[]; x0: number; y0: number; dx: number; dy: number; moved: boolean }
   | { kind: "resize"; id: ObjectId; corner: Corner; from: Rect; to: Rect; x0: number; y0: number }
-  | { kind: "image"; start: Point; end: Point; x0: number; y0: number; moved: boolean };
+  | { kind: "image" | "mark"; start: Point; end: Point; x0: number; y0: number; moved: boolean };
 
 export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
   const t = useT();
@@ -44,11 +51,15 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
   const selected = useEditStore((s) => (s.selection?.page === ctx.index ? s.selection.ids : EMPTY));
   const session = useEditStore((s) => (s.session?.page === ctx.index ? s.session : null));
   const anySession = useEditStore((s) => s.session !== null);
+  const allMarks = useEditStore((s) => s.marks);
+  const markSel = useEditStore((s) => s.markSel);
+  const preview = useEditStore((s) => s.previews[ctx.index]);
   const [hover, setHover] = useState<ObjectId | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   const objects = entry?.objects ?? NO_OBJECTS;
+  const marks = allMarks.length ? allMarks.filter((m) => m.page === ctx.index) : NO_MARKS;
   const listedAt = entry?.docGeneration ?? -1;
 
   useEffect(() => {
@@ -83,9 +94,16 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
       beginAddText(ctx.index, at);
       return;
     }
-    if (tool === "addImage") {
+    if (tool === "addImage" || tool === "redact") {
+      if (tool === "redact") {
+        const mark = markAt(marks, at[0], at[1]);
+        if (mark) {
+          store.selectMark(mark.id);
+          return;
+        }
+      }
       e.currentTarget.setPointerCapture?.(e.pointerId);
-      setDrag({ kind: "image", start: at, end: at, x0: e.clientX, y0: e.clientY, moved: false });
+      setDrag({ kind: tool === "redact" ? "mark" : "image", start: at, end: at, x0: e.clientX, y0: e.clientY, moved: false });
       return;
     }
     if (tool !== "select") return;
@@ -116,9 +134,9 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!drag) {
-      if (tool === "select" || tool === "editText") {
+      if (tool === "select" || tool === "editText" || tool === "redact") {
         const [x, y] = toPage(e);
-        const hit = hitObject(objects, x, y);
+        const hit = tool === "redact" && markAt(marks, x, y) ? null : hitObject(objects, x, y);
         const next = hit && (tool === "select" || hit.type === "text") ? hit.objectId : null;
         if (next !== hover) setHover(next);
       }
@@ -148,6 +166,9 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
       void moveObjects(ctx.index, drag.ids, round2(dx), round2(dy));
     } else if (drag.kind === "resize") {
       void resizeObject(ctx.index, drag.id, drag.to);
+    } else if (drag.kind === "mark") {
+      if (drag.moved) markArea(ctx.index, rectFromPoints(drag.start, drag.end));
+      else markTextRunAt(ctx.index, drag.start);
     } else {
       const rect = drag.moved ? rectFromPoints(drag.start, drag.end) : imageRectAt(drag.start, ctx.page);
       void addImageFlow(ctx.index, rect);
@@ -194,7 +215,47 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
           />
         );
       })}
-      {tool === "editText" && hovered?.type === "text" && <Outline ctx={ctx} rect={hovered.rect} state="hover" />}
+      {(tool === "editText" || tool === "redact") && hovered?.type === "text" && (
+        <Outline ctx={ctx} rect={hovered.rect} state="hover" />
+      )}
+      {preview?.status === "ready" &&
+        preview.result.textObjects
+          .filter((o) => !o.fullyInside)
+          .map((o) => {
+            const box = ctx.rectToBox(o.rect);
+            return (
+              <div
+                key={`c-${o.objectId}`}
+                className="redact-collateral"
+                title={t("redact.collateral")}
+                style={{ left: box.x - 1, top: box.y - 1, width: box.w + 2, height: box.h + 2 }}
+              />
+            );
+          })}
+      {marks.map((m) => {
+        const box = ctx.rectToBox(m.rect);
+        const on = m.id === markSel && tool === "redact";
+        return (
+          <div
+            key={m.id}
+            className="redact-mark"
+            data-selected={on || undefined}
+            style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
+          >
+            {on && (
+              <button
+                type="button"
+                className="redact-mark-remove"
+                aria-label={t("redact.removeMark")}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => useEditStore.getState().removeMark(m.id)}
+              >
+                <X size={12} strokeWidth={2.25} />
+              </button>
+            )}
+          </div>
+        );
+      })}
       {single?.editable === "full" &&
         CORNERS.map((corner) => {
           const [x, y] = ctx.toDevice(...cornerPoint(single.rect, corner));
@@ -226,6 +287,9 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
           );
         })}
       {drag?.kind === "image" && drag.moved && <Outline ctx={ctx} rect={rectFromPoints(drag.start, drag.end)} state="draft" />}
+      {drag?.kind === "mark" && drag.moved && (
+        <div className="redact-mark" data-draft style={boxStyle(ctx.rectToBox(rectFromPoints(drag.start, drag.end)))} />
+      )}
       {session && <TextEditor key={sessionKey(session)} ctx={ctx} session={session} />}
     </div>
   );
@@ -233,6 +297,10 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
 
 function sessionKey(s: NonNullable<ReturnType<typeof useEditStore.getState>["session"]>): string {
   return s.kind === "paragraph" ? `p:${s.probe.objectIds.join(",")}` : `a:${s.at.join(",")}`;
+}
+
+function boxStyle(box: { x: number; y: number; w: number; h: number }): React.CSSProperties {
+  return { left: box.x, top: box.y, width: box.w, height: box.h };
 }
 
 function round2(v: number): number {

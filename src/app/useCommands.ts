@@ -17,7 +17,7 @@ import { openDialog } from "../dialogs/dialogState";
 import { openContextMenu, type MenuEntry } from "./contextMenuStore";
 import { toolController } from "../tools/ToolController";
 import { clearTextSelection, findStep, selectAllOnCurrentPage } from "../viewer/viewerCommands";
-import { runAnnotCommand } from "../tools/commands";
+import { editLeaveGuard, runAnnotCommand } from "../tools/commands";
 import { toggleFullScreen, toggleReadingMode } from "./readingMode";
 import type { PageOp } from "../ipc/types";
 
@@ -50,7 +50,14 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
     const info = docs.info;
     const target = pages.selected.length ? pages.selected : pages.focus !== null ? [pages.focus] : [];
 
-    if (id in MODE_OF) return app.setMode(MODE_OF[id]);
+    if (id in MODE_OF) {
+      const next = MODE_OF[id];
+      // 편집 mode may hold pending 영역 표시 marks: leaving asks first (F-22)
+      const pending = app.mode === "edit" && next !== "edit" ? editLeaveGuard() : null;
+      if (!pending) return app.setMode(next);
+      void pending.then((ok) => ok && useAppStore.getState().setMode(next));
+      return;
+    }
 
     // (d): 주석 mode claims ⌫ / ⌘D / ⌘C / ⌘X / ⌘V while an annotation is selected. The bus answers
     // `false` when the annotation chunk is not loaded or nothing is selected, and the switch below

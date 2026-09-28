@@ -10,7 +10,8 @@
 .edit-surface[data-tool="editText"] { cursor: default; }
 .edit-surface[data-tool="editText"][data-hover="text"] { cursor: text; }
 .edit-surface[data-tool="addText"],
-.edit-surface[data-tool="addImage"] { cursor: crosshair; }
+.edit-surface[data-tool="addImage"],
+.edit-surface[data-tool="redact"] { cursor: crosshair; }
 .edit-surface[data-tool="select"][data-hover] { cursor: move; }
 
 .edit-outline {
@@ -133,3 +134,85 @@
   color: var(--text-secondary);
   box-shadow: var(--elevation-1);
 }
+
+/* ------------------------------------------------------------ 영역 표시 (F-22) */
+
+/* A pending mark: hatched, on paper, so it reads as "not applied yet" rather than a black box. */
+.redact-mark {
+  position: absolute;
+  pointer-events: none;
+  border: 1.5px dashed var(--danger);
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--danger) 30%, transparent) 0 2px,
+    transparent 2px 7px
+  );
+}
+
+.redact-mark[data-selected] {
+  border-style: solid;
+  box-shadow: 0 0 0 2px var(--danger-subtle);
+}
+
+.redact-mark[data-draft] { opacity: 0.7; }
+
+.redact-mark-remove {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  box-shadow: var(--elevation-1);
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 3;
+}
+
+/* text the preview says goes although it reaches outside the marks */
+.redact-collateral {
+  position: absolute;
+  pointer-events: none;
+  border: 1.5px dashed var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  border-radius: 1px;
+}
+
+/* ------------------------------------------------------------ 영역 표시 panel */
+
+.redact-fills { display: flex; gap: 6px; }
+.redact-fills .swatch { border: 1px solid var(--border-default); }
+
+.redact-page { margin-top: var(--space-2); }
+
+.redact-list {
+  max-height: 140px;
+  margin: var(--space-1) 0 0;
+  padding: 0 0 0 var(--space-4);
+  overflow: auto;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.redact-list li[data-collateral] { color: var(--warning); }
+
+.redact-collateral-note {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.redact-collateral-note strong { color: var(--warning); font-weight: 600; }
+.redact-collateral-note ul { margin: var(--space-1) 0; padding-left: var(--space-4); overflow-wrap: anywhere; }
+
+.redact-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.btn.redact-apply { background: var(--danger); border-color: transparent; color: #fff; font-weight: 500; }
+.btn.redact-apply:disabled { opacity: 0.45; cursor: not-allowed; }

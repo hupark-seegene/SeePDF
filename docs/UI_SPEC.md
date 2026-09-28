@@ -114,7 +114,7 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
 | 편집 | 텍스트 수정 | `text` over text | click → 문단 편집 (Stage 7): the whole paragraph (`probe_paragraph`) opens in an editing box over its own area — the original masked with the page paper, the text at the paragraph's size × zoom, leading, alignment, colour and an approximate font family; a right-edge handle sets the width; a floating bar has 크기 · 색상 · 정렬 (왼쪽/가운데/오른쪽/양쪽 맞춤) · 취소 · 완료. Mixed styles show 서식이 하나로 통일됩니다. 완료 / ⌘↵ / a click outside commits with reflow (`edit_paragraph`, one undo step 문단 편집), Esc cancels. Characters the paragraph's font lacks ask once to switch to the SeePDF 한글 글꼴; a paragraph that grows past its area toasts that it may overlap the text below. A refused paragraph toasts its reason | 선택 |
 | 편집 | 텍스트 추가 | `crosshair` | click → the same editing box, empty, in the tool default (12 pt black unless `toolDefaults.addText`); 완료 writes `add_text_object` sized to the typed text | 선택 |
 | 편집 | 이미지 추가 | `crosshair` | drag a box, or click for a 240 pt box at the click (kept on the page) → PNG/JPEG picker → placed inside the box with its aspect kept | 선택 |
-| 편집 | 영역 표시 | `crosshair` | drag marks a region; dragging over text marks those runs | 선택 |
+| 편집 | 영역 표시 | `crosshair` | drag marks a region; a click on text marks that run's bounds (`list_page_objects`); a click on a mark selects it (× / ⌫ removes). Marks are pending (nothing is written), kept per page, drawn hatched in every 편집 tool, and survive tool switches; leaving 편집 with marks asks 표시한 영역을 버릴까요?; undo / redo / page ops / OCR drop them (toast). Text the preview says goes although it reaches outside a mark is outlined amber | 선택 |
 | 페이지 | — | arrow | grid: click selects, drag reorders, double-click opens that page in 읽기 | — |
 | 양식 | 채우기 | arrow / `text` over text fields / `pointer` over buttons | click focuses the field (HTML overlay input) | — |
 
@@ -136,7 +136,7 @@ tapping a tool key latches it, holding it switches momentarily and reverts on re
 | 이미지 객체 | 위치 X/Y, 크기 W/H (비율 고정), 삭제 |
 | 페이지 선택 (페이지 mode) | 페이지 크기, 회전, 회전/삭제/추출/복제 buttons |
 | 양식 필드 focused | 필드 이름 (read-only), 유형, 값, 필수 여부, 값 지우기 |
-| 영역 표시 pending | 채우기 색상 (기본 검정), 덮어쓸 문구, 표시된 영역 {{count}}개, **적용** (destructive, confirms) |
+| 영역 표시 pending | 채우기 색상 (검정 · 회색 · 흰색, 기본 검정), 덮어쓸 문구, 표시된 영역 {{count}}개, 제거될 내용 per marked page (`redact_preview`, 250 ms debounce: text / image / annotation counts, the text runs, **collateral** in amber with why — PDFium cannot split a text object), **적용** (destructive, confirms "removed from the document; undo only until you save"; disabled with the reason when a mark covers a form field) → `apply_redactions` per page in page order, stops on the first error; `verifyFailed` toasts that the document was restored; 표시 모두 지우기 |
 
 A second surface exists for speed: an **inline popover** 8 px above a selected annotation (280 px wide,
 `--radius-lg`, `--elevation-2`) with only swatches, opacity, thickness, 메모 and 삭제. It closes on Esc,
@@ -252,7 +252,9 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 
 ## 12. Context menus (all rendered in the webview, themed and localised)
 
-* **Text selection**: 복사 · 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색
+* **Text selection**: 복사 · 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색 (영역 표시로 표시 is wired: it
+  sits at the top of the canvas menu while a text selection exists, marks the selection's line rects and
+  switches to 편집 · 영역 표시; the other items are not in the canvas menu yet)
 * **Empty page area**: 붙여넣기 · 메모 추가 · 페이지 회전 · 이미지로 내보내기 · 스냅샷 · 페이지로 이동…
 * **Annotation**: 편집 · 속성… · 메모 열기 · 복사 · 삭제 · 이 스타일을 기본값으로
 * **Thumbnail / page cell**: 이 페이지로 이동 · 왼쪽/오른쪽 회전 · 삭제 · 복제 · 추출… · 뒤에 페이지 삽입… ·
@@ -783,11 +785,31 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `redact.title` | 영역 표시 | Redaction |
 | `redact.markArea` | 영역 표시하기 | Mark area |
 | `redact.apply` | 표시한 영역 적용 | Apply redactions |
-| `redact.applyWarning` | 적용하면 표시한 내용이 문서에서 영구히 제거됩니다. 실행 취소할 수 없습니다. | Applying permanently removes the marked content. This cannot be undone. |
+| `redact.applyWarning` | 표시한 내용이 문서에서 제거됩니다. 저장하기 전까지만 실행 취소할 수 있습니다. | The marked content is removed from the document. You can undo this only until you save. |
 | `redact.overlayText` | 덮어쓸 문구 | Overlay text |
 | `redact.marked` | 표시된 영역 {{count}}개 | {{count}} marked area |
 | `redact.marked_other` | 표시된 영역 {{count}}개 | {{count}} marked areas |
-| `redact.done` | {{count}}개 영역이 제거되었습니다 | {{count}} areas removed |
+| `redact.done` | {{count}}개 영역이 제거되었습니다 | {{count}} area removed |
+| `redact.done_other` | {{count}}개 영역이 제거되었습니다 | {{count}} areas removed |
+| `redact.empty` | 영역을 드래그하거나 텍스트를 클릭해 표시하세요 | Drag an area or click text to mark it |
+| `redact.overlayPlaceholder` | 예: 비공개 | e.g. REDACTED |
+| `redact.previewTitle` | 제거될 내용 | What will be removed |
+| `redact.pageLabel` | {{page}}쪽 | Page {{page}} |
+| `redact.pageSummary` | {{page}}쪽 · 텍스트 {{text}} · 이미지 {{images}} · 주석 {{annots}} | Page {{page}} · {{text}} text · {{images}} images · {{annots}} annotations |
+| `redact.previewLoading` | 확인하는 중… | Checking… |
+| `redact.previewFailed` | 미리 보기를 불러오지 못했습니다 | Could not load the preview |
+| `redact.collateral` | 표시한 영역 밖의 텍스트도 함께 제거됩니다 | Text outside the marks will also be removed |
+| `redact.collateralHint` | PDF 텍스트 개체는 나눌 수 없어, 표시한 영역에 걸친 텍스트 개체가 통째로 제거됩니다. | A PDF text object cannot be split, so any text object a mark touches is removed whole. |
+| `redact.formFields` | 양식 필드가 있는 영역은 적용할 수 없습니다: {{names}} | Areas with form fields cannot be redacted: {{names}} |
+| `redact.clearAll` | 표시 모두 지우기 | Clear all marks |
+| `redact.removeMark` | 표시 지우기 | Remove mark |
+| `redact.confirmTitle` | 표시한 영역을 적용할까요? | Apply redactions? |
+| `redact.verifyFailed` | 내용이 완전히 제거되었는지 확인하지 못해 문서를 원래대로 되돌렸습니다 | The removal could not be verified, so the document was restored |
+| `redact.leaveTitle` | 표시한 영역을 버릴까요? | Discard the marked areas? |
+| `redact.leaveBody` | 아직 적용하지 않은 영역 표시가 사라집니다. | Marks you have not applied yet will be lost. |
+| `redact.discard` | 버리기 | Discard |
+| `redact.marksDropped` | 문서가 바뀌어 표시한 영역을 지웠습니다 | The document changed, so the marks were cleared |
+| `redact.markSelection` | 영역 표시로 표시 | Mark for redaction |
 
 ### 15.14 `welcome.*`
 | Key | ko | en |
