@@ -216,6 +216,33 @@ export function currentPageAt(layout: DocLayout, scrollTop: number, viewportH: n
   return best.page;
 }
 
+/**
+ * 분할 보기 동기화 스크롤 (P2): where a pane is, in **pages** — the page at the top edge of the
+ * viewport plus how far down it (a spread of two counts as two pages). Page units, not pixels, so
+ * two panes at different zooms move by the same amount of document.
+ */
+export function positionAt(layout: DocLayout, scrollTop: number, gap = PAGE_GAP): number {
+  const rows = layout.rows;
+  if (rows.length === 0) return 0;
+  let row = rows[0];
+  for (const r of rows) {
+    if (r.y <= scrollTop) row = r;
+    else break;
+  }
+  const span = Math.max(1, row.h + gap);
+  const fraction = Math.min(1, Math.max(0, (scrollTop - row.y) / span));
+  return row.pages[0] + fraction * row.pages.length;
+}
+
+/** The inverse of `positionAt`; `null` when the page is not laid out (단일 shows one page). */
+export function scrollTopForPosition(layout: DocLayout, position: number, gap = PAGE_GAP): number | null {
+  const item = layout.byPage.get(Math.max(0, Math.floor(position)));
+  const row = item ? layout.rows[item.row] : undefined;
+  if (!row) return null;
+  const fraction = (position - row.pages[0]) / row.pages.length;
+  return Math.max(0, row.y + fraction * (row.h + gap));
+}
+
 /** Scroll offset that puts a page at the top of the viewport (minus the top padding). */
 export function scrollTopForPage(layout: DocLayout, page: PageIndex, padY = PAD_Y): number {
   const item = layout.byPage.get(page);

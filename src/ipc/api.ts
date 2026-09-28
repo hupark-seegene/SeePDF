@@ -231,6 +231,17 @@ export function setAnnotationsHidden(
   return call("set_annotations_hidden", a, (mock) => mock.setAnnotationsHidden(a));
 }
 
+/**
+ * P2 threads: a reply to `parentId` (a `Text` annotation with `/IRT` → the parent, `/RT /R`).
+ * `result.annot` is the reply; edits and deletes go through `update_annotation` /
+ * `delete_annotations` (which removes a deleted annotation's replies with it).
+ */
+export function replyAnnotation(
+  a: { docId: DocId; page: PageIndex; parentId: string; contents: string; author?: string | null },
+): Promise<AnnotResult> {
+  return call("reply_annotation", a, (mock) => mock.replyAnnotation(a));
+}
+
 // ---------------------------------------------------------------------------
 // 7.2 Forms
 // ---------------------------------------------------------------------------
@@ -478,6 +489,14 @@ export function saveDocumentAs(
 /** `true` when something already exists at `path` (여러 파일 OCR picks `name-ocr (2).pdf` then). */
 export function pathExists(a: { path: string }): Promise<boolean> {
   return call("path_exists", a, (mock) => mock.pathExists(a));
+}
+
+/**
+ * P2 여러 파일에서 검색 › 폴더 추가: every `*.pdf` under `dir` (recursive by default, hidden
+ * entries skipped, symbolic links not followed, at most 2000), sorted by path.
+ */
+export function listPdfFiles(a: { dir: string; recursive?: boolean }): Promise<string[]> {
+  return call("list_pdf_files", a, (mock) => mock.listPdfFiles(a));
 }
 
 // ---------------------------------------------------------------------------

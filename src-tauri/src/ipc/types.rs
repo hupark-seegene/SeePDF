@@ -412,6 +412,10 @@ pub struct Annot {
     pub image_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub uri: Option<String>,
+    /// P2 threads: the `/NM` of the annotation this one replies to (`/IRT`, `/RT /R` or no
+    /// `/RT`). Absent for a top-level annotation and for a `/RT /Group` member.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub in_reply_to: Option<AnnotId>,
     pub hidden: bool,
     pub printed: bool,
     pub locked: bool,

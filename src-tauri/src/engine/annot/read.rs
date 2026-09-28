@@ -30,12 +30,15 @@ pub fn list_page(doc: &mut OpenDoc<'_>, page_index: PageIndex) -> Result<Vec<Ann
     // would re-parse its content stream *and* drop the cached text layer on every call.
     let page = doc.page(page_index)?;
     let count = raw::annot::count(bindings, page);
-    let mut out = Vec::with_capacity(count);
+    // Pass 1: every annotation gets its `/NM` first, so a reply listed *before* its parent
+    // (P2 threads) still resolves `/IRT` to the parent's id in pass 2.
+    let mut ids: Vec<Option<String>> = Vec::with_capacity(count);
     for i in 0..count {
         let mut a = raw::annot::get(bindings, page, i)?;
         if a.subtype() == consts::FPDF_ANNOT_POPUP {
             // Popups are drawn by the React layer from the parent's contents; PDFium never
             // renders a standalone one and the contract has no `popup` kind.
+            ids.push(None);
             continue;
         }
         let id = match a.string("NM") {
@@ -46,9 +49,34 @@ pub fn list_page(doc: &mut OpenDoc<'_>, page_index: PageIndex) -> Result<Vec<Ann
                 id
             }
         };
+        ids.push(Some(id));
+    }
+    let mut out = Vec::with_capacity(count);
+    for (i, id) in ids.into_iter().enumerate() {
+        let Some(id) = id else { continue };
+        let a = raw::annot::get(bindings, page, i)?;
         out.push(read_one(&a, id, page_index, document));
     }
     Ok(out)
+}
+
+/// The `/NM` of the annotation `a` replies to (P2 threads), or `None`.
+///
+/// `/IRT` is an indirect reference to the parent's dictionary; `/RT` is `/R` (a reply, also
+/// the default when absent) or `/Group` (the two annotations are one unit — not a reply).
+/// `FPDFAnnot_GetLinkedAnnot` resolves the reference, and the parent is identified by its
+/// `/NM`, like everywhere else in this module.
+pub fn in_reply_to(a: &AnnotRef<'_>) -> Option<String> {
+    if a.subtype() == consts::FPDF_ANNOT_POPUP {
+        return None;
+    }
+    let rt = a.string("RT");
+    if rt.is_some_and(|rt| rt.trim_start_matches('/') == "Group") {
+        return None;
+    }
+    a.linked("IRT")
+        .and_then(|parent| parent.string("NM"))
+        .filter(|nm| !nm.is_empty())
 }
 
 /// One annotation, fully populated.
@@ -161,6 +189,7 @@ pub fn read_one(
             AnnotKind::Link => a.uri(document),
             _ => None,
         },
+        in_reply_to: in_reply_to(a),
         hidden: flags & consts::FPDF_ANNOT_FLAG_HIDDEN != 0,
         printed: flags & consts::FPDF_ANNOT_FLAG_PRINT != 0,
         locked: flags & consts::FPDF_ANNOT_FLAG_LOCKED != 0,

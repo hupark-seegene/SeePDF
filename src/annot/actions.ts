@@ -20,6 +20,9 @@ import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { boundsOfPaths, boundsOfRects } from "../tools/geometry";
 import { NOTE_SIZE_PT } from "../tools/note";
+import { askConfirm } from "../dialogs/dialogState";
+import { toast } from "../app/toastStore";
+import { descendantIds, threadRootId, withoutReplies } from "./threads";
 
 /** A drag idling this long flushes its coalesced patch. 140 ms ≈ the panel's own repaint budget. */
 export const PATCH_COALESCE_MS = 140;
@@ -253,16 +256,79 @@ export function resetPatchQueue(): void {
 
 // ---------------------------------------------------------------- delete / duplicate / list
 
-export async function deleteAnnotations(page: PageIndex, ids: AnnotId[]): Promise<void> {
+/**
+ * Delete annotations. The engine removes their replies with them (P2 threads), so an annotation
+ * that has replies asks first — 주석과 답글 N개를 삭제할까요? — unless `confirmed`. Resolves
+ * `false` when the user kept them.
+ */
+export async function deleteAnnotations(
+  page: PageIndex,
+  ids: AnnotId[],
+  opts: { confirmed?: boolean } = {},
+): Promise<boolean> {
   const id = docId();
-  if (!id || ids.length === 0) return;
-  useAnnotStore.getState().remove(page, ids); // optimistic: the shape goes now
+  if (!id || ids.length === 0) return false;
+  const list = useAnnotStore.getState().byPage[page] ?? [];
+  const replies = [...new Set(ids.flatMap((target) => descendantIds(list, target)))].filter((r) => !ids.includes(r));
+  if (replies.length && !opts.confirmed) {
+    const ok = await askConfirm({
+      titleKey: "annot.thread.deleteTitle",
+      bodyKey: "annot.thread.deleteBody",
+      bodyParams: { count: replies.length },
+      confirmKey: "common.delete",
+      danger: true,
+    });
+    if (!ok) return false;
+  }
+  useAnnotStore.getState().remove(page, [...ids, ...replies]); // optimistic: the shapes go now
   try {
     const result = await api.deleteAnnotations({ docId: id, page, ids });
     useAnnotStore.getState().setPage(page, result.list.annots, result.list.docGeneration);
   } catch {
     void reloadPage(page);
   }
+  return true;
+}
+
+/**
+ * P2 threads: reply to `parentId` with `contents`, as Settings' 작성자. Coalesced patches go
+ * first (the engine rewrites the serialised document). Resolves with the reply, or `null` — an
+ * encrypted document (`unsupported`) or a failure is toasted.
+ */
+export async function replyToAnnotation(page: PageIndex, parentId: AnnotId, contents: string): Promise<Annot | null> {
+  const id = docId();
+  const text = contents.trim();
+  if (!id || !text) return null;
+  await flushPatches();
+  const author = useAppStore.getState().settings?.author?.trim() || null;
+  try {
+    const result = await api.replyAnnotation({ docId: id, page, parentId, contents: text, author });
+    useAnnotStore.getState().setPage(page, result.list.annots, result.list.docGeneration);
+    return result.annot;
+  } catch (e) {
+    const encrypted = api.isSeePdfError(e) && e.code === "unsupported";
+    toast(encrypted ? "annot.thread.encrypted" : "annot.thread.failed", undefined, {
+      tone: "danger",
+      detail: e instanceof Error ? e.message : String(e),
+    });
+    void reloadPage(page);
+    return null;
+  }
+}
+
+/**
+ * 답글 / a click on a thread: open the thread of `id` (its root) in a popover — a note's own
+ * popover, the thread popover for any other kind — with the reply box focused when `focusReply`.
+ */
+export function openThread(page: PageIndex, id: AnnotId, focusReply = true): void {
+  const store = useAnnotStore.getState();
+  const list = store.byPage[page] ?? [];
+  const root = threadRootId(list, id);
+  const annot = list.find((a) => a.id === root);
+  if (!annot) return;
+  store.select([root]);
+  if (annot.kind === "note") store.setEditing({ page, id: root });
+  store.setThread({ page, id: root, focusReply });
 }
 
 /** ⌘D on a selection: the same annotation, offset by 12 pt so it is visibly a copy. */
@@ -323,7 +389,8 @@ export function specFromAnnot(a: Annot, dx = 0, dy = 0): AnnotSpec | null {
  */
 export function annotsOnPage(page: PageIndex): Annot[] {
   const s = useAnnotStore.getState();
-  const base = s.byPage[page] ?? [];
+  // P2 threads: a reply is never drawn on the page, so it is never hit, moved or copied there
+  const base = withoutReplies(s.byPage[page] ?? []);
   const ghosts = s.ghosts.filter((g) => g.annot.page === page);
   if (ghosts.length === 0) return base;
   const known = new Set(base.map((a) => a.id));

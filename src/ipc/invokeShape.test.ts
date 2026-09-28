@@ -79,4 +79,14 @@ describe("invoke payload shape", () => {
     await api.getPageText({ docId: "d1", page: 3 });
     expect(invoked[0]).toEqual({ cmd: "get_page_text", args: { docId: "d1", page: 3 } });
   });
+
+  it("P2: reply_annotation and list_pdf_files name the Rust parameters", async () => {
+    await api.replyAnnotation({ docId: "d1", page: 2, parentId: "a-1", contents: "답글", author: "박현우" });
+    expect(invoked[0]).toEqual({
+      cmd: "reply_annotation",
+      args: { docId: "d1", page: 2, parentId: "a-1", contents: "답글", author: "박현우" },
+    });
+    await api.listPdfFiles({ dir: "/archive", recursive: true });
+    expect(invoked[1]).toEqual({ cmd: "list_pdf_files", args: { dir: "/archive", recursive: true } });
+  });
 });

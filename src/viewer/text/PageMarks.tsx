@@ -15,7 +15,8 @@ import { useTextLayer } from "./textLayers";
 export function PageMarks({ ctx }: { ctx: PageLayerContext }) {
   const layer = useTextLayer(ctx.docId, ctx.docGeneration, ctx.index);
   const selection = useSelectionStore((s) => s.selection);
-  const hits = useSearchStore((s) => s.byPage.get(ctx.index));
+  // hits of another document (the one this window showed before) are never painted on this one
+  const hits = useSearchStore((s) => (s.docId === null || s.docId === ctx.docId ? s.byPage.get(ctx.index) : undefined));
   const currentHit = useSearchStore((s) => s.hits[s.current]);
 
   const selectionRects = useMemo<Rect[]>(() => {

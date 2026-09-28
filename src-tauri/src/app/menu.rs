@@ -59,6 +59,7 @@ pub const MENU_IDS: &[&str] = &[
     "edit.find",
     "edit.findNext",
     "edit.findPrevious",
+    "edit.findInFiles",
     "view.sidebar",
     "view.inspector",
     "view.zoomIn",
@@ -68,6 +69,7 @@ pub const MENU_IDS: &[&str] = &[
     "view.fitWidth",
     "view.readingMode",
     "view.night",
+    "view.split",
     "go.nextPage",
     "go.previousPage",
     "go.firstPage",
@@ -131,6 +133,7 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("edit.find", "찾기…", "Find…"),
     ("edit.findNext", "다음 찾기", "Find Next"),
     ("edit.findPrevious", "이전 찾기", "Find Previous"),
+    ("edit.findInFiles", "여러 파일에서 검색…", "Search in Files…"),
     // view
     ("view.sidebar", "사이드바", "Sidebar"),
     ("view.inspector", "속성 패널", "Inspector"),
@@ -141,6 +144,7 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("view.fitWidth", "너비에 맞춤", "Fit Width"),
     ("view.readingMode", "읽기 모드", "Reading Mode"),
     ("view.night", "야간 모드", "Night Mode"),
+    ("view.split", "분할 보기", "Split View"),
     ("view.fullScreen", "전체 화면", "Full Screen"),
     // go
     ("go.nextPage", "다음 페이지", "Next Page"),
@@ -257,6 +261,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&item("edit.find", Some("CmdOrCtrl+F"))?)
         .item(&item("edit.findNext", Some("CmdOrCtrl+G"))?)
         .item(&item("edit.findPrevious", Some("CmdOrCtrl+Shift+G"))?)
+        // P2: a search over files on disk (a job in the status bar); no shortcut.
+        .item(&item("edit.findInFiles", None)?)
         .build()?;
 
     let view_menu = SubmenuBuilder::new(app, t("view"))
@@ -272,6 +278,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&item("view.readingMode", Some("Ctrl+Cmd+R"))?)
         // 끄기 → 어둡게 → 세피아 (P1-10); the item cycles, like the keymap row and the status bar.
         .item(&item("view.night", Some("Ctrl+Cmd+N"))?)
+        // P2: two panes on the same document; toggles, Esc also closes it.
+        .item(&item("view.split", Some("Alt+Cmd+S"))?)
         .item(&PredefinedMenuItem::fullscreen(
             app,
             Some(t("view.fullScreen")),

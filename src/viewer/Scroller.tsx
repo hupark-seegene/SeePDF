@@ -18,8 +18,9 @@ import type { DocInfo, PageIndex } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
-import { useViewStore } from "../store/viewStore";
+import { paneView, usePaneView, useViewStore, type PaneId, type ZoomMode } from "../store/viewStore";
 import { useAnnotStore } from "../store/annotStore";
+import { paneScrolled, registerPane, viewportFor } from "./panes";
 import {
   devicePixelRatio,
   pageBoxCss,
@@ -37,7 +38,9 @@ import {
   currentPageAt,
   fitZoomPercent,
   onScreenRange,
+  positionAt,
   scrollTopForPage,
+  scrollTopForPosition,
   visibleRange,
   type DocLayout,
 } from "./layout";
@@ -77,6 +80,17 @@ export interface ScrollerProps {
   renderFormWidgets?: boolean;
   /** forwarded to every `PageShell`: the engine has painted this page at this generation. */
   onPageRendered?: PageShellProps["onPageRendered"];
+  /**
+   * 분할 보기 (P2): which pane this scroller is. Its zoom, rotation, current page and scroll
+   * requests are that pane's slice of `viewStore` (`paneView`); the rest is shared.
+   */
+  paneId?: PaneId;
+  /** the pane the keys, menus and tools act on; only it follows search hits */
+  focused?: boolean;
+  /** another pane is open beside this one (동기화 스크롤, the shared viewport hint) */
+  split?: boolean;
+  /** the split's shared tile manager; a scroller on its own keeps a private one */
+  tiles?: TileManager;
 }
 
 export function Scroller({
@@ -85,20 +99,32 @@ export function Scroller({
   fieldHighlight = false,
   renderFormWidgets = true,
   onPageRendered,
+  paneId = "main",
+  focused = true,
+  split = false,
+  tiles: sharedTiles,
 }: ScrollerProps) {
   const t = useT();
-  const zoomPercent = useViewStore((s) => s.zoomPercent);
-  const zoomMode = useViewStore((s) => s.zoomMode);
-  const rotation = useViewStore((s) => s.rotation);
+  const zoomPercent = usePaneView(paneId, (v) => v.zoomPercent);
+  const zoomMode = usePaneView(paneId, (v) => v.zoomMode);
+  const rotation = usePaneView(paneId, (v) => v.rotation);
   const mode = useViewStore((s) => s.layout);
   const night = useViewStore((s) => s.night);
   // P1-12: a page whose annotation is hidden mid-drag carries its view nonce in its URLs.
   const viewNonce = useAnnotStore((s) => s.viewNonce);
-  const currentPage = useViewStore((s) => s.currentPage);
-  const scrollRequest = useViewStore((s) => s.scrollRequest);
-  const setCurrentPage = useViewStore((s) => s.setCurrentPage);
-  const setZoomMode = useViewStore((s) => s.setZoomMode);
-  const setZoom = useViewStore((s) => s.setZoom);
+  const currentPage = usePaneView(paneId, (v) => v.currentPage);
+  const scrollRequest = usePaneView(paneId, (v) => v.scrollRequest);
+  const setCurrentPage = useCallback(
+    (page: PageIndex) => useViewStore.getState().setCurrentPage(page, paneId),
+    [paneId],
+  );
+  const setZoomMode = useCallback(
+    (m: ZoomMode, percent?: number) => useViewStore.getState().setZoomMode(m, percent, paneId),
+    [paneId],
+  );
+  const setZoom = useCallback((percent: number) => useViewStore.getState().setZoom(percent, paneId), [paneId]);
+  /** this pane's view right now, for handlers that must not re-subscribe */
+  const paneNow = useCallback(() => paneView(useViewStore.getState(), paneId), [paneId]);
   const tool = useAppStore((s) => s.tool);
   const changedPages = useDocStore((s) => s.changedPages);
   const changeNonce = useDocStore((s) => s.changeNonce);
@@ -152,15 +178,18 @@ export function Scroller({
 
   // ---------------------------------------------------------------- tiles
   const tilesRef = useRef<TileManager | null>(null);
-  if (!tilesRef.current) tilesRef.current = new TileManager();
-  const tiles = tilesRef.current;
+  if (!sharedTiles && !tilesRef.current) tilesRef.current = new TileManager();
+  const tiles = sharedTiles ?? (tilesRef.current as TileManager);
+  // a shared manager (분할 보기) hands each pane the tiles it asked for
+  const client = sharedTiles ? paneId : undefined;
 
   useEffect(() => onEnginePressure((e) => tiles.setPressure(e.level)), [tiles]);
+  useEffect(() => (sharedTiles ? () => sharedTiles.removeClient(paneId) : undefined), [sharedTiles, paneId]);
 
   const mountedTiles = useSyncExternalStore(
     useCallback((cb: () => void) => tiles.subscribe(cb), [tiles]),
-    useCallback(() => tiles.mounted(), [tiles]),
-    useCallback(() => tiles.mounted(), [tiles]),
+    useCallback(() => tiles.mounted(client), [tiles, client]),
+    useCallback(() => tiles.mounted(client), [tiles, client]),
   );
 
   const renderKey = `${info.docId}:${info.docGeneration}:${renderScaleKey}:${rotation}:${night}`;
@@ -192,10 +221,10 @@ export function Scroller({
       currentPage,
       viewNonce,
     });
-    tiles.setDesired(renderGen, desired, { fling: flingRef.current });
+    tiles.setDesired(renderGen, desired, { fling: flingRef.current, client: paneId });
   }, [
     info, mountedItems, scroll, viewport, renderScaleKey, rotation, night, fieldHighlight, dpr,
-    currentPage, renderGen, tiles, viewNonce,
+    currentPage, renderGen, tiles, viewNonce, paneId,
   ]);
 
   // A mutation invalidates the pages it touched: the URLs carry the new generation, so the old
@@ -230,19 +259,26 @@ export function Scroller({
       const vp = viewportRef.current;
       const onScreen = onScreenRange(l, scrollRef.current.y, vp.h);
       const pages = onScreen.pages.length ? onScreen.pages : [0];
+      const view = paneNow();
+      // 분할 보기: one engine viewport for both panes, so neither pane's renders count as stale
+      const hint = viewportFor(
+        paneId,
+        { first: pages[0], last: pages[pages.length - 1], centre: currentPageAt(l, scrollRef.current.y, vp.h) },
+        useViewStore.getState().focusedPane,
+      );
       void api
         .setViewport({
           docId: info.docId,
-          scaleKey: scaleKeyFor(useViewStore.getState().zoomPercent, dpr),
-          rotation: useViewStore.getState().rotation,
-          centrePage: currentPageAt(l, scrollRef.current.y, vp.h),
-          firstPage: pages[0],
-          lastPage: pages[pages.length - 1],
+          scaleKey: scaleKeyFor(view.zoomPercent, dpr),
+          rotation: view.rotation,
+          centrePage: hint.centre,
+          firstPage: hint.first,
+          lastPage: hint.last,
           velocityPxPerMs: 0,
         })
         .catch(() => undefined);
     }, SETTLE_MS);
-  }, [commitScroll, dpr, info.docId]);
+  }, [commitScroll, dpr, info.docId, paneId, paneNow]);
 
   useEffect(() => {
     const el = elRef.current;
@@ -268,6 +304,8 @@ export function Scroller({
       if (Math.abs(next.y - committed.y) >= SCROLL_COMMIT_PX || Math.abs(next.x - committed.x) >= SCROLL_COMMIT_PX) {
         commitScroll(next);
       }
+      // 분할 보기 동기화 스크롤: the other pane follows by as many pages
+      if (split) paneScrolled(paneId, useViewStore.getState().split?.sync ?? false);
       settle();
     };
     const onScroll = () => {
@@ -279,7 +317,26 @@ export function Scroller({
       if (frame) cancelAnimationFrame(frame);
       window.clearTimeout(settleRef.current);
     };
-  }, [commitScroll, setCurrentPage, settle]);
+  }, [commitScroll, setCurrentPage, settle, split, paneId]);
+
+  // 분할 보기: where this pane is, and how the other pane moves it, in pages (`positionAt`).
+  useEffect(() => {
+    if (!split) return;
+    return registerPane(paneId, {
+      position: () => positionAt(layoutRef.current, elRef.current?.scrollTop ?? 0),
+      scrollToPosition: (position) => {
+        const el = elRef.current;
+        if (!el) return;
+        const top = scrollTopForPosition(layoutRef.current, position);
+        if (top === null) {
+          // 단일 lays out one page: turn to the page instead
+          useViewStore.getState().goToPage(Math.floor(position), undefined, paneId);
+          return;
+        }
+        el.scrollTop = top;
+      },
+    });
+  }, [split, paneId]);
 
   /**
    * Re-anchoring after a zoom. A cursor zoom (ctrl+wheel, pinch) computes its target before the
@@ -328,13 +385,14 @@ export function Scroller({
       if (!el) return;
       const before = layoutRef.current;
       const anchor = anchorAt(before, { x: el.scrollLeft, y: el.scrollTop }, cursor);
+      const view = paneNow();
       const after = computeLayout({
         pages: info.pages,
         zoomPercent: next,
-        rotation: useViewStore.getState().rotation,
+        rotation: view.rotation,
         mode: useViewStore.getState().layout,
         viewport: viewportRef.current,
-        currentPage: useViewStore.getState().currentPage,
+        currentPage: view.currentPage,
         dpr,
       });
       pendingScrollRef.current = anchor
@@ -343,7 +401,7 @@ export function Scroller({
       setZoom(next);
       settle();
     },
-    [dpr, info.pages, setZoom, settle],
+    [dpr, info.pages, setZoom, settle, paneNow],
   );
 
   // ctrl/⌘ + wheel and trackpad pinch (WKWebView and WebView2 both send wheel + ctrlKey).
@@ -354,7 +412,7 @@ export function Scroller({
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
-      applyZoom(zoomForWheel(useViewStore.getState().zoomPercent, e.deltaY, e.deltaMode), {
+      applyZoom(zoomForWheel(paneNow().zoomPercent, e.deltaY, e.deltaMode), {
         x: e.clientX - rect.left,
         y: e.clientY - rect.top,
       });
@@ -368,7 +426,7 @@ export function Scroller({
       el.removeEventListener("gesturestart", blockGesture);
       el.removeEventListener("gesturechange", blockGesture);
     };
-  }, [applyZoom]);
+  }, [applyZoom, paneNow]);
 
   // 이동: the status bar, the thumbnail rail, the outline and ⌘↑/⌘↓ all go through `scrollRequest`.
   useEffect(() => {
@@ -381,12 +439,13 @@ export function Scroller({
     const item = layoutRef.current.byPage.get(scrollRequest.page);
     const geom = info.pages[scrollRequest.page];
     if (scrollRequest.yPt !== undefined && item && geom) {
+      const view = paneNow();
       const ctx = makePageLayerContext({
         docId: info.docId,
         docGeneration: info.docGeneration,
         page: geom,
-        rotation: useViewStore.getState().rotation,
-        zoomPercent: useViewStore.getState().zoomPercent,
+        rotation: view.rotation,
+        zoomPercent: view.zoomPercent,
         width: item.w,
         height: item.h,
       });
@@ -397,30 +456,34 @@ export function Scroller({
     scrollRef.current = { x: el.scrollLeft, y: top };
     commitScroll(scrollRef.current);
     settle();
-  }, [scrollRequest, info, commitScroll, settle]);
+  }, [scrollRequest, info, commitScroll, settle, paneNow]);
 
-  // A search hit is scrolled into view by its rectangle, not by its page.
+  // A search hit is scrolled into view by its rectangle, not by its page — in the focused pane
+  // only (분할 보기: the other pane stays where the user left it).
   const navNonce = useSearchStore((s) => s.navNonce);
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
   useEffect(() => {
-    if (!navNonce) return;
+    if (!navNonce || !focusedRef.current) return;
     const { hits, current } = useSearchStore.getState();
     const hit = hits[current];
     const el = elRef.current;
     if (!hit || !el) return;
     const item = layoutRef.current.byPage.get(hit.page);
     if (!item) {
-      useViewStore.getState().goToPage(hit.page);
+      useViewStore.getState().goToPage(hit.page, undefined, paneId);
       return;
     }
     const geom = info.pages[hit.page];
     const rect = hit.rects[0];
     if (!geom || !rect) return;
+    const view = paneNow();
     const ctx = makePageLayerContext({
       docId: info.docId,
       docGeneration: info.docGeneration,
       page: geom,
-      rotation: useViewStore.getState().rotation,
-      zoomPercent: useViewStore.getState().zoomPercent,
+      rotation: view.rotation,
+      zoomPercent: view.zoomPercent,
       width: item.w,
       height: item.h,
     });
@@ -437,7 +500,7 @@ export function Scroller({
     scrollRef.current = { x: el.scrollLeft, y: el.scrollTop };
     commitScroll(scrollRef.current);
     settle();
-  }, [navNonce, info, commitScroll, settle]);
+  }, [navNonce, info, commitScroll, settle, paneId, paneNow]);
 
   // ---------------------------------------------------------------- pointer
   const selecting = useRef<{ page: PageIndex; offset: number; mode: "char" | "word" | "line" } | null>(null);
@@ -466,19 +529,20 @@ export function Scroller({
       if (!best) return null;
       const geom = info.pages[best.page];
       if (!geom) return null;
+      const view = paneNow();
       const ctx = makePageLayerContext({
         docId: info.docId,
         docGeneration: info.docGeneration,
         page: geom,
-        rotation: useViewStore.getState().rotation,
-        zoomPercent: useViewStore.getState().zoomPercent,
+        rotation: view.rotation,
+        zoomPercent: view.zoomPercent,
         width: best.w,
         height: best.h,
       });
       const [px, py] = ctx.toPage(cx - best.x, cy - best.y);
       return { page: best.page, x: px, y: py };
     },
-    [info],
+    [info, paneNow],
   );
 
   const selectsText = tool === "select" || tool === "highlight" || tool === "underline" || tool === "strikeout" || tool === "squiggly";
@@ -623,10 +687,14 @@ export function Scroller({
       className="canvas viewer"
       ref={elRef}
       role="region"
-      aria-label={t("a11y.canvas")}
+      aria-label={paneId === "second" ? t("view.split.secondPane") : t("a11y.canvas")}
       tabIndex={0}
       data-tool={tool}
       data-night={nightOn ? night : undefined}
+      data-pane={paneId}
+      data-focused={(split && focused) || undefined}
+      // 분할 보기: a click in the other pane makes it the one the keys, menus and tools act on
+      onPointerDownCapture={focused ? undefined : () => useViewStore.getState().focusPane(paneId)}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPointer}

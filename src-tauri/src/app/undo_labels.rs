@@ -87,7 +87,7 @@ mod tests {
     fn every_engine_undo_label_has_a_step_name_in_both_languages() {
         // Every label a `MutateOpts::new(..)` in the engine uses.
         let keys = [
-            "undo.annotCreate", "undo.annotDelete", "undo.annotEdit", "undo.formFill",
+            "undo.annotCreate", "undo.annotDelete", "undo.annotEdit", "undo.annotReply", "undo.formFill",
             "undo.formReset", "undo.metadataEdit", "undo.metadataRemove", "undo.objectAdd",
             "undo.objectDelete", "undo.objectEdit", "undo.paragraphEdit", "undo.objectTransform",
             "undo.objectDuplicate", "undo.ocrApply", "undo.redact", "undo.watermark",

@@ -99,6 +99,9 @@ fn in_place(
     // appearance. Clearing it would erase the annotation. Everything else gets its appearance
     // back on the next render, which is why the AP goes first there.
     let stamp_backed = subtype == consts::FPDF_ANNOT_STAMP;
+    // A reply (P2 threads) is drawn by nobody: its appearance is an empty stream, so the note
+    // icon PDFium would generate never lands on top of its parent. It is written back below.
+    let reply = read::in_reply_to(&a).is_some();
     if !stamp_backed {
         a.clear_ap();
     }
@@ -212,6 +215,9 @@ fn in_place(
         });
     }
     a.set_string("M", &annot::pdf_date_now());
+    if reply && !stamp_backed {
+        a.set_ap("");
+    }
     drop(a);
     drop(scratch);
     Ok(())
@@ -225,7 +231,8 @@ fn rebuild(
     patch: &AnnotPatch,
 ) -> Result<(), EngineError> {
     let spec = respec(previous, patch)?;
-    annot::delete(doc, page_index, std::slice::from_ref(&previous.id))?;
+    // No reply cascade: the re-created annotation keeps its `/NM`, so its thread stays attached.
+    annot::delete_with(doc, page_index, std::slice::from_ref(&previous.id), false)?;
     create::create(doc, page_index, &spec, Some(previous.id.clone()))?;
     // Contents and author are not part of every spec, so re-apply what the patch did not set.
     // A text box is the exception: `create` already wrote `/Contents` from the merged text,

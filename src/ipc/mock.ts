@@ -593,11 +593,47 @@ export const mock = {
   },
   async deleteAnnotations(a: { docId: DocId; page: PageIndex; ids: string[] }): Promise<AnnotResult> {
     const d = doc(a.docId);
+    const list = d.annots.get(a.page) ?? [];
+    // like the engine (P2 threads): a deleted annotation takes its replies, transitively
+    const doomed = new Set(a.ids);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const x of list) {
+        if (x.inReplyTo && doomed.has(x.inReplyTo) && !doomed.has(x.id)) {
+          doomed.add(x.id);
+          grew = true;
+        }
+      }
+    }
     return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.annotDelete" }, () => {
-      const kept = (d.annots.get(a.page) ?? []).filter((x) => !a.ids.includes(x.id));
+      const kept = list.filter((x) => !doomed.has(x.id));
       d.annots.set(a.page, kept);
       return { list: listOf(d, a.page), annot: null, previous: null };
     });
+  },
+  /** P2 threads: a `Text` reply, invisible on the page, sharing its parent's colour. */
+  async replyAnnotation(a: {
+    docId: DocId; page: PageIndex; parentId: string; contents: string; author?: string | null;
+  }): Promise<AnnotResult> {
+    const d = doc(a.docId);
+    if (d.info.encrypted) throw err("unsupported", "replies cannot be written into an encrypted document");
+    const parent = (d.annots.get(a.page) ?? []).find((x) => x.id === a.parentId);
+    if (!parent) throw err("notFound", `annotation '${a.parentId}' is not on page ${a.page}`);
+    const now = new Date().toISOString();
+    const reply: Annot = {
+      id: `mock-${nextAnnot++}`, page: a.page, kind: "note", subtype: "Text",
+      rect: { l: parent.rect.l, b: parent.rect.t - 20, r: parent.rect.l + 20, t: parent.rect.t },
+      color: [...parent.color] as Rgb, fillColor: null, opacity: 1, borderWidth: 1,
+      contents: a.contents, author: a.author?.trim() || null, created: now, modified: now,
+      inReplyTo: parent.id, hidden: false, printed: true, locked: false, editable: "full",
+    };
+    return delay(
+      mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.annotReply" }, () => {
+        d.annots.set(a.page, [...(d.annots.get(a.page) ?? []), reply]);
+        return { list: listOf(d, a.page), annot: structuredClone(reply), previous: null };
+      }),
+      30,
+    );
   },
   async setAnnotationsHidden(_a: { docId: DocId; page: PageIndex; ids: string[]; hidden: boolean }) {
     return { viewNonce: Date.now() };
@@ -1209,6 +1245,13 @@ export const mock = {
   async revealInFileManager(_a: { path: string }): Promise<void> {},
   async pathExists(a: { path: string }): Promise<boolean> {
     return writtenFiles.has(a.path) || docsByPath(a.path) || recents.some((r) => r.path === a.path);
+  },
+  /** P2 여러 파일에서 검색 › 폴더 추가: a fixed little tree under any folder, like the real listing. */
+  async listPdfFiles(a: { dir: string; recursive?: boolean }): Promise<string[]> {
+    const dir = a.dir.replace(/[\\/]+$/, "");
+    const top = [`${dir}/보고서-2024.pdf`, `${dir}/회의록.pdf`];
+    const nested = [`${dir}/2023/예산안.pdf`];
+    return delay([...top, ...(a.recursive === false ? [] : nested)].sort(), 10);
   },
   async getSettings(): Promise<Settings> {
     return structuredClone(settings);

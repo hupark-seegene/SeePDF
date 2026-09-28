@@ -55,12 +55,14 @@ async function openSeparately(paths: string[]): Promise<void> {
  */
 export async function openPath(
   path: string,
-  opts: { guard?: boolean; recovery?: RecoveryEntry } = {},
+  opts: { guard?: boolean; recovery?: RecoveryEntry; password?: string } = {},
 ): Promise<DocInfo | null> {
   if (opts.guard !== false && !(await confirmLeaveDocument())) return null;
   const docs = useDocStore.getState();
   const previous = docs.info;
-  let password: string | undefined;
+  // `password`: one the user already gave for this file (여러 파일에서 검색, P2) — tried first,
+  // and a wrong one still falls back to the prompt
+  let password: string | undefined = opts.password;
   for (;;) {
     // a 복구 copy opens under the original document's name, not `<uuid>.pdf` (Stage 8)
     const info = await docs.open(path, password, opts.recovery?.name);

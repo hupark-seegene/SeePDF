@@ -162,6 +162,19 @@ export function findStep(direction: 1 | -1): boolean {
   return true;
 }
 
+/** When an Esc last cleared a text selection (`performance.now()`), 0 = never. */
+let escapeClearedAt = 0;
+
+/**
+ * `true` once when the Esc being handled right now cleared a text selection — so `tool.none`
+ * knows that Esc already did something and must not also close 분할 보기 (P2).
+ */
+export function escapeClearedSelection(): boolean {
+  const recent = escapeClearedAt > 0 && performance.now() - escapeClearedAt < 250;
+  escapeClearedAt = 0;
+  return recent;
+}
+
 /** Bound by `<Viewer>` while a document is open. */
 export function useViewerCommands(enabled: boolean): void {
   useEffect(() => {
@@ -180,6 +193,7 @@ export function useViewerCommands(enabled: boolean): void {
       if (isEditingTarget(e.target)) return;
 
       if (matchesChord(e, "Escape", os)) {
+        if (useSelectionStore.getState().selection) escapeClearedAt = performance.now();
         useSelectionStore.getState().clear();
         return; // Esc still reaches `tool.none`
       }

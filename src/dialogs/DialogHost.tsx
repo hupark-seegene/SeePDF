@@ -33,6 +33,8 @@ const RecoveryDialog = lazy(() => import("./RecoveryDialog"));
 const BatchOcrDialog = lazy(() => import("../ocr/batch/BatchOcrDialog"));
 // 도장 선택 (Stage 6b, P1-12): only 주석 mode opens it.
 const StampPickerDialog = lazy(() => import("./StampPickerDialog"));
+// 여러 파일에서 검색 (P2): its own chunk.
+const MultiSearchDialog = lazy(() => import("../multisearch/MultiSearchDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -130,6 +132,12 @@ function Current({ entry }: { entry: DialogEntry }) {
       return (
         <Suspense fallback={null}>
           <BatchOcrDialog onClose={close} />
+        </Suspense>
+      );
+    case "multiSearch":
+      return (
+        <Suspense fallback={null}>
+          <MultiSearchDialog onClose={close} />
         </Suspense>
       );
     case "recovery":

@@ -59,9 +59,17 @@ export interface SearchState {
   /** bumped whenever the current hit changes, so the scroller can react to a repeat ⌘G */
   navNonce: number;
   error: string | null;
+  /** the query `hits` answer (`query` may already be a newer one set from outside) */
+  hitsQuery: string;
 
   setOptions(options: Partial<SearchOptions>): void;
   run(docId: DocId, query: string, fromPage: PageIndex): Promise<void>;
+  /**
+   * P2 여러 파일에서 검색: show results found elsewhere (the same file, searched on its own) as this
+   * document's search — the panel's list, the page highlights, ⌘G — with hit `current` selected
+   * and scrolled to. Any pass still running is dropped.
+   */
+  show(docId: DocId, query: string, options: SearchOptions, hits: SearchHit[], current: number): void;
   rerun(docId: DocId, fromPage: PageIndex): Promise<void>;
   cancel(): Promise<void>;
   select(index: number): void;
@@ -96,6 +104,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   current: -1,
   navNonce: 0,
   error: null,
+  hitsQuery: "",
 
   setOptions(options) {
     set({ ...options });
@@ -113,6 +122,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     set({
       docId,
       query: trimmed,
+      hitsQuery: trimmed,
       hits: [],
       byPage: new Map(),
       total: 0,
@@ -166,6 +176,28 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     await get().run(docId, get().query, fromPage);
   },
 
+  show(docId, query, options, hits, current) {
+    activeToken = null;
+    void get().cancel();
+    const sorted = [...hits].sort((a, b) => a.page - b.page || a.charStart - b.charStart);
+    const index = hits[current] ? sorted.indexOf(hits[current]) : -1;
+    set({
+      docId,
+      query,
+      hitsQuery: query,
+      ...options,
+      hits: sorted,
+      byPage: group(sorted),
+      total: sorted.length,
+      scanned: 0,
+      current: index,
+      running: false,
+      jobId: null,
+      error: null,
+      navNonce: get().navNonce + 1,
+    });
+  },
+
   select(index) {
     const state = get();
     if (index < 0 || index >= state.hits.length) return;
@@ -182,6 +214,6 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   clear() {
     activeToken = null;
     void get().cancel();
-    set({ query: "", hits: [], byPage: new Map(), total: 0, scanned: 0, current: -1, error: null });
+    set({ query: "", hitsQuery: "", hits: [], byPage: new Map(), total: 0, scanned: 0, current: -1, error: null });
   },
 }));
