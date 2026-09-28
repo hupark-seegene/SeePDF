@@ -260,7 +260,9 @@ pub fn index_of(
     id: &str,
 ) -> Result<usize, EngineError> {
     for i in 0..raw::annot::count(bindings, page) {
-        let annot = raw::annot::get(bindings, page, i)?;
+        let Some(annot) = raw::annot::slot(bindings, page, i) else {
+            continue;
+        };
         if annot.string("NM").as_deref() == Some(id) {
             return Ok(i);
         }
@@ -310,6 +312,8 @@ pub fn delete_with(
     /// Popup — the `/NM` of its `/Parent`. `FPDFAnnot_GetLinkedAnnot` hands back a second
     /// handle to the same dictionary, so handle identity means nothing: links compare by `/NM`.
     struct Row {
+        /// The slot index in `/Annots` (null slots are skipped, so it is not the row's position).
+        index: usize,
         name: Option<String>,
         replies_to: Option<String>,
         popup_of: Option<String>,
@@ -322,9 +326,13 @@ pub fn delete_with(
 
     let mut rows: Vec<Row> = Vec::with_capacity(count);
     for i in 0..count {
-        let annot = raw::annot::get(bindings, page, i)?;
+        // A `/Annots` slot holding no annotation (null, dangling reference) is skipped.
+        let Some(annot) = raw::annot::slot(bindings, page, i) else {
+            continue;
+        };
         let popup = annot.subtype() == raw::consts::FPDF_ANNOT_POPUP;
         rows.push(Row {
+            index: i,
             name: annot.string("NM"),
             replies_to: if cascade_replies && !popup {
                 read::in_reply_to(&annot)
@@ -368,13 +376,12 @@ pub fn delete_with(
 
     let victims: Vec<usize> = rows
         .iter()
-        .enumerate()
-        .filter(|(_, r)| {
+        .filter(|r| {
             // A Popup whose /Parent is one of the targets goes with it.
             r.name.as_deref().is_some_and(|n| doomed.contains(n))
                 || r.popup_of.as_deref().is_some_and(|p| doomed.contains(p))
         })
-        .map(|(i, _)| i)
+        .map(|r| r.index)
         .collect();
     for &i in victims.iter().rev() {
         raw::annot::remove(bindings, page, i)?;
@@ -402,7 +409,9 @@ pub fn set_hidden(
     let page = &scratch.page;
     let mut changed = 0usize;
     for i in 0..raw::annot::count(bindings, page) {
-        let mut annot = raw::annot::get(bindings, page, i)?;
+        let Some(mut annot) = raw::annot::slot(bindings, page, i) else {
+            continue;
+        };
         let Some(name) = annot.string("NM") else {
             continue;
         };

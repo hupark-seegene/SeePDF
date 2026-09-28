@@ -695,6 +695,7 @@
   "compress.needEstimate": "Run an estimate first to see the resulting size before applying.",
   "compress.done": "Compressed: {{before}} → {{after}}",
   "compress.failed": "Couldn't compress the document",
+  "compress.stale": "The document changed after the estimate — estimating again",
   "dialog.docInfo.encryption.none": "None",
   "dialog.docInfo.encryption.r2": "RC4 40-bit (R2)",
   "dialog.docInfo.encryption.r3": "RC4 128-bit (R3)",

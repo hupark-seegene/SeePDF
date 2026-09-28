@@ -1778,13 +1778,14 @@ pub struct OpenFilePayload {
     pub source: OpenSource,
 }
 
+/// `doc-changed.reason`. There is no `save`: a save changes nothing a cache is keyed on, so
+/// it keeps the generation and emits only `doc-saved` (`IPC_CONTRACT.md` §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ChangeReason {
     Edit,
     Undo,
     Redo,
-    Save,
     Pages,
     Ocr,
     Redact,

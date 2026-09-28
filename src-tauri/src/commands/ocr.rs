@@ -73,11 +73,24 @@ pub async fn ocr_apply(
                     note: None,
                 });
             };
-            ocr::apply(st, &doc_id, &pages, replace_existing, &mut report)
+            // `cancel_job` is honoured between pages; the batch then rolls back whole.
+            let cancelled = || token.is_cancelled();
+            ocr::apply_cancellable(
+                st,
+                &doc_id,
+                &pages,
+                replace_existing,
+                &mut report,
+                &cancelled,
+            )
         })
         .await;
     engine.jobs.finish(job_id);
     match &result {
+        Err(error) if error.code == ErrorCode::Cancelled => {
+            // The batch is one `mutate`, so a cancel rolled every page of it back.
+            let _ = on_progress.send(JobEvent::Cancelled { job_id, done: 0 });
+        }
         Ok(_) => {
             let _ = on_progress.send(JobEvent::Done {
                 job_id,

@@ -155,6 +155,7 @@ export interface OpenRequest { path: string; source: 'argv' | 'macos-opened' | '
 
 // Stage 8: `displayName` — what `DocInfo.name` reports instead of the file name (a recovered copy
 // `<uuid>.pdf` opens under the original name; also the `{{filename}}` stamp token). Blank = file name.
+// A document with more than 65,535 pages (PageIndex is u16 in the engine) is `unsupported`.
 open_document(a: { path: string; password?: string; displayName?: string }): Promise<DocInfo>
 close_document(a: { docId: DocId }): Promise<void>
 get_document(a: { docId: DocId }): Promise<DocInfo>
@@ -405,7 +406,11 @@ merge_documents(a: { inputs: { path: string; range?: string; password?: string }
 
 Engine: `engine/pages/`. One `page_ops` call is one `registry::mutate` = one generation = one undo step.
 `extract_pages` and `split_document` **copy the original and delete the other pages** (import drops
-`/AcroForm`). `merge_documents` creates an untitled in-memory document and is the only importer.
+`/AcroForm`). `merge_documents` creates an untitled in-memory document and is the only importer; it has
+never been saved, so it opens **dirty** (`path: null`, `dirty: true`) — close / quit ask, autosave keeps it.
+`duplicate` puts each copy **right after its source** (`[a, b, c]` duplicate `[0, 2]` → `[a, a′, b, c, c′]`;
+repeated indices count once). An op that would take the document past 65,535 pages is `unsupported` and
+rolled back.
 Owner (b). Feature F-16.
 
 ### 7.3a Page boxes and page size — 자르기 / 페이지 크기 변경 (P2)
@@ -818,7 +823,11 @@ determined (a permission error counts as taken). 여러 파일 OCR asks it befor
 
 Engine: `engine/save/` — pre-flight AP render → `FPDF_SaveAsCopy(flags = 0)` → temp + fsync → verify by
 reopening → backup → `rename` → reload (ARCHITECTURE §8). Errors: `readOnly` (offer Save As), `io`,
-`verifyFailed`. Owner (b). Feature F-23.
+`verifyFailed`. A new file's directory is probed by creating a file there, never judged by its
+read-only *attribute* (on Windows that is the shell-folder marker on Documents / Desktop / Pictures).
+A save keeps `docGeneration` (nothing a cache is keyed on changed) and emits only `doc-saved` — no
+`doc-changed`. Its job id is for progress only: a save cannot stop half-way, so `cancel_job` answers
+`false` for it. Owner (b). Feature F-23.
 
 ### 7.6a Compress (P1-5, Stage 4)
 
@@ -972,7 +981,10 @@ print_prepare(a: { docId: DocId; pages?: PageIndex[] }): Promise<{ tempPath: str
 
 Flattening uses raw `FPDFPage_Flatten(page, FLAT_NORMALDISPLAY)` + `FPDFPage_GenerateContent` + page
 reload on a scratch copy — never `PdfPage::flatten()`, which is `FLAT_PRINT` and silently deletes
-annotations without the Print flag. `print_prepare` is the fallback path for the OS print handler; the
+annotations without the Print flag. `export_flattened`'s two switches are independent: `forms` bakes the
+AcroForm widgets, `annotations` every other annotation; what is not baked stays live (fields fillable,
+comments editable — parked outside `/Annots` for the flatten and restored in an incremental update, so
+an encrypted file stays encrypted). `print_prepare` is the fallback path for the OS print handler; the
 primary print path is the frontend's print-only DOM plus `getCurrentWebview().print()`.
 Owner (b). Features F-24, F-25, F-26.
 
@@ -1005,7 +1017,10 @@ undo(a: { docId: DocId }): Promise<DocInfo>
 redo(a: { docId: DocId }): Promise<DocInfo>
 ```
 
-Engine: pop a snapshot → `registry::replace` → generation bump (ARCHITECTURE §7). `DocInfo.undoLabel` /
+Engine: load the top snapshot → `registry::replace` → only then move the stacks → generation bump
+(ARCHITECTURE §7). Transactional: a snapshot that cannot be read or reloaded fails the call and leaves
+both stacks, the generation and the document as they were. The snapshot RAM budget (256 MiB) is shared
+by all open documents. `DocInfo.undoLabel` /
 `redoLabel` are i18n keys (`undo.annotCreate`, `undo.pageDelete`, …) rendered in the Edit menu.
 Owner: S0. Feature F-15.
 
@@ -1111,9 +1126,9 @@ Semantics:
 // src/ipc/events.ts — app-wide broadcasts (tauri emit/listen)
 'open-file'        { path: string; source: OpenRequest['source'] }
 'doc-changed'      { docId: DocId; docGeneration: DocGeneration; changedPages: PageIndex[] | 'all';
-                     structure: boolean; dirty: boolean; reason: 'edit'|'undo'|'redo'|'save'|'pages'|'ocr'|'redact';
+                     structure: boolean; dirty: boolean; reason: 'edit'|'undo'|'redo'|'pages'|'ocr'|'redact';
                      canUndo: boolean; canRedo: boolean }   // Stage 2: no get_document per edit
-'doc-saved'        { docId: DocId; path: string; docGeneration: DocGeneration }
+'doc-saved'        { docId: DocId; path: string; docGeneration: DocGeneration }   // a save: generation unchanged, no doc-changed
 'recents-changed'  {}
 'engine-pressure'  { level: 'normal' | 'high' }         // budgets halved; the frontend lowers MAX_MOUNTED_TILES
 'menu:<id>'        {}                                   // native macOS menu item -> the focused window
@@ -1132,7 +1147,9 @@ export type JobEvent =
 
 Channels are used by `search_start` (own event type), `export_images`, `export_flattened`,
 `split_document`, `ocr_apply`, `scan_annotations`, `save_document`, `compress_estimate`, `compare_documents`. Every job id can be cancelled with
-`cancel_job`. Measured headroom: Channel ≥ 42k msg/s, `emit` ≥ 60k msg/s — both far above the ≤ 100 msg/s
+`cancel_job`, except `save_document` / `save_document_as`'s, which is for progress only (`cancel_job`
+answers `false`). `ocr_apply` stops between pages; the batch is one undo step, so a cancelled batch is
+rolled back whole and ends with `cancelled`. Measured headroom: Channel ≥ 42k msg/s, `emit` ≥ 60k msg/s — both far above the ≤ 100 msg/s
 this contract produces.
 
 ---

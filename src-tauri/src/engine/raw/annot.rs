@@ -82,12 +82,28 @@ pub fn get<'a>(
     page: &'a PdfPage<'_>,
     index: usize,
 ) -> Result<AnnotRef<'a>, EngineError> {
-    // SAFETY: `page` is live; an out-of-range index makes PDFium return NULL, checked below.
+    slot(bindings, page, index)
+        .ok_or_else(|| EngineError::not_found(format!("annotation #{index}")))
+}
+
+/// [`get`] for a walk over `0..count()`: `None` for a slot that holds no annotation.
+///
+/// `FPDFPage_GetAnnotCount` is the raw length of `/Annots`, but `FPDFPage_GetAnnot` returns
+/// NULL for an entry that is `null`, not a dictionary, or a reference to a missing object —
+/// common in producer-damaged files. Every enumeration **skips** such a slot; failing on it
+/// made every annotation and field on the page unreachable.
+pub fn slot<'a>(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    page: &'a PdfPage<'_>,
+    index: usize,
+) -> Option<AnnotRef<'a>> {
+    // SAFETY: `page` is live; an out-of-range index or a bad slot makes PDFium return NULL,
+    // checked below.
     let handle = unsafe { bindings.FPDFPage_GetAnnot(page.raw_handle(), index as c_int) };
     if handle.is_null() {
-        return Err(EngineError::not_found(format!("annotation #{index}")));
+        return None;
     }
-    Ok(AnnotRef {
+    Some(AnnotRef {
         bindings,
         handle,
         page: PhantomData,

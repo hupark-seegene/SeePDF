@@ -39,6 +39,177 @@ fn rotations(doc_id: &str) -> Vec<u16> {
     .expect("rotations")
 }
 
+/// `(undo depth, redo depth, generation)` of an open document.
+fn stacks(doc_id: &str) -> (usize, usize, u64) {
+    let doc_id = doc_id.to_string();
+    with_doc(&doc_id, |d| {
+        Ok((
+            d.history.undo_depth(),
+            d.history.redo_depth(),
+            d.generation as u64,
+        ))
+    })
+    .expect("stacks")
+}
+
+fn spilled_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .map(|e| e.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
+/// Bug hunt: undo / redo used to pop the history entry (and push the redo entry) *before*
+/// the snapshot was loaded and the document replaced. A spilled snapshot that is gone (macOS
+/// purges `$TMPDIR`) or does not reload then consumed an undo step and left a redo entry for a
+/// state the document never left. Both stacks must be untouched when the step fails.
+#[test]
+fn history_undo_is_transactional() {
+    let doc = open("rotation.pdf");
+    let doc_id = doc.doc_id.clone();
+    let spill = std::env::temp_dir().join(format!("seepdf-undo-tx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&spill);
+    {
+        let spill = spill.clone();
+        // Budget 0: every snapshot goes to disk.
+        with_doc(&doc_id, move |d| {
+            d.history = History::new(spill, d.bytes.len(), 0);
+            Ok(())
+        })
+        .expect("swap history");
+    }
+    rotate(&doc_id, 0, PdfPageRenderRotation::Degrees90);
+    rotate(&doc_id, 0, PdfPageRenderRotation::Degrees180);
+    let edited = rotations(&doc_id);
+    let before = stacks(&doc_id);
+    assert_eq!((before.0, before.1), (2, 0));
+    assert_eq!(spilled_files(&spill).len(), 2, "both snapshots spilled");
+
+    // (a) the snapshot file is gone.
+    for f in spilled_files(&spill) {
+        std::fs::remove_file(f).expect("delete snapshot");
+    }
+    let err = with_state({
+        let doc_id = doc_id.clone();
+        move |st| registry::undo(st, &doc_id, false)
+    });
+    assert!(err.is_err(), "undo cannot load a deleted snapshot");
+    assert_eq!(
+        stacks(&doc_id),
+        before,
+        "a failed undo leaves both stacks and the generation alone"
+    );
+    assert_eq!(rotations(&doc_id), edited, "the document is unchanged");
+
+    // (b) the snapshot is there but does not load as a PDF: `replace` fails.
+    let doc2 = open("rotation.pdf");
+    let doc2_id = doc2.doc_id.clone();
+    let spill2 = spill.join("second");
+    {
+        let spill2 = spill2.clone();
+        with_doc(&doc2_id, move |d| {
+            d.history = History::new(spill2, d.bytes.len(), 0);
+            Ok(())
+        })
+        .expect("swap history");
+    }
+    rotate(&doc2_id, 1, PdfPageRenderRotation::Degrees90);
+    let before2 = stacks(&doc2_id);
+    for f in spilled_files(&spill2) {
+        std::fs::write(f, b"not a pdf").expect("corrupt snapshot");
+    }
+    let err = with_state({
+        let doc_id = doc2_id.clone();
+        move |st| registry::undo(st, &doc_id, false)
+    });
+    assert!(err.is_err(), "a snapshot PDFium cannot load fails the undo");
+    assert_eq!(stacks(&doc2_id), before2);
+
+    // A redo that fails is just as transactional: undo for real, break the redo snapshot.
+    let doc3 = open("rotation.pdf");
+    let doc3_id = doc3.doc_id.clone();
+    let spill3 = spill.join("third");
+    {
+        let spill3 = spill3.clone();
+        with_doc(&doc3_id, move |d| {
+            d.history = History::new(spill3, d.bytes.len(), 0);
+            Ok(())
+        })
+        .expect("swap history");
+    }
+    rotate(&doc3_id, 0, PdfPageRenderRotation::Degrees270);
+    with_state({
+        let doc_id = doc3_id.clone();
+        move |st| registry::undo(st, &doc_id, false)
+    })
+    .expect("undo");
+    let before3 = stacks(&doc3_id);
+    assert_eq!((before3.0, before3.1), (0, 1));
+    for f in spilled_files(&spill3) {
+        std::fs::remove_file(f).expect("delete snapshot");
+    }
+    assert!(with_state({
+        let doc_id = doc3_id.clone();
+        move |st| registry::undo(st, &doc_id, true)
+    })
+    .is_err());
+    assert_eq!(stacks(&doc3_id), before3);
+    let _ = std::fs::remove_dir_all(&spill);
+}
+
+/// Bug hunt: the undo RAM budget is documented (and meant) as one budget **across all open
+/// documents**, but every document used to get its own 256 MiB. Two documents' snapshots must
+/// share it: once the first document has used it up, the second one spills to disk.
+#[test]
+fn history_budget_is_shared_across_documents() {
+    // One engine-thread call, so no other test's document can come and go in between.
+    let spilled = with_state(|st| {
+        let bytes = std::fs::read(fixture("tracemonkey.pdf"))?;
+        let len = bytes.len();
+        let budget = st.history_budget.clone();
+        let saved = budget.limit();
+        // Room for one more snapshot of this file, not two — on top of whatever the other
+        // tests of this process keep resident right now.
+        budget.set_limit(budget.used() + len + len / 2);
+        let result = (|| {
+            let a = registry::open(st, Some(fixture("tracemonkey.pdf")), bytes.clone(), None)?;
+            let b = registry::open(st, Some(fixture("tracemonkey.pdf")), bytes, None)?;
+            for id in [&a.doc_id, &b.doc_id] {
+                registry::mutate(
+                    st,
+                    id,
+                    MutateOpts::new("undo.pageRotate", ChangeReason::Pages).page(0),
+                    |d| {
+                        d.page(0)?.set_rotation(PdfPageRenderRotation::Degrees90);
+                        Ok(())
+                    },
+                )?;
+            }
+            let first = st.doc(&a.doc_id)?.history.newest_is_on_disk();
+            let second = st.doc(&b.doc_id)?.history.newest_is_on_disk();
+            let used = budget.used();
+            registry::close(st, &a.doc_id)?;
+            registry::close(st, &b.doc_id)?;
+            assert_eq!(
+                budget.used(),
+                used - len,
+                "closing gives the resident snapshot back"
+            );
+            Ok((first, second))
+        })();
+        budget.set_limit(saved);
+        result
+    })
+    .expect("two documents");
+    assert_eq!(spilled.0, Some(false), "the first snapshot fits in RAM");
+    assert_eq!(
+        spilled.1,
+        Some(true),
+        "the second document's snapshot spills: the budget is shared"
+    );
+}
+
 /// 20 edits, then 20 undos, must return the document to its opening state; redo replays them.
 #[test]
 fn history_roundtrip() {

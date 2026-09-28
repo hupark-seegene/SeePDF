@@ -120,8 +120,8 @@ export const useDocStore = create<DocState>((set, get) => ({
     // ↶ / ↷ stay honest without a `get_document` per edit (STAGE1D_NOTES §7.4). The labels
     // still come from `DocInfo`: an event for a *newer* generation means the labels we hold describe
     // an older history, so they are dropped (the title bar fetches them on hover) rather than shown
-    // wrong. A save does not touch the history.
-    const stale = e.docGeneration > info.docGeneration && e.reason !== "save";
+    // wrong. (A save is not a `doc-changed` at all: it keeps the generation, IPC_CONTRACT §8.)
+    const stale = e.docGeneration > info.docGeneration;
     set({
       info: {
         ...info,

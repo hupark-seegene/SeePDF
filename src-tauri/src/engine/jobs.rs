@@ -35,6 +35,13 @@ impl Jobs {
         JobToken { id, cancel }
     }
 
+    /// A job id for progress events only — for work that cannot stop half-way (a save is one
+    /// atomic file rewrite). No cancel flag is registered, so `cancel_job` answers `false`
+    /// instead of `true` for a job that then runs to completion anyway.
+    pub fn progress_only(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
     /// `cancel_job` (`IPC_CONTRACT.md` §6). Returns false for an unknown or finished job.
     pub fn cancel(&self, id: u64) -> bool {
         match self.flags.lock().get(&id) {
@@ -64,5 +71,21 @@ impl Jobs {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Jobs;
+
+    #[test]
+    fn progress_only_ids_are_not_cancellable() {
+        let jobs = Jobs::default();
+        let token = jobs.create();
+        let save = jobs.progress_only();
+        assert_ne!(token.id, save, "one id space");
+        assert!(jobs.cancel(token.id));
+        assert!(token.is_cancelled());
+        assert!(!jobs.cancel(save), "cancel_job answers false for a save");
     }
 }

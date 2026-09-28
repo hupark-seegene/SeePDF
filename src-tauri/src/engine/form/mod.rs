@@ -76,7 +76,10 @@ pub fn list(doc: &mut OpenDoc<'_>, page: Option<PageIndex>) -> Result<Vec<FormFi
         // read path, so no `ScratchPage` here.
         let page = doc.page(page_index)?;
         for i in 0..raw::annot::count(bindings, page) {
-            let a = raw::annot::get(bindings, page, i)?;
+            // A bad `/Annots` slot (null, dangling) is skipped, not fatal for the page.
+            let Some(a) = raw::annot::slot(bindings, page, i) else {
+                continue;
+            };
             if a.subtype() != consts::FPDF_ANNOT_WIDGET {
                 continue;
             }

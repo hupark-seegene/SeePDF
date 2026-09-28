@@ -293,6 +293,21 @@ export async function confirmLeaveDocument(): Promise<boolean> {
   return confirmUnsaved();
 }
 
+/**
+ * The window's close request (F-23) — the same gate as closing the document: pending 편집 · 영역
+ * 표시 marks first (F-22; they do not make the document dirty, so a clean document with marks must
+ * still ask), then 저장 / 저장 안 함 / 취소. `"close"`: nothing to ask, let the window close;
+ * `"confirmed"`: the user was asked and agreed (the caller holds the close request and closes the
+ * window itself); `"cancel"`: stay.
+ */
+export async function windowCloseGate(): Promise<"close" | "confirmed" | "cancel"> {
+  const info = useDocStore.getState().info;
+  const pending = info ? editLeaveGuard() : null;
+  if (!info?.dirty && !pending) return "close";
+  if (pending && !(await pending)) return "cancel";
+  return (await confirmUnsaved()) ? "confirmed" : "cancel";
+}
+
 export async function closeDocumentFlow(): Promise<boolean> {
   if (!(await confirmLeaveDocument())) return false;
   const info = useDocStore.getState().info;
@@ -481,10 +496,17 @@ export function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+/**
+ * The folder of `path`, in the path's own separator: `C:\Users\hw\a.pdf` → `C:\Users\hw` (Explorer's
+ * `/select,` and `split_document`'s outDir need a real Windows path), and a drive root keeps its
+ * separator — `C:\a.pdf` → `C:\`, because `C:` alone is the current directory on C:.
+ */
 export function dirName(path: string): string {
-  const parts = path.split(/[\\/]/);
-  parts.pop();
-  return parts.join("/") || "/";
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (cut < 0) return ".";
+  const dir = path.slice(0, cut);
+  if (dir === "" || /^[A-Za-z]:$/.test(dir)) return dir + path[cut];
+  return dir;
 }
 
 export function message(e: unknown): string {

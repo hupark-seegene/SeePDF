@@ -1446,3 +1446,201 @@ fn annot_stamp_signature_reads_back_as_signature() {
         })
     ));
 }
+
+// ---------------------------------------------------------------------------------------
+// Bug hunt regressions
+// ---------------------------------------------------------------------------------------
+
+/// `annotation-highlight.pdf` with page 1's `/Annots` prefixed by a `null` and a reference to
+/// an object that does not exist — what producer-damaged files look like.
+fn damaged_annots_bytes() -> Vec<u8> {
+    use lopdf::Object;
+    let mut doc = lopdf::Document::load(fixture("annotation-highlight.pdf")).expect("lopdf load");
+    let page_id = *doc.get_pages().get(&1).expect("page 1");
+    let annots: Vec<Object> = {
+        let page = doc.get_dictionary(page_id).expect("page dict");
+        match page.get(b"Annots").expect("the fixture has /Annots") {
+            Object::Reference(id) => doc.get_object(*id).unwrap().as_array().unwrap().clone(),
+            Object::Array(a) => a.clone(),
+            other => panic!("unexpected /Annots {other:?}"),
+        }
+    };
+    let mut damaged = vec![Object::Null, Object::Reference((999_999, 0))];
+    damaged.extend(annots);
+    doc.get_dictionary_mut(page_id)
+        .unwrap()
+        .set("Annots", Object::Array(damaged));
+    let mut out = Vec::new();
+    doc.save_to(&mut out).expect("lopdf save");
+    out
+}
+
+/// Bug hunt: `FPDFPage_GetAnnotCount` counts every `/Annots` slot while `FPDFPage_GetAnnot`
+/// returns NULL for a `null` / dangling entry, and every enumeration propagated that as
+/// `notFound` — no annotation or field on the page could be listed, and `create_annotation`
+/// failed *after* it had committed. A bad slot is skipped instead.
+#[test]
+fn annot_bad_annots_entries_are_skipped() {
+    let doc = reopen(damaged_annots_bytes());
+    let slots = with_doc(&doc.doc_id, |d| {
+        let bindings = d.bindings();
+        let page = d.page(0)?;
+        Ok(raw::annot::count(bindings, page))
+    })
+    .unwrap();
+    assert!(slots >= 3, "the two bad slots are really there ({slots})");
+
+    let listed = with_doc(&doc.doc_id, |d| annot::list(d, 0));
+    let listed = listed.expect("listing a page with bad /Annots slots");
+    assert!(
+        listed.iter().any(|a| a.kind == AnnotKind::Highlight),
+        "{listed:?}"
+    );
+    let id = listed[0].id.clone();
+
+    // Every other walk over the page's annotations.
+    with_doc(&doc.doc_id, |d| {
+        seepdf_lib::engine::form::list(d, None)?;
+        Ok(())
+    })
+    .expect("list_form_fields");
+    with_doc(&doc.doc_id, {
+        let id = id.clone();
+        move |d| annot::set_hidden(d, 0, &[id], true)
+    })
+    .expect("set_annotations_hidden");
+    with_doc(&doc.doc_id, {
+        let id = id.clone();
+        move |d| annot::set_hidden(d, 0, &[id], false)
+    })
+    .expect("set_annotations_hidden back");
+
+    let created = create(
+        &doc.doc_id,
+        0,
+        AnnotSpec::Square(ShapeSpec {
+            rect: Rect::new(20.0, 20.0, 60.0, 60.0),
+            color: [200, 0, 0],
+            fill_color: None,
+            width: 1.0,
+            opacity: 1.0,
+        }),
+    );
+    let after = list(&doc.doc_id, 0);
+    assert!(after.iter().any(|a| a.id == created));
+
+    with_state({
+        let doc_id = doc.doc_id.clone();
+        let id = id.clone();
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.annotEdit", ChangeReason::Edit).page(0),
+                |d| {
+                    annot::update::update(
+                        d,
+                        0,
+                        &id,
+                        &seepdf_lib::ipc::types::AnnotPatch {
+                            contents: Some("edited".into()),
+                            ..Default::default()
+                        },
+                    )
+                },
+            )
+        }
+    })
+    .expect("update_annotation");
+    with_state({
+        let doc_id = doc.doc_id.clone();
+        let ids = vec![created.clone()];
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.annotDelete", ChangeReason::Edit).page(0),
+                |d| annot::delete(d, 0, &ids),
+            )
+        }
+    })
+    .expect("delete_annotations");
+    let last = list(&doc.doc_id, 0);
+    assert!(last.iter().all(|a| a.id != created));
+    assert_eq!(
+        last.iter()
+            .find(|a| a.id == id)
+            .map(|a| a.contents.as_str()),
+        Some("edited")
+    );
+}
+
+/// Bug hunt: `list_annotations` stamps a `/NM` on an annotation that has none (in memory, no
+/// new generation), but the first edit after open used to snapshot the **file** bytes — which
+/// have no `/NM` — so undoing that edit reloaded the file and the next list handed out new
+/// ids: every id the frontend held (selection, 주석 목록) was `notFound`.
+#[test]
+fn annot_ids_survive_undo_of_the_first_edit() {
+    // The fixture's annotations carry a `/NM`; strip it, as LibreOffice and scanners write.
+    let mut stripped = lopdf::Document::load(fixture("annotation-highlight.pdf")).unwrap();
+    let mut removed = 0;
+    for object in stripped.objects.values_mut() {
+        if let Ok(dict) = object.as_dict_mut() {
+            if dict.remove(b"NM").is_some() {
+                removed += 1;
+            }
+        }
+    }
+    assert!(removed > 0, "the fixture had /NM entries to strip");
+    let path = out_dir().join("no-nm.pdf");
+    stripped.save(&path).unwrap();
+    // Opened from a path: a clean document, so the first edit takes the free snapshot path.
+    let info = with_state({
+        let path = path.clone();
+        move |st| registry::open(st, Some(path.clone()), std::fs::read(&path)?, None)
+    })
+    .expect("open the stripped copy");
+    let doc = TestDoc {
+        doc_id: info.doc_id.clone(),
+        info,
+    };
+    let before = list(&doc.doc_id, 0);
+    assert!(!before.is_empty());
+    let ids: Vec<String> = before.iter().map(|a| a.id.clone()).collect();
+
+    with_state({
+        let doc_id = doc.doc_id.clone();
+        let id = ids[0].clone();
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.annotEdit", ChangeReason::Edit).page(0),
+                |d| {
+                    annot::update::update(
+                        d,
+                        0,
+                        &id,
+                        &seepdf_lib::ipc::types::AnnotPatch {
+                            contents: Some("moved".into()),
+                            ..Default::default()
+                        },
+                    )
+                },
+            )
+        }
+    })
+    .expect("first edit");
+    for redo in [false, true] {
+        with_state({
+            let doc_id = doc.doc_id.clone();
+            move |st| registry::undo(st, &doc_id, redo)
+        })
+        .expect("undo / redo");
+        let now: Vec<String> = list(&doc.doc_id, 0).iter().map(|a| a.id.clone()).collect();
+        assert_eq!(
+            now, ids,
+            "annotation ids are stable across undo (redo: {redo})"
+        );
+    }
+}

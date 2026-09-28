@@ -286,7 +286,9 @@ fn engine_main(
         encode: EncodePool::spawn(encode_workers()),
         next_doc_id: 0,
         spill_dir,
-        history_budget: crate::engine::history::DEFAULT_RAM_BUDGET,
+        history_budget: crate::engine::history::RamBudget::new(
+            crate::engine::history::DEFAULT_RAM_BUDGET,
+        ),
     };
 
     let mut lanes: [BinaryHeap<Cmd>; 5] = Default::default();

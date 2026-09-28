@@ -38,6 +38,8 @@ const REFINE_ALL_UP_TO: u16 = 64;
 /// (correct) rotated size from `page_sizes()` with a provisional rotation of 0 until they are
 /// opened. See `STAGE0_NOTES.md` — this is the one place `DocInfo` can lag.
 const REFINE_HEAD: u16 = 8;
+/// The most pages a document may have: every page index is a `u16`.
+pub const MAX_PAGES: usize = u16::MAX as usize;
 
 fn refine_count(page_count: u16) -> u16 {
     if page_count <= REFINE_ALL_UP_TO {
@@ -101,6 +103,10 @@ pub struct OpenDoc<'p> {
     /// `write_recovery` and kept for the document's lifetime (reloads keep it). `close` does
     /// not delete the files — `clear_recovery` does.
     pub recovery_id: Option<String>,
+    /// `list_annotations` stamped a `/NM` on an annotation that had none since `bytes` was
+    /// loaded, so the in-memory document is no longer `bytes`: the next [`mutate`] must
+    /// snapshot `to_bytes()`, or undoing it would reload the file and hand out new ids.
+    pub ids_stamped: bool,
 }
 
 impl<'p> OpenDoc<'p> {
@@ -393,7 +399,7 @@ pub fn open_named<'p>(
         saved_generation: 1,
         pages_meta,
         touched: BTreeSet::new(),
-        history: History::new(spill_dir, byte_len, st.history_budget),
+        history: History::shared(spill_dir, byte_len, st.history_budget.clone()),
         hangul_font: None,
         text: TextCache::default(),
         annots: HashMap::new(),
@@ -407,6 +413,7 @@ pub fn open_named<'p>(
         compress_work: None,
         compress_pending: None,
         recovery_id: None,
+        ids_stamped: false,
     };
 
     // Exact geometry (rotation, crop box, label) for as many pages as the budget allows.
@@ -552,11 +559,7 @@ pub fn mutate<'p, T>(
 
     // 1. undo snapshot of the *pre-edit* state. The first push after open/save/undo reuses
     //    the bytes we already have and is free.
-    let base = if doc.generation == doc.saved_generation && doc.history.undo_depth() == 0 {
-        doc.bytes.clone()
-    } else {
-        doc.to_bytes()?
-    };
+    let base = pre_edit_bytes(doc)?;
     let pushed = doc.history.push(opts.label, base.clone(), opts.coalesce)?;
 
     // 2. structural edits invalidate every open page handle.
@@ -564,8 +567,15 @@ pub fn mutate<'p, T>(
         doc.close_pages();
     }
 
-    // 3. the actual work.
-    let out = match f(doc) {
+    // 3. the actual work, then the new page list — which can refuse the result (a page count
+    //    past `u16::MAX`), and that is rolled back like any other failure.
+    let refine: Vec<u16> = match &opts.pages {
+        ChangedPages::Some(pages) if pages.len() <= 32 => pages.clone(),
+        _ => Vec::new(),
+    };
+    let result =
+        f(doc).and_then(|out| refresh_pages_meta(doc, opts.structural, &refine).map(|()| out));
+    let out = match result {
         Ok(out) => out,
         Err(e) => {
             // Undo the bookkeeping: the snapshot describes a state we never left.
@@ -588,15 +598,10 @@ pub fn mutate<'p, T>(
         }
     };
 
-    // 4. refresh geometry, bump the generation, invalidate caches.
-    //    Page sizes are re-read every time (`page_sizes()` costs 0.1 ms per 14 pages and a
-    //    rotate swaps them); the exact `/Rotate` and crop box of the pages the edit names are
-    //    re-read from the page itself.
-    let refine: Vec<u16> = match &opts.pages {
-        ChangedPages::Some(pages) if pages.len() <= 32 => pages.clone(),
-        _ => Vec::new(),
-    };
-    refresh_pages_meta(doc, opts.structural, &refine)?;
+    // 4. bump the generation, invalidate caches. (Geometry was refreshed in step 3: page
+    //    sizes are re-read every time — `page_sizes()` costs 0.1 ms per 14 pages and a rotate
+    //    swaps them — and the exact `/Rotate` and crop box of the pages the edit names are
+    //    re-read from the page itself.)
     doc.generation += 1;
     let generation = doc.generation;
     match &opts.pages {
@@ -624,6 +629,17 @@ pub fn mutate<'p, T>(
         TileDrop::Older(generation),
     )?;
     Ok(out)
+}
+
+/// The undo snapshot of the document as it is now. Right after open / save / undo the
+/// document *is* `bytes`, so that is free — unless `list_annotations` has since stamped ids
+/// into it, which only `to_bytes()` (5 ms/MB) captures.
+fn pre_edit_bytes(doc: &OpenDoc<'_>) -> Result<Arc<[u8]>, EngineError> {
+    if doc.generation == doc.saved_generation && doc.history.undo_depth() == 0 && !doc.ids_stamped {
+        Ok(doc.bytes.clone())
+    } else {
+        doc.to_bytes()
+    }
 }
 
 /// Which cached tiles an [`announce`] throws away.
@@ -715,11 +731,7 @@ pub fn mutate_bytes_checked(
         .docs
         .get_mut(doc_id)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))?;
-    let base = if doc.generation == doc.saved_generation && doc.history.undo_depth() == 0 {
-        doc.bytes.clone()
-    } else {
-        doc.to_bytes()?
-    };
+    let base = pre_edit_bytes(doc)?;
     let pushed = doc.history.push(opts.label, base.clone(), opts.coalesce)?;
 
     let rewritten = (|| {
@@ -806,6 +818,8 @@ pub fn replace<'p>(
     doc.hangul_font = None;
     // A pending compress result describes bytes that are no longer the document's.
     doc.compress_pending = None;
+    // The document is exactly `bytes` again.
+    doc.ids_stamped = false;
 
     for i in 0..refine_count(doc.page_count()) {
         let _ = doc.page(i);
@@ -813,29 +827,32 @@ pub fn replace<'p>(
     Ok(())
 }
 
-/// `undo` / `redo` (contract §7.8). Pops a snapshot, replaces the document, bumps the
-/// generation and broadcasts `doc-changed`.
+/// `undo` / `redo` (contract §7.8). Loads the snapshot, replaces the document, and only then
+/// moves the history stacks, bumps the generation and broadcasts `doc-changed`.
+///
+/// Transactional: a snapshot that cannot be read (a spilled file the OS purged) or a replace
+/// that fails leaves both stacks, the generation and the document exactly as they were — the
+/// step is not consumed, and no redo entry appears for a state the document never left.
 pub fn undo(st: &mut EngineState<'_>, doc_id: &str, redo: bool) -> Result<DocInfo, EngineError> {
     let doc = st
         .docs
         .get_mut(doc_id)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))?;
     let current = doc.to_bytes()?;
-    let popped = if redo {
-        doc.history.take_redo(current)?
-    } else {
-        doc.history.take_undo(current)?
-    };
-    let Some((label, bytes)) = popped else {
+    let Some(step) = doc.history.prepare(redo, current)? else {
         return Err(EngineError::invalid(if redo {
             "nothing to redo"
         } else {
             "nothing to undo"
         }));
     };
-    replace(st, doc_id, bytes)?;
+    if let Err(e) = replace(st, doc_id, step.bytes()) {
+        st.doc_mut(doc_id)?.history.abandon(step);
+        return Err(e);
+    }
 
     let doc = st.doc_mut(doc_id)?;
+    let label = doc.history.commit(step);
     doc.generation += 1;
     let info = doc.info();
     tracing::debug!(doc_id, label, redo, "history step applied");
@@ -909,6 +926,18 @@ fn read_pages_meta(
     doc: &PdfDocument<'_>,
 ) -> Result<Vec<PageGeom>, EngineError> {
     let sizes = doc.pages().page_sizes().ctx("page_sizes")?;
+    // Page indices are `u16` everywhere (contract `PageIndex`): past 65,535 they would wrap
+    // (`len() as u16` made 65,536 pages count as 0). Refuse the document — or, through
+    // `mutate`'s rollback, the edit that would get it there.
+    if sizes.len() > MAX_PAGES {
+        return Err(EngineError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "the document has {} pages; SeePDF handles at most {MAX_PAGES}",
+                sizes.len()
+            ),
+        ));
+    }
     Ok(sizes
         .iter()
         .enumerate()

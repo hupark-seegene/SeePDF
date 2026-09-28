@@ -235,7 +235,10 @@ export function StatusBar() {
             <span className="text-xs dim mono">
               {job.total ? `${job.done}/${job.total}` : ""}
             </span>
-            <IconButton icon={X} label={t("common.cancel")} size={14} onClick={() => void cancelJob(job.id)} />
+            {/* a save is one atomic rewrite: its job id is progress-only (`cancel_job` answers false) */}
+            {job.kind !== "save" && (
+              <IconButton icon={X} label={t("common.cancel")} size={14} onClick={() => void cancelJob(job.id)} />
+            )}
           </div>
         )}
         {info && (

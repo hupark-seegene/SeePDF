@@ -269,7 +269,6 @@ export function dropMarks(): void {
 /** The document moved: undo / redo / page ops / OCR drop the marks; our own edits re-preview. */
 export function onDocChangedForMarks(e: DocChangedEvent): void {
   if (e.docId !== useEditStore.getState().docId || useEditStore.getState().marks.length === 0) return;
-  if (e.reason === "save") return;
   if (e.reason === "edit" || e.reason === "redact") {
     if (applying) return; // our own apply; the loop owns the marks
     const pages = e.changedPages === "all" ? markedPages() : e.changedPages.filter((p) => marksOn(p).length);

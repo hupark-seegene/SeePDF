@@ -361,6 +361,203 @@ fn export_print_prepare() {
     assert_eq!(prepared.info.page_count, 2, "only the selected pages");
 }
 
+/// Widgets and non-widget annotations on one page.
+fn kinds(doc_id: &str, page: u16) -> (usize, usize) {
+    with_doc(doc_id, move |d| {
+        let widgets = seepdf_lib::engine::form::list(d, Some(page))?.len();
+        let markup = seepdf_lib::engine::annot::list(d, page)?
+            .iter()
+            .filter(|a| a.subtype != "Widget")
+            .count();
+        Ok((widgets, markup))
+    })
+    .expect("count annotations")
+}
+
+fn flatten(doc_id: &str, annotations: bool, forms: bool, name: &str) -> TestDoc {
+    flatten_with(doc_id, annotations, forms, name, None)
+}
+
+fn flatten_with(
+    doc_id: &str,
+    annotations: bool,
+    forms: bool,
+    name: &str,
+    password: Option<&str>,
+) -> TestDoc {
+    let path = out_dir().join(name);
+    with_state({
+        let doc_id = doc_id.to_string();
+        let path = path.display().to_string();
+        move |st| export::export_flattened(st, &doc_id, &path, annotations, forms, None)
+    })
+    .expect("export_flattened");
+    let bytes = std::fs::read(&path).expect("read flattened");
+    let password = password.map(str::to_owned);
+    let info = with_state(move |st| registry::open(st, None, bytes, password)).expect("reopen");
+    let doc_id = info.doc_id.clone();
+    TestDoc { info, doc_id }
+}
+
+/// Bug hunt: `export_flattened` ignored its `annotations` / `forms` selection — PDFium's
+/// `FPDFPage_Flatten` bakes every visible annotation and drops the whole `/Annots` array, so
+/// 양식 병합 off still turned every field into static ink, and 주석 병합 off still baked every
+/// comment. Each checkbox now does only what it says, on a rotated page too.
+#[test]
+fn export_flatten_respects_the_selection() {
+    let doc = open("160F-2019.pdf");
+    // A quarter turn first, so the baked appearances have to land right on a rotated page.
+    with_state({
+        let doc_id = doc.doc_id.clone();
+        move |st| {
+            seepdf_lib::engine::pages::apply_ops(
+                st,
+                &doc_id,
+                vec![seepdf_lib::ipc::types::PageOp::Rotate {
+                    pages: vec![0],
+                    delta: 90,
+                }],
+            )
+        }
+    })
+    .expect("rotate");
+    let rect = Rect::new(60.0, 600.0, 260.0, 630.0);
+    with_state({
+        let doc_id = doc.doc_id.clone();
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                registry::MutateOpts::new(
+                    "undo.annotCreate",
+                    seepdf_lib::ipc::types::ChangeReason::Edit,
+                )
+                .page(0),
+                |d| {
+                    seepdf_lib::engine::annot::create::create(
+                        d,
+                        0,
+                        &seepdf_lib::ipc::types::AnnotSpec::Square(
+                            seepdf_lib::ipc::types::ShapeSpec {
+                                rect,
+                                color: [220, 30, 30],
+                                fill_color: Some([250, 220, 40]),
+                                width: 2.0,
+                                opacity: 1.0,
+                            },
+                        ),
+                        None,
+                    )
+                },
+            )
+        }
+    })
+    .expect("add a comment");
+    let (widgets, markup) = kinds(&doc.doc_id, 0);
+    assert!(widgets > 0 && markup > 0, "page 0 has fields and a comment");
+    let before_comment = render_area(&doc.doc_id, 0, Some(rect));
+    let before_page = render_area(&doc.doc_id, 0, None);
+
+    // 주석 병합 only: the comment is ink, every field is still a field.
+    let comments_baked = flatten(&doc.doc_id, true, false, "flatten-annotations-only.pdf");
+    assert_eq!(
+        kinds(&comments_baked.doc_id, 0),
+        (widgets, 0),
+        "fields stay fillable, the comment is gone from /Annots"
+    );
+    let delta = difference(
+        &before_comment,
+        &render_area(&comments_baked.doc_id, 0, Some(rect)),
+    );
+    assert!(
+        delta < 0.02,
+        "the comment is baked in place: {:.1}%",
+        delta * 100.0
+    );
+    let delta = difference(&before_page, &render_area(&comments_baked.doc_id, 0, None));
+    assert!(
+        delta < 0.01,
+        "the page looks the same: {:.2}%",
+        delta * 100.0
+    );
+
+    // 양식 병합 only: the fields are ink, the comment is still an annotation.
+    let fields_baked = flatten(&doc.doc_id, false, true, "flatten-forms-only.pdf");
+    assert_eq!(
+        kinds(&fields_baked.doc_id, 0),
+        (0, markup),
+        "the fields are baked, the comment stays"
+    );
+    let delta = difference(&before_page, &render_area(&fields_baked.doc_id, 0, None));
+    assert!(
+        delta < 0.01,
+        "the page looks the same: {:.2}%",
+        delta * 100.0
+    );
+
+    // Both: nothing interactive is left (the old behaviour, unchanged).
+    let all = flatten(&doc.doc_id, true, true, "flatten-both.pdf");
+    assert_eq!(kinds(&all.doc_id, 0), (0, 0));
+
+    // The partial copies do not duplicate the page's fonts and images.
+    let size = |name: &str| std::fs::metadata(out_dir().join(name)).unwrap().len();
+    let full = size("flatten-both.pdf");
+    for name in ["flatten-annotations-only.pdf", "flatten-forms-only.pdf"] {
+        assert!(
+            size(name) < full + full / 5,
+            "{name} is {} bytes against {full} for the full flatten",
+            size(name)
+        );
+    }
+
+    // An encrypted document stays encrypted, and the kept fields are still fields.
+    let protected = out_dir().join("flatten-protected.pdf");
+    let _ = std::fs::remove_file(&protected);
+    with_state({
+        let doc_id = doc.doc_id.clone();
+        let path = protected.display().to_string();
+        move |st| {
+            seepdf_lib::engine::security::set_password(
+                st,
+                &doc_id,
+                &path,
+                Some("pw"),
+                "owner",
+                seepdf_lib::ipc::types::PermissionsRequest::default(),
+            )
+        }
+    })
+    .expect("set_password");
+    let bytes = std::fs::read(&protected).unwrap();
+    let info = with_state(move |st| registry::open(st, None, bytes, Some("pw".into())))
+        .expect("open the protected copy");
+    let locked = TestDoc {
+        doc_id: info.doc_id.clone(),
+        info,
+    };
+    assert_eq!(kinds(&locked.doc_id, 0), (widgets, markup));
+    let kept = flatten_with(
+        &locked.doc_id,
+        true,
+        false,
+        "flatten-protected-annots.pdf",
+        Some("pw"),
+    );
+    assert!(kept.info.encrypted);
+    assert_eq!(kinds(&kept.doc_id, 0), (widgets, 0));
+    let bytes = std::fs::read(out_dir().join("flatten-protected-annots.pdf")).unwrap();
+    let refused = with_state(move |st| registry::open(st, None, bytes, None).map(|i| i.doc_id));
+    assert!(refused.is_err(), "still needs the password");
+    let kept = flatten_with(
+        &locked.doc_id,
+        false,
+        true,
+        "flatten-protected-forms.pdf",
+        Some("pw"),
+    );
+    assert_eq!(kinds(&kept.doc_id, 0), (0, markup));
+}
+
 /// `crop` reports the unrotated crop box, which is what the page→device matrix is built from.
 #[test]
 fn export_reports_crop_box() {

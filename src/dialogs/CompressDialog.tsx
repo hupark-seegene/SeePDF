@@ -163,9 +163,15 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
       );
       onClose();
     } catch (e) {
-      toast("compress.failed", undefined, { tone: "danger", detail: message(e) });
       setReport(null);
       setPhase("idle");
+      if (api.isSeePdfError(e) && e.code === "stale") {
+        // the document changed after the estimate (the engine spent the token): estimate again
+        toast("compress.stale", undefined, { tone: "info" });
+        void estimate();
+        return;
+      }
+      toast("compress.failed", undefined, { tone: "danger", detail: message(e) });
     }
   };
 

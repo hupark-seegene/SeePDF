@@ -130,7 +130,9 @@ impl From<std::io::Error> for EngineError {
     fn from(e: std::io::Error) -> Self {
         let code = match e.kind() {
             std::io::ErrorKind::NotFound => ErrorCode::NotFound,
-            std::io::ErrorKind::PermissionDenied => ErrorCode::ReadOnly,
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+                ErrorCode::ReadOnly
+            }
             _ => ErrorCode::Io,
         };
         Self::new(code, e.to_string())

@@ -22,7 +22,10 @@ const DEFAULT_COLOR: Rgb = [0, 0, 0];
 /// Assigning the id is required by `IPC_CONTRACT.md` §7.1 — without it a third-party
 /// annotation has no stable handle. It writes to the in-memory document but deliberately
 /// does **not** bump the generation or dirty the document: it is an identity stamp, not a
-/// user edit, and the next real edit's undo snapshot picks it up.
+/// user edit. `OpenDoc::ids_stamped` makes the next real edit snapshot the stamped document
+/// (not the file), so undoing that edit keeps the ids.
+///
+/// A `/Annots` slot that holds no annotation (`null`, a dangling reference) is skipped.
 pub fn list_page(doc: &mut OpenDoc<'_>, page_index: PageIndex) -> Result<Vec<Annot>, EngineError> {
     let bindings = doc.bindings();
     let document = doc.pdf().raw_handle();
@@ -33,8 +36,12 @@ pub fn list_page(doc: &mut OpenDoc<'_>, page_index: PageIndex) -> Result<Vec<Ann
     // Pass 1: every annotation gets its `/NM` first, so a reply listed *before* its parent
     // (P2 threads) still resolves `/IRT` to the parent's id in pass 2.
     let mut ids: Vec<Option<String>> = Vec::with_capacity(count);
+    let mut stamped = false;
     for i in 0..count {
-        let mut a = raw::annot::get(bindings, page, i)?;
+        let Some(mut a) = raw::annot::slot(bindings, page, i) else {
+            ids.push(None);
+            continue;
+        };
         if a.subtype() == consts::FPDF_ANNOT_POPUP {
             // Popups are drawn by the React layer from the parent's contents; PDFium never
             // renders a standalone one and the contract has no `popup` kind.
@@ -46,6 +53,7 @@ pub fn list_page(doc: &mut OpenDoc<'_>, page_index: PageIndex) -> Result<Vec<Ann
             _ => {
                 let id = annot::new_id();
                 a.set_string("NM", &id);
+                stamped = true;
                 id
             }
         };
@@ -54,8 +62,13 @@ pub fn list_page(doc: &mut OpenDoc<'_>, page_index: PageIndex) -> Result<Vec<Ann
     let mut out = Vec::with_capacity(count);
     for (i, id) in ids.into_iter().enumerate() {
         let Some(id) = id else { continue };
-        let a = raw::annot::get(bindings, page, i)?;
+        let Some(a) = raw::annot::slot(bindings, page, i) else {
+            continue;
+        };
         out.push(read_one(&a, id, page_index, document));
+    }
+    if stamped {
+        doc.ids_stamped = true;
     }
     Ok(out)
 }

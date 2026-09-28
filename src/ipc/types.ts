@@ -459,7 +459,8 @@ export type OcrApplyPage = OcrPage | { page: PageIndex; ocr: OcrPage };
 export interface OpenFileEvent { path: string; source: OpenRequest['source'] }
 export interface DocChangedEvent {
   docId: DocId; docGeneration: DocGeneration; changedPages: PageIndex[] | 'all';
-  structure: boolean; dirty: boolean; reason: 'edit' | 'undo' | 'redo' | 'save' | 'pages' | 'ocr' | 'redact';
+  // no 'save': a save keeps the generation and emits only `doc-saved` (IPC_CONTRACT §8)
+  structure: boolean; dirty: boolean; reason: 'edit' | 'undo' | 'redo' | 'pages' | 'ocr' | 'redact';
   /** Stage 2: history state rides along, so ⌘Z/⇧⌘Z need no `get_document` per edit. */
   canUndo: boolean; canRedo: boolean;
 }

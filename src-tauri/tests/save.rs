@@ -95,12 +95,59 @@ fn save_document_roundtrip() {
     let info = with_doc(&doc.doc_id, |d| Ok(d.info())).expect("info");
     assert!(!info.dirty, "savedGeneration caught up");
     assert_eq!(info.page_count, 13);
+    // IPC_CONTRACT §8: a save changes nothing a cache is keyed on, so the generation stays
+    // (and only `doc-saved` is emitted, never `doc-changed`) — the mock mirrors this.
+    assert_eq!(result.doc_generation, dirty.doc_generation);
+    assert_eq!(info.doc_generation, dirty.doc_generation);
 
     let reopened = open_path(&path, None);
     assert_eq!(
         reopened.info.page_count, 13,
         "the file on disk has 13 pages"
     );
+}
+
+/// Bug hunt: Save As into a directory that does not have the file yet must not be refused by
+/// a pre-check on the directory's attributes (on Windows `readonly()` of Documents / Desktop /
+/// Pictures is the shell-folder marker, not a permission). The check now probes by creating a
+/// file; a directory that really refuses writes still answers `readOnly` before any bytes are
+/// serialised, and a missing directory is `notFound`.
+#[test]
+fn save_as_probes_the_directory() {
+    let doc = open("rotation.pdf");
+    let dir = out_dir().join("save-probe");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("새 파일.pdf");
+    save_to(&doc.doc_id, Some(&target.display().to_string())).expect("save as into a new file");
+    assert!(target.is_file());
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n != "새 파일.pdf")
+        .collect();
+    assert!(leftovers.is_empty(), "the probe cleans up: {leftovers:?}");
+
+    let missing = dir.join("nope").join("x.pdf");
+    let err = save_to(&doc.doc_id, Some(&missing.display().to_string())).unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = dir.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = save_to(
+            &doc.doc_id,
+            Some(&locked.join("x.pdf").display().to_string()),
+        )
+        .unwrap_err();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(err.code, ErrorCode::ReadOnly, "{err:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Save As writes elsewhere and re-points the document at the new file.
