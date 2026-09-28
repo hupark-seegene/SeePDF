@@ -172,14 +172,15 @@ by OCR, export, search and save (label + determinate bar + cancel ×).
 ## 10. Dialogs
 
 **OCR** (modal sheet, 520 px): 범위 (모든 페이지 / 현재 페이지 / 페이지 범위 `1,3,5-9`) · 언어 chips
-(한국어 + English selected by default) · 출력 (검색 가능한 PDF) · 옵션 (이미 텍스트가 있는 페이지 건너뛰기
-**on**, 해상도 자동/200/300/400 DPI, 고급 ▸ 레이아웃 자동/단일 단/단일 블록) · footer 예상 시간 + 취소/시작.
+(한국어 + English selected by default) · 출력 (검색 가능한 PDF) · 옵션 (인식 엔진 자동/Apple Vision/Tesseract —
+only where `ocr_capabilities` lists `vision`; 자동 = Apple Vision there, 이미 텍스트가 있는 페이지 건너뛰기
+**on**, 해상도 자동/200/300/400 DPI, 고급 ▸ 레이아웃 자동/단일 단/단일 블록 for Tesseract) · footer 예상 시간 + 취소/시작.
 While running it becomes a progress view: `12 / 148`, a thumbnail of the page being processed,
 elapsed/remaining, and an always-live 취소. On completion: an inline success bar with 실행 취소.
 
 **여러 파일 OCR** (P1-7, 640 px, 도구 ▸ 여러 파일 OCR… or ⋯; no shortcut): 파일 추가… (multi-select) / 목록 비우기,
 a list 파일 · 상태 (대기 / 여는 중… / 진행 중 n/m 페이지 / 저장 중… / 완료 · `<name>-ocr.pdf` / 건너뜀 · 이유 /
-실패 · 이유 / 취소됨) with × per row, the OCR sheet's shared options (언어 chips, 해상도, 이미 텍스트가 있는 페이지
+실패 · 이유 / 취소됨) with × per row, the OCR sheet's shared options (언어 chips, 인식 엔진, 해상도, 이미 텍스트가 있는 페이지
 건너뛰기), 저장 위치 원본과 같은 폴더 (default) | 다른 폴더 + 찾아보기…. 시작 processes every file without a copy yet,
 one at a time, the pages of each in parallel on one worker pool; each file is opened beside the window's document,
 recognised, saved as `<name>-ocr.pdf` (never over the source or an existing file: ` (2)`, ` (3)`…) and closed. An
@@ -961,6 +962,9 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `print.preparing` | 인쇄 준비 중… | Preparing to print… |
 | `ocr.engine` | 인식 엔진 | Engine |
 | `ocr.engine.auto` | 자동 | Automatic |
+| `ocr.engine.vision` | Apple Vision | Apple Vision |
+| `ocr.engine.tesseract` | Tesseract | Tesseract |
+| `ocr.engine.autoHint` | 이 Mac에서는 Apple Vision으로 더 빠르고 정확하게 인식합니다 | On this Mac, Apple Vision recognizes text faster and more accurately |
 | `ocr.layout` | 레이아웃 | Layout |
 | `ocr.layout.auto` | 자동 | Automatic |
 | `ocr.layout.column` | 단일 단 | Single column |

@@ -1,7 +1,8 @@
 /**
  * 텍스트 인식 (OCR) — the modal sheet of UI_SPEC §10, 520 px.
  *
- *   setup     범위 · 언어 · 출력 · 옵션 (건너뛰기, 해상도, 고급 ▸ 레이아웃) · 예상 시간 + 취소/시작
+ *   setup     범위 · 언어 · 출력 · 옵션 (인식 엔진 where Apple Vision exists, 건너뛰기, 해상도,
+ *             고급 ▸ 레이아웃 for Tesseract) · 예상 시간 + 취소/시작
  *   running   the same sheet becomes a progress view: `12 / 148`, the page thumbnail, elapsed and
  *             remaining, and a 취소 that is live at every moment
  *   done      an inline success bar with 실행 취소
@@ -23,6 +24,9 @@ import {
   estimateSeconds, formatPageRange, parsePageRange, runOcrJob, type OcrDpi, type OcrJobResult,
 } from "./ocrJob";
 import { DEFAULT_LAYOUT, defaultWorkerCount, type OcrLayout } from "./tesseractPool";
+import {
+  ENGINE_CHOICES, isVisionAvailable, resolveEngine, useVisionAvailable, type OcrEngineChoice,
+} from "./engine";
 import "./OcrDialog.css";
 
 type RangeMode = "all" | "current" | "custom";
@@ -74,6 +78,9 @@ function OcrDialogBody(
   const [dpi, setDpi] = useState<OcrDpi>("auto");
   const [layout, setLayout] = useState<OcrLayout>(DEFAULT_LAYOUT);
   const [advanced, setAdvanced] = useState(false);
+  const [engineChoice, setEngineChoice] = useState<OcrEngineChoice>("auto");
+  const visionAvailable = useVisionAvailable();
+  const engine = resolveEngine(engineChoice, visionAvailable === true);
 
   const [phase, setPhase] = useState<Phase>("setup");
   const [jobId, setJobId] = useState<number | null>(null);
@@ -101,7 +108,7 @@ function OcrDialogBody(
 
   const rangeInvalid = rangeMode === "custom" && pages === null;
   const workers = defaultWorkerCount();
-  const seconds = estimateSeconds(pages?.length ?? 0, workers);
+  const seconds = estimateSeconds(pages?.length ?? 0, workers, engine);
   const canStart = !!docId && !!pages && pages.length > 0 && (ko || en) && phase === "setup";
 
   const start = useCallback(async () => {
@@ -111,6 +118,8 @@ function OcrDialogBody(
     setPhase("running");
     setActivePage(pages[0] ?? null);
     startedAt.current = Date.now();
+    // The capability answer may still be in flight on a very fast click: ask the cached promise.
+    const runEngine = resolveEngine(engineChoice, await isVisionAvailable());
     const r = await runOcrJob({
       docId,
       docGeneration,
@@ -121,6 +130,7 @@ function OcrDialogBody(
       dpi,
       skipPagesWithText: skipText,
       workers,
+      engine: runEngine,
       jobId: id,
       onPageDone: (page) => {
         const next = pages[pages.indexOf(page) + 1];
@@ -129,7 +139,7 @@ function OcrDialogBody(
     });
     setResult(r);
     setPhase("finished");
-  }, [docId, docGeneration, pages, pageGeom, ko, en, layout, dpi, skipText, workers]);
+  }, [docId, docGeneration, pages, pageGeom, ko, en, layout, dpi, skipText, workers, engineChoice]);
 
   const undoAll = useCallback(async () => {
     if (!docId || !result) return;
@@ -240,6 +250,21 @@ function OcrDialogBody(
 
             <section className="ocr-section">
               <h3 className="ocr-label">{t("ocr.options")}</h3>
+              {visionAvailable && (
+                <>
+                  <label className="ocr-row">
+                    <span className="ocr-row-label">{t("ocr.engine")}</span>
+                    <select
+                      className="field"
+                      value={engineChoice}
+                      onChange={(e) => setEngineChoice(e.target.value as OcrEngineChoice)}
+                    >
+                      {ENGINE_CHOICES.map((c) => <option key={c.id} value={c.id}>{t(c.labelKey)}</option>)}
+                    </select>
+                  </label>
+                  {engineChoice === "auto" && <p className="ocr-hint">{t("ocr.engine.autoHint")}</p>}
+                </>
+              )}
               <label className="ocr-check">
                 <input type="checkbox" checked={skipText} onChange={(e) => setSkipText(e.target.checked)} />
                 <span>{t("ocr.option.skipText")}</span>
@@ -267,7 +292,7 @@ function OcrDialogBody(
                 <span className="ocr-caret" data-open={advanced || undefined}>›</span>
                 {t("settings.tab.advanced")}
               </button>
-              {advanced && (
+              {advanced && engine === "tesseract" && (
                 <label className="ocr-row">
                   <span className="ocr-row-label">{t("ocr.layout")}</span>
                   <select

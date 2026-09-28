@@ -355,6 +355,8 @@ export interface OcrPage {
   rotation: Rotation; lines: OcrLine[];
 }
 export type OcrEngine = 'tesseract' | 'vision' | 'windows';
+/** One element of `ocr_apply.pages`: the page itself, or the Stage 8 `{ page, ocr }` form (same batch). */
+export type OcrApplyPage = OcrPage | { page: PageIndex; ocr: OcrPage };
 
 // ---------------------------------------------------------------------------
 // 8. Events and progress

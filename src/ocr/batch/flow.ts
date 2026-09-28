@@ -4,7 +4,9 @@
  *
  * Per file: `open_document` (beside the window's document, never through `docStore`; an encrypted
  * file asks for its password through the ordinary 암호 입력 prompt, and dismissing it skips the
- * file) → `runOcrJob` over every page → `save_document_as` to `<name>-ocr.pdf` (beside the source
+ * file) → `runOcrJob` over every page, applied as **one** `ocr_apply` (`applyOnce`: one undo
+ * snapshot per file, not per page — nobody undoes inside a file that is closed right after) →
+ * `save_document_as` to `<name>-ocr.pdf` (beside the source
  * or in the chosen folder; never over the source, never over anything that exists — `(2)`, `(3)`…)
  * → `close_document`, on success, failure and cancel alike.
  *
@@ -21,6 +23,7 @@ import { useAppStore } from "../../store/appStore";
 import { toast } from "../../app/toastStore";
 import { resolveDpi, runOcrJob, type OcrDpi } from "../ocrJob";
 import { DEFAULT_LAYOUT, TesseractPool, defaultWorkerCount } from "../tesseractPool";
+import { isVisionAvailable, resolveEngine, type OcrEngineChoice, type OcrRunEngine } from "../engine";
 import {
   addPaths, isRunnable, patchItem, pathKey, pickOutputPath, removeItem, requeue, summarize,
   type BatchItem, type BatchStatus,
@@ -32,6 +35,8 @@ export interface BatchOptions {
   /** 한국어 — always recognised together with English (`kor` alone garbles Latin) */
   ko: boolean;
   en: boolean;
+  /** 인식 엔진: 자동 = Apple Vision where the backend has it (P1-11) */
+  engine: OcrEngineChoice;
   dpi: OcrDpi;
   /** UI_SPEC `ocr.option.skipText`, on by default */
   skipPagesWithText: boolean;
@@ -51,7 +56,9 @@ export interface BatchState {
   jobId: number | null;
 }
 
-const DEFAULT_OPTIONS: BatchOptions = { ko: true, en: true, dpi: "auto", skipPagesWithText: true, outputDir: null };
+const DEFAULT_OPTIONS: BatchOptions = {
+  ko: true, en: true, engine: "auto", dpi: "auto", skipPagesWithText: true, outputDir: null,
+};
 
 function initial(): BatchState {
   return {
@@ -158,8 +165,8 @@ async function runQueue(queue: number[]): Promise<void> {
   const langs = langsFor(options);
   const dpi = resolveDpi(options.dpi);
   const workers = defaultWorkerCount();
-  // One pool for the whole batch: the workers load their language data once, not once per file.
-  const pool = new TesseractPool({ langs, layout: DEFAULT_LAYOUT, dpi, workers });
+  /** the batch's tesseract pool; Vision needs none — the backend renders and recognises */
+  let pool: TesseractPool | undefined;
   /** outputs this run has claimed, so two `보고서.pdf` never race for one name */
   const reserved = new Set<string>();
 
@@ -175,13 +182,17 @@ async function runQueue(queue: number[]): Promise<void> {
 
   let finished = 0;
   try {
+    // After the phase switch above, which must stay synchronous (a second 시작 checks it).
+    const engine = resolveEngine(options.engine, await isVisionAvailable());
+    // One pool for the whole batch: the workers load their language data once, not once per file.
+    if (engine === "tesseract") pool = new TesseractPool({ langs, layout: DEFAULT_LAYOUT, dpi, workers });
     for (const id of queue) {
       if (signal.aborted) break;
       const item = itemOf(id);
       if (!item) continue;
       let outcome: Outcome;
       try {
-        outcome = await processFile(item, { options, langs, workers, pool, reserved, signal });
+        outcome = await processFile(item, { options, langs, workers, engine, pool, reserved, signal });
       } catch (e) {
         outcome = { status: "failed", reasonKey: "error.generic", detail: message(e) };
       }
@@ -193,7 +204,7 @@ async function runQueue(queue: number[]): Promise<void> {
     }
   } finally {
     unregister();
-    await pool.terminate().catch(() => undefined);
+    await pool?.terminate().catch(() => undefined);
     const cancelled = signal.aborted;
     useJobStore.getState().update(jobId, { state: cancelled ? "cancelled" : "done", done: finished });
     if (live.controller === controller) live.controller = null;
@@ -206,7 +217,8 @@ interface FileContext {
   options: BatchOptions;
   langs: string;
   workers: number;
-  pool: TesseractPool;
+  engine: OcrRunEngine;
+  pool: TesseractPool | undefined;
   reserved: Set<string>;
   signal: AbortSignal;
 }
@@ -231,7 +243,10 @@ async function processFile(item: BatchItem, ctx: FileContext): Promise<Outcome> 
       dpi: ctx.options.dpi,
       skipPagesWithText: ctx.options.skipPagesWithText,
       workers: ctx.workers,
+      engine: ctx.engine,
       pool: ctx.pool,
+      // One `ocr_apply` for the whole file: a cancelled file is closed unsaved anyway.
+      applyOnce: true,
       track: false,
       signal,
       onPlan: (todo) => patch(item.id, { total: todo.length }),

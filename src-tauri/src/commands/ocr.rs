@@ -4,13 +4,17 @@
 //! The page image the tesseract.js workers recognise comes from the `/ocr` protocol route,
 //! never from a command. `ocr_apply` is **one** `registry::mutate` for the whole batch = one
 //! undo step, so cancelling a 14-page run and undoing it are both a single step.
+//!
+//! `ocr_recognize_native` (P1-11, macOS Vision) renders that same image on the engine thread and
+//! recognises it on a blocking thread — Vision never runs on the engine thread, PDFium never
+//! runs off it.
 
 use crate::engine::ocr;
 use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
-    DocInfo, JobEvent, OcrCapabilities, OcrPage, OcrPageStatus, PageIndex,
+    DocInfo, JobEvent, OcrApplyPage, OcrCapabilities, OcrPage, OcrPageStatus, PageIndex,
 };
-use crate::ipc::EngineError;
+use crate::ipc::{EngineError, ErrorCode};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -40,10 +44,15 @@ pub async fn ocr_page_status(
 pub async fn ocr_apply(
     engine: State<'_, EngineHandle>,
     doc_id: String,
-    pages: Vec<OcrPage>,
+    pages: Vec<OcrApplyPage>,
     replace_existing: bool,
     on_progress: Channel<JobEvent>,
 ) -> Result<DocInfo, EngineError> {
+    // `OcrPage[]` and the Stage 8 `{ page, ocr }[]` form are the same batch.
+    let pages = pages
+        .into_iter()
+        .map(OcrApplyPage::into_page)
+        .collect::<Result<Vec<OcrPage>, EngineError>>()?;
     let token = engine.jobs.create();
     let job_id = token.id;
     let total = pages.len() as u32;
@@ -88,15 +97,28 @@ pub async fn ocr_apply(
     result
 }
 
-/// P1, macOS only (Vision). `ocr_capabilities` does not advertise `vision` until this has a
-/// body, so the frontend never routes to it by accident.
+/// P1-11, macOS only (Vision, accurate level, `ko-KR` + `en-US`, language correction). Returns
+/// the same `OcrPage` the tesseract path builds — image pixels, origin top-left — for
+/// `ocr_apply`. `unsupported` where `ocr_capabilities` does not list `vision`.
 #[tauri::command]
 pub async fn ocr_recognize_native(
-    _engine: State<'_, EngineHandle>,
-    _doc_id: String,
-    _page: PageIndex,
-    _dpi: u32,
-    _languages: Vec<String>,
-) -> Result<crate::ipc::types::OcrPage, EngineError> {
-    Err(EngineError::unsupported("ocr_recognize_native"))
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    dpi: u32,
+    languages: Vec<String>,
+) -> Result<OcrPage, EngineError> {
+    if !ocr::vision_available() {
+        return Err(EngineError::unsupported("ocr_recognize_native"));
+    }
+    // The `/ocr` image, on the engine thread (the only thread that may touch PDFium)…
+    let image = engine
+        .call(Lane::Background, "ocr_recognize_native", move |st| {
+            ocr::render_page_gray(st, &doc_id, page, dpi)
+        })
+        .await?;
+    // …and Vision on a blocking thread, so tiles keep flowing while it reads (0.1–3 s a page).
+    tauri::async_runtime::spawn_blocking(move || ocr::recognize_gray(&image, &languages))
+        .await
+        .map_err(|e| EngineError::new(ErrorCode::Pdfium, format!("Vision thread: {e}")))?
 }

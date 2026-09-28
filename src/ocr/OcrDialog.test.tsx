@@ -17,6 +17,16 @@ vi.mock("./ocrJob", async (importOriginal) => {
 
 import { OcrDialog } from "./OcrDialog";
 import { closeOcrDialog, openOcrDialog } from "./dialogState";
+import { mock } from "../ipc/mock";
+import { loadOcrCapabilities, resetOcrCapabilities } from "./engine";
+
+/** `ocr_capabilities` as a machine without Apple Vision (Windows, macOS 12) or a Mac with it. */
+function capabilities(vision: boolean) {
+  resetOcrCapabilities();
+  vi.spyOn(mock, "ocrCapabilities").mockResolvedValue({
+    engines: vision ? ["tesseract", "vision"] : ["tesseract"], languages: ["kor", "eng"],
+  });
+}
 
 const CONTEXT = { docId: "d1", docGeneration: 1, pageCount: 14, currentPage: 3 };
 
@@ -31,6 +41,7 @@ beforeEach(() => {
   closeOcrDialog();
   useJobStore.setState({ jobs: [], active: null });
   runOcrJob.mockReset().mockResolvedValue(result());
+  capabilities(false);
 });
 
 describe("ocr.dialog", () => {
@@ -148,5 +159,61 @@ describe("ocr.dialog", () => {
     fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
     await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
     expect(runOcrJob.mock.calls[0][0].layout).toBe("block");
+  });
+});
+
+describe("ocr.dialog.engine", () => {
+  it("has no 인식 엔진 row without Apple Vision, and runs Tesseract", async () => {
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    // Let the capability answer land before asserting the row stays away.
+    await act(async () => { await loadOcrCapabilities(); });
+    expect(screen.queryByLabelText(t("ocr.engine"))).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0].engine).toBe("tesseract");
+  });
+
+  it("offers 자동 / Apple Vision / Tesseract where Vision exists; 자동 runs Vision", async () => {
+    capabilities(true);
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    const select = await screen.findByLabelText(t("ocr.engine"));
+    expect(select).toHaveValue("auto");
+    expect([...(select as HTMLSelectElement).options].map((o) => o.textContent)).toEqual([
+      t("ocr.engine.auto"), t("ocr.engine.vision"), t("ocr.engine.tesseract"),
+    ]);
+    expect(screen.getByText(t("ocr.engine.autoHint"))).toBeInTheDocument();
+    // Vision's estimate: 14 pages × 0.8 s, no worker speed-up.
+    expect(screen.getByText(t("ocr.estimate", { seconds: 11 }))).toBeInTheDocument();
+    // 레이아웃 is a Tesseract knob: not offered while Vision runs.
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(t("settings.tab.advanced")) }));
+    expect(screen.queryByLabelText(t("ocr.layout"))).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0]).toMatchObject({ engine: "vision", langs: "kor+eng", pages: expect.any(Array) });
+  });
+
+  it("Tesseract picked explicitly runs Tesseract and brings 레이아웃 back", async () => {
+    capabilities(true);
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    fireEvent.change(await screen.findByLabelText(t("ocr.engine")), { target: { value: "tesseract" } });
+    expect(screen.queryByText(t("ocr.engine.autoHint"))).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(t("settings.tab.advanced")) }));
+    expect(screen.getByLabelText(t("ocr.layout"))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0].engine).toBe("tesseract");
+  });
+
+  it("a 시작 faster than the capability answer still runs Vision under 자동", async () => {
+    capabilities(true);
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));   // before the row appears
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0].engine).toBe("vision");
   });
 });

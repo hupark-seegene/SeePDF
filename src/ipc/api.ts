@@ -13,7 +13,7 @@ import { parseRawPage, parseTextLayer, type RawPage, type TextLayerView } from "
 import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, CompareOptions, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
   EngineError, EngineStats, ErrorCode, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, ObjectId,
-  ObjectsResult, OcrEngine, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
+  ObjectsResult, OcrApplyPage, OcrEngine, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
   RedactPreview, Rgb, SaveResult, SearchEvent, Settings, StampResult, StampSpec, TextEditProbe, ViewportHint,
 } from "./types";
 
@@ -503,19 +503,23 @@ export function ocrPageStatus(
   return call("ocr_page_status", a, (mock) => mock.ocrPageStatus(a));
 }
 
+/** Every page of `pages` in **one** `registry::mutate` = one undo step (§7.9). */
 export function ocrApply(
-  a: { docId: DocId; pages: OcrPage[]; replaceExisting: boolean },
+  a: { docId: DocId; pages: OcrApplyPage[]; replaceExisting: boolean },
   onProgress: (e: JobEvent) => void,
 ): Promise<DocInfo> {
   return call("ocr_apply", { ...a, onProgress: channel(onProgress) }, (mock) => mock.ocrApply(a, onProgress));
 }
 
+/**
+ * P1-11, macOS 13+: Apple Vision over the page the `/ocr` route would render (the backend renders it
+ * itself). `languages` are Vision's (`ko-KR`, `en-US`); tesseract codes are mapped too. `unsupported`
+ * where `ocrCapabilities().engines` has no `vision`.
+ */
 export function ocrRecognizeNative(
   a: { docId: DocId; page: PageIndex; dpi: number; languages: string[] },
 ): Promise<OcrPage> {
-  return call("ocr_recognize_native", a, async () => {
-    throw new SeePdfError({ code: "unsupported", message: "native OCR is P1 (macOS Vision)" });
-  });
+  return call("ocr_recognize_native", a, (mock) => mock.ocrRecognizeNative(a));
 }
 
 // ---------------------------------------------------------------------------

@@ -21,12 +21,22 @@
  * that carries an older `gen` is answered `410 Gone` (IPC_CONTRACT §9). So bitmaps are fetched for one
  * batch at the *current* generation, and the generation is re-read from the `DocInfo` each apply
  * returns.
+ *
+ * Two variations (P1-11):
+ *
+ *   engine: "vision"   `ocr_recognize_native` per page instead of `/ocr` + tesseract — the backend
+ *                      renders the same image and Apple Vision reads it; two pages in flight
+ *   applyOnce: true    one `ocr_apply` with every page at the end = one undo snapshot for the whole
+ *                      run. 여러 파일 OCR uses it: a cancelled file is closed unsaved anyway, so
+ *                      all-or-nothing costs nothing there and a 300-page file stops paying 300
+ *                      snapshots.
  */
 import * as api from "../ipc/api";
 import { ocrImageUrl } from "../ipc/protocol";
 import type { DocGeneration, DocId, DocInfo, JobEvent, JobId, OcrPage, PageGeom, PageIndex, Rotation } from "../ipc/types";
 import { localJobId, registerCanceller, useJobStore } from "../store/jobStore";
 import { countWords, meanConfidence, normalizeTesseract } from "./normalize";
+import { VISION_CONCURRENCY, VISION_SECONDS_PER_PAGE, visionLanguages, type OcrRunEngine } from "./engine";
 import {
   DEFAULT_DPI, DEFAULT_LANGS, DEFAULT_LAYOUT, OcrCancelledError, TesseractPool,
   defaultWorkerCount, type OcrLayout,
@@ -114,6 +124,14 @@ export interface OcrRunOptions {
    * and cancels through `signal` (여러 파일 OCR has one job for the whole batch). Default `true`.
    */
   track?: boolean;
+  /** the recogniser (already resolved from 자동, see `engine.ts`). Default `"tesseract"`. */
+  engine?: OcrRunEngine;
+  /**
+   * `true`: one `ocr_apply` with every recognised page at the end — one undo step, nothing applied
+   * when the run is cancelled, and `onPageDone` fires as each page is *recognised*. Default `false`
+   * (one `ocr_apply` per page, so a cancel keeps the pages already done).
+   */
+  applyOnce?: boolean;
   /** called once the pages to recognise are known (after "skip pages that already have text") */
   onPlan?: (todo: PageIndex[], skipped: PageIndex[]) => void;
 }
@@ -142,9 +160,12 @@ export interface OcrJobResult {
 const SECONDS_PER_PAGE = 1.6;
 const INIT_SECONDS = 0.3;
 
-/** `ocr.estimate` — "예상 시간: 약 {{seconds}}초". */
-export function estimateSeconds(pageCount: number, workers = defaultWorkerCount()): number {
+/** `ocr.estimate` — "예상 시간: 약 {{seconds}}초". Vision does not scale with workers (`engine.ts`). */
+export function estimateSeconds(
+  pageCount: number, workers = defaultWorkerCount(), engine: OcrRunEngine = "tesseract",
+): number {
   if (pageCount <= 0) return 0;
+  if (engine === "vision") return Math.max(1, Math.round(pageCount * VISION_SECONDS_PER_PAGE));
   return Math.max(1, Math.round(INIT_SECONDS + (pageCount * SECONDS_PER_PAGE) / Math.max(1, workers)));
 }
 
@@ -246,6 +267,9 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
   const workers = options.workers ?? options.pool?.maxWorkers ?? defaultWorkerCount();
   const skipPagesWithText = options.skipPagesWithText ?? true;
   const replaceExisting = options.replaceExisting ?? false;
+  const engine = options.engine ?? "tesseract";
+  const applyOnce = options.applyOnce ?? false;
+  const inFlight = engine === "vision" ? VISION_CONCURRENCY : workers;
 
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -293,46 +317,83 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
       return finish({ status: "done", applied, skipped, words: 0, confidence: 0, messageKey: "ocr.noImagePages" });
     }
 
-    pool = options.pool ?? new TesseractPool({
-      langs, layout, dpi, workers,
-      onProgress: (e) => {
-        if (e.status === "recognizing text") options.onPageProgress?.(-1, e.progress);
-      },
-    });
+    if (engine === "tesseract") {
+      pool = options.pool ?? new TesseractPool({
+        langs, layout, dpi, workers,
+        onProgress: (e) => {
+          if (e.status === "recognizing text") options.onPageProgress?.(-1, e.progress);
+        },
+      });
+    }
+    const languages = visionLanguages(langs);
 
-    // 2. Batch of `workers` pages: fetch + recognise in parallel, then apply strictly in order.
-    for (const batch of chunk(todo, workers)) {
+    /** One page → `OcrPage`: Vision in the backend, or `/ocr` + the tesseract pool here. */
+    const recognise = async (page: PageIndex, batchGen: DocGeneration): Promise<OcrPage> => {
+      if (engine === "vision") {
+        // The command cannot be interrupted mid-page (0.1–3 s); the checks around it stop the run.
+        const ocrPage = await api.ocrRecognizeNative({ docId: options.docId, page, dpi, languages });
+        if (controller.signal.aborted) throw new OcrCancelledError();
+        return ocrPage;
+      }
+      const bitmap = await fetchPageBitmap({ docId: options.docId, gen: batchGen, page, dpi, signal: controller.signal });
+      const mismatch = bitmapScaleMismatch(bitmap, options.pageGeom?.[page], dpi);
+      if (mismatch !== null) {
+        console.warn(`[ocr] page ${page + 1}: /ocr bitmap is ${mismatch.toFixed(3)}× the expected size at ${dpi} DPI`);
+      }
+      const raw = await pool!.recognize(bitmap.blob, { langs, layout, dpi, signal: controller.signal });
+      const rotation: Rotation = options.pageGeom?.[page]?.rotation ?? 0;
+      return normalizeTesseract(raw, {
+        page, dpi, widthPx: bitmap.widthPx, heightPx: bitmap.heightPx, rotation,
+      });
+    };
+
+    const apply = async (ocrPages: OcrPage[]) => {
+      info = await api.ocrApply(
+        { docId: options.docId, pages: ocrPages, replaceExisting },
+        (e: JobEvent) => {
+          if (e.type === "started") backendJobId = e.jobId;
+          if (e.type === "done" || e.type === "error" || e.type === "cancelled") backendJobId = null;
+        },
+      );
+      gen = info.docGeneration;
+    };
+
+    const tally = (ocrPage: OcrPage) => {
+      const n = countWords(ocrPage);
+      words += n;
+      confidenceSum += meanConfidence(ocrPage) * n;
+    };
+
+    // 2. Batch of `inFlight` pages: recognise in parallel, then apply strictly in order.
+    const pending: OcrPage[] = [];
+    for (const batch of chunk(todo, inFlight)) {
       if (controller.signal.aborted) throw new OcrCancelledError();
       const batchGen = gen;
-      const recognised = await Promise.all(batch.map(async (page) => {
-        const bitmap = await fetchPageBitmap({ docId: options.docId, gen: batchGen, page, dpi, signal: controller.signal });
-        const mismatch = bitmapScaleMismatch(bitmap, options.pageGeom?.[page], dpi);
-        if (mismatch !== null) {
-          console.warn(`[ocr] page ${page + 1}: /ocr bitmap is ${mismatch.toFixed(3)}× the expected size at ${dpi} DPI`);
-        }
-        const raw = await pool!.recognize(bitmap.blob, { langs, layout, dpi, signal: controller.signal });
-        const rotation: Rotation = options.pageGeom?.[page]?.rotation ?? 0;
-        return normalizeTesseract(raw, {
-          page, dpi, widthPx: bitmap.widthPx, heightPx: bitmap.heightPx, rotation,
-        });
-      }));
+      const recognised = await Promise.all(batch.map((page) => recognise(page, batchGen)));
 
       for (const ocrPage of recognised) {
         if (controller.signal.aborted) throw new OcrCancelledError();
-        info = await api.ocrApply(
-          { docId: options.docId, pages: [ocrPage], replaceExisting },
-          (e: JobEvent) => {
-            if (e.type === "started") backendJobId = e.jobId;
-            if (e.type === "done" || e.type === "error" || e.type === "cancelled") backendJobId = null;
-          },
-        );
-        gen = info.docGeneration;
+        if (applyOnce) {
+          pending.push(ocrPage);
+          options.onPageDone?.(ocrPage.page, ocrPage);
+          jobs.update(jobId, { done: pending.length, total: todo.length, note: String(ocrPage.page + 1) });
+          continue;
+        }
+        await apply([ocrPage]);
         applied.push(ocrPage.page);
-        const n = countWords(ocrPage);
-        words += n;
-        confidenceSum += meanConfidence(ocrPage) * n;
+        tally(ocrPage);
         options.onPageDone?.(ocrPage.page, ocrPage);
         jobs.update(jobId, { done: applied.length, total: todo.length, note: String(ocrPage.page + 1) });
+      }
+    }
+
+    // 3. `applyOnce`: the whole run as one `ocr_apply` = one undo step.
+    if (pending.length > 0) {
+      if (controller.signal.aborted) throw new OcrCancelledError();
+      await apply(pending);
+      for (const ocrPage of pending) {
+        applied.push(ocrPage.page);
+        tally(ocrPage);
       }
     }
 
