@@ -50,6 +50,14 @@ export default defineConfig(() => ({
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     css: false,
     restoreMocks: true,
+    // The component tests are written against the macOS layout (Finder, ⌘ shortcuts). jsdom's
+    // default user agent names the host OS, so on a Windows runner `detectOs()` said "windows"
+    // and every "Finder에서 보기" assertion failed. Tests that need Windows pass their own UA.
+    environmentOptions: {
+      jsdom: {
+        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) jsdom",
+      },
+    },
     env: {
       // every test runs against the mock adapter — there is no Rust in vitest
       VITE_SEEPDF_MOCK: "1",

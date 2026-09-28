@@ -1,0 +1,17 @@
+# LF everywhere, including a Windows checkout (the GitHub Windows runner's git has
+# core.autocrlf=true): `cargo fmt --check`, `include_str!` and the JSON/TOML fixtures all
+# expect LF, and the source is authored on macOS.
+* text=auto eol=lf
+
+# Never touch these: a PDF is byte-offset addressed (its xref breaks if a newline is
+# rewritten), and a generated fixture may contain no NUL byte for git's binary sniffing.
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.traineddata binary
+*.gz binary
+*.wasm binary

@@ -70,9 +70,12 @@ describe("Intl helpers", () => {
   it("formats bytes and relative days in Korean", () => {
     setLocale("ko");
     expect(formatBytes(1024)).toBe("1 KB");
-    const now = new Date("2026-09-15T10:00:00+09:00");
-    expect(formatRelativeDay("2026-09-15T08:00:00+09:00", now)).toBe("오늘");
-    expect(formatRelativeDay("2026-09-14T23:00:00+09:00", now)).toBe("어제");
-    expect(formatRelativeDay("2026-09-12T09:00:00+09:00", now)).toBe("3일 전");
+    // Local wall-clock times: "today" is a calendar day in the machine's time zone, so fixed
+    // +09:00 offsets made this fail on a UTC runner (08:00 KST is still yesterday in UTC).
+    const at = (d: number, h: number) => new Date(2026, 8, d, h).toISOString();
+    const now = new Date(2026, 8, 15, 10);
+    expect(formatRelativeDay(at(15, 8), now)).toBe("오늘");
+    expect(formatRelativeDay(at(14, 23), now)).toBe("어제");
+    expect(formatRelativeDay(at(12, 9), now)).toBe("3일 전");
   });
 });

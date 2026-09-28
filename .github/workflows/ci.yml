@@ -6,9 +6,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push to a PR branch supersedes the running check, but a push to main never cancels
+# the run in progress: until Stage 9 every main run was cancelled this way (or sat queued on
+# a retired runner label), so the Windows job had never once finished. GitHub still keeps at
+# most one *pending* run per group, so a burst of pushes costs one extra run, not N.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -46,8 +50,9 @@ jobs:
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
+          # `macos-13` was retired; its jobs sat in the queue until the 24 h timeout.
           - name: macos-x64
-            os: macos-13
+            os: macos-15-intel
             target: x86_64-apple-darwin
           - name: windows-x64
             os: windows-latest
@@ -60,9 +65,12 @@ jobs:
           node-version: 24
           cache: npm
 
+      # Pinned to the toolchain the tree is developed with (CLAUDE.md), so a new stable's
+      # lints cannot turn `clippy -D warnings` red overnight. Bump together with local rustup.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.96.0"
           targets: ${{ matrix.target }}
           components: rustfmt, clippy
 
