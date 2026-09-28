@@ -122,10 +122,12 @@ export const KEYMAP: KeyBinding[] = [
 export const KEYMAP_BY_ID: Record<string, KeyBinding> = Object.fromEntries(KEYMAP.map((b) => [b.id, b]));
 /**
  * Native-menu items with no shortcut row above (the 도구 menu in `src-tauri/src/app/menu.rs`).
- * Without them here `menu:tools/…` would never reach the dispatcher.
+ * Without them here `menu:tools/…` would never reach the dispatcher. `settings` is the app menu's
+ * 설정… (its id predates the keymap's `app.settings`), `app.checkUpdates` its 업데이트 확인….
  */
 export const MENU_ONLY_IDS: readonly string[] = [
   "tools.ocr", "tools.batchOcr", "tools.security", "tools.compress", "tools.compare", "tools.merge",
+  "settings", "app.checkUpdates",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 

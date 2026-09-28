@@ -101,6 +101,8 @@ export default function App() {
   // 1. settings + recents + theme + locale, then drain anything the OS handed us before mount
   useEffect(() => {
     void bootstrap().then(async () => {
+      // 업데이트 확인 on launch (v0.2.0): silent, main window only, never in the way of recovery
+      void import("./update/launch").then((m) => m.checkOnLaunch(useAppStore.getState().settings));
       await offerRecovery();
       const pending = await api.takePendingOpens().catch(() => []);
       if (pending.length) {

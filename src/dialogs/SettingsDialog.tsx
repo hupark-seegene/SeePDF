@@ -122,6 +122,14 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                 />
                 <span>{t("settings.restorePosition")}</span>
               </label>
+              <label className="dlg-check text-base">
+                <input
+                  type="checkbox"
+                  checked={settings?.checkUpdates !== false}
+                  onChange={(e) => void patch({ checkUpdates: e.target.checked })}
+                />
+                <span>{t("settings.checkUpdates")}</span>
+              </label>
               <Row labelKey="settings.autosave" hintKey="settings.autosave.hint">
                 <div className="segmented" role="radiogroup" aria-label={t("settings.autosave")}>
                   {AUTOSAVE_CHOICES.map((sec) => (

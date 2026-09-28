@@ -444,6 +444,8 @@ export interface Settings {
   signatures: SavedSignature[];
   /** 야간 모드, persisted across launches (Stage 8); `'off'` in settings written before it */
   night: 'off' | 'dark' | 'sepia';
+  /** 시작할 때 업데이트 확인 (v0.2.0); `true` in settings written before it */
+  checkUpdates: boolean;
 }
 
 /** One entry of the 서명 보관함. Drawn strokes are unit space (0…1 of the drawn box, y-down). */

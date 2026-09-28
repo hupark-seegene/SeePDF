@@ -1,0 +1,58 @@
+/* 업데이트 확인 (v0.2.0) */
+.update-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 48px;
+}
+
+.update-headline {
+  font-weight: 600;
+}
+
+.update-notes {
+  margin-top: 4px;
+}
+
+.update-notes h3 {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.update-notes-text {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-hover);
+}
+
+.update-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.update-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.update-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width var(--dur-fast, 140ms) var(--ease-out);
+}
+
+.update-bar-fill[data-indeterminate] {
+  opacity: 0.45;
+}
+
+.update-error {
+  overflow-wrap: anywhere;
+}

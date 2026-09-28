@@ -16,5 +16,6 @@
   ],
   "ocrDpi": "auto",
   "toolDefaults": {},
-  "signatures": []
+  "signatures": [],
+  "checkUpdates": true
 }

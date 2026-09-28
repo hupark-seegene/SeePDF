@@ -98,6 +98,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::new().build())
+        // 업데이트 확인 (v0.2.0): `check` / `download` / `install` from the frontend, then
+        // `relaunch` from the process plugin. Endpoint and public key: `plugins.updater` in
+        // tauri.conf.json; the release workflow signs the bundles.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(PendingOpens::default())
         .manage(WindowDocs::default())
         .manage(commands::recovery::RecoveryIds::default())

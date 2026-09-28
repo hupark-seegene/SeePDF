@@ -87,6 +87,7 @@ pub const MENU_IDS: &[&str] = &[
     "tools.merge",
     "help.shortcuts",
     "settings",
+    "app.checkUpdates",
 ];
 
 /// `(key, 한국어, English)` — the `menu.*` rows of `UI_SPEC.md` §15.2, verbatim. The key is
@@ -104,6 +105,7 @@ const LABELS: &[(&str, &str, &str)] = &[
     // app menu
     ("settings", "설정…", "Settings…"),
     ("help.about", "SeePDF 정보", "About SeePDF"),
+    ("app.checkUpdates", "업데이트 확인…", "Check for Updates…"),
     ("quit", "SeePDF 종료", "Quit SeePDF"),
     ("services", "서비스", "Services"),
     ("hide", "SeePDF 가리기", "Hide SeePDF"),
@@ -207,6 +209,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
             Some(t("help.about")),
             Some(AboutMetadata::default()),
         )?)
+        .item(&item("app.checkUpdates", None)?)
         .separator()
         .item(&item("settings", Some("CmdOrCtrl+,"))?)
         .separator()

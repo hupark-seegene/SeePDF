@@ -1076,6 +1076,7 @@ export interface Settings {
   autosaveSec: number;          // Stage 5: autosave interval in seconds, 0 = off; default 60 (absent in old files → 60)
   signatures: SavedSignature[]; // Stage 6b (P1-9): 서명 보관함, ≤ 10, newest last; absent in old files → []
   night: 'off' | 'dark' | 'sepia';   // Stage 8 (P1-10): persisted 야간 모드; absent (or unknown) in old files → 'off'
+  checkUpdates: boolean;        // v0.2.0: 시작할 때 업데이트 확인; absent in old files → true
 }
 export type SavedSignature =
   | { kind: 'drawn'; id: string; paths: number[][]; aspect: number; createdAt: string }  // unit space, y-down

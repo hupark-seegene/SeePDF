@@ -17,6 +17,8 @@
     "store:default",
     "window-state:default",
     "opener:default",
+    "updater:default",
+    "process:allow-restart",
     {
       "identifier": "opener:allow-open-path",
       "allow": [

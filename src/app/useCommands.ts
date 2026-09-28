@@ -124,8 +124,14 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         return;
 
       // App ------------------------------------------------------------------
+      // `settings` is the id of the native app menu's 설정… item (`menu:settings`).
       case "app.settings":
+      case "settings":
         openDialog("settings");
+        return;
+      case "app.checkUpdates":
+        openDialog("update");
+        void import("../update/updateStore").then((m) => m.checkForUpdates());
         return;
       case "app.overflow":
         openOverflowMenu();
@@ -369,6 +375,14 @@ function openOverflowMenu(): void {
       { id: "sep", separator: true },
       { id: "docInfo", labelKey: "menu.file.docInfo", disabled: !info, onSelect: () => openDialog("docInfo") },
       { id: "settings", labelKey: "menu.settings", onSelect: () => openDialog("settings") },
+      {
+        id: "checkUpdates",
+        labelKey: "menu.app.checkUpdates",
+        onSelect: () => {
+          openDialog("update");
+          void import("../update/updateStore").then((m) => m.checkForUpdates());
+        },
+      },
     ],
   });
 }

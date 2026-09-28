@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SeePDF",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.seepdf.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -58,6 +58,18 @@
     ],
     "macOS": {
       "minimumSystemVersion": "12.0"
+    },
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYyNTNBNEUzNDNGQUE1NzIKUldSeXBmcEQ0NlJUOHBnUFltOUtMQ2ViV1g3bnRIR0pVSVZ0WEVCT25HelFzTG5wMHk1ODlDRHIK",
+      "endpoints": [
+        "https://github.com/hupark-seegene/SeePDF/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

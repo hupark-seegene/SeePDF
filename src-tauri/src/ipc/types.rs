@@ -1689,6 +1689,13 @@ pub struct Settings {
     /// written before it; an unknown value also reads as `off` rather than resetting everything.
     #[serde(default, deserialize_with = "lenient_night")]
     pub night: NightMode,
+    /// 시작할 때 업데이트 확인 (v0.2.0). `true` for settings files written before it.
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// `Settings.night`.
@@ -1781,6 +1788,7 @@ impl Default for Settings {
             autosave_sec: default_autosave_sec(),
             signatures: Vec::new(),
             night: NightMode::Off,
+            check_updates: true,
         }
     }
 }
@@ -2332,6 +2340,24 @@ mod tests {
         assert_eq!(
             (back.night, back.author.as_str()),
             (NightMode::Off, "박현우")
+        );
+
+        // v0.2.0: `checkUpdates` is on by default and for settings written before it.
+        let value = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(value["checkUpdates"], json!(true));
+        let mut old = value.clone();
+        old.as_object_mut().unwrap().remove("checkUpdates");
+        assert!(
+            serde_json::from_value::<Settings>(old)
+                .unwrap()
+                .check_updates
+        );
+        let mut off = value;
+        off["checkUpdates"] = json!(false);
+        assert!(
+            !serde_json::from_value::<Settings>(off)
+                .unwrap()
+                .check_updates
         );
 
         // Stage 8 shapes the frontend mocks: remove_stamps / duplicate / redact batch results.

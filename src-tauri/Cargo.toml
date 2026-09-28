@@ -1,6 +1,6 @@
 [package]
 name = "seepdf"
-version = "0.1.0"
+version = "0.2.0"
 description = "SeePDF - lightweight, powerful PDF editor with OCR"
 authors = ["hwpark"]
 edition = "2021"
@@ -32,6 +32,17 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-store = "2"
 tauri-plugin-window-state = "2"
+# 업데이트 확인 (v0.2.0). `~2.12` / `~2.3`: the next minors need tauri 2.12, and the npm
+# packages (`@tauri-apps/plugin-updater` / `-process`) must stay on the same minor.
+# `native-tls` instead of the default rustls+ring: schannel on Windows and Security.framework
+# on macOS are already on the machine, so nothing new is compiled from C and the binary does
+# not carry a TLS stack of its own. `system-proxy` because SeePDF runs behind corporate proxies.
+tauri-plugin-updater = { version = "~2.12", default-features = false, features = [
+  "native-tls",
+  "system-proxy",
+  "zip",
+] }
+tauri-plugin-process = "~2.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `thread_safe` is deliberately NOT enabled: pdfium types stay `!Send` so the compiler
