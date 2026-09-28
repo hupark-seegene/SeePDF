@@ -778,14 +778,23 @@ export interface OcrPage { page: PageIndex; dpi: number; widthPx: number; height
 
 ocr_capabilities(): Promise<{ engines: ('tesseract' | 'vision' | 'windows')[]; languages: string[] }>
 ocr_page_status(a: { docId: DocId; pages: PageIndex[] }): Promise<{ page: PageIndex; hasText: boolean; charCount: number }[]>
-ocr_apply(a: { docId: DocId; pages: OcrPage[]; replaceExisting: boolean }, onProgress: Channel<JobEvent>): Promise<DocInfo>
-ocr_recognize_native(a: { docId: DocId; page: PageIndex; dpi: number; languages: string[] }): Promise<OcrPage>  // P1, macOS
+export type OcrApplyPage = OcrPage | { page: PageIndex; ocr: OcrPage };   // Stage 8: both forms, mixable
+ocr_apply(a: { docId: DocId; pages: OcrApplyPage[]; replaceExisting: boolean }, onProgress: Channel<JobEvent>): Promise<DocInfo>
+ocr_recognize_native(a: { docId: DocId; page: PageIndex; dpi: number; languages: string[] }): Promise<OcrPage>  // P1-11, macOS 13+
 ```
 
 The page image for the tesseract.js workers comes from the protocol route `/ocr` (§9), never from a
 command. `ocr_apply` is **one** `registry::mutate` for the whole batch = one undo step; per-page work runs
 as separate `Lane::Background` commands so tiles interleave. Owner: (b) engine layer, (f) worker pipeline.
 Feature F-21.
+
+`ocr_recognize_native` (P1-11) renders the same `/ocr` image on the engine thread and runs Apple Vision
+(`VNRecognizeTextRequest`, accurate, language correction on) on a blocking thread; it returns the page already
+normalised (the Rust twin of `normalizeVision`: image pixels, origin top-left, confidence 0..100, synthetic
+baseline/row height). `languages` are Vision's (`ko-KR`, `en-US`); tesseract codes (`kor`, `eng`) are mapped,
+and Korean always brings English. `ocr_capabilities` lists `vision` only on macOS 13+ where Vision reports
+`ko-KR`; elsewhere the command answers `unsupported`. `ocr_apply` with a wrapped page whose `page` differs
+from `ocr.page` is `invalidArgument`. 여러 파일 OCR applies each file's pages in one call (one snapshot).
 
 ---
 

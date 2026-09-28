@@ -14,7 +14,7 @@ import { encodeRawPage, encodeTextLayer, CHAR_SPACE, type TextChar, type TextLin
 import { pngDataUrl, solidPngDataUrl, type RgbaPixel } from "./png";
 import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, DocGeneration, DocId, DocInfo, EngineError,
-  EngineStats, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, Mat6, MergeWarning, OcrPage, OutlineNode,
+  EngineStats, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, Mat6, MergeWarning, OcrApplyPage, OcrPage, OutlineNode,
   PageGeom, PageIndex, Permissions, PageObject, PageOp, RecentEntry, Rect, RedactPreview, SaveResult, SearchEvent, SearchHit,
   Settings, StampResult, StampSpec, StampRole, RemoveStampsResult, TextEditProbe, ViewportHint, CompressOptions, CompressReport,
   ObjectId, ObjectsResult, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, Rgb,
@@ -1130,7 +1130,32 @@ export const mock = {
 
   // 7.9 OCR ------------------------------------------------------------------
   async ocrCapabilities() {
-    return { engines: ["tesseract"] as ("tesseract" | "vision" | "windows")[], languages: ["kor", "eng"] };
+    // The browser mock plays a Mac with Vision, so 인식 엔진 can be exercised without a backend.
+    return { engines: ["tesseract", "vision"] as ("tesseract" | "vision" | "windows")[], languages: ["kor", "eng"] };
+  },
+  /** A canned one-line Vision result in the `/ocr` image's geometry (P1-11). */
+  async ocrRecognizeNative(a: { docId: DocId; page: PageIndex; dpi: number; languages: string[] }): Promise<OcrPage> {
+    const d = doc(a.docId);
+    const geom = d.info.pages[a.page];
+    if (!geom) throw err("invalidArgument", `page ${a.page} of ${d.info.pageCount}`);
+    const turned = geom.rotation === 90 || geom.rotation === 270;
+    const widthPx = Math.round(((turned ? geom.heightPt : geom.widthPt) * a.dpi) / 72);
+    const heightPx = Math.round(((turned ? geom.widthPt : geom.heightPt) * a.dpi) / 72);
+    const y0 = Math.round(heightPx * 0.1);
+    const y1 = y0 + Math.round(a.dpi / 6);
+    const x0 = Math.round(widthPx * 0.1);
+    const mid = Math.round(widthPx * 0.3);
+    const x1 = Math.round(widthPx * 0.5);
+    return delay({
+      page: a.page, dpi: a.dpi, widthPx, heightPx, rotation: geom.rotation,
+      lines: [{
+        text: "모의 인식 결과", bbox: [x0, y0, x1, y1], rowHeightPx: y1 - y0,
+        words: [
+          { text: "모의", bbox: [x0, y0, mid, y1], confidence: 100 },
+          { text: "인식 결과", bbox: [mid + 10, y0, x1, y1], confidence: 100 },
+        ],
+      }],
+    }, 150);
   },
   async ocrPageStatus(a: { docId: DocId; pages: PageIndex[] }) {
     const d = doc(a.docId);
@@ -1140,7 +1165,7 @@ export const mock = {
     });
   },
   async ocrApply(
-    a: { docId: DocId; pages: OcrPage[]; replaceExisting: boolean },
+    a: { docId: DocId; pages: OcrApplyPage[]; replaceExisting: boolean },
     onProgress: (e: JobEvent) => void,
   ): Promise<DocInfo> {
     const d = doc(a.docId);

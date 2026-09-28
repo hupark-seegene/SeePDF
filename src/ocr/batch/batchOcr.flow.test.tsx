@@ -13,6 +13,16 @@ import { openDialog, useDialogStore } from "../../dialogs/dialogState";
 import { useJobStore } from "../../store/jobStore";
 import { useToastStore } from "../../app/toastStore";
 import { useBatchOcr, resetBatch, cancelBatch } from "./flow";
+import { loadOcrCapabilities, resetOcrCapabilities } from "../engine";
+import type { OcrPage } from "../../ipc/types";
+
+/** `ocr_capabilities`: the suite runs as a machine without Apple Vision unless a test says so. */
+function capabilities(vision: boolean) {
+  resetOcrCapabilities();
+  vi.spyOn(mock, "ocrCapabilities").mockResolvedValue({
+    engines: vision ? ["tesseract", "vision"] : ["tesseract"], languages: ["kor", "eng"],
+  });
+}
 
 vi.mock("../../ipc/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../ipc/api")>();
@@ -98,6 +108,7 @@ beforeEach(() => {
   // The mock's sample text is on every page; these files are scans.
   vi.spyOn(mock, "ocrPageStatus").mockImplementation(async (a) =>
     a.pages.map((page) => ({ page, hasText: false, charCount: 0 })));
+  capabilities(false);
 });
 
 async function openBatchDialog(paths?: string[]) {
@@ -255,5 +266,52 @@ describe("batchOcr.flow", () => {
     });
     expect(useDialogStore.getState().stack.map((e) => e.name)).toEqual(["batchOcr"]);
     expect(useBatchOcr.getState().items.map((i) => i.status)).toEqual(["cancelled", "queued"]);
+  });
+});
+
+describe("batchOcr.engine", () => {
+  it("자동 on a Mac with Vision: every page through ocr_recognize_native, ONE ocr_apply per file, no pool", async () => {
+    capabilities(true);
+    const native = vi.spyOn(mock, "ocrRecognizeNative");
+    const apply = vi.spyOn(mock, "ocrApply");
+    const save = vi.spyOn(mock, "saveDocumentAs");
+    const start = await openBatchDialog([PLAIN, "/scans/second-스캔.pdf"]);
+    const select = await screen.findByLabelText("인식 엔진");
+    expect(select).toHaveValue("auto");
+    fireEvent.click(start);
+
+    const summary = await screen.findByTestId("bocr-summary", {}, { timeout: 6000 });
+    expect(summary.textContent).toBe("완료 2 · 건너뜀 0 · 실패 0");
+    expect(native.mock.calls.map((c) => c[0].page)).toEqual([0, 1, 2, 0, 1, 2]);
+    expect(native.mock.calls[0][0]).toMatchObject({ dpi: 300, languages: ["ko-KR", "en-US"] });
+    // One undo snapshot per file, not per page: each file's pages in a single ocr_apply.
+    expect(apply).toHaveBeenCalledTimes(2);
+    for (const call of apply.mock.calls) {
+      expect((call[0].pages as OcrPage[]).map((p) => p.page)).toEqual([0, 1, 2]);
+    }
+    expect(pools).toHaveLength(0);
+    expect(recognized).toEqual([]);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it("Tesseract chosen on a Mac with Vision: the shared pool, still one ocr_apply per file", async () => {
+    capabilities(true);
+    const native = vi.spyOn(mock, "ocrRecognizeNative");
+    const apply = vi.spyOn(mock, "ocrApply");
+    const start = await openBatchDialog([PLAIN]);
+    fireEvent.change(await screen.findByLabelText("인식 엔진"), { target: { value: "tesseract" } });
+    fireEvent.click(start);
+    await screen.findByTestId("bocr-summary", {}, { timeout: 6000 });
+    expect(native).not.toHaveBeenCalled();
+    expect(recognized).toEqual([PLAIN, PLAIN, PLAIN]);
+    expect(pools).toHaveLength(1);
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect((apply.mock.calls[0][0].pages as OcrPage[]).map((p) => p.page)).toEqual([0, 1, 2]);
+  });
+
+  it("no 인식 엔진 row without Vision", async () => {
+    await openBatchDialog([PLAIN]);
+    await act(async () => { await loadOcrCapabilities(); });
+    expect(screen.queryByLabelText("인식 엔진")).not.toBeInTheDocument();
   });
 });

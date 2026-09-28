@@ -29,14 +29,19 @@
 //! uses the bundled Hangul subset, loaded **once per document** — `load_true_type_from_bytes`
 //! appends another copy of the whole file on every call.
 
+pub mod vision;
+
 use crate::engine::annot::ScratchPage;
 use crate::engine::fonts;
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
 use crate::engine::text::layer;
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
+use crate::engine::render::cache::{Night, RenderKind, TileKey};
+use crate::engine::render::tiles::{self, RenderRequest};
 use crate::ipc::types::{
     ChangeReason, DocInfo, OcrCapabilities, OcrEngine, OcrLine, OcrPage, OcrPageStatus, PageIndex,
+    Rotation,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
@@ -66,15 +71,131 @@ const LATIN_BOX_TO_EM: f32 = 1.15;
 /// `ocr_capabilities` — which engines this build can drive, and in which languages.
 ///
 /// The engine list is what the **backend** knows about. tesseract.js is always available (it is
-/// bundled in `public/ocr/`, 8.4 MB, and runs entirely offline); `vision` and `windows` are P1
-/// and P2 and are reported only when the corresponding `ocr_recognize_native` body exists, so
-/// today the list is exactly `["tesseract"]` on every platform.
+/// bundled in `public/ocr/`, 8.4 MB, and runs entirely offline). `vision` (P1-11) is added on a
+/// Mac whose Vision reads Korean — macOS 13 or later, checked against Vision's own language
+/// list, once per process. `windows` (P2) has no `ocr_recognize_native` body and is never listed.
 pub fn capabilities() -> OcrCapabilities {
+    let mut engines = vec![OcrEngine::Tesseract];
+    if vision_available() {
+        engines.push(OcrEngine::Vision);
+    }
     OcrCapabilities {
-        engines: vec![OcrEngine::Tesseract],
+        engines,
         // The traineddata `scripts/prepare-ocr.mjs` fetches. Always `kor+eng` together:
         // `kor` alone reads English as digits (ARCHITECTURE §9).
         languages: vec!["kor".to_string(), "eng".to_string()],
+    }
+}
+
+/// `true` when `ocr_recognize_native` can run here (macOS 13+ with Korean in Vision).
+pub fn vision_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        vision::mac::available()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Native recognition (P1-11, macOS Vision)
+// ---------------------------------------------------------------------------------------
+
+/// One page rendered for a native recogniser: 8-bit gray, one byte a pixel, row-major.
+pub struct GrayPage {
+    pub page: PageIndex,
+    pub dpi: u32,
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    /// The page's `/Rotate`, which the render applied (the boxes are display pixels).
+    pub rotation: Rotation,
+    pub render_ms: f64,
+}
+
+/// **Engine thread.** The `/ocr` route's image — same key, same grayscale render, so a Vision
+/// page and a tesseract page of the same document are pixel-identical inputs and `ocr_apply`'s
+/// `pixels_to_points` inverts the same transform for both.
+pub fn render_page_gray(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page: PageIndex,
+    dpi: u32,
+) -> Result<GrayPage, EngineError> {
+    if !(72..=1200).contains(&dpi) {
+        return Err(EngineError::invalid(format!("dpi {dpi} is outside 72..1200")));
+    }
+    let doc = st.doc(doc_id)?;
+    let count = doc.page_count();
+    if page >= count {
+        return Err(
+            EngineError::invalid(format!("page {page} is outside 0..{count}")).with_page(page)
+        );
+    }
+    let generation = doc.generation;
+    let rotation = doc.geom(page)?.rotation;
+    let key = TileKey {
+        doc: doc_id.to_string(),
+        generation,
+        page,
+        kind: RenderKind::Ocr,
+        scale_key: dpi,
+        rotation: 0,
+        tx: 0,
+        ty: 0,
+        night: Night::Off,
+        hl: false,
+        forms: true,
+    };
+    let raw = tiles::render(st, &RenderRequest::new(key))?;
+    let expected = raw.width as usize * raw.height as usize;
+    // pdfium rendered with `use_grayscale_rendering`, so R == G == B: one byte a pixel.
+    let pixels: Vec<u8> = raw.pixels.chunks_exact(4).take(expected).map(|px| px[0]).collect();
+    if pixels.len() != expected {
+        return Err(EngineError::new(
+            ErrorCode::Pdfium,
+            format!("OCR render returned {} of {expected} pixels", pixels.len()),
+        ));
+    }
+    Ok(GrayPage {
+        page,
+        dpi,
+        pixels,
+        width: raw.width,
+        height: raw.height,
+        rotation,
+        render_ms: raw.render_ms,
+    })
+}
+
+/// **Any thread but the engine's** (it blocks for 0.1–3 s). Vision over a rendered page →
+/// the contract's `OcrPage`. `languages` may be tesseract codes or Vision's own
+/// ([`vision::vision_languages`]); other OSes get `unsupported`.
+pub fn recognize_gray(image: &GrayPage, languages: &[String]) -> Result<OcrPage, EngineError> {
+    #[cfg(target_os = "macos")]
+    {
+        let languages = vision::vision_languages(languages);
+        let observations =
+            vision::mac::recognize(&image.pixels, image.width, image.height, &languages)
+                .map_err(|e| e.with_page(image.page))?;
+        Ok(vision::normalize(
+            &observations,
+            &vision::VisionContext {
+                page: image.page,
+                dpi: image.dpi,
+                width_px: image.width,
+                height_px: image.height,
+                rotation: image.rotation,
+                min_confidence: vision::MIN_CONFIDENCE,
+            },
+        ))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (image, languages);
+        Err(EngineError::unsupported("ocr_recognize_native"))
     }
 }
 
@@ -437,9 +558,13 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_are_offline_tesseract() {
+    fn capabilities_are_offline_tesseract_plus_vision_where_it_reads_korean() {
         let caps = capabilities();
-        assert_eq!(caps.engines, vec![OcrEngine::Tesseract]);
+        assert_eq!(caps.engines[0], OcrEngine::Tesseract);
+        assert_eq!(caps.engines.contains(&OcrEngine::Vision), vision_available());
+        assert!(!caps.engines.contains(&OcrEngine::Windows));
+        #[cfg(not(target_os = "macos"))]
+        assert!(!vision_available());
         assert!(caps.languages.iter().any(|l| l == "kor"));
     }
 }

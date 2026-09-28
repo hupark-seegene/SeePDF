@@ -59,6 +59,43 @@ getrandom = "0.4"
 # Local-time ModDate for set_metadata. Already in the tree (pdfium-render), same features.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+# P1-11: macOS Vision OCR (`ocr_recognize_native`). The same objc2 0.6 / 0.3.2 family Tauri
+# already links on macOS, so this adds bindings, not a second runtime. Default features off: the
+# framework crates enable every class of their framework by default.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSError",
+  "NSDictionary",
+  "NSObject",
+  "NSProcessInfo",
+  "NSRange",
+  "NSString",
+] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "CFCGTypes",
+  "CFData",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+  "std",
+  "CGImage",
+  "CGColorSpace",
+  "CGDataProvider",
+] }
+objc2-vision = { version = "0.3", default-features = false, features = [
+  "std",
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+  "VNObservation",
+  "VNRecognizeTextRequest",
+  "VNRequest",
+  "VNRequestHandler",
+  "VNTypes",
+] }
+
 # The only fork in the project: five additive `raw_handle()` / `raw_bindings()`
 # accessors (ARCHITECTURE §1.3). The diff is kept in `docs/pdfium-patch.diff`.
 [dev-dependencies]

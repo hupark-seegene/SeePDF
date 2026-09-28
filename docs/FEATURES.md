@@ -181,7 +181,7 @@ A build ships only when all of the following are green on both platforms:
 | P1-8 | **Autosave / crash recovery** | a recovery copy every 60 s while dirty into `$APPDATA/SeePDF/recovery/`, offered on next launch; never touches the user's file |
 | P1-9 | **Signature: draw / type** (image signature is P0) + saved signature library | draw → Ink with `/Subj "SeePDF:Signature"`; type → text object rendered to an image stamp |
 | P1-10 | **Night mode for the document** (끄기 / 어둡게 / 세피아) | CSS filter on the tile layer only, with a transparent clear colour |
-| P1-11 | **macOS Vision OCR** | `ocr_recognize_native` behind the same `OcrPage` contract; needs `objc2`, `objc2-foundation`, `objc2-core-foundation`, `objc2-core-graphics`, `objc2-vision` (unverified compile) |
+| P1-11 | **macOS Vision OCR** | `ocr_recognize_native` behind the same `OcrPage` contract (`objc2` 0.6 + `objc2-{foundation,core-foundation,core-graphics,vision}` 0.3.2, links against the Command Line Tools SDK); 인식 엔진 자동 / Apple Vision / Tesseract in the OCR sheet and 여러 파일 OCR. **Done (Stage 8).** |
 | P1-12 | Korean stamp set (결재 / 승인 / 기밀), per-tool default styles, reading mode + full screen, hide-annotation-while-dragging (`set_annotations_hidden`) | small UI work on top of P0 machinery |
 
 ### P1 status — Stage 3

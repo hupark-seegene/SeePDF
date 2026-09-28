@@ -1099,6 +1099,31 @@ pub struct OcrPage {
     pub lines: Vec<OcrLine>,
 }
 
+/// One element of `ocr_apply.pages`: the `OcrPage` itself, or the Stage 8 `{ page, ocr }` form.
+/// Either way the whole array is one `registry::mutate` = one undo step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OcrApplyPage {
+    Wrapped { page: PageIndex, ocr: OcrPage },
+    Plain(OcrPage),
+}
+
+impl OcrApplyPage {
+    /// The page to apply; a wrapped page whose `page` disagrees with its `ocr.page` is refused
+    /// rather than guessed at (the boxes belong to one of the two).
+    pub fn into_page(self) -> Result<OcrPage, crate::ipc::EngineError> {
+        match self {
+            OcrApplyPage::Plain(ocr) => Ok(ocr),
+            OcrApplyPage::Wrapped { page, ocr } if page == ocr.page => Ok(ocr),
+            OcrApplyPage::Wrapped { page, ocr } => Err(crate::ipc::EngineError::invalid(format!(
+                "ocr_apply: page {page} carries the OCR result of page {}",
+                ocr.page
+            ))
+            .with_page(page)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OcrEngine {
@@ -2218,5 +2243,33 @@ mod tests {
         );
         let back: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(back.signatures.len(), MAX_SAVED_SIGNATURES);
+    }
+
+    /// `ocr_apply.pages` takes the `OcrPage[]` form and the Stage 8 `{ page, ocr }[]` form,
+    /// mixed if need be; a wrapper that disagrees with its own page is refused.
+    #[test]
+    fn ocr_apply_pages_take_both_forms() {
+        let ocr = |page: u16| {
+            json!({
+                "page": page, "dpi": 300, "widthPx": 2480, "heightPx": 3508, "rotation": 0,
+                "lines": [{ "text": "가", "bbox": [0, 0, 10, 10], "words": [
+                    { "text": "가", "bbox": [0, 0, 10, 10], "confidence": 90 }
+                ] }]
+            })
+        };
+        let pages: Vec<OcrApplyPage> =
+            serde_json::from_value(json!([ocr(0), { "page": 1, "ocr": ocr(1) }])).unwrap();
+        let pages: Vec<OcrPage> = pages
+            .into_iter()
+            .map(OcrApplyPage::into_page)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(pages.iter().map(|p| p.page).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(pages[1].lines[0].words[0].text, "가");
+
+        let bad: OcrApplyPage = serde_json::from_value(json!({ "page": 2, "ocr": ocr(1) })).unwrap();
+        let err = bad.into_page().unwrap_err();
+        assert_eq!(err.code, crate::ipc::ErrorCode::InvalidArgument);
+        assert_eq!(err.page, Some(2));
     }
 }

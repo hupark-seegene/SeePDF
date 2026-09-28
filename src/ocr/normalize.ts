@@ -339,12 +339,13 @@ function splitObservation(text: string, bbox: Box, confidence: number): OcrWord[
 }
 
 /**
- * macOS Vision result → the same `OcrPage` (P1, `ocr_recognize_native`).
+ * macOS Vision result → the same `OcrPage` (P1-11, `ocr_recognize_native`).
  *
- * Placeholder in the sense that nothing produces a `VisionResult` yet — the *mapping* is real, so
- * when the native side lands the only thing to check is that its JSON matches `VisionResult`.
- * Vision returns one observation per line with no block/paragraph structure (spike §3b), so reading
- * order is a top-to-bottom, left-to-right sort here rather than the engine's own grouping.
+ * The reference mapping. `ocr_recognize_native` returns an `OcrPage` already normalised by its Rust
+ * twin (`src-tauri/src/engine/ocr/vision.rs` `normalize`, whose unit tests use this file's fixtures
+ * and expectations) — keep the two in step. Vision returns one observation per line with no
+ * block/paragraph structure (spike §3b), so reading order is a top-to-bottom, left-to-right sort
+ * here rather than the engine's own grouping.
  */
 export function normalizeVision(result: VisionResult, ctx: NormalizeContext): OcrPage {
   const minConfidence = ctx.minConfidence ?? DEFAULT_MIN_CONFIDENCE;

@@ -12,6 +12,7 @@ import { useT } from "../../i18n/useT";
 import { useAppStore } from "../../store/appStore";
 import { Dialog, Row } from "../../dialogs/Dialog";
 import type { OcrDpi } from "../ocrJob";
+import { ENGINE_CHOICES, useVisionAvailable, type OcrEngineChoice } from "../engine";
 import {
   addFiles, cancelBatch, clearFiles, firstOutput, removeFile, resetBatch, revealOutputs, setOptions,
   startBatch, useBatchOcr,
@@ -30,6 +31,7 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
   const summary = summarize(items);
   const output = firstOutput(items);
   const canStart = !running && runnable > 0 && (options.ko || options.en);
+  const visionAvailable = useVisionAvailable();
 
   const add = async () => {
     const picked = await api.openFileDialog({ multiple: true, title: t("batchOcr.pick") });
@@ -138,6 +140,20 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
           </button>
         </div>
       </Row>
+
+      {visionAvailable && (
+        <Row labelKey="ocr.engine" hintKey={options.engine === "auto" ? "ocr.engine.autoHint" : undefined}>
+          <select
+            className="field"
+            value={options.engine}
+            disabled={running}
+            aria-label={t("ocr.engine")}
+            onChange={(e) => setOptions({ engine: e.target.value as OcrEngineChoice })}
+          >
+            {ENGINE_CHOICES.map((c) => <option key={c.id} value={c.id}>{t(c.labelKey)}</option>)}
+          </select>
+        </Row>
+      )}
 
       <Row labelKey="ocr.option.dpi">
         <select

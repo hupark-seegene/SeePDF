@@ -14,6 +14,7 @@ import { useJobStore } from "../store/jobStore";
 const ocrPageStatus = vi.fn();
 const ocrApply = vi.fn();
 const cancelJob = vi.fn();
+const ocrRecognizeNative = vi.fn();
 
 vi.mock("../ipc/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../ipc/api")>();
@@ -22,6 +23,7 @@ vi.mock("../ipc/api", async (importOriginal) => {
     ocrPageStatus: (...a: unknown[]) => ocrPageStatus(...a),
     ocrApply: (...a: unknown[]) => ocrApply(...a),
     cancelJob: (...a: unknown[]) => cancelJob(...a),
+    ocrRecognizeNative: (...a: unknown[]) => ocrRecognizeNative(...a),
   };
 });
 
@@ -55,7 +57,9 @@ vi.mock("./tesseractPool", async (importOriginal) => {
   };
 });
 
-import { bitmapScaleMismatch, formatPageRange, parsePageRange, readPngSize, resolveDpi, runOcrJob } from "./ocrJob";
+import {
+  bitmapScaleMismatch, estimateSeconds, formatPageRange, parsePageRange, readPngSize, resolveDpi, runOcrJob,
+} from "./ocrJob";
 
 // --------------------------------------------------------------------------- helpers
 
@@ -93,6 +97,20 @@ function docInfo(generation: number): DocInfo {
   };
 }
 
+/** What `ocr_recognize_native` answers: an `OcrPage` the backend already normalised. */
+function visionPage(page: PageIndex, dpi = 300): OcrPage {
+  return {
+    page, dpi, widthPx: 2480, heightPx: 3508, rotation: 0,
+    lines: [{
+      text: "검색 가능한", bbox: [100, 100, 400, 160], rowHeightPx: 60,
+      words: [
+        { text: "검색", bbox: [100, 100, 220, 160], confidence: 100 },
+        { text: "가능한", bbox: [240, 100, 400, 160], confidence: 50 },
+      ],
+    }],
+  };
+}
+
 const fetched: number[] = [];
 
 function stubFetch() {
@@ -119,6 +137,7 @@ beforeEach(() => {
   });
   cancelJob.mockReset().mockResolvedValue(true);
   recognize.mockReset().mockImplementation(async () => tessPage());
+  ocrRecognizeNative.mockReset().mockImplementation(async (a: { page: PageIndex; dpi: number }) => visionPage(a.page, a.dpi));
   useJobStore.setState({ jobs: [], active: null });
   stubFetch();
 });
@@ -347,5 +366,109 @@ describe("ocr.progress", () => {
     await runOcrJob({ docId: "d1", docGeneration: 1, pages: [0, 1, 2, 3], workers: 2 });
     expect(recognize).toHaveBeenCalledTimes(4);
     expect(fetched).toEqual([0, 1, 2, 3]);
+  });
+});
+
+// --------------------------------------------------------------------------- P1-11: engine + applyOnce
+
+describe("ocr.engine", () => {
+  it("vision: every page through ocr_recognize_native — no /ocr fetch, no tesseract", async () => {
+    const r = await runOcrJob({
+      docId: "d1", docGeneration: 1, pages: [0, 2], engine: "vision", langs: "kor+eng", dpi: 400,
+    });
+    expect(r.status).toBe("done");
+    expect(r.applied).toEqual([0, 2]);
+    expect(ocrRecognizeNative).toHaveBeenCalledTimes(2);
+    expect(ocrRecognizeNative.mock.calls[0][0]).toEqual({ docId: "d1", page: 0, dpi: 400, languages: ["ko-KR", "en-US"] });
+    expect(fetched).toEqual([]);
+    expect(recognize).not.toHaveBeenCalled();
+    // The backend's OcrPage goes to ocr_apply untouched.
+    expect((ocrApply.mock.calls[1][0] as { pages: OcrPage[] }).pages).toEqual([visionPage(2, 400)]);
+    expect(r.words).toBe(4);
+    expect(r.confidence).toBe(75);
+  });
+
+  it("vision with English only asks Vision for en-US alone", async () => {
+    await runOcrJob({ docId: "d1", docGeneration: 1, pages: [0], engine: "vision", langs: "eng" });
+    expect(ocrRecognizeNative.mock.calls[0][0].languages).toEqual(["en-US"]);
+  });
+
+  it("vision: a cancel between pages stops the run", async () => {
+    const jobId = -995;
+    ocrRecognizeNative.mockImplementation(async (a: { page: PageIndex }) => {
+      if (a.page === 2) await useJobStore.getState().cancel(jobId);
+      return visionPage(a.page);
+    });
+    const r = await runOcrJob({ docId: "d1", docGeneration: 1, pages: [0, 1, 2, 3, 4], engine: "vision", jobId });
+    expect(r.status).toBe("cancelled");
+    // Two pages in flight at a time: 0–1 applied, 2–3 recognised then dropped, 4 never asked.
+    expect(r.applied).toEqual([0, 1]);
+    expect(ocrRecognizeNative.mock.calls.map((c) => c[0].page)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("vision failures surface as ocr.failed", async () => {
+    ocrRecognizeNative.mockRejectedValue(Object.assign(new Error("no"), { name: "SeePdfError", code: "unsupported" }));
+    const r = await runOcrJob({ docId: "d1", docGeneration: 1, pages: [0], engine: "vision" });
+    expect(r.status).toBe("error");
+    expect(r.messageKey).toBe("ocr.failed");
+    expect(ocrApply).not.toHaveBeenCalled();
+  });
+
+  it("estimates Vision without the worker speed-up", () => {
+    expect(estimateSeconds(10, 4, "vision")).toBe(8);
+    expect(estimateSeconds(10, 4, "tesseract")).toBe(4);
+    expect(estimateSeconds(100, 4, "vision")).toBe(80);
+    expect(estimateSeconds(0, 4, "vision")).toBe(0);
+  });
+});
+
+describe("ocr.applyOnce", () => {
+  it("applies every page in ONE ocr_apply = one undo step", async () => {
+    const done: PageIndex[] = [];
+    const r = await runOcrJob({
+      docId: "d1", docGeneration: 1, pages: [0, 1, 2], workers: 2, applyOnce: true,
+      onPageDone: (page) => done.push(page),
+    });
+    expect(r.status).toBe("done");
+    expect(ocrApply).toHaveBeenCalledTimes(1);
+    const call = ocrApply.mock.calls[0][0] as { pages: OcrPage[] };
+    expect(call.pages.map((p) => p.page)).toEqual([0, 1, 2]);
+    expect(r.applied).toEqual([0, 1, 2]);
+    expect(r.info?.docGeneration).toBe(2);
+    expect(done).toEqual([0, 1, 2]);
+    expect(r.words).toBe(6);
+  });
+
+  it("works with Vision too", async () => {
+    const r = await runOcrJob({ docId: "d1", docGeneration: 1, pages: [0, 1, 2], engine: "vision", applyOnce: true });
+    expect(ocrApply).toHaveBeenCalledTimes(1);
+    expect((ocrApply.mock.calls[0][0] as { pages: OcrPage[] }).pages).toEqual([0, 1, 2].map((p) => visionPage(p)));
+    expect(r.applied).toEqual([0, 1, 2]);
+  });
+
+  it("a cancel applies nothing at all", async () => {
+    const jobId = -994;
+    recognize.mockImplementation(async () => {
+      if (recognize.mock.calls.length === 2) await useJobStore.getState().cancel(jobId);
+      return tessPage();
+    });
+    const r = await runOcrJob({ docId: "d1", docGeneration: 1, pages: [0, 1, 2, 3], workers: 1, applyOnce: true, jobId });
+    expect(r.status).toBe("cancelled");
+    expect(r.applied).toEqual([]);
+    expect(ocrApply).not.toHaveBeenCalled();
+  });
+
+  it("reports progress as pages are recognised", async () => {
+    const jobId = -993;
+    const seen: number[] = [];
+    const unsubscribe = useJobStore.subscribe((s) => {
+      const j = s.jobs.find((x) => x.id === jobId);
+      if (j) seen.push(j.done);
+    });
+    await runOcrJob({ docId: "d1", docGeneration: 1, pages: [0, 1, 2], workers: 1, applyOnce: true, jobId });
+    unsubscribe();
+    expect(seen).toContain(1);
+    expect(seen).toContain(2);
+    expect(useJobStore.getState().jobs.find((j) => j.id === jobId)).toMatchObject({ state: "done", done: 3 });
   });
 });
