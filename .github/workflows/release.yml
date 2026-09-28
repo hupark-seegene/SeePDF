@@ -1,0 +1,250 @@
+name: Release
+
+# A `v*` tag builds the installers, runs the Rust suite on both targets and publishes a GitHub
+# Release: Windows x64 NSIS `.exe` + `.msi`, macOS arm64 `.dmg`, and — when the updater
+# signing key is configured — the signed updater bundles and `latest.json`.
+#
+#   git tag v0.2.0 && git push origin v0.2.0        # a release
+#   git tag v0.2.0-rc1 && git push origin v0.2.0-rc1  # a pre-release (any tag with a `-`)
+#
+# The app's auto-update endpoint is `releases/latest/download/latest.json`; GitHub's "latest"
+# never points at a pre-release, so an rc can be published without offering it to users.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Publish as this tag (e.g. v0.2.0-rc9). Empty = build and test only."
+        required: false
+        default: ""
+
+# Never cancel a release half-way: a second tag waits for the first.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Same pin as ci.yml.
+  RUST_TOOLCHAIN: "1.96.0"
+
+jobs:
+  # The tag must name the version the app reports (tauri.conf.json), or the updater would
+  # compare against a number the installer does not carry.
+  version:
+    name: version check
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          pkg=$(node -p "require('./package.json').version")
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n1)
+          if [ "$version" != "$pkg" ] || [ "$version" != "$cargo" ]; then
+            echo "::error::version mismatch: tauri.conf.json $version, package.json $pkg, Cargo.toml $cargo"
+            exit 1
+          fi
+          tag="${INPUT_TAG:-}"
+          if [ -z "$tag" ] && [ "${GITHUB_REF_TYPE}" = "tag" ]; then tag="${GITHUB_REF_NAME}"; fi
+          if [ -n "$tag" ]; then
+            base="${tag#v}"; base="${base%%-*}"
+            if [ "$base" != "$version" ]; then
+              echo "::error::tag $tag does not match the app version $version"
+              exit 1
+            fi
+          fi
+          case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+          echo "version $version, tag '${tag:-<none>}', prerelease $pre"
+
+  test:
+    name: test (${{ matrix.name }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-test-${{ matrix.target }}
+
+      - name: npm ci (fetches libpdfium for ${{ matrix.target }})
+        run: npm ci
+        env:
+          PDFIUM_TARGET: ${{ matrix.target }}
+
+      # Build first, then run: see ci.yml for why the two are separate invocations.
+      - name: cargo build --release --tests
+        working-directory: src-tauri
+        shell: bash
+        run: bash ../scripts/ci-run.sh "cargo build --tests" cargo build --release --tests --target ${{ matrix.target }}
+
+      - name: cargo test --release
+        working-directory: src-tauri
+        shell: bash
+        run: bash ../scripts/ci-run.sh "cargo test" cargo test --release --target ${{ matrix.target }}
+
+  bundle:
+    name: bundle (${{ matrix.name }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x64
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-bundle-${{ matrix.target }}
+
+      - name: npm ci (fetches libpdfium for ${{ matrix.target }})
+        run: npm ci
+        env:
+          PDFIUM_TARGET: ${{ matrix.target }}
+
+      # `bundle.createUpdaterArtifacts` is false in tauri.conf.json, so a build without the
+      # signing key (a fork, a local `tauri build`, ci.yml) never fails for want of one. With
+      # the secret present the override turns the signed updater bundles on.
+      - name: tauri build
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          args=(--target "${{ matrix.target }}")
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            printf '{"bundle":{"createUpdaterArtifacts":true}}' > updater.conf.json
+            args+=(--config updater.conf.json)
+            echo "updater artifacts: on"
+          else
+            echo "::warning title=updater::TAURI_SIGNING_PRIVATE_KEY is not set - the release has installers but no updater bundles or latest.json"
+          fi
+          bash scripts/ci-run.sh "tauri build" npm run tauri build -- "${args[@]}"
+
+      # One flat folder per platform with release-ready names. The macOS updater bundle is
+      # `SeePDF.app.tar.gz` out of the bundler; it gets the version and arch like the others.
+      - name: Collect assets
+        shell: bash
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          out="release-assets"
+          mkdir -p "$out"
+          shopt -s nullglob
+          for f in "$bundle"/nsis/*.exe "$bundle"/nsis/*.exe.sig "$bundle"/msi/*.msi "$bundle"/msi/*.msi.sig "$bundle"/dmg/*.dmg; do
+            cp "$f" "$out/"
+          done
+          for f in "$bundle"/macos/*.app.tar.gz "$bundle"/macos/*.app.tar.gz.sig; do
+            name=$(basename "$f")
+            cp "$f" "$out/${name/SeePDF.app.tar.gz/SeePDF_${version}_${{ matrix.arch }}.app.tar.gz}"
+          done
+          ls -la "$out"
+          count=$(ls "$out" | grep -cE '\.(exe|msi|dmg)$' || true)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no installer was produced under $bundle"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish
+    needs: [version, test, bundle]
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: latest.json (only with signed updater bundles)
+        run: |
+          node scripts/release-latest-json.mjs \
+            --dir release-assets \
+            --version "${{ needs.version.outputs.version }}" \
+            --tag "${{ needs.version.outputs.tag }}" \
+            --repo "${{ github.repository }}"
+          ls -la release-assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: SeePDF ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            release-assets/*.exe
+            release-assets/*.msi
+            release-assets/*.dmg
+            release-assets/*.app.tar.gz
+            release-assets/*.sig
+            release-assets/latest.json

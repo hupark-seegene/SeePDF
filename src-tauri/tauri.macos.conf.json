@@ -6,6 +6,9 @@
       "resources/pdfium/LICENSE.pdfium",
       "resources/pdfium/VERSION",
       "resources/fonts/*"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }

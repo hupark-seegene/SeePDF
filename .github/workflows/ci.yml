@@ -10,8 +10,11 @@ on:
 # the run in progress: until Stage 9 every main run was cancelled this way (or sat queued on
 # a retired runner label), so the Windows job had never once finished. GitHub still keeps at
 # most one *pending* run per group, so a burst of pushes costs one extra run, not N.
+#
+# The group name changed with that fix (`ci-` → `ci-build-`): the last run under the old name
+# is stuck in the queue on `macos-13`, and a new run in the same group would wait behind it.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-build-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
@@ -33,7 +36,8 @@ jobs:
         run: npm ci --ignore-scripts
       - run: node scripts/check-i18n.mjs
       - run: npm run typecheck
-      - run: npx vitest run
+      - name: vitest
+        run: bash scripts/ci-run.sh vitest npx vitest run
       - name: Production build against the mock adapter
         run: npm run build
         env:
@@ -86,15 +90,21 @@ jobs:
           PDFIUM_TARGET: ${{ matrix.target }}
 
       - run: npm run typecheck
-      - run: npx vitest run
+      - name: vitest
+        shell: bash
+        run: bash scripts/ci-run.sh vitest npx vitest run
 
+      # `scripts/ci-run.sh` republishes a failure's key lines as annotations, which the public
+      # REST API serves without a login (job logs need one).
       - name: cargo fmt
         working-directory: src-tauri
-        run: cargo fmt --check
+        shell: bash
+        run: bash ../scripts/ci-run.sh "cargo fmt" cargo fmt --check
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --target ${{ matrix.target }} -- -D warnings
+        shell: bash
+        run: bash ../scripts/ci-run.sh "cargo clippy" cargo clippy --target ${{ matrix.target }} -- -D warnings
 
       # Two invocations on purpose. Building the test binaries first and only then running
       # them is deterministic; `cargo test --release` on its own used to fail roughly one run
@@ -104,14 +114,17 @@ jobs:
       # separates a compile failure from a test failure in the CI log.
       - name: cargo build --release --tests
         working-directory: src-tauri
-        run: cargo build --release --tests --target ${{ matrix.target }}
+        shell: bash
+        run: bash ../scripts/ci-run.sh "cargo build --tests" cargo build --release --tests --target ${{ matrix.target }}
 
       - name: cargo test --release
         working-directory: src-tauri
-        run: cargo test --release --target ${{ matrix.target }}
+        shell: bash
+        run: bash ../scripts/ci-run.sh "cargo test" cargo test --release --target ${{ matrix.target }}
 
       - name: tauri build --debug
-        run: npm run tauri build -- --debug --target ${{ matrix.target }}
+        shell: bash
+        run: bash scripts/ci-run.sh "tauri build" npm run tauri build -- --debug --target ${{ matrix.target }}
 
       # `tauri build -- --debug` leaves an unminified, source-mapped `dist/` behind
       # (`vite.config.ts` keys `minify`/`sourcemap` off `TAURI_ENV_DEBUG`), which is 172 kB gz
