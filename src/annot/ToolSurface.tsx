@@ -11,7 +11,7 @@
  * Coordinates: the surface covers the page box exactly, so `client − boundingRect` is CSS px
  * inside the box and `ctx.toPage` turns it into PDF user space (STAGE1C_NOTES §1.1).
  */
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { PageLayerContext } from "../viewer";
 import { toolController, type ToolContext } from "../tools/ToolController";
 import { GRAB_PX } from "../tools/select";
@@ -20,6 +20,7 @@ import { useAnnotStore } from "../store/annotStore";
 import { annotsOnPage } from "./actions";
 import { selectionRectsForPage } from "./selectionQuads";
 import { stampImage } from "../tools/stamp";
+import { dragHidePage, endDrag } from "./dragHide";
 
 export interface ToolSurfaceProps {
   ctx: PageLayerContext;
@@ -106,7 +107,20 @@ export function ToolSurface({ ctx, tool }: ToolSurfaceProps) {
 
   const onPointerCancel = useCallback(() => {
     toolController.cancel();
+    // A cancelled drag never gets its `onUp`: restore what it hid and commit where it got to.
+    void endDrag();
   }, []);
+
+  // The surface of the page being dragged on goes away mid-drag (mode switch): same as cancel.
+  useEffect(
+    () => () => {
+      if (dragHidePage() === ctx.index) {
+        toolController.cancel();
+        void endDrag();
+      }
+    },
+    [ctx.index],
+  );
 
   const onPointerLeave = useCallback(() => {
     if (!toolController.active()) {

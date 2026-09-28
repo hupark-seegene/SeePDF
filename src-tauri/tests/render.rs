@@ -211,3 +211,58 @@ fn render_cache_keys_include_generation() {
     cache.drop_older_generations(&doc.doc_id, k.generation + 1);
     assert!(cache.get(&k).is_none(), "the bump swept the dead entry");
 }
+
+/// P1-10 야간 모드: `night` changes **only** the clear colour (ARCHITECTURE §3.4). The page
+/// background comes out transparent, so the page shell's night paper shows through, and the
+/// ink is *not* inverted by the engine — the CSS filter on `.page-bitmaps` is the one and
+/// only colour transform, so nothing on the page is ever inverted twice.
+#[test]
+fn render_night_is_transparent_not_inverted() {
+    let doc = open("tracemonkey.pdf");
+    // 3x, so glyph stems have solid interiors to compare (at 1x most ink is anti-aliasing).
+    let day_key = key(&doc, RenderKind::Page, 300, 0, 0);
+    let night_key = TileKey {
+        night: Night::Dark,
+        ..day_key.clone()
+    };
+    let sepia_key = TileKey {
+        night: Night::Sepia,
+        ..day_key.clone()
+    };
+    let day = render(day_key);
+    let night = render(night_key);
+    let sepia = render(sepia_key);
+    assert_eq!((day.width, day.height), (night.width, night.height));
+    assert_eq!(night.pixels, sepia.pixels, "dark and sepia share one bitmap");
+
+    // The top-left corner is page margin: opaque white by day, fully transparent at night.
+    assert_eq!(&day.pixels[0..4], &[255, 255, 255, 255]);
+    assert_eq!(night.pixels[3], 0, "night renders on a transparent clear colour");
+
+    let mut white = 0usize;
+    let mut cleared = 0usize;
+    let mut ink = 0usize;
+    let mut max_ink_delta = 0u8;
+    for (d, n) in day.pixels.chunks_exact(4).zip(night.pixels.chunks_exact(4)) {
+        if d == [255, 255, 255, 255] {
+            white += 1;
+            cleared += usize::from(n[3] == 0);
+        }
+        // Solid glyph interiors are opaque in both renders; their colour must be identical.
+        if n[3] == 255 && d[0] < 64 && d[1] < 64 && d[2] < 64 {
+            ink += 1;
+            for c in 0..3 {
+                max_ink_delta = max_ink_delta.max(d[c].abs_diff(n[c]));
+            }
+        }
+    }
+    assert!(ink > 1_000, "the page has solid ink ({ink} px)");
+    assert!(
+        max_ink_delta <= 2,
+        "the engine must not invert or tint the ink (max channel delta {max_ink_delta})"
+    );
+    assert!(
+        cleared * 100 >= white * 99,
+        "the white background is transparent at night ({cleared} of {white} px)"
+    );
+}

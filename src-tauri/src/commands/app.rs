@@ -72,6 +72,18 @@ pub async fn write_recent_thumbnail(
     Ok(ThumbId { thumb_id })
 }
 
+/// P1-9: a typed signature, rendered to PNG by the webview, written under
+/// `$APPDATA/SeePDF/signatures/` so the 서명 tool can place it as a `StampImage::Path`.
+/// Returns the absolute path. File I/O only — no pdfium, so it never touches the engine thread.
+#[tauri::command]
+pub async fn write_signature_image(app: AppHandle, bytes: Vec<u8>) -> Result<String, EngineError> {
+    let dir = store::signatures_dir(&app).ok_or_else(|| EngineError::io("no app data directory"))?;
+    tauri::async_runtime::spawn_blocking(move || crate::app::signatures::write_png(&dir, &bytes))
+        .await
+        .map_err(|e| EngineError::io(format!("write signature image: {e}")))?
+        .map(|path| path.display().to_string())
+}
+
 #[tauri::command]
 pub fn reveal_in_file_manager(path: String) -> Result<(), EngineError> {
     store::reveal(&path)

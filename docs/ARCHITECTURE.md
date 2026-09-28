@@ -230,11 +230,15 @@ a crop of the full render within 427/1,048,576 px at max channel delta 1, tile-t
 
 ### 3.4 Night mode
 
-The tile layer gets `filter: invert(1) hue-rotate(180deg)` (dark) or a sepia matrix; the SVG overlay
-(in-progress gestures, handles) is outside the filtered element. Annotations baked into the bitmap
+The tile layer gets `filter: invert(0.9) hue-rotate(180deg)` (dark) or `sepia(0.2)` with
+`mix-blend-mode: multiply` onto the sepia paper (P1-10); the SVG overlay (in-progress gestures, handles),
+the marks and the form inputs are outside the filtered element. The engine applies no colour transform of
+its own (`render_night_is_transparent_not_inverted`), so nothing is inverted twice. Annotations baked into the bitmap
 invert with the page — hue-rotate keeps a yellow highlight yellowish. A transparent clear colour
 (`PdfColor::new(0,0,0,0)`, verified to keep real alpha on 484,566/484,704 px of a text page) is used when
-`night != off` so the page is composited over the UI's dark background instead of inverting white.
+`night != off` so the page is composited over the page shell's night paper (`--night-paper`, exactly what the
+filter makes of white, or `--sepia-paper`) instead of inverting white. 어둡게 and 세피아 share one bitmap
+(`night=1`).
 
 ---
 

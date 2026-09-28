@@ -1417,10 +1417,60 @@ pub struct Settings {
     /// settings files written before it still load.
     #[serde(default = "default_autosave_sec")]
     pub autosave_sec: u32,
+    /// 서명 보관함 (P1-9): at most [`MAX_SAVED_SIGNATURES`], newest last. Stage 6b,
+    /// `serde(default)` so older settings files still load; an entry that does not parse is
+    /// dropped on its own instead of resetting every setting to the default.
+    #[serde(default, deserialize_with = "lenient_signatures")]
+    pub signatures: Vec<SavedSignature>,
 }
 
 fn default_autosave_sec() -> u32 {
     60
+}
+
+/// The 서명 보관함 cap (P1-9).
+pub const MAX_SAVED_SIGNATURES: usize = 10;
+
+/// One saved signature. A drawn one keeps its unit-space strokes (0…1 of the drawn box,
+/// y-down, as `SignatureDialog` produces them); a typed one keeps the text and the style id,
+/// and is re-rendered to a PNG each time it is placed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SavedSignature {
+    #[serde(rename_all = "camelCase")]
+    Drawn {
+        id: String,
+        paths: Vec<Vec<f32>>,
+        aspect: f32,
+        #[serde(default)]
+        created_at: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Typed {
+        id: String,
+        text: String,
+        style: String,
+        #[serde(default)]
+        created_at: String,
+    },
+}
+
+/// `signatures` is user data inside a file that also holds every other setting: a malformed
+/// entry must not make `get_settings` fall back to `Settings::default()` wholesale.
+fn lenient_signatures<'de, D>(deserializer: D) -> Result<Vec<SavedSignature>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Through `Value` first: a wrong shape is then a value we ignore, not a parse error.
+    let items = match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Array(items) => items,
+        _ => Vec::new(),
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<SavedSignature>(v).ok())
+        .take(MAX_SAVED_SIGNATURES)
+        .collect())
 }
 
 fn default_recents_count() -> u32 {
@@ -1444,6 +1494,7 @@ impl Default for Settings {
             ocr_dpi: OcrDpi::Auto(OcrDpiAuto::Auto),
             tool_defaults: serde_json::Map::new(),
             autosave_sec: default_autosave_sec(),
+            signatures: Vec::new(),
         }
     }
 }
@@ -1812,5 +1863,64 @@ mod tests {
         old.as_object_mut().unwrap().remove("autosaveSec");
         let back: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(back.autosave_sec, 60);
+    }
+
+    /// Stage 6b (P1-9): the 서명 보관함 wire shape, the default for settings written before it,
+    /// and the leniency that keeps one bad entry from resetting every setting.
+    #[test]
+    fn saved_signatures_shape_default_and_leniency() {
+        let drawn = SavedSignature::Drawn {
+            id: "s1".into(),
+            paths: vec![vec![0.0, 0.0, 1.0, 1.0]],
+            aspect: 2.5,
+            created_at: "2026-09-28T00:00:00.000Z".into(),
+        };
+        let typed = SavedSignature::Typed {
+            id: "s2".into(),
+            text: "박현우".into(),
+            style: "script".into(),
+            created_at: String::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(&drawn).unwrap(),
+            json!({ "kind": "drawn", "id": "s1", "paths": [[0.0, 0.0, 1.0, 1.0]], "aspect": 2.5,
+                    "createdAt": "2026-09-28T00:00:00.000Z" })
+        );
+        assert_eq!(
+            serde_json::to_value(&typed).unwrap(),
+            json!({ "kind": "typed", "id": "s2", "text": "박현우", "style": "script", "createdAt": "" })
+        );
+
+        // Written before Stage 6b: no `signatures` key at all.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(old["signatures"], json!([]));
+        old.as_object_mut().unwrap().remove("signatures");
+        let back: Settings = serde_json::from_value(old.clone()).unwrap();
+        assert!(back.signatures.is_empty());
+
+        // A malformed entry is dropped on its own; the rest of the settings survive.
+        old["author"] = json!("박현우");
+        old["signatures"] = json!([
+            { "kind": "typed", "id": "ok", "text": "Kim", "style": "formal" },
+            { "kind": "drawn", "id": "bad" },
+            42,
+        ]);
+        let back: Settings = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(back.author, "박현우");
+        assert_eq!(back.signatures.len(), 1);
+
+        // Not an array: ignored, not an error.
+        old["signatures"] = json!("nope");
+        let back: Settings = serde_json::from_value(old.clone()).unwrap();
+        assert!(back.signatures.is_empty());
+
+        // Capped at MAX_SAVED_SIGNATURES.
+        old["signatures"] = serde_json::Value::Array(
+            (0..15)
+                .map(|i| json!({ "kind": "typed", "id": format!("t{i}"), "text": "x", "style": "script" }))
+                .collect(),
+        );
+        let back: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(back.signatures.len(), MAX_SAVED_SIGNATURES);
     }
 }

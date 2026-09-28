@@ -11,6 +11,11 @@
   background: var(--bg-app);
 }
 
+/* 읽기 모드 (P1-12): the title bar and status bar are not rendered, the pages get every row. */
+.app-shell[data-reading] {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 /* ---------------------------------------------------------------- title bar */
 
 .titlebar {

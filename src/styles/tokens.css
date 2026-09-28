@@ -86,11 +86,24 @@
   /* 14.3b the page itself — paper, ink and the form-field wash.
      Defined **once** and deliberately NOT redefined per theme: these are the colours of paper,
      not of chrome, and a dark-mode swap would paint black handles and light-grey form text onto
-     a white page. Night mode is a filter on `.page-bitmaps`, not a token change.
+     a white page. Night mode is a filter on `.page-bitmaps` plus the paper below.
      (STAGE1C_NOTES §8, STAGE1D_NOTES §7.3.) */
   --page-paper: #ffffff;
   --page-ink: #1a1c1f;
   --page-field: rgb(47 111 235 / 0.1);
+
+  /* 야간 모드 (P1-10): the paper a night page is composited over. Night bitmaps are rendered on a
+     transparent clear colour (ARCHITECTURE §3.4), so this shows wherever the page is blank; the
+     viewer re-scopes `--page-*` to these while a night mode is on (viewer.css).
+     어둡게 — exactly what `invert(0.9)` makes of white (255 × 0.1 ≈ #1a) and of black (≈ #e6), so a
+     page that paints its own white background looks the same as one that does not.
+     세피아 — the bitmap is multiplied onto it: white paper becomes this colour, black ink stays. */
+  --night-paper: #1a1a1a;
+  --night-ink: #e6e6e6;
+  --night-field: rgb(96 140 255 / 0.2);
+  --sepia-paper: #f4ecd8;
+  --sepia-ink: #3b2f22;
+  --sepia-field: rgb(47 111 235 / 0.12);
 
   color-scheme: light;
 }

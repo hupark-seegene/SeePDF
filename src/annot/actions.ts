@@ -146,6 +146,20 @@ interface PendingPatch {
 const pending = new Map<string, PendingPatch>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 let inFlight: Promise<void> = Promise.resolve();
+/**
+ * While a drag has its annotations hidden (`dragHide.ts`) nothing is sent until the drop: an
+ * `update_annotation` snapshots the document for undo, and a snapshot taken while `/F` has the
+ * HIDDEN bit would bring the annotation back hidden on 실행 취소.
+ */
+let held = false;
+
+export function holdPatchFlush(on: boolean): void {
+  held = on;
+  if (on && timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+}
 
 function keyOf(page: PageIndex, id: AnnotId): string {
   return `${page}:${id}`;
@@ -189,6 +203,7 @@ export function patchAnnotation(page: PageIndex, id: AnnotId, patch: AnnotPatch,
   const merged = { page, id, patch: { ...(pending.get(key)?.patch ?? {}), ...patch } };
   pending.set(key, merged);
   applyLocally(page, id, patch);
+  if (held) return;
   if (timer) clearTimeout(timer);
   if (live) {
     timer = setTimeout(() => void flushPatches(), PATCH_COALESCE_MS);
@@ -231,6 +246,7 @@ export function hasPendingPatches(): boolean {
 export function resetPatchQueue(): void {
   if (timer) clearTimeout(timer);
   timer = null;
+  held = false;
   pending.clear();
   inFlight = Promise.resolve();
 }

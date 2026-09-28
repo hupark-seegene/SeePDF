@@ -427,6 +427,11 @@ export function saveDocumentAs(
   return call("save_document_as", { ...a, onProgress: channel(onProgress) }, (mock) => mock.saveDocumentAs(a, onProgress));
 }
 
+/** `true` when something already exists at `path` (여러 파일 OCR picks `name-ocr (2).pdf` then). */
+export function pathExists(a: { path: string }): Promise<boolean> {
+  return call("path_exists", a, (mock) => mock.pathExists(a));
+}
+
 // ---------------------------------------------------------------------------
 // 7.7 Export and print
 // ---------------------------------------------------------------------------
@@ -539,6 +544,16 @@ export function getSettings(): Promise<Settings> {
 
 export function setSettings(a: { patch: Partial<Settings> }): Promise<Settings> {
   return call("set_settings", a, (mock) => mock.setSettings(a));
+}
+
+/**
+ * P1-9: a typed signature rendered to PNG → `$APPDATA/SeePDF/signatures/sig-<hash>.png`, so the
+ * 서명 tool can place it as `StampImage { path }`. Resolves with the absolute path.
+ */
+export function writeSignatureImage(a: { bytes: Uint8Array }): Promise<string> {
+  // A JSON array: `Vec<u8>` on the Rust side (a typed array would serialise as an object).
+  const args = { bytes: Array.from(a.bytes) };
+  return call("write_signature_image", args, (mock) => mock.writeSignatureImage(args));
 }
 
 // ---------------------------------------------------------------------------

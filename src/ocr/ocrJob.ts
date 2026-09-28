@@ -103,6 +103,19 @@ export interface OcrRunOptions {
   /** an existing job id (the dialog allocates one so it can render the cancel button immediately) */
   jobId?: JobId;
   signal?: AbortSignal;
+  /**
+   * A worker pool the caller owns and terminates (여러 파일 OCR shares one across every file, so
+   * the workers are initialised once per batch, not once per file). Default: a pool of this run's
+   * own, terminated when it ends.
+   */
+  pool?: TesseractPool;
+  /**
+   * `false`: no `jobStore` entry and no status-bar canceller — the caller shows its own progress
+   * and cancels through `signal` (여러 파일 OCR has one job for the whole batch). Default `true`.
+   */
+  track?: boolean;
+  /** called once the pages to recognise are known (after "skip pages that already have text") */
+  onPlan?: (todo: PageIndex[], skipped: PageIndex[]) => void;
 }
 
 export interface OcrJobResult {
@@ -221,13 +234,16 @@ function chunk<T>(items: T[], size: number): T[][] {
  * and `messageKey`, which is what the dialog and the toast both render.
  */
 export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
-  const jobs = useJobStore.getState();
+  const track = options.track ?? true;
+  const store = useJobStore.getState();
+  // An untracked run (여러 파일 OCR) reports through its callbacks only.
+  const jobs: Pick<typeof store, "start" | "update"> = track ? store : { start() {}, update() {} };
   const jobId = options.jobId ?? localJobId();
   const startedAt = Date.now();
   const dpi = resolveDpi(options.dpi);
   const langs = options.langs ?? DEFAULT_LANGS;
   const layout = options.layout ?? DEFAULT_LAYOUT;
-  const workers = options.workers ?? defaultWorkerCount();
+  const workers = options.workers ?? options.pool?.maxWorkers ?? defaultWorkerCount();
   const skipPagesWithText = options.skipPagesWithText ?? true;
   const replaceExisting = options.replaceExisting ?? false;
 
@@ -237,7 +253,7 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
     if (options.signal.aborted) abort();
     else options.signal.addEventListener("abort", abort, { once: true });
   }
-  const unregister = registerCanceller(jobId, abort);
+  const unregister = track ? registerCanceller(jobId, abort) : () => {};
   /** the backend job id of the `ocr_apply` currently in flight, so cancel reaches the engine too */
   let backendJobId: JobId | null = null;
 
@@ -248,6 +264,7 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
   let gen = options.docGeneration;
   let info: DocInfo | undefined;
   let pool: TesseractPool | null = null;
+  const ownsPool = !options.pool;
 
   const finish = (r: Omit<OcrJobResult, "jobId" | "elapsedMs">): OcrJobResult => ({
     ...r, jobId, elapsedMs: Date.now() - startedAt,
@@ -270,12 +287,13 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
       skipped.push(...options.pages.filter((p) => hasText.has(p)));
     }
     jobs.update(jobId, { total: todo.length });
+    options.onPlan?.(todo, [...skipped]);
     if (todo.length === 0) {
       jobs.update(jobId, { state: "done", done: 0 });
       return finish({ status: "done", applied, skipped, words: 0, confidence: 0, messageKey: "ocr.noImagePages" });
     }
 
-    pool = new TesseractPool({
+    pool = options.pool ?? new TesseractPool({
       langs, layout, dpi, workers,
       onProgress: (e) => {
         if (e.status === "recognizing text") options.onPageProgress?.(-1, e.progress);
@@ -350,6 +368,6 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
   } finally {
     unregister();
     options.signal?.removeEventListener("abort", abort);
-    await pool?.terminate().catch(() => {});
+    if (ownsPool) await pool?.terminate().catch(() => {});
   }
 }

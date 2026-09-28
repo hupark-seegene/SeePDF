@@ -365,8 +365,16 @@ export interface Settings {
   tileCacheMb: number; recentsCount: number;   // Stage 2: no longer inside `toolDefaults`
   backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
   autosaveSec: number;          // Stage 5 (P1-8): 0 = off; default 60
+  /** per-tool style overrides, keyed by tool id (Stage 6b, P1-12); see `store/toolStyles.ts` */
   toolDefaults: Record<string, unknown>;
+  /** 서명 보관함, at most 10, newest last (Stage 6b, P1-9); `[]` in settings written before it */
+  signatures: SavedSignature[];
 }
+
+/** One entry of the 서명 보관함. Drawn strokes are unit space (0…1 of the drawn box, y-down). */
+export type SavedSignature =
+  | { kind: 'drawn'; id: string; paths: number[][]; aspect: number; createdAt: string }
+  | { kind: 'typed'; id: string; text: string; style: string; createdAt: string };
 
 // ---------------------------------------------------------------------------
 // Convenience aliases used by the shell (not part of the wire format)

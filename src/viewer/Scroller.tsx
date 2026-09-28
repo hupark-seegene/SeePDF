@@ -19,6 +19,7 @@ import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
+import { useAnnotStore } from "../store/annotStore";
 import {
   devicePixelRatio,
   pageBoxCss,
@@ -91,6 +92,8 @@ export function Scroller({
   const rotation = useViewStore((s) => s.rotation);
   const mode = useViewStore((s) => s.layout);
   const night = useViewStore((s) => s.night);
+  // P1-12: a page whose annotation is hidden mid-drag carries its view nonce in its URLs.
+  const viewNonce = useAnnotStore((s) => s.viewNonce);
   const currentPage = useViewStore((s) => s.currentPage);
   const scrollRequest = useViewStore((s) => s.scrollRequest);
   const setCurrentPage = useViewStore((s) => s.setCurrentPage);
@@ -187,11 +190,12 @@ export function Scroller({
       forms: renderFormWidgets,
       dpr,
       currentPage,
+      viewNonce,
     });
     tiles.setDesired(renderGen, desired, { fling: flingRef.current });
   }, [
     info, mountedItems, scroll, viewport, renderScaleKey, rotation, night, fieldHighlight, dpr,
-    currentPage, renderGen, tiles,
+    currentPage, renderGen, tiles, viewNonce,
   ]);
 
   // A mutation invalidates the pages it touched: the URLs carry the new generation, so the old
@@ -662,6 +666,7 @@ export function Scroller({
                 night: nightOn,
                 hl: fieldHighlight,
                 forms: renderFormWidgets,
+                vn: viewNonce[item.page],
               })}
               bitmapUrl={
                 tiled
@@ -675,6 +680,7 @@ export function Scroller({
                       night: nightOn,
                       hl: fieldHighlight,
                       forms: renderFormWidgets,
+                      vn: viewNonce[item.page],
                     })
               }
               tiles={tilesByPage.get(item.page) ?? EMPTY_TILES}
@@ -715,6 +721,8 @@ function collectTiles(a: {
   forms: boolean;
   dpr: number;
   currentPage: PageIndex;
+  /** per-page view nonce (`set_annotations_hidden`), part of the key and the URL */
+  viewNonce: Record<PageIndex, number>;
 }): TileRequest[] {
   const s = scaleFromKey(a.renderScaleKey);
   const out: TileRequest[] = [];
@@ -747,7 +755,7 @@ function collectTiles(a: {
         const rect = tileRect(px.w, px.h, tx, ty);
         if (!rect) continue;
         out.push({
-          key: `${a.info.docId}:${a.info.docGeneration}:${item.page}:${a.renderScaleKey}:${a.rotation}:${tx}:${ty}:${a.night ? 1 : 0}:${a.hl ? 1 : 0}:${a.forms ? 1 : 0}`,
+          key: `${a.info.docId}:${a.info.docGeneration}:${item.page}:${a.renderScaleKey}:${a.rotation}:${tx}:${ty}:${a.night ? 1 : 0}:${a.hl ? 1 : 0}:${a.forms ? 1 : 0}:${a.viewNonce[item.page] ?? 0}`,
           page: item.page,
           tx,
           ty,
@@ -763,6 +771,7 @@ function collectTiles(a: {
             night: a.night,
             hl: a.hl,
             forms: a.forms,
+            vn: a.viewNonce[item.page],
           }),
           box: { x: rect.x / a.dpr, y: rect.y / a.dpr, w: rect.w / a.dpr, h: rect.h / a.dpr },
         });

@@ -7,8 +7,9 @@
  * host feeds it back through `ctx.image` so the state machine stays pure.
  */
 import type { AnnotSpec, PageIndex, Point, Rect, Rgb } from "../ipc/types";
-import type { StampImage, ToolModule, ToolResult } from "./ToolController";
+import type { StampImage, ToolModule, ToolPreview, ToolResult } from "./ToolController";
 import { rectFrom, rectIsEmpty } from "./geometry";
+import { builtinStamp } from "./stampCatalog";
 
 export interface StampState {
   page: PageIndex | null;
@@ -24,13 +25,31 @@ export const STAMP_SIZE: Record<"stamp" | "signature", { w: number; h: number }>
   signature: { w: 160, h: 56 },
 };
 
-export function placementRect(id: "stamp" | "signature", at: Point): Rect {
-  const { w, h } = STAMP_SIZE[id];
+/**
+ * The default placement size: a built-in stamp has its own (`stampCatalog.ts`), an image whose
+ * shape is known (a typed signature) keeps its aspect at the default width, anything else is
+ * [`STAMP_SIZE`].
+ */
+export function placementSize(id: "stamp" | "signature", image?: StampImage | null): { w: number; h: number } {
+  const builtin = image && "builtin" in image ? builtinStamp(image.builtin) : null;
+  if (builtin) return builtin.size;
+  const aspect = image && "path" in image ? pickedAspect[id] : undefined;
+  if (aspect && Number.isFinite(aspect) && aspect > 0) {
+    const w = STAMP_SIZE[id].w;
+    return { w, h: Math.min(160, Math.max(18, w / aspect)) };
+  }
+  return STAMP_SIZE[id];
+}
+
+export function placementRect(id: "stamp" | "signature", at: Point, image: StampImage | null = stampImage(id)): Rect {
+  const { w, h } = placementSize(id, image);
   return { l: at[0] - w / 2, r: at[0] + w / 2, b: at[1] - h / 2, t: at[1] + h / 2 };
 }
 
 /** Module-level, set by `onArm` through the picker the host installs. */
 let picked: Partial<Record<"stamp" | "signature", StampImage | null>> = {};
+/** width ÷ height of the picked image, when the picker knows it (a typed signature does). */
+let pickedAspect: Partial<Record<"stamp" | "signature", number>> = {};
 let picker: ((id: "stamp" | "signature") => void) | null = null;
 
 /**
@@ -88,9 +107,15 @@ export function setStampPicker(fn: ((id: "stamp" | "signature") => void) | null)
   picker = fn;
 }
 
-export function setStampImage(id: "stamp" | "signature", image: StampImage | null): void {
+export function setStampImage(id: "stamp" | "signature", image: StampImage | null, aspect?: number): void {
   picked = { ...picked, [id]: image };
+  pickedAspect = { ...pickedAspect, [id]: aspect };
   if (id === "signature" && image) drawn = null;
+}
+
+/** Open the picker for `id` again (the properties panel's 도장 변경… / 서명 변경…). */
+export function reopenStampPicker(id: "stamp" | "signature"): void {
+  picker?.(id);
 }
 
 export function stampImage(id: "stamp" | "signature"): StampImage | null {
@@ -99,7 +124,16 @@ export function stampImage(id: "stamp" | "signature"): StampImage | null {
 
 export function resetStampImages(): void {
   picked = {};
+  pickedAspect = {};
   drawn = null;
+}
+
+/** The ghost that follows the cursor: a built-in stamp shows its label in its colour. */
+function stampPreview(page: PageIndex, rect: Rect, image: StampImage | null): ToolPreview {
+  const builtin = image && "builtin" in image ? builtinStamp(image.builtin) : null;
+  return builtin
+    ? { page, kind: "stamp", rect, label: builtin.label, color: builtin.color }
+    : { page, kind: "stamp", rect };
 }
 
 export function makeStampTool(id: "stamp" | "signature"): ToolModule<StampState> {
@@ -118,13 +152,14 @@ export function makeStampTool(id: "stamp" | "signature"): ToolModule<StampState>
       return { state: { page: p.page, from: p.pt, at: p.pt } };
     },
 
-    onMove(state, p): ToolResult<StampState> {
+    onMove(state, p, ctx): ToolResult<StampState> {
+      const image = ctx?.image ?? stampImage(id);
       const base =
-        id === "signature" && drawn ? drawnPlacementRect(drawn, p.pt) : placementRect(id, p.pt);
+        id === "signature" && drawn ? drawnPlacementRect(drawn, p.pt) : placementRect(id, p.pt, image);
       const rect = state.from ? rectFrom(state.from, p.pt) : base;
       return {
         state: { ...state, at: p.pt },
-        preview: { page: p.page, kind: "stamp", rect: rectIsEmpty(rect, 4) ? base : rect },
+        preview: stampPreview(p.page, rectIsEmpty(rect, 4) ? base : rect, id === "signature" && drawn ? null : image),
       };
     },
 
@@ -150,8 +185,8 @@ export function makeStampTool(id: "stamp" | "signature"): ToolModule<StampState>
         picker?.(id);
         return { state: { ...EMPTY }, preview: null };
       }
-      const dragged = state.from ? rectFrom(state.from, p.pt) : placementRect(id, p.pt);
-      const rect = rectIsEmpty(dragged, 4) ? placementRect(id, p.pt) : dragged;
+      const dragged = state.from ? rectFrom(state.from, p.pt) : placementRect(id, p.pt, image);
+      const rect = rectIsEmpty(dragged, 4) ? placementRect(id, p.pt, image) : dragged;
       const spec: AnnotSpec = { kind: "stamp", rect, image };
       return { state: { ...EMPTY }, preview: null, commit: { page, spec }, done: true };
     },

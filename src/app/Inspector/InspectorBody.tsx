@@ -13,6 +13,8 @@ import { useT } from "../../i18n/useT";
 import { useAppStore } from "../../store/appStore";
 import { MARKUP_KINDS, useAnnotStore } from "../../store/annotStore";
 import { commitField, useFormStore } from "../../forms/formStore";
+import { isStyledTool, toolOfKind } from "../../store/toolStyles";
+import { reopenStampPicker } from "../../tools/stamp";
 import { makeApply } from "./apply";
 import { Swatches } from "../Swatches";
 import type { PropertyId } from "./patch";
@@ -124,7 +126,10 @@ export function InspectorBody() {
   const mode = useAppStore((s) => s.mode);
   const tool = useAppStore((s) => s.tool);
   const style = useAnnotStore((s) => s.style);
-  const setStyle = useAnnotStore((s) => s.setStyle);
+  const styleTool = useAnnotStore((s) => s.styleTool);
+  const overrides = useAnnotStore((s) => s.toolDefaults);
+  const setToolDefault = useAnnotStore((s) => s.setToolDefault);
+  const resetToolDefault = useAnnotStore((s) => s.resetToolDefault);
   const selection = useSelection();
   const apply = useApply();
 
@@ -144,6 +149,11 @@ export function InspectorBody() {
   // 펜 / 도형 / 선, and `AnnotPatch.borderWidth` on a Highlight is silently ignored by the engine.
   const isMarkup = MARKUP_KINDS.includes(kind as AnnotKind) || kind === "note";
   const showThickness = !isText && !isMarkup;
+  // 도구별 기본 스타일 (P1-12): which tool's default the buttons below talk about — the selected
+  // annotation's tool, or (nothing selected) the armed tool / the one whose style is showing.
+  const defaultTool = selection.length > 0 ? toolOfKind(one?.kind) : isStyledTool(tool) ? tool : styleTool;
+  const hasOverride = !!defaultTool && !!overrides[defaultTool];
+  const placesImage = (tool === "stamp" || tool === "signature") && selection.length === 0;
 
   return (
     <>
@@ -220,9 +230,33 @@ export function InspectorBody() {
       )}
 
       <section className="field-group">
-        <button type="button" className="btn quiet" onClick={() => setStyle({ color: colour, opacity, width, fillColor: fill })}>
-          {t("prop.setDefault")}
-        </button>
+        {placesImage && (
+          <button type="button" className="btn quiet" onClick={() => reopenStampPicker(tool as "stamp" | "signature")}>
+            {t(tool === "stamp" ? "prop.changeStamp" : "prop.changeSignature")}
+          </button>
+        )}
+        {selection.length > 0 && defaultTool && (
+          <button
+            type="button"
+            className="btn quiet"
+            onClick={() =>
+              setToolDefault(defaultTool, {
+                color: colour,
+                opacity,
+                ...(showThickness ? { width } : {}),
+                ...(isShape || isText ? { fillColor: fill } : {}),
+                ...(one?.fontSize ? { fontSize: one.fontSize } : {}),
+              })
+            }
+          >
+            {t("prop.setDefault")}
+          </button>
+        )}
+        {selection.length === 0 && hasOverride && defaultTool && (
+          <button type="button" className="btn quiet" onClick={() => resetToolDefault(defaultTool)}>
+            {t("prop.resetDefault")}
+          </button>
+        )}
         {selection.length > 0 && (
           <button
             type="button"

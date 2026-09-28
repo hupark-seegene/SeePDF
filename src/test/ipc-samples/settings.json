@@ -15,5 +15,6 @@
     "eng"
   ],
   "ocrDpi": "auto",
-  "toolDefaults": {}
+  "toolDefaults": {},
+  "signatures": []
 }

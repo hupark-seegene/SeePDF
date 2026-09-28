@@ -52,6 +52,7 @@ pub const MENU_IDS: &[&str] = &[
     "view.fitPage",
     "view.fitWidth",
     "view.readingMode",
+    "view.night",
     "go.nextPage",
     "go.previousPage",
     "go.firstPage",
@@ -60,6 +61,7 @@ pub const MENU_IDS: &[&str] = &[
     "go.back",
     "go.forward",
     "tools.ocr",
+    "tools.batchOcr",
     "tools.security",
     "tools.redact",
     "tools.stamp",
@@ -123,6 +125,7 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("view.fitPage", "페이지에 맞춤", "Fit Page"),
     ("view.fitWidth", "너비에 맞춤", "Fit Width"),
     ("view.readingMode", "읽기 모드", "Reading Mode"),
+    ("view.night", "야간 모드", "Night Mode"),
     ("view.fullScreen", "전체 화면", "Full Screen"),
     // go
     ("go.nextPage", "다음 페이지", "Next Page"),
@@ -134,6 +137,7 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("go.forward", "앞으로", "Forward"),
     // tools
     ("tools.ocr", "텍스트 인식(OCR)…", "Recognize Text (OCR)…"),
+    ("tools.batchOcr", "여러 파일 OCR…", "Batch OCR…"),
     ("tools.security", "보안…", "Security…"),
     ("tools.redact", "영역 표시", "Redact"),
     ("tools.stamp", "워터마크 / 머리글·바닥글…", "Watermark / Header & Footer…"),
@@ -251,6 +255,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&item("view.fitWidth", Some("CmdOrCtrl+8"))?)
         .separator()
         .item(&item("view.readingMode", Some("Ctrl+Cmd+R"))?)
+        // 끄기 → 어둡게 → 세피아 (P1-10); the item cycles, like the keymap row and the status bar.
+        .item(&item("view.night", Some("Ctrl+Cmd+N"))?)
         .item(&PredefinedMenuItem::fullscreen(
             app,
             Some(t("view.fullScreen")),
@@ -271,6 +277,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
 
     let tools_menu = SubmenuBuilder::new(app, t("tools"))
         .item(&item("tools.ocr", None)?)
+        .item(&item("tools.batchOcr", None)?)
         .item(&item("tools.redact", Some("CmdOrCtrl+Shift+R"))?)
         .item(&item("tools.security", None)?)
         .item(&item("tools.stamp", Some("CmdOrCtrl+Alt+W"))?)

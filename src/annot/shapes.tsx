@@ -15,6 +15,7 @@
  */
 import type { Annot, Rect, Rgb } from "../ipc/types";
 import type { ToolPreview } from "../tools/ToolController";
+import { builtinColor, builtinLabel, isBuiltinStampKind } from "../tools/stampCatalog";
 
 export function rgb(c: Rgb): string {
   return `rgb(${c[0]} ${c[1]} ${c[2]})`;
@@ -51,6 +52,29 @@ function arrowHead(x: number, y: number, fx: number, fy: number, size: number): 
   const a = [x - size * Math.cos(angle - spread), y - size * Math.sin(angle - spread)];
   const b = [x - size * Math.cos(angle + spread), y - size * Math.sin(angle + spread)];
   return `M ${a[0]} ${a[1]} L ${x} ${y} L ${b[0]} ${b[1]}`;
+}
+
+
+/**
+ * Border + label, centred, in PDF user space (`scale(1 -1)` counter-flips the text). The font
+ * size mirrors the engine's rule: half the height, shrunk until it fits 84 % of the width.
+ */
+function StampLabel({ rect, label, color, dashed }: { rect: Rect; label: string; color: Rgb; dashed?: boolean }) {
+  const b = box(rect);
+  const hangul = /[ㄱ-힝]/.test(label);
+  const em = label.length * (hangul ? 1 : 0.68);
+  const size = Math.max(4, Math.min(b.height * 0.5, 48, em > 0 ? (b.width * 0.84) / em : b.height));
+  const stroke = rgb(color);
+  return (
+    <g>
+      <rect {...b} fill="none" stroke={stroke} strokeWidth={hangul ? 2.5 : 2} strokeDasharray={dashed ? "4 3" : undefined} />
+      <g transform={`translate(${b.x + b.width / 2} ${b.y + b.height / 2}) scale(1 -1)`}>
+        <text x={0} y={0} fontSize={size} fill={stroke} textAnchor="middle" dominantBaseline="central" fontWeight={hangul ? 700 : 600}>
+          {label}
+        </text>
+      </g>
+    </g>
+  );
 }
 
 /** One annotation, fully painted. Used for ghosts and for the 텍스트 상자 draft. */
@@ -162,6 +186,13 @@ export function AnnotShape({ annot: a }: { annot: Annot }) {
       );
     }
     case "stamp":
+      if (isBuiltinStampKind(a.stampKind)) {
+        return (
+          <g opacity={a.opacity}>
+            <StampLabel rect={a.rect} label={builtinLabel(a.stampKind)} color={builtinColor(a.stampKind)} />
+          </g>
+        );
+      }
       return (
         <g opacity={a.opacity}>
           <rect {...box(a.rect)} fill="none" stroke={stroke} strokeWidth={1} strokeDasharray="4 3" />
@@ -227,9 +258,14 @@ export function PreviewShape({ preview, scale }: { preview: ToolPreview; scale: 
       );
     }
     case "stamp":
-      return preview.rect ? (
+      if (!preview.rect) return null;
+      return preview.label && preview.color ? (
+        <g opacity={0.7}>
+          <StampLabel rect={preview.rect} label={preview.label} color={preview.color} dashed />
+        </g>
+      ) : (
         <rect {...box(preview.rect)} className="annot-placing" strokeDasharray={`${6 / scale} ${4 / scale}`} vectorEffect="non-scaling-stroke" />
-      ) : null;
+      );
     default:
       return null;
   }

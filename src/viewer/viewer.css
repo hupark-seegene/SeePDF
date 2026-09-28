@@ -41,13 +41,35 @@
   overflow: hidden;
 }
 
-/* Night mode filters the bitmap layer only — never the overlays (ARCHITECTURE §3.4). */
-.viewer .page-bitmaps[data-night="dark"] {
-  filter: invert(1) hue-rotate(180deg);
+/* Night mode (P1-10) filters the bitmap layer only — never the overlays, so annotations drawn in
+   the SVG layer, handles, selection and form inputs are never inverted (twice or at all). The engine
+   renders night bitmaps on a transparent clear colour and applies no colour transform of its own
+   (`render_night_is_transparent_not_inverted`), so the paper below is the page shell's: the page
+   tokens are re-scoped here, which also keeps form text and the text editor readable on it. */
+.viewer[data-night="dark"] {
+  --page-paper: var(--night-paper);
+  --page-ink: var(--night-ink);
+  --page-field: var(--night-field);
 }
 
+.viewer[data-night="sepia"] {
+  --page-paper: var(--sepia-paper);
+  --page-ink: var(--sepia-ink);
+  --page-field: var(--sepia-field);
+}
+
+/* `invert(0.9)`, not 1: white → #1a, black → #e6 (tokens.css); hue-rotate keeps a yellow highlight
+   yellowish. */
+.viewer .page-bitmaps[data-night="dark"] {
+  filter: invert(0.9) hue-rotate(180deg);
+}
+
+/* Multiplied onto the sepia paper (`.page-shell` is its own stacking context through
+   `contain: paint`, so the paper is the only backdrop): a scan's white becomes the paper, black ink
+   stays black, and the light sepia warms photographs to match. */
 .viewer .page-bitmaps[data-night="sepia"] {
-  filter: sepia(0.45) saturate(0.85) brightness(0.96);
+  filter: sepia(0.2);
+  mix-blend-mode: multiply;
 }
 
 .viewer .page-bitmaps img {
@@ -126,7 +148,8 @@
   box-shadow: 0 0 0 1px var(--accent);
 }
 
-/* An inverted page needs the marks inverted too, or a multiply turns them black. */
-.viewer[data-night] .mark {
+/* A dark page needs the marks to lighten instead, or a multiply turns them black. Sepia is still a
+   light page, so its marks keep multiplying. */
+.viewer[data-night="dark"] .mark {
   mix-blend-mode: screen;
 }

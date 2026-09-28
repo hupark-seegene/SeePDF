@@ -14,7 +14,11 @@ import type { DocInfo, PageIndex } from "../ipc/types";
 export type DialogName =
   | "export" | "merge" | "split" | "print" | "settings" | "docInfo"
   | "password" | "unsaved" | "extract" | "insertFrom" | "multipleFiles" | "signature" | "security"
-  | "stamp" | "compress" | "compare" | "recovery";
+  | "stamp" | "compress" | "compare" | "recovery"
+  // 여러 파일 OCR (P1-7)
+  | "batchOcr"
+  // 도장 선택 (P1-12)
+  | "stampPicker";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";

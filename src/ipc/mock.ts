@@ -58,12 +58,19 @@ let nextRecovery = 1;
 let nextDoc = 1;
 let nextJob = 1;
 let nextAnnot = 1;
+/** Files the mock "wrote" (Save As): `path_exists` answers true for them (여러 파일 OCR). */
+const writtenFiles = new Set<string>();
 let recents: RecentEntry[] = structuredClone(recentsFixture) as unknown as RecentEntry[];
 let settings: Settings = structuredClone(settingsFixture) as unknown as Settings;
 const pendingOpens: { path: string; source: "argv" | "macos-opened" | "drop" | "dialog" | "recent" }[] = [];
 
 function err(code: EngineError["code"], message: string, extra: Partial<EngineError> = {}): EngineError {
   return { code, message, ...extra };
+}
+
+function docsByPath(path: string): boolean {
+  for (const d of docs.values()) if (d.info.path === path) return true;
+  return false;
 }
 
 function doc(docId: DocId): MockDoc {
@@ -400,6 +407,8 @@ export const mock = {
   // 4. documents -------------------------------------------------------------
   async openDocument(a: { path: string; password?: string }): Promise<DocInfo> {
     if (/encrypted/i.test(a.path) && !a.password) throw err("passwordRequired", "document is encrypted");
+    // a path that names itself damaged fails to open, so a batch can exercise its 실패 row
+    if (/damaged/i.test(a.path)) throw err("pdfium", "the file is damaged or not a PDF");
     const recent = recents.find((r) => r.path === a.path);
     const d = makeDoc(a.path, recent?.pages ?? BASE_DOC.pageCount);
     docs.set(d.info.docId, d);
@@ -853,6 +862,7 @@ export const mock = {
     onProgress({ type: "started", jobId, total: 1 });
     await delay(null, 120);
     d.info.path = a.path;
+    writtenFiles.add(a.path);
     d.info.name = baseName(a.path);
     d.info.dirty = false;
     d.info.docGeneration += 1;
@@ -975,12 +985,26 @@ export const mock = {
     return { thumbId: `thumb-${a.docId}` };
   },
   async revealInFileManager(_a: { path: string }): Promise<void> {},
+  async pathExists(a: { path: string }): Promise<boolean> {
+    return writtenFiles.has(a.path) || docsByPath(a.path) || recents.some((r) => r.path === a.path);
+  },
   async getSettings(): Promise<Settings> {
     return structuredClone(settings);
   },
   async setSettings(a: { patch: Partial<Settings> }): Promise<Settings> {
     settings = { ...settings, ...a.patch };
     return structuredClone(settings);
+  },
+  /** P1-9: the path is content-addressed like the real one, so the same PNG gives the same path. */
+  async writeSignatureImage(a: { bytes: number[] }): Promise<string> {
+    if (a.bytes.length < 8 || a.bytes[0] !== 0x89 || a.bytes[1] !== 0x50) {
+      throw err("invalidArgument", "signature image is not a PNG");
+    }
+    let hash = 0x811c9dc5;
+    for (const b of a.bytes) hash = Math.imul(hash ^ b, 0x01000193) >>> 0;
+    const path = `/mock/app-data/signatures/sig-${hash.toString(16).padStart(8, "0")}.png`;
+    writtenFiles.add(path);
+    return path;
   },
 };
 
@@ -1292,6 +1316,7 @@ export function resetMock(): void {
   nextCompressToken = 1;
   recoveryFiles.clear();
   recoveryIdOf.clear();
+  writtenFiles.clear();
   nextRecovery = 1;
   for (const job of jobs.values()) job.cancel();
   jobs.clear();

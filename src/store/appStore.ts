@@ -31,6 +31,11 @@ export interface AppState {
   sidebarTab: SidebarTab;
   sidebarWidth: number;
   inspectorOpen: boolean;
+  /**
+   * 읽기 모드 (P1-12, ⌃⌘R / F8): the toolbar, sidebars, inspector and status bar are hidden and
+   * only the pages remain; Esc leaves it (`app/readingMode.ts`). Not the 읽기 *mode tab*.
+   */
+  readingMode: boolean;
 
   mode: Mode;
   tool: ToolId;
@@ -47,6 +52,7 @@ export interface AppState {
   setSidebarTab(tab: SidebarTab): void;
   setSidebarWidth(px: number): void;
   toggleInspector(open?: boolean): void;
+  setReadingMode(on: boolean): void;
 
   setMode(mode: Mode): void;
   setTool(tool: ToolId, momentary?: boolean): void;
@@ -81,6 +87,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarTab: "thumbnails",
   sidebarWidth: 240,
   inspectorOpen: false,
+  readingMode: false,
 
   mode: "read",
   tool: "select",
@@ -130,6 +137,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   toggleInspector(open) {
     set((s) => ({ inspectorOpen: open ?? !s.inspectorOpen }));
+  },
+  setReadingMode(readingMode) {
+    set({ readingMode });
   },
 
   setMode(mode) {

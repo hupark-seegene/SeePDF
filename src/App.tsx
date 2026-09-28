@@ -14,7 +14,9 @@ import { useMock } from "./ipc/env";
 import { useAppStore } from "./store/appStore";
 import { useDocStore } from "./store/docStore";
 import { useDialogStore } from "./dialogs/dialogState";
+import { useJobStore } from "./store/jobStore";
 import { autosave, offerRecovery, useAutosave } from "./app/autosave";
+import { useReadingModeKeys } from "./app/readingMode";
 import { useCompareStore } from "./compare/state";
 import { useOcrDialogOpen } from "./ocr/dialogState";
 import { useToastStore } from "./app/toastStore";
@@ -48,6 +50,16 @@ async function leaveCompare(): Promise<void> {
   await useCompareStore.getState().exit();
 }
 
+/**
+ * The window is closing mid-batch (여러 파일 OCR, P1-7): the file being recognised is open in the
+ * engine outside `docStore`, so stop the queue and let it close that file before the window goes.
+ */
+async function stopBatchOcr(): Promise<void> {
+  if (!useJobStore.getState().jobs.some((j) => j.kind === "batchOcr" && j.state === "running")) return;
+  const { cancelBatch } = await import("./ocr/batch/flow");
+  await cancelBatch();
+}
+
 /** Cheap synchronous test so the default menu is only suppressed over a page (the import is async). */
 function pageLike(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -73,9 +85,18 @@ export default function App() {
   const menuOpen = useContextMenuStore((s) => s.menu !== null);
   const printing = usePrintStore((s) => s.job !== null);
   const comparing = useCompareStore((s) => s.session !== null);
+  const readingMode = useAppStore((s) => s.readingMode);
+  // 읽기 모드 (P1-12) only means something over a document
+  const reading = readingMode && info !== null;
 
   // P1-8: recovery copies of the dirty document on a timer
   useAutosave();
+
+  // P1-12: Esc leaves 읽기 모드 (and 전체 화면 with it); closing the document leaves it too
+  useReadingModeKeys();
+  useEffect(() => {
+    if (!info && readingMode) useAppStore.getState().setReadingMode(false);
+  }, [info, readingMode]);
 
   // 1. settings + recents + theme + locale, then drain anything the OS handed us before mount
   useEffect(() => {
@@ -117,6 +138,7 @@ export default function App() {
               // 저장 or 저장 안 함: a clean close, the recovery copy goes (P1-8)
               if (current) await autosave.clear(current.docId);
               await leaveCompare();
+              await stopBatchOcr();
               await win.destroy();
             }
             return;
@@ -126,6 +148,7 @@ export default function App() {
             await autosave.clear(current.docId);
           }
           await leaveCompare();
+          await stopBatchOcr();
         });
       })
       .then((fn) => {
@@ -188,10 +211,10 @@ export default function App() {
 
   return (
     <>
-    <div className="app-shell" data-ready={ready || undefined}>
-      <TitleBar run={run} />
+    <div className="app-shell" data-ready={ready || undefined} data-reading={reading || undefined}>
+      {!reading && <TitleBar run={run} />}
       <div className="app-body">
-        {info && sidebarOpen && !organizing && <SidebarFrame />}
+        {info && sidebarOpen && !organizing && !reading && <SidebarFrame />}
         <main className="app-main">
           {info ? (
             organizing ? (
@@ -200,7 +223,7 @@ export default function App() {
               </Suspense>
             ) : (
               <>
-                <ToolStrip />
+                {!reading && <ToolStrip />}
                 <CanvasStub />
               </>
             )
@@ -210,9 +233,9 @@ export default function App() {
             </Suspense>
           )}
         </main>
-        {info && inspectorOpen && mode !== "read" && !organizing && <Inspector />}
+        {info && inspectorOpen && mode !== "read" && !organizing && !reading && <Inspector />}
       </div>
-      <StatusBar />
+      {!reading && <StatusBar />}
       {comparing && (
         <Suspense fallback={null}>
           <CompareView />

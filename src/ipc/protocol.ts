@@ -55,6 +55,12 @@ export interface TileParams {
    * input on top, not by PDFium underneath as well (F-20).
    */
   forms?: boolean;
+  /**
+   * The page's view nonce from `set_annotations_hidden` (IPC_CONTRACT §7.1): the engine ignores
+   * it, but a new value makes a new URL, so the webview's immutable cache cannot serve the
+   * bitmap from before an annotation was hidden or shown again (P1-12).
+   */
+  vn?: number;
 }
 
 export type PageParams = Omit<TileParams, "tx" | "ty">;
@@ -79,14 +85,14 @@ function build(route: string, query: Query): string {
 export function tileUrl(p: TileParams): string {
   return build("/tile", {
     doc: p.doc, gen: p.gen, page: p.page, sk: p.sk, rot: p.rot, tx: p.tx, ty: p.ty,
-    night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined, forms: p.forms === false ? 0 : undefined,
+    night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined, forms: p.forms === false ? 0 : undefined, vn: p.vn,
   });
 }
 
 export function pageUrl(p: PageParams): string {
   return build("/page", {
     doc: p.doc, gen: p.gen, page: p.page, sk: p.sk, rot: p.rot,
-    night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined, forms: p.forms === false ? 0 : undefined,
+    night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined, forms: p.forms === false ? 0 : undefined, vn: p.vn,
   });
 }
 

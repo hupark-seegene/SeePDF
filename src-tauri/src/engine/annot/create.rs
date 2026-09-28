@@ -20,6 +20,7 @@
 use crate::engine::annot::{
     self, font, read, ScratchPage, SUBJ_ARROW, SUBJ_LINE, SUBJ_SIGNATURE, SUBJ_TEXTBOX,
 };
+use crate::engine::fonts;
 use crate::engine::raw::{self, annot::AnnotRef, annot::ColorKind, consts};
 use crate::engine::registry::OpenDoc;
 use crate::ipc::error::PdfiumResultExt;
@@ -29,7 +30,7 @@ use crate::ipc::types::{
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
-    PdfColor, PdfPage, PdfPageAnnotationCommon, PdfPageImageObject, PdfPageObjectCommon,
+    PdfColor, PdfFontToken, PdfPage, PdfPageAnnotationCommon, PdfPageImageObject, PdfPageObjectCommon,
     PdfPageObjectsCommon, PdfPagePathObject, PdfPageTextObject, PdfPoints, PdfRect,
     PdfiumLibraryBindings,
 };
@@ -59,10 +60,17 @@ pub fn create(
     // Fonts first: `fonts_mut()` needs `&mut PdfDocument` (annotations spike §5.14).
     let font = match spec {
         AnnotSpec::Textbox(t) => Some(font::resolve(doc.pdf_mut(), &t.text)?),
+        _ => None,
+    };
+    // A built-in stamp's label (결재 / 승인 / 기밀 are Hangul): the document-level bundled
+    // subset, loaded once per document and coverage-checked, so a missing glyph is an honest
+    // `fontCoverage` error instead of a silently blank label — and ten 결재 stamps embed the
+    // font once, not ten times (P1-12).
+    let label_font = match spec {
         AnnotSpec::Stamp(StampSpec {
             image: StampImage::Builtin { builtin },
             ..
-        }) => Some(font::resolve(doc.pdf_mut(), builtin)?),
+        }) => Some(doc.hangul_token_for(&builtin_label(builtin))?.0),
         _ => None,
     };
 
@@ -92,7 +100,7 @@ pub fn create(
             textbox(doc, &mut scratch.page, t, &id, &font)?
         }
         AnnotSpec::Stamp(s) => {
-            stamp(doc, &mut scratch.page, s, &id, font.as_ref())?;
+            stamp(doc, &mut scratch.page, s, &id, label_font)?;
         }
     }
     drop(scratch);
@@ -417,13 +425,22 @@ fn textbox(
     Ok(())
 }
 
+/// What a built-in stamp says: the Latin names in capitals (`approved` → `APPROVED`), the
+/// Korean ones (결재 / 승인 / 기밀) as they are.
+pub fn builtin_label(name: &str) -> String {
+    name.to_uppercase()
+}
+
+/// Share of the stamp's width the label may take, so it never touches the border.
+const STAMP_LABEL_MAX_WIDTH: f32 = 0.84;
+
 /// An image stamp (PNG or JPEG), or a built-in label stamp.
 fn stamp(
     doc: &OpenDoc<'_>,
     page: &mut PdfPage<'_>,
     spec: &StampSpec,
     id: &str,
-    font: Option<&font::FontChoice>,
+    label_font: Option<PdfFontToken>,
 ) -> Result<(), EngineError> {
     let bindings = doc.bindings();
     let pdf_rect = to_pdf_rect(spec.rect);
@@ -459,33 +476,46 @@ fn stamp(
                     .ctx("append stamp image")?;
             }
             StampImage::Builtin { builtin } => {
-                let font = font.ok_or_else(|| {
+                let token = label_font.ok_or_else(|| {
                     EngineError::invalid("a built-in stamp needs a label font")
                 })?;
                 let colour = builtin_color(builtin);
+                // A Korean seal (결재 / 승인 / 기밀) gets a heavier border, like 인주 on paper.
+                let border_width = if fonts::is_latin1(builtin) { 2.0 } else { 2.5 };
                 let border = PdfPagePathObject::new_rect(
                     doc.pdf(),
                     pdf_rect,
                     Some(rgb(colour, 255)),
-                    Some(points(2.0)),
+                    Some(points(border_width)),
                     None,
                 )
                 .ctx("stamp border")?;
                 a.objects_mut()
                     .add_path_object(border)
                     .ctx("append stamp border")?;
-                let label = builtin.to_uppercase();
-                let size = (spec.rect.height() * 0.5).clamp(6.0, 48.0);
-                let mut t = PdfPageTextObject::new(doc.pdf(), &label, font.token, points(size))
+                let label = builtin_label(builtin);
+                // Half the height, then shrunk until it fits the width: a square 결재 seal
+                // and a wide APPROVED banner both keep the label inside the border.
+                let mut size = (spec.rect.height() * 0.5).clamp(6.0, 48.0);
+                let mut t = PdfPageTextObject::new(doc.pdf(), &label, token, points(size))
                     .ctx("stamp label")?;
+                let max_width = spec.rect.width() * STAMP_LABEL_MAX_WIDTH;
+                let width = text_width(&t);
+                if width > max_width && width > 0.0 {
+                    size = (size * max_width / width).max(4.0);
+                    t = PdfPageTextObject::new(doc.pdf(), &label, token, points(size))
+                        .ctx("stamp label")?;
+                }
                 t.set_fill_color(rgb(colour, 255)).ctx("stamp colour")?;
-                let width = t
+                // Centre the glyphs' own box, not the em box: Hangul sits higher on the
+                // baseline than Latin capitals, and `size` alone would put 결재 low.
+                let (left, bottom, right, top) = t
                     .bounds()
-                    .map(|b| b.right().value - b.left().value)
-                    .unwrap_or(0.0);
+                    .map(|b| (b.left().value, b.bottom().value, b.right().value, b.top().value))
+                    .unwrap_or((0.0, 0.0, 0.0, size));
                 t.translate(
-                    points(spec.rect.l + (spec.rect.width() - width) / 2.0),
-                    points(spec.rect.b + (spec.rect.height() - size) / 2.0),
+                    points(spec.rect.l + (spec.rect.width() - (right - left)) / 2.0 - left),
+                    points(spec.rect.b + (spec.rect.height() - (top - bottom)) / 2.0 - bottom),
                 )
                 .ctx("place stamp label")?;
                 a.objects_mut()
@@ -505,13 +535,25 @@ fn stamp(
     Ok(())
 }
 
-fn builtin_color(name: &str) -> Rgb {
+/// The colour of a built-in stamp. The Korean set is 인주 red, whatever it says.
+pub fn builtin_color(name: &str) -> Rgb {
     match name.to_ascii_lowercase().as_str() {
+        "결재" | "승인" | "기밀" => KOREAN_SEAL_RED,
         "approved" | "final" | "completed" => [0, 140, 60],
         "draft" | "forcomment" | "notapproved" => [200, 120, 0],
         "confidential" | "urgent" | "void" => [200, 0, 0],
         _ => [40, 70, 160],
     }
+}
+
+/// 인주 red of the Korean stamp set (결재 / 승인 / 기밀). The UI's `stampCatalog.ts` uses the
+/// same value for its preview.
+pub const KOREAN_SEAL_RED: Rgb = [206, 32, 41];
+
+fn text_width(t: &PdfPageTextObject<'_>) -> f32 {
+    t.bounds()
+        .map(|b| b.right().value - b.left().value)
+        .unwrap_or(0.0)
 }
 
 fn points(v: f32) -> PdfPoints {

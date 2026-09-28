@@ -78,6 +78,8 @@ export interface ToolPreview {
   width?: number;
   /** ids the gesture is about to act on (eraser hover, marquee hit set) */
   ids?: AnnotId[];
+  /** a built-in 도장's label, drawn inside the placement ghost (P1-12) */
+  label?: string;
 }
 
 export interface ToolResult<S = unknown> {

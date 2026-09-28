@@ -282,6 +282,8 @@ export type AnnotSpec =
   | { kind: 'textbox'; rect: Rect; text: string; fontSize: number; color: Rgb;
       align: 'left' | 'center' | 'right'; fillColor: Rgb | null }
   | { kind: 'stamp'; rect: Rect; image: { path: string } | { builtin: string }; rotate?: number };
+    // builtin (Stage 6b): '결재' | '승인' | '기밀' (인주 red, Hangul label from the bundled subset) |
+    // 'approved' | 'final' | 'draft' | 'confidential' (label upper-cased); /Subj = the id = Annot.stampKind
 
 export interface AnnotPatch {
   rect?: Rect; rects?: Rect[]; paths?: number[][]; p1?: Point; p2?: Point;
@@ -312,7 +314,7 @@ the engine snapshot (§7.8).
 | `create_annotation` | `raw::create_annot` pipeline (ARCHITECTURE §6.1) inside `registry::mutate` | (a) | F-08…F-13 |
 | `update_annotation` | `SetAP(NULL)` → setters → next render regenerates | (a) | F-14 |
 | `delete_annotations` | `annotations_mut().get(i)` → `delete_annotation` (+ linked popup) | (a) | F-14 |
-| `set_annotations_hidden` | `FPDFAnnot_SetFlags` HIDDEN, transient: bumps `viewNonce`, **not** `docGeneration`, never dirties | (a) | P1 |
+| `set_annotations_hidden` | `FPDFAnnot_SetFlags` HIDDEN, transient: bumps `viewNonce`, **not** `docGeneration`, never dirties. Stage 6b: the viewer puts the nonce in that page's URLs (`vn`, §9) while a 선택-tool drag hides the annotation; the frontend unhides **before** the drag's `update_annotation`, so the HIDDEN bit is never in an undo snapshot | (a) | P1 |
 
 ### 7.2 Forms
 
@@ -486,7 +488,12 @@ Stage 3 semantics (`docs/STAGE3_SECURITY_NOTES.md`):
 export interface SaveResult { docId: DocId; path: string; bytes: number; docGeneration: DocGeneration; elapsedMs: number }
 save_document(a: { docId: DocId }, onProgress: Channel<JobEvent>): Promise<SaveResult>
 save_document_as(a: { docId: DocId; path: string }, onProgress: Channel<JobEvent>): Promise<SaveResult>
+path_exists(a: { path: string }): Promise<boolean>   // Stage 6a (P1-7)
 ```
+
+`path_exists` is `true` when anything (file or directory) exists at `path`, and also when that cannot be
+determined (a permission error counts as taken). 여러 파일 OCR asks it before each `save_document_as`, so a
+`<name>-ocr.pdf` that exists becomes `<name>-ocr (2).pdf` instead of being overwritten. No engine call.
 
 Engine: `engine/save/` — pre-flight AP render → `FPDF_SaveAsCopy(flags = 0)` → temp + fsync → verify by
 reopening → backup → `rename` → reload (ARCHITECTURE §8). Errors: `readOnly` (offer Save As), `io`,
@@ -700,8 +707,8 @@ every URL with `convertFileSrc('', 'seepdf')` — it never sniffs the OS.
 
 | Route | Query | Response |
 |---|---|---|
-| `/tile` | `doc, gen, page, sk, rot, tx, ty[, night][, hl][, forms]` | `image/png` (512×512 or clipped edge) |
-| `/page` | `doc, gen, page, sk, rot[, night][, hl][, forms]` | `image/png`, whole page — also the placeholder (`sk` small) |
+| `/tile` | `doc, gen, page, sk, rot, tx, ty[, night][, hl][, forms][, vn]` | `image/png` (512×512 or clipped edge) |
+| `/page` | `doc, gen, page, sk, rot[, night][, hl][, forms][, vn]` | `image/png`, whole page — also the placeholder (`sk` small) |
 | `/thumb` | `doc, gen, page, w[, rot]` | `image/png`, `set_target_width(w).set_maximum_height(w*2)` |
 | `/ocr` | `doc, gen, page, dpi` | `image/png` gray8 at `dpi` (300 default) |
 | `/recent-thumb` | `id` | `image/png` from `$APPDATA/SeePDF/thumbs/<id>.png` (read on the io thread) |
@@ -709,6 +716,11 @@ every URL with `convertFileSrc('', 'seepdf')` — it never sniffs the OS.
 
 * `sk` = `scaleKey` = `round(zoomPercent × devicePixelRatio)`; device scale `s = sk / 100`.
 * `tx`,`ty` are **tile indices** (device origin = `tx·512, ty·512`).
+* `vn` (Stage 6b, P1-12) is the `viewNonce` that `set_annotations_hidden` returned, on the **one page**
+  it changed. The engine ignores it (it is not part of the cache key or the ETag; `set_annotations_hidden`
+  already dropped the document's cached tiles); it only makes the URL new, because every image response
+  is `Cache-Control: immutable` and the webview would otherwise keep painting the bitmap from before the
+  annotation was hidden. A page with no nonce sends no `vn`, so its URLs are unchanged.
 * `forms` defaults to `1`. **`forms=0` makes the engine skip `FPDF_FFLDraw`**, so the bitmap carries
   no AcroForm widget at all — no value text, no field wash, no pushbutton caption (PDFium's own
   contract: `FPDF_ANNOT` renders "all annotations except widget and popup annotations"). The 양식
@@ -797,12 +809,31 @@ export interface Settings {
   restorePosition: boolean; author: string; renderQuality: 'balanced' | 'high';
   tileCacheMb: number; recentsCount: number;   // Stage 2: first-class, was `toolDefaults.recentsCount`
   backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
-  toolDefaults: Record<string, unknown>;
+  toolDefaults: Record<string, unknown>;   // Stage 6b: per-tool style overrides, see below
   autosaveSec: number;          // Stage 5: autosave interval in seconds, 0 = off; default 60 (absent in old files → 60)
+  signatures: SavedSignature[]; // Stage 6b (P1-9): 서명 보관함, ≤ 10, newest last; absent in old files → []
 }
+export type SavedSignature =
+  | { kind: 'drawn'; id: string; paths: number[][]; aspect: number; createdAt: string }  // unit space, y-down
+  | { kind: 'typed'; id: string; text: string; style: string; createdAt: string };      // style: script | hand | formal
 get_settings(): Promise<Settings>
 set_settings(a: { patch: Partial<Settings> }): Promise<Settings>
+write_signature_image(a: { bytes: number[] }): Promise<string>   // Stage 6b (P1-9): PNG → absolute path
 ```
+
+**`toolDefaults`** (Stage 6b, P1-12): keyed by tool id (`highlight`, `underline`, `strikeout`, `squiggly`,
+`note`, `pen`, `eraser`, `rectangle`, `ellipse`, `line`, `arrow`, `textbox`), each a *partial*
+`{ color, opacity, width, fontSize, fillColor, heads, align, eraserSize }` holding only what the user
+changed; the frontend validates each field and ignores other keys (the pre-Stage-2 `recentsCount` is left
+alone). **`signatures`** is read leniently in Rust: an entry that does not parse is dropped on its own and the
+list is capped at 10, so one bad entry never resets every setting to the default.
+
+**`write_signature_image`** (Stage 6b, P1-9): the webview renders a typed signature to a transparent PNG and
+sends its bytes (a JSON array → `Vec<u8>`). Rust checks the PNG signature and dimensions (≤ 8 MB, ≤ 4096 px a
+side), writes `$APPDATA/SeePDF/signatures/sig-<fnv64>.png` (write-then-rename; the same bytes reuse the same
+file), keeps the 32 most recently used files, and returns the absolute path — which the 서명 tool places through
+the existing `AnnotSpec { kind: 'stamp', image: { path } }`. File I/O only, on `spawn_blocking`; no pdfium.
+Errors: `invalidArgument` (not a PNG / too large), `io`.
 
 Backed by `tauri-plugin-store` (`settings.json`, `recents.json`) from Rust so the values are available
 before the webview mounts (window state, locale, theme). Owner: S0. Features F-01, F-27, F-28.
@@ -820,6 +851,7 @@ paths to the fs scope automatically.
 |---|---|---|
 | `open_document`, `close_document`, `get_document`, `get_outline`, `take_pending_opens`, `open_in_new_window`, `window_bind_document` | S0 engine-core / app | F-01, F-05 |
 | `get_recent`, `update_recent`, `remove_recent`, `set_recent_pinned`, `clear_recent`, `write_recent_thumbnail`, `reveal_in_file_manager`, `get_settings`, `set_settings` | S0 app | F-01, F-27, F-28 |
+| `write_signature_image` | Stage 6b, `commands/app.rs` + `app/signatures.rs` | P1-9 |
 | `set_viewport`, `engine_stats`, `render_page_raw` | S0 render | F-02, F-26, F-30 |
 | `get_text_layer`, `get_page_text`, `search_start`, `cancel_job` | S0 text | F-06, F-07 |
 | `undo`, `redo` | S0 engine-core (history) | F-15 |
@@ -829,6 +861,7 @@ paths to the fs scope automatically.
 | `page_ops`, `extract_pages`, `split_document`, `merge_documents` | (b) backend pages | F-16 |
 | `list_page_objects`, `probe_text_edit`, `edit_text_object`, `add_text_object`, `add_image_object`, `transform_object`, `delete_objects` | (b) backend objects | F-17, F-18, F-19 |
 | `save_document`, `save_document_as` | (b) backend save | F-23 |
+| `path_exists` | Stage 6a, `commands/save.rs` | P1-7 |
 | `export_images`, `export_text`, `export_flattened`, `estimate_export`, `print_prepare` | (b) backend export | F-24, F-25, F-26 |
 | `ocr_capabilities`, `ocr_page_status`, `ocr_apply` | (b) engine OCR layer + (f) worker pipeline | F-21 |
 | `remove_password`, `set_password`, `remove_metadata`, `set_metadata`, `ocr_recognize_native` | (b), P1 | P1-1, P1-2, P1-3, P1-11 |

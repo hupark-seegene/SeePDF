@@ -29,6 +29,12 @@ pub fn recovery_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     Some(app.path().app_data_dir().ok()?.join("recovery"))
 }
 
+/// `$APPDATA/SeePDF/signatures/`, where typed signatures are written as PNGs (P1-9). Created by
+/// `app::signatures::write_png`.
+pub fn signatures_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    Some(app.path().app_data_dir().ok()?.join("signatures"))
+}
+
 /// `$TEMP/seepdf-history/`, where undo snapshots spill.
 pub fn history_spill_dir<R: Runtime>(app: Option<&AppHandle<R>>) -> PathBuf {
     let base = app

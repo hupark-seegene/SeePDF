@@ -16,6 +16,7 @@
  */
 import { create } from "zustand";
 import type { Annot, AnnotId, AnnotKind, DocGeneration, PageIndex, Rgb } from "../ipc/types";
+import { BASE_STYLE, baseStyleFor, isStyledTool, styleFor } from "./toolStyles";
 
 /** The 8 swatches of UI_SPEC §14.4, with the highlight alpha column. */
 export const PALETTE: { key: string; rgb: Rgb; highlightAlpha: number }[] = [
@@ -65,7 +66,17 @@ export interface AnnotState {
   selected: AnnotId[];
   hovered: AnnotId | null;
   ghosts: Ghost[];
+  /** the style the next annotation is drawn with: the armed tool's (P1-12) */
   style: ToolStyle;
+  /** the tool `style` belongs to; a panel edit with nothing selected becomes its default */
+  styleTool: string | null;
+  /** per-tool overrides of the built-in styles, mirrored into `Settings.toolDefaults` */
+  toolDefaults: Record<string, Partial<ToolStyle>>;
+  /**
+   * Per-page view nonce from `set_annotations_hidden` (P1-12): the viewer puts it in that page's
+   * bitmap URLs, so hiding an annotation re-renders the page without a generation bump.
+   */
+  viewNonce: Record<PageIndex, number>;
   /** 주석 sidebar filter chips; `null` = every kind */
   filter: AnnotKind[] | null;
   /** the note popover / free-text editor target */
@@ -89,23 +100,24 @@ export interface AnnotState {
   /** the page has been re-rendered at `generation`: every ghost it now contains can go */
   pageRendered(page: PageIndex, generation: DocGeneration): void;
 
+  /** edit the current style; it is remembered as `styleTool`'s default */
   setStyle(patch: Partial<ToolStyle>): void;
+  /** a tool was armed: its remembered style becomes the current one */
+  activateTool(tool: string): void;
+  /** `Settings.toolDefaults`, already validated (`toolStyles.readToolDefaults`) */
+  loadToolDefaults(overrides: Record<string, Partial<ToolStyle>>): void;
+  /** 이 스타일을 기본값으로 on a selection: set `tool`'s default without arming it */
+  setToolDefault(tool: string, patch: Partial<ToolStyle>): void;
+  /** 기본값으로 재설정: forget `tool`'s override */
+  resetToolDefault(tool: string): void;
+  setViewNonce(page: PageIndex, nonce: number | null): void;
   /** every annotation of the document, page order then document order */
   all(): Annot[];
   find(id: AnnotId): { page: PageIndex; annot: Annot } | null;
   reset(): void;
 }
 
-const INITIAL_STYLE: ToolStyle = {
-  color: PALETTE[0].rgb,
-  opacity: PALETTE[0].highlightAlpha,
-  width: 2,
-  fontSize: 12,
-  fillColor: null,
-  heads: [false, true],
-  align: "left",
-  eraserSize: 12,
-};
+const INITIAL_STYLE: ToolStyle = BASE_STYLE;
 
 export const useAnnotStore = create<AnnotState>((set, get) => ({
   byPage: {},
@@ -114,6 +126,9 @@ export const useAnnotStore = create<AnnotState>((set, get) => ({
   hovered: null,
   ghosts: [],
   style: INITIAL_STYLE,
+  styleTool: null,
+  toolDefaults: {},
+  viewNonce: {},
   filter: null,
   editing: null,
   listNonce: 0,
@@ -199,7 +214,50 @@ export const useAnnotStore = create<AnnotState>((set, get) => ({
   },
 
   setStyle(patch) {
-    set((s) => ({ style: { ...s.style, ...patch } }));
+    set((s) => ({
+      style: { ...s.style, ...patch },
+      toolDefaults: isStyledTool(s.styleTool)
+        ? { ...s.toolDefaults, [s.styleTool]: { ...s.toolDefaults[s.styleTool], ...patch } }
+        : s.toolDefaults,
+    }));
+  },
+
+  activateTool(tool) {
+    // 선택 / 손 / 도장 have no style of their own: keep the last one so the panel stays put.
+    if (!isStyledTool(tool)) return;
+    set((s) => ({ styleTool: tool, style: styleFor(tool, s.toolDefaults) }));
+  },
+
+  loadToolDefaults(overrides) {
+    set((s) => ({
+      toolDefaults: overrides,
+      style: isStyledTool(s.styleTool) ? styleFor(s.styleTool, overrides) : s.style,
+    }));
+  },
+
+  setToolDefault(tool, patch) {
+    if (!isStyledTool(tool)) return;
+    set((s) => {
+      const toolDefaults = { ...s.toolDefaults, [tool]: { ...s.toolDefaults[tool], ...patch } };
+      return { toolDefaults, style: s.styleTool === tool ? styleFor(tool, toolDefaults) : s.style };
+    });
+  },
+
+  resetToolDefault(tool) {
+    set((s) => {
+      const toolDefaults = { ...s.toolDefaults };
+      delete toolDefaults[tool];
+      return { toolDefaults, style: s.styleTool === tool ? baseStyleFor(tool) : s.style };
+    });
+  },
+
+  setViewNonce(page, nonce) {
+    set((s) => {
+      const viewNonce = { ...s.viewNonce };
+      if (nonce === null) delete viewNonce[page];
+      else viewNonce[page] = nonce;
+      return { viewNonce };
+    });
   },
 
   all() {
@@ -231,6 +289,7 @@ export const useAnnotStore = create<AnnotState>((set, get) => ({
       filter: null,
       editing: null,
       listNonce: 0,
+      viewNonce: {},
     });
   },
 }));

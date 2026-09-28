@@ -18,6 +18,7 @@ import { openContextMenu, type MenuEntry } from "./contextMenuStore";
 import { toolController } from "../tools/ToolController";
 import { clearTextSelection, findStep, selectAllOnCurrentPage } from "../viewer/viewerCommands";
 import { runAnnotCommand } from "../tools/commands";
+import { toggleFullScreen, toggleReadingMode } from "./readingMode";
 import type { PageOp } from "../ipc/types";
 
 export type CommandId = string;
@@ -126,6 +127,9 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         void import("../ocr").then((m) =>
           m.openOcrDialog({ selectedPages: pages.selected.length ? pages.selected : undefined }),
         );
+        return;
+      case "tools.batchOcr":
+        openDialog("batchOcr");
         return;
       case "tools.merge":
         openDialog("merge");
@@ -241,7 +245,14 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         view.rotate(90);
         return;
       case "view.night":
-        view.setNight(view.night === "off" ? "dark" : "off");
+        view.cycleNight();
+        return;
+      // 읽기 모드 / 전체 화면 (P1-12): the native View menu, ⌃⌘R / F8 and ⌃⌘F / F11
+      case "view.readingMode":
+        if (info) toggleReadingMode();
+        return;
+      case "view.fullScreen":
+        void toggleFullScreen();
         return;
 
       // Navigation -----------------------------------------------------------
@@ -326,7 +337,7 @@ function openRecentMenu(): void {
   openContextMenu({ x: 96, y: 52, labelKey: "menu.file.openRecent", items });
 }
 
-/** ⋯ — 인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 문서 정보, 설정 (UI_SPEC §2). */
+/** ⋯ — 인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 합치기, 분할, 문서 정보, 설정 (UI_SPEC §2). */
 function openOverflowMenu(): void {
   const info = useDocStore.getState().info;
   openContextMenu({
@@ -345,6 +356,7 @@ function openOverflowMenu(): void {
         disabled: !info,
         onSelect: () => void import("../ocr").then((m) => m.openOcrDialog()),
       },
+      { id: "batchOcr", labelKey: "menu.tools.batchOcr", onSelect: () => openDialog("batchOcr") },
       { id: "merge", labelKey: "menu.tools.merge", onSelect: () => openDialog("merge") },
       { id: "split", labelKey: "pages.split", disabled: !info, onSelect: () => openDialog("split") },
       { id: "sep", separator: true },

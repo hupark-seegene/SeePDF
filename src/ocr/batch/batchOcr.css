@@ -1,0 +1,10 @@
+/* 여러 파일 OCR (P1-7). Tokens only; the table borrows `.recovery-table`'s rules. */
+.bocr-list { max-height: 220px; overflow-y: auto; margin-top: var(--space-2); }
+.bocr-list .recovery-table { margin-top: 0; table-layout: fixed; }
+.bocr-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bocr-status { width: 44%; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bocr-status[data-status="done"] { color: var(--success); }
+.bocr-status[data-status="failed"] { color: var(--danger); }
+.bocr-status[data-status="skipped"], .bocr-status[data-status="cancelled"] { color: var(--warning); }
+.bocr-remove { width: 36px; text-align: end; }
+.bocr-empty { padding: var(--space-4) 0; text-align: center; color: var(--text-tertiary); }

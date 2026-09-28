@@ -125,7 +125,7 @@ export const KEYMAP_BY_ID: Record<string, KeyBinding> = Object.fromEntries(KEYMA
  * Without them here `menu:tools/…` would never reach the dispatcher.
  */
 export const MENU_ONLY_IDS: readonly string[] = [
-  "tools.ocr", "tools.security", "tools.compress", "tools.compare", "tools.merge",
+  "tools.ocr", "tools.batchOcr", "tools.security", "tools.compress", "tools.compare", "tools.merge",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 

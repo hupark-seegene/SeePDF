@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, Moon, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
@@ -26,6 +26,8 @@ export function StatusBar() {
   const rotate = useViewStore((s) => s.rotate);
   const zoomIn = useViewStore((s) => s.zoomIn);
   const zoomOut = useViewStore((s) => s.zoomOut);
+  const night = useViewStore((s) => s.night);
+  const cycleNight = useViewStore((s) => s.cycleNight);
   const setZoom = useViewStore((s) => s.setZoom);
   const setZoomMode = useViewStore((s) => s.setZoomMode);
   const job = useJobStore((s) => s.active);
@@ -115,6 +117,16 @@ export function StatusBar() {
           disabled={!info}
           size={16}
           onClick={() => rotate(90)}
+        />
+        {/* 야간 모드 (P1-10): one click steps 끄기 → 어둡게 → 세피아, like ⌃⌘N and 보기 ▸ 야간 모드. */}
+        <IconButton
+          icon={Moon}
+          label={`${t("view.night.label")}: ${t(`view.night.${night}`)}`}
+          shortcut={shortcutFor("view.night", os)}
+          active={night !== "off"}
+          disabled={!info}
+          size={16}
+          onClick={cycleNight}
         />
       </div>
 

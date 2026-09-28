@@ -11,7 +11,10 @@ import { create } from "zustand";
 import * as api from "../ipc/api";
 import type { JobEvent, JobId } from "../ipc/types";
 
-export type JobKind = "search" | "export" | "save" | "split" | "ocr" | "scan" | "print" | "compare";
+export type JobKind =
+  | "search" | "export" | "save" | "split" | "ocr" | "scan" | "print" | "compare"
+  // 여러 파일 OCR (P1-7): one job for the whole queue, `done/total` counted in files
+  | "batchOcr";
 export type JobState = "running" | "done" | "cancelled" | "error";
 
 export interface Job {

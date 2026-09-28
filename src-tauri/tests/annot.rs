@@ -673,6 +673,160 @@ fn annot_stamp_image_roundtrip() {
     );
 }
 
+/// P1-12: the Korean stamp set. Each of 결재 / 승인 / 기밀 is a `Stamp` whose `/Subj` is the
+/// builtin name, drawn with a red border **and** a Hangul label from the bundled subset — the
+/// inner area (away from the border) must have red pixels, which is the label, so a font that
+/// silently drops Hangul glyphs fails here. Three stamps embed the font once.
+#[test]
+fn annot_stamp_korean_builtin() {
+    let doc = open("tracemonkey.pdf");
+    let baseline = save_bytes(&doc.doc_id).len();
+    let names = ["결재", "승인", "기밀"];
+    let rects = [
+        Rect::new(380.0, 600.0, 452.0, 672.0),
+        Rect::new(460.0, 600.0, 532.0, 672.0),
+        Rect::new(380.0, 520.0, 530.0, 570.0),
+    ];
+    let before: Vec<_> = rects.iter().map(|r| render_rect(&doc.doc_id, 0, *r)).collect();
+
+    let ids: Vec<String> = names
+        .iter()
+        .zip(rects.iter())
+        .map(|(name, rect)| {
+            create(
+                &doc.doc_id,
+                0,
+                AnnotSpec::Stamp(StampSpec {
+                    rect: *rect,
+                    image: StampImage::Builtin {
+                        builtin: name.to_string(),
+                    },
+                    rotate: None,
+                }),
+            )
+        })
+        .collect();
+
+    let bytes = save_bytes(&doc.doc_id);
+    write_artifacts("stamp-korean", &bytes, &doc.doc_id, 0);
+    let growth = bytes.len().saturating_sub(baseline);
+    assert!(
+        growth < 900_000,
+        "three Korean stamps must embed the Hangul subset once, grew by {growth} bytes"
+    );
+
+    let saved = reopen(bytes);
+    let annots = list(&saved.doc_id, 0);
+    for (((name, id), rect), before) in names.iter().zip(&ids).zip(&rects).zip(&before) {
+        let stamp = find(&annots, id);
+        assert_eq!(stamp.kind, AnnotKind::Stamp, "{name}");
+        assert_eq!(stamp.subtype, "Stamp", "{name}");
+        assert_eq!(stamp.stamp_kind.as_deref(), Some(*name), "/Subj is the builtin name");
+
+        let after = render_rect(&saved.doc_id, 0, *rect);
+        let changed = changed_pixels(before, &after);
+        assert!(changed > 300, "{name}: the stamp renders ({changed} pixels changed)");
+
+        // The label: red pixels in the middle 60 % of the box, where the border never is.
+        let (w, h, px) = &after;
+        let (w, h) = (*w as usize, *h as usize);
+        let mut label_red = 0usize;
+        for y in (h * 2 / 10)..(h * 8 / 10) {
+            for x in (w * 2 / 10)..(w * 8 / 10) {
+                let p = &px[(y * w + x) * 4..(y * w + x) * 4 + 3];
+                if p[0] > 150 && p[1] < 110 && p[2] < 110 {
+                    label_red += 1;
+                }
+            }
+        }
+        assert!(
+            label_red > 80,
+            "{name}: the Hangul label must be drawn in red inside the border ({label_red} px)"
+        );
+    }
+}
+
+/// P1-9: a typed signature is a PNG with a **transparent** background, placed as an image
+/// stamp. The page must show through around the ink — an opaque box would hide the line the
+/// signature is written on.
+#[test]
+fn annot_stamp_png_keeps_transparency() {
+    let doc = open("tracemonkey.pdf");
+    // Over body text, so "the page shows through" is measurable.
+    let rect = Rect::new(100.0, 500.0, 260.0, 556.0);
+    let before = render_rect(&doc.doc_id, 0, rect);
+
+    // 160×56 px, transparent except a dark bar through the middle third.
+    let (w, h) = (160u32, 56u32);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for y in (h / 3)..(2 * h / 3) {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            rgba[i..i + 4].copy_from_slice(&[17, 19, 24, 255]);
+        }
+    }
+    let path = out_dir().join("signature-typed.png");
+    {
+        let file = std::fs::File::create(&path).expect("create png");
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .expect("png header")
+            .write_image_data(&rgba)
+            .expect("png data");
+    }
+    create(
+        &doc.doc_id,
+        0,
+        AnnotSpec::Stamp(StampSpec {
+            rect,
+            image: StampImage::Path {
+                path: path.display().to_string(),
+            },
+            rotate: None,
+        }),
+    );
+    let bytes = save_bytes(&doc.doc_id);
+    let saved = reopen(bytes);
+    let after = render_rect(&saved.doc_id, 0, rect);
+
+    // Compare the top quarter (transparent in the PNG) and the middle band (the bar).
+    let (rw, rh) = (after.0 as usize, after.1 as usize);
+    let band = |img: &(u32, u32, Vec<u8>), y0: usize, y1: usize| -> (usize, usize) {
+        let mut changed = 0usize;
+        let mut total = 0usize;
+        for y in y0..y1 {
+            for x in 0..rw {
+                let i = (y * rw + x) * 4;
+                let (a, b) = (&before.2[i..i + 3], &img.2[i..i + 3]);
+                total += 1;
+                if (0..3).any(|c| (a[c] as i32 - b[c] as i32).abs() > PIXEL_TOLERANCE) {
+                    changed += 1;
+                }
+            }
+        }
+        (changed, total)
+    };
+    // The check is only meaningful over ink: an opaque *white* box would pass it on paper.
+    let dark_before = before.2[..rw * (rh / 4) * 4]
+        .chunks_exact(4)
+        .filter(|p| p[0] < 128 && p[1] < 128 && p[2] < 128)
+        .count();
+    assert!(dark_before > 50, "the test rect must sit over text ({dark_before} dark px)");
+    let (top_changed, top_total) = band(&after, 0, rh / 4);
+    let (mid_changed, mid_total) = band(&after, rh * 4 / 10, rh * 6 / 10);
+    assert!(
+        top_changed * 20 < top_total,
+        "transparent pixels must leave the page visible: {top_changed} of {top_total} changed"
+    );
+    assert!(
+        mid_changed * 2 > mid_total,
+        "the ink must be drawn: {mid_changed} of {mid_total} changed"
+    );
+}
+
 fn write_test_png(path: &std::path::Path) {
     let (w, h) = (64u32, 64u32);
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
@@ -1098,5 +1252,71 @@ fn annot_textbox_edit_keeps_its_appearance() {
     assert!(
         changed_pixels(&blank, &after) > 4000,
         "the edited text box is still drawn — its appearance stream was not cleared"
+    );
+}
+
+/// P1-12 hide-while-dragging, as the frontend sequences it (`src/annot/dragHide.ts`):
+/// hide → (drag) → **unhide** → one `update_annotation`. Undo must bring the annotation back
+/// **visible** at its old place. The second half pins why the order matters: an update made
+/// while the HIDDEN bit is set snapshots it, and undo restores a hidden annotation.
+#[test]
+fn annot_drag_hide_unhides_before_the_undo_snapshot() {
+    let doc = open("tracemonkey.pdf");
+    let rect = Rect::new(80.0, 200.0, 200.0, 300.0);
+    let id = create(
+        &doc.doc_id,
+        0,
+        AnnotSpec::Square(ShapeSpec {
+            rect,
+            color: [255, 0, 0],
+            fill_color: None,
+            width: 2.0,
+            opacity: 1.0,
+        }),
+    );
+    let set_hidden = |hidden: bool| {
+        let (doc_id, id) = (doc.doc_id.clone(), id.clone());
+        with_doc(&doc_id, move |d| annot::set_hidden(d, 0, &[id], hidden)).expect("set hidden")
+    };
+    let move_by = |dx: f32| {
+        let (doc_id, id) = (doc.doc_id.clone(), id.clone());
+        let patch = seepdf_lib::ipc::types::AnnotPatch {
+            rect: Some(Rect::new(rect.l + dx, rect.b, rect.r + dx, rect.t)),
+            ..Default::default()
+        };
+        with_state(move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.annotEdit", ChangeReason::Edit).page(0).keeps_text(),
+                |d| annot::update::update(d, 0, &id, &patch),
+            )
+        })
+        .expect("move");
+    };
+    let undo = || {
+        let doc_id = doc.doc_id.clone();
+        with_state(move |st| registry::undo(st, &doc_id, false)).expect("undo");
+    };
+
+    // The frontend's order: hide, unhide, then the one update.
+    set_hidden(true);
+    set_hidden(false);
+    move_by(40.0);
+    let moved = list(&doc.doc_id, 0);
+    assert!(!find(&moved, &id).hidden);
+    assert!((find(&moved, &id).rect.l - (rect.l + 40.0)).abs() < 0.5);
+    undo();
+    let back = list(&doc.doc_id, 0);
+    assert!(!find(&back, &id).hidden, "undo brings the annotation back visible");
+    assert!((find(&back, &id).rect.l - rect.l).abs() < 0.5, "at its old place");
+
+    // The wrong order: the update snapshots the HIDDEN bit, and undo restores it hidden.
+    set_hidden(true);
+    move_by(40.0);
+    undo();
+    assert!(
+        find(&list(&doc.doc_id, 0), &id).hidden,
+        "an update made while hidden snapshots /F HIDDEN — which is why dragHide.ts unhides first"
     );
 }

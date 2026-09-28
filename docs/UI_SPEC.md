@@ -45,7 +45,7 @@ One document per window; the first window shows the welcome screen.
 | left group | `☰` sidebar toggle · `↶` undo · `↷` redo (undo/redo only when a document is open) |
 | centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty |
 | centre | **mode switcher**: 읽기 · 주석 · 편집 · 페이지 · 양식 (segmented, ⌘1–⌘5) |
-| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 합치기, 분할, 문서 정보, 설정) |
+| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 합치기, 분할, 문서 정보, 설정) |
 
 Changing mode changes four things at once: the tool strip, the default canvas cursor, the properties
 panel content, and what a click on the page does.
@@ -86,7 +86,12 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
 * Page gap 16 px, `--page-shadow`, canvas background `--bg-canvas`.
 * Zoom during a gesture is a CSS transform; sharp tiles replace it on settle (120 ms debounce).
   The point under the cursor is the zoom anchor.
-* Night mode (P1) filters the tile layer only; the SVG overlay is never inverted.
+* Night mode (P1-10: 끄기 → 어둡게 → 세피아, one step per ⌃⌘N / 보기 ▸ 야간 모드 / the status-bar `moon`)
+  filters the tile layer only; the SVG overlay, the selection and search marks and the form inputs are never
+  filtered. Night bitmaps are rendered on a transparent clear colour, so the page shell shows the night paper:
+  어둡게 = `invert(0.9) hue-rotate(180deg)` over `--night-paper` (#1a, exactly the filtered white), 세피아 =
+  `sepia(0.2)` multiplied onto `--sepia-paper`. The `--page-*` tokens are re-scoped to those papers while a
+  night mode is on; thumbnails, the organizer and the compare view stay day-rendered. Not persisted.
 
 ---
 
@@ -104,7 +109,7 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
 | 주석 | 사각형 / 타원 | `crosshair` | drag; ⇧ = square/circle; ⌥ = from centre | 선택 |
 | 주석 | 선 / 화살표 | `crosshair` | drag; ⇧ snaps to 15° | 선택 |
 | 주석 | 텍스트 상자 | `crosshair` | drag a box or click for auto-size, then edit inline | 선택 |
-| 주석 | 도장 / 서명 | ghost preview follows the cursor | click places; first use opens 서명 만들기 | 선택 |
+| 주석 | 도장 / 서명 | ghost preview follows the cursor (a built-in 도장 shows its label) | click places, drag sizes; first use opens 도장 선택 (결재 · 승인 · 기밀, APPROVED · FINAL · DRAFT · CONFIDENTIAL, 이미지 선택…) / 서명 만들기 (그리기 · 입력 · 이미지 + 저장된 서명); the panel's 도장 변경… / 서명 변경… reopens it | 선택 |
 | 편집 | 선택 | arrow | click selects an object, drag moves, handles resize | — |
 | 편집 | 텍스트 수정 | `text` over an editable run | double-click a run → inline caret; a non-editable run shows its badge and reason | 선택 |
 | 편집 | 텍스트 추가 | `crosshair` | click → new text object with a caret | 선택 |
@@ -123,6 +128,7 @@ tapping a tool key latches it, holding it switches momentarily and reverts on re
 | Context | Contents |
 |---|---|
 | Markup tool armed / markup selected | 8 colour swatches + custom, 불투명도 slider, 메모 textarea, 작성자, 만든 날짜, 삭제, 이 스타일을 기본값으로 |
+| Any drawing tool, nothing selected (P1-12) | the controls edit **that tool's** default (remembered per tool in `Settings.toolDefaults`); 기본값으로 재설정 appears once it differs from the built-in style. With a selection, 이 스타일을 기본값으로 sets the default of the tool that drew it (사각형 → 사각형) |
 | 펜 / 지우개 | 색상, 굵기 (1/2/4/8/12), 불투명도, 지우개 크기 |
 | 도형 | 선 색상, 채우기 색상 (+ 채우기 없음), 굵기, 시작/끝 화살표 (line only), 불투명도 |
 | 텍스트 상자 / 도장 | 글꼴 (bundled Hangul / Helvetica), 크기, 색상, 정렬, 채우기, 불투명도 |
@@ -141,7 +147,7 @@ outside click, or a scroll of more than 40 px; opening the panel closes the popo
 ## 8. Status bar (28 px)
 
 `◀ [page input] / [total] ▶` · view layout segmented (단일 / 연속 / 두 쪽) · 왼쪽/오른쪽 회전 ·
-zoom `− [slider] +` with a numeric combo (25/50/75/100/125/150/200/400 %, 페이지 맞춤, 너비 맞춤,
+야간 모드 `moon` (cycles, pressed while on) · zoom `− [slider] +` with a numeric combo (25/50/75/100/125/150/200/400 %, 페이지 맞춤, 너비 맞춤,
 실제 크기) · right side: save state (저장됨 / 저장되지 않은 변경 사항 / 저장 중…) and a progress slot used
 by OCR, export, search and save (label + determinate bar + cancel ×).
 
@@ -170,6 +176,17 @@ by OCR, export, search and save (label + determinate bar + cancel ×).
 **on**, 해상도 자동/200/300/400 DPI, 고급 ▸ 레이아웃 자동/단일 단/단일 블록) · footer 예상 시간 + 취소/시작.
 While running it becomes a progress view: `12 / 148`, a thumbnail of the page being processed,
 elapsed/remaining, and an always-live 취소. On completion: an inline success bar with 실행 취소.
+
+**여러 파일 OCR** (P1-7, 640 px, 도구 ▸ 여러 파일 OCR… or ⋯; no shortcut): 파일 추가… (multi-select) / 목록 비우기,
+a list 파일 · 상태 (대기 / 여는 중… / 진행 중 n/m 페이지 / 저장 중… / 완료 · `<name>-ocr.pdf` / 건너뜀 · 이유 /
+실패 · 이유 / 취소됨) with × per row, the OCR sheet's shared options (언어 chips, 해상도, 이미 텍스트가 있는 페이지
+건너뛰기), 저장 위치 원본과 같은 폴더 (default) | 다른 폴더 + 찾아보기…. 시작 processes every file without a copy yet,
+one at a time, the pages of each in parallel on one worker pool; each file is opened beside the window's document,
+recognised, saved as `<name>-ocr.pdf` (never over the source or an existing file: ` (2)`, ` (3)`…) and closed. An
+encrypted file asks 암호 입력; dismissing it skips the file. A file whose pages all have text is skipped with no
+copy. While running: `파일 2/5 · name` + progress + 취소 (stops the current file, closes it, leaves the rest 대기;
+시작 resumes). 닫기 only hides the sheet — the batch continues in the status bar (× cancels) and ends with a toast.
+When done: 완료 N · 건너뜀 N · 실패 N and Finder에서 보기 (the first copy).
 
 **내보내기** (non-modal sheet): format list on the left (PDF 평면화 / PNG / JPEG / 텍스트), options on the
 right (페이지 범위, DPI 72–600 default 150, 품질, 투명 배경, 페이지마다 파일 하나), an estimated size, then
@@ -261,6 +278,10 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 **View** — 사이드바 ⌃⌘S / Ctrl+F9 · 속성 패널 ⌥⌘P / Ctrl+F10 · 사이드바 탭 ⌘⌥1…4 / Ctrl+Alt+1…4 ·
 확대/축소 ⌘+ / ⌘− · 실제 크기 ⌘0 · 페이지 맞춤 ⌘9 · 너비 맞춤 ⌘8 · 단일/연속/두 쪽 ⌃1/⌃2/⌃3 (Ctrl+Shift+1/2/3) ·
 왼쪽/오른쪽 회전 ⌘L / ⌘R · 야간 모드 ⌃⌘N / Ctrl+Shift+N · 읽기 모드 ⌃⌘R / F8 · 전체 화면 ⌃⌘F / F11
+
+> 읽기 모드 (P1-12) hides the title/tool bar, sidebar, 주석 tool strip, properties panel and status bar;
+> only the pages remain, and a toast says "읽기 모드 · Esc 키를 누르면 나갑니다". 전체 화면 is the window's own
+> (`setFullscreen`; on macOS the View menu's native item). They combine, and Esc in 읽기 모드 leaves both.
 
 **Navigation** — 다음/이전 페이지 ↓ ↑ PageDown PageUp Space ⇧Space · 첫/마지막 페이지 ⌘↑ / ⌘↓
 (Ctrl+Home / Ctrl+End) · 페이지로 이동 ⌥⌘G / Ctrl+G · 뒤로/앞으로 ⌘[ / ⌘] (Alt+← / Alt+→)
@@ -443,6 +464,7 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `menu.view.fitPage` | 페이지에 맞춤 | Fit Page |
 | `menu.view.fitWidth` | 너비에 맞춤 | Fit Width |
 | `menu.view.readingMode` | 읽기 모드 | Reading Mode |
+| `menu.view.night` | 야간 모드 | Night Mode |
 | `menu.view.fullScreen` | 전체 화면 | Full Screen |
 | `menu.go` | 이동 | Go |
 | `menu.go.nextPage` | 다음 페이지 | Next Page |
@@ -459,6 +481,7 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `menu.tools.compress` | 압축… | Compress… |
 | `menu.tools.compare` | 문서 비교… | Compare Documents… |
 | `menu.tools.merge` | 파일 합치기… | Merge Files… |
+| `menu.tools.batchOcr` | 여러 파일 OCR… | Batch OCR… |
 | `menu.window` | 윈도우 | Window |
 | `menu.window.minimize` | 최소화 | Minimize |
 | `menu.window.zoom` | 확대/축소 | Zoom |
@@ -642,6 +665,10 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `sign.save` | 이 서명 저장 | Save this signature |
 | `sign.delete` | 서명 삭제 | Delete signature |
 | `sign.placeHint` | 페이지를 클릭하여 서명을 배치하세요 | Click the page to place your signature |
+| `sign.style.script` / `.hand` / `.formal` | 필기체 / 손글씨 / 정자체 | Script / Handwriting / Formal |
+| `sign.libraryFull` | 보관함이 가득 찼습니다 (최대 {{max}}개) | The library is full (up to {{max}}) |
+| `stampPick.title` | 도장 선택 | Choose a Stamp |
+| `prop.resetDefault` | 기본값으로 재설정 | Reset to default |
 
 ### 15.11 `ocr.*`
 | Key | ko | en |
@@ -676,6 +703,32 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `ocr.cancelled` | 텍스트 인식이 취소되었습니다 | Text recognition cancelled |
 | `ocr.failed` | 텍스트 인식에 실패했습니다 | Text recognition failed |
 | `ocr.noImagePages` | 인식할 스캔 페이지가 없습니다 | No scanned pages to recognize |
+
+#### `batchOcr.*` (P1-7, Stage 6a)
+| Key | ko | en |
+|---|---|---|
+| `batchOcr.title` | 여러 파일 텍스트 인식 (OCR) | Batch Text Recognition (OCR) |
+| `batchOcr.description` | 여러 PDF의 스캔 페이지를 차례로 인식해 검색 가능한 사본을 만듭니다. 원본 파일은 바꾸지 않습니다. | Recognizes the scanned pages of several PDFs, one file after another, and saves searchable copies. The original files are never changed. |
+| `batchOcr.pick` | 텍스트를 인식할 PDF 선택 | Choose PDFs to recognize |
+| `batchOcr.add` / `batchOcr.clear` | 파일 추가… / 목록 비우기 | Add Files… / Clear List |
+| `batchOcr.count` | 파일 {{count}}개 | {{count}} files |
+| `batchOcr.empty` | 추가한 파일이 없습니다 | No files added yet |
+| `batchOcr.remove` | {{name}} 제거 | Remove {{name}} |
+| `batchOcr.col.file` / `batchOcr.col.status` | 파일 / 상태 | File / Status |
+| `batchOcr.status.queued` · `.opening` · `.saving` | 대기 · 여는 중… · 저장 중… | Waiting · Opening… · Saving… |
+| `batchOcr.status.running` | 진행 중 {{done}}/{{total}} 페이지 | In progress: page {{done}} of {{total}} |
+| `batchOcr.status.done` · `.skipped` · `.failed` · `.cancelled` | 완료 · 건너뜀 · 실패 · 취소됨 | Done · Skipped · Failed · Cancelled |
+| `batchOcr.reason.password` | 암호를 입력하지 않았습니다 | No password was entered |
+| `batchOcr.output` | 저장 위치 | Save To |
+| `batchOcr.output.beside` / `.folder` | 원본과 같은 폴더 / 다른 폴더 | Same folder as the original / Another folder |
+| `batchOcr.output.pickFolder` | 사본을 저장할 폴더 선택 | Choose a folder for the copies |
+| `batchOcr.output.noFolder` | 선택한 폴더 없음 | No folder chosen |
+| `batchOcr.output.hint` | 파일 이름 뒤에 -ocr을 붙여 저장합니다. 같은 이름의 파일이 있으면 (2), (3)…을 붙입니다. | Saved as <name>-ocr.pdf. If that name is taken, (2), (3)… is added. |
+| `batchOcr.progress` | 파일 {{done}}/{{total}} | File {{done}} of {{total}} |
+| `batchOcr.running` | 여러 파일 텍스트 인식 중… | Recognizing text in several files… |
+| `batchOcr.summary` | 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | {{done}} done · {{skipped}} skipped · {{failed}} failed |
+| `batchOcr.finished` | 여러 파일 텍스트 인식을 마쳤습니다: 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | Batch text recognition finished: {{done}} done · {{skipped}} skipped · {{failed}} failed |
+| `batchOcr.cancelled` | 여러 파일 텍스트 인식을 취소했습니다: 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | Batch text recognition cancelled: {{done}} done · {{skipped}} skipped · {{failed}} failed |
 
 ### 15.12 `export.*`
 | Key | ko | en |

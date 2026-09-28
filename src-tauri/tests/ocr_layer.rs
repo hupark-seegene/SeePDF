@@ -283,6 +283,68 @@ fn ocr_layer_apply_searchable() {
     );
 }
 
+/// P1-7 여러 파일 OCR: a document the engine has open but no window is bound to goes through
+/// the batch's exact command sequence — one `ocr_apply` per page, `save_document_as` to a new
+/// `<name>-ocr.pdf`, `close_document` — and the source file is never written (no backup either).
+#[test]
+fn ocr_layer_batch_file_roundtrip() {
+    let source = fixture("tracemonkey.pdf");
+    let source_bytes = std::fs::read(&source).expect("read the source");
+    let doc = open("tracemonkey.pdf");
+    let doc_id = doc.doc_id.clone();
+    let page_count = doc.info.page_count;
+
+    for page in [0u16, 1] {
+        let (width_px, height_px) = image_size(&doc_id, page);
+        let marker = format!("SeePDFbatch{page}");
+        let ocr_page = OcrPage {
+            page,
+            dpi: DPI,
+            width_px,
+            height_px,
+            rotation: 0,
+            lines: vec![line(
+                &marker,
+                [300.0, 300.0, 1100.0, 360.0],
+                vec![word(&marker, [300.0, 300.0, 1100.0, 360.0])],
+            )],
+        };
+        apply(&doc_id, vec![ocr_page], false);
+    }
+
+    let dir = out_dir().join("batch");
+    std::fs::create_dir_all(&dir).expect("create the batch output dir");
+    let target = dir.join("tracemonkey-ocr.pdf");
+    let _ = std::fs::remove_file(&target);
+    let saved = with_state({
+        let doc_id = doc_id.clone();
+        let target = target.display().to_string();
+        move |st| seepdf_lib::engine::save::save(st, &doc_id, Some(&target), true)
+    })
+    .expect("save_document_as to the -ocr path");
+    assert_eq!(saved.path, target.display().to_string());
+    assert!(target.exists());
+
+    // `close_document`, then the id is gone.
+    with_state({
+        let doc_id = doc_id.clone();
+        move |st| registry::close(st, &doc_id)
+    })
+    .expect("close_document");
+    assert!(with_doc(&doc_id, |_| Ok(())).is_err(), "the batch document is closed");
+
+    assert_eq!(
+        std::fs::read(&source).expect("reread the source"),
+        source_bytes,
+        "the source file is untouched"
+    );
+
+    let output = reopen(std::fs::read(&target).expect("read the output"));
+    assert_eq!(output.info.page_count, page_count);
+    assert!(page_text(&output.doc_id, 0).contains("SeePDFbatch0"));
+    assert!(page_text(&output.doc_id, 1).contains("SeePDFbatch1"));
+}
+
 /// `/Rotate 90`: the OCR boxes are display pixels, the text objects are unrotated user space,
 /// and `FPDF_DeviceToPage` is the only thing that knows the difference.
 #[test]

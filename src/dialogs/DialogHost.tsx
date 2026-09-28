@@ -16,7 +16,7 @@ import { DocInfoDialog } from "./DocInfoDialog";
 import { ExtractDialog, InsertFromDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
 import type { MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
 import type { PageIndex, RecoveryEntry, StampRole } from "../ipc/types";
-import type { DrawnSignature } from "./SignatureDialog";
+import type { DrawnSignature, ImageSignature } from "./SignatureDialog";
 
 const OcrDialog = lazy(() => import("../ocr").then((m) => ({ default: m.OcrDialog })));
 // 서명 만들기 carries a canvas and its own drawing state; only 주석 mode ever opens it.
@@ -29,6 +29,10 @@ const CompressDialog = lazy(() => import("./CompressDialog"));
 // 문서 비교 and 복구 (Stage 5): rare, each in its own chunk.
 const CompareDialog = lazy(() => import("../compare/CompareDialog"));
 const RecoveryDialog = lazy(() => import("./RecoveryDialog"));
+// 여러 파일 OCR (Stage 6a, P1-7): its own chunk, sharing tesseract.js with the OCR sheet's.
+const BatchOcrDialog = lazy(() => import("../ocr/batch/BatchOcrDialog"));
+// 도장 선택 (Stage 6b, P1-12): only 주석 mode opens it.
+const StampPickerDialog = lazy(() => import("./StampPickerDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -108,6 +112,12 @@ function Current({ entry }: { entry: DialogEntry }) {
           <CompareDialog onClose={close} />
         </Suspense>
       );
+    case "batchOcr":
+      return (
+        <Suspense fallback={null}>
+          <BatchOcrDialog onClose={close} />
+        </Suspense>
+      );
     case "recovery":
       return (
         <Suspense fallback={null}>
@@ -120,7 +130,19 @@ function Current({ entry }: { entry: DialogEntry }) {
           <SignatureDialog
             onClose={close}
             onDrawn={p.onDrawn as (s: DrawnSignature) => void}
+            onImage={p.onImage as ((s: ImageSignature) => void) | undefined}
             onChooseImage={p.onChooseImage as () => void}
+          />
+        </Suspense>
+      );
+    case "stampPicker":
+      return (
+        <Suspense fallback={null}>
+          <StampPickerDialog
+            onClose={close}
+            onPick={p.onPick as (builtin: string) => void}
+            onChooseImage={p.onChooseImage as () => void}
+            current={p.current as string | null | undefined}
           />
         </Suspense>
       );

@@ -11,6 +11,14 @@ import type { PageIndex, Rotation, ViewLayout } from "../ipc/types";
 export type ZoomMode = "fit-width" | "fit-page" | "actual" | "custom";
 export type NightMode = "off" | "dark" | "sepia";
 
+/** 야간 모드 order (P1-10): ⌃⌘N, the 보기 menu item and the status-bar moon all step through it. */
+export const NIGHT_MODES: readonly NightMode[] = ["off", "dark", "sepia"];
+
+/** 끄기 → 어둡게 → 세피아 → 끄기. */
+export function nextNight(night: NightMode): NightMode {
+  return NIGHT_MODES[(NIGHT_MODES.indexOf(night) + 1) % NIGHT_MODES.length];
+}
+
 /** The numeric steps of the status-bar zoom combo (UI_SPEC §8). */
 export const ZOOM_STEPS = [25, 50, 75, 100, 125, 150, 200, 400] as const;
 export const MIN_ZOOM = 25;
@@ -37,6 +45,8 @@ export interface ViewState {
   setLayout(layout: ViewLayout): void;
   rotate(delta: 90 | -90): void;
   setNight(night: NightMode): void;
+  /** the next of 끄기 / 어둡게 / 세피아 */
+  cycleNight(): void;
   setCurrentPage(page: PageIndex): void;
   goToPage(page: PageIndex, yPt?: number): void;
 }
@@ -77,6 +87,9 @@ export const useViewStore = create<ViewState>((set, get) => ({
   },
   setNight(night) {
     set({ night });
+  },
+  cycleNight() {
+    set({ night: nextNight(get().night) });
   },
   setCurrentPage(page) {
     if (page !== get().currentPage) set({ currentPage: page });

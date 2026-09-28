@@ -168,6 +168,8 @@ pub fn run() {
             commands::app::get_settings,
             commands::app::set_settings,
             commands::app::app_info,
+            // --- typed signature → PNG (Stage 6b, P1-9) ---
+            commands::app::write_signature_image,
             // --- annotations (Stage 1a) ---
             commands::annots::list_annotations,
             commands::annots::scan_annotations,
@@ -214,6 +216,7 @@ pub fn run() {
             // --- save (Stage 1b) ---
             commands::save::save_document,
             commands::save::save_document_as,
+            commands::save::path_exists,
             // --- export and print (Stage 1b) ---
             commands::export::export_images,
             commands::export::export_text,

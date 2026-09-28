@@ -15,7 +15,7 @@ import { useSelectionStore } from "../viewer";
 import { DRAWING_TOOLS, MARKUP_TOOLS, toolController, type ToolSink } from "../tools/ToolController";
 import { registerTools } from "../tools/registry";
 import { setAnnotCommandHandler } from "../tools/commands";
-import { setDrawnSignature, setStampImage, setStampPicker } from "../tools/stamp";
+import { setDrawnSignature, setStampImage, setStampPicker, stampImage } from "../tools/stamp";
 import { movePatch } from "../tools/hit";
 import { useAnnotStore } from "../store/annotStore";
 import { useAppStore } from "../store/appStore";
@@ -32,6 +32,8 @@ import {
 } from "./actions";
 import { closeDialog, openDialog } from "../dialogs/dialogState";
 import { startAnnotSync } from "./sync";
+import { dragPatch, endDrag, startDragHide } from "./dragHide";
+import { startToolDefaultsSync } from "./toolDefaults";
 import { AnnotOverlay } from "./AnnotOverlay";
 import { ToolSurface } from "./ToolSurface";
 import { NotePopover, TextBoxEditor, type TextDraft } from "./editors";
@@ -71,7 +73,8 @@ const sink: ToolSink = {
     void deleteAnnotations(page, ids);
   },
   patch(page, edits, live) {
-    for (const edit of edits) patchAnnotation(page, edit.id, edit.patch, live);
+    // Only the 선택 tool's move / resize reaches here: the drag hides the bitmap copy (P1-12).
+    dragPatch(page, edits, live);
   },
   select(ids) {
     useAnnotStore.getState().select(ids);
@@ -320,9 +323,25 @@ function renderLayers(ctx: PageLayerContext): PageLayers {
 function openSignatureSheet(): void {
   openDialog("signature", {
     onDrawn: (signature: { paths: number[][]; aspect: number }) => setDrawnSignature(signature),
+    // 입력 / a saved typed signature (P1-9): a PNG on disk, placed like a picked image.
+    onImage: (signature: { path: string; aspect: number }) =>
+      setStampImage("signature", { path: signature.path }, signature.aspect),
     onChooseImage: () => {
       closeDialog("signature");
       void pickStamp("signature");
+    },
+  });
+}
+
+/** 도장 선택 (P1-12): the built-ins (결재 / 승인 / 기밀 first) or 이미지 선택…. */
+function openStampPicker(): void {
+  const current = stampImage("stamp");
+  openDialog("stampPicker", {
+    current: current && "builtin" in current ? current.builtin : null,
+    onPick: (builtin: string) => setStampImage("stamp", { builtin }),
+    onChooseImage: () => {
+      closeDialog("stampPicker");
+      void pickStamp("stamp");
     },
   });
 }
@@ -370,8 +389,10 @@ function start(): () => void {
   registerTools();
   toolController.setSink(sink);
   toolController.arm(useAppStore.getState().tool);
-  setStampPicker((id) => (id === "signature" ? openSignatureSheet() : void pickStamp(id)));
+  setStampPicker((id) => (id === "signature" ? openSignatureSheet() : openStampPicker()));
   const offSync = startAnnotSync();
+  const offDragHide = startDragHide();
+  const offToolDefaults = startToolDefaultsSync();
   const offForms = startFormSync();
   setAnnotCommandHandler((id) => {
     if (useAppStore.getState().mode !== "annotate") return false;
@@ -410,7 +431,10 @@ function start(): () => void {
     offTool();
     offForms();
     offSync();
-    void flushPatches();
+    offToolDefaults();
+    // A drag in flight is restored (unhidden) and committed before the last flush.
+    offDragHide();
+    void endDrag().then(() => flushPatches());
   };
 }
 

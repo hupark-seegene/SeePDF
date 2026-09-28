@@ -5,6 +5,7 @@ pub mod files;
 #[cfg(target_os = "macos")]
 pub mod menu;
 pub mod pdfium_path;
+pub mod signatures;
 pub mod store;
 pub mod windows;
 
