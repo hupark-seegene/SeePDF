@@ -28,12 +28,14 @@ import {
 } from "./actions";
 import { EditLayer } from "./EditLayer";
 import { confirmLeave, dropMarks, onDocChangedForMarks, watchMarks } from "./redact";
+import { deleteLink, useLinkStore } from "./linkActions";
 import "./edit.css";
 
 function typing(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   const tag = el?.tagName?.toLowerCase();
-  return tag === "input" || tag === "textarea" || tag === "select" || !!el?.isContentEditable;
+  // `data-own-keys`: a widget with its own ⌫ / arrows (the 목차 editor's tree, P2)
+  return tag === "input" || tag === "textarea" || tag === "select" || !!el?.isContentEditable || !!el?.closest?.("[data-own-keys]");
 }
 
 /**
@@ -55,6 +57,20 @@ export function onEditKeyDown(e: KeyboardEvent): void {
     e.preventDefault();
     e.stopPropagation();
   };
+  // 링크 (P2): Esc drops the rectangle just drawn, then the selection; ⌫ / ⌦ deletes the selected link
+  if (useAppStore.getState().tool === "link") {
+    const links = useLinkStore.getState();
+    if (e.key === "Escape" && (links.draft || links.selected)) {
+      if (links.draft) links.setDraft(null);
+      else links.select(null);
+      return claim();
+    }
+    if ((e.key === "Backspace" || e.key === "Delete") && links.selected) {
+      claim();
+      void deleteLink(links.selected.page, links.selected.id);
+      return;
+    }
+  }
   if (e.key === "Escape") {
     if (store.session) {
       cancelSession();
@@ -154,8 +170,20 @@ function start(): () => void {
     }
   });
   window.addEventListener("keydown", onEditKeyDown, true);
+  // the 링크 tool's rectangle and selection do not outlive the tool (or the document)
+  const offLinkTool = useAppStore.subscribe((s, prev) => {
+    if (prev.tool === "link" && s.tool !== "link") useLinkStore.getState().reset();
+  });
+  const offLinkDoc = useDocStore.subscribe((s, prev) => {
+    if (s.info?.docId !== prev.info?.docId) useLinkStore.getState().reset();
+  });
   setEditCommandHandler((id) => {
     if (useAppStore.getState().mode !== "edit") return false;
+    const link = useAppStore.getState().tool === "link" ? useLinkStore.getState().selected : null;
+    if (id === "edit.delete" && link) {
+      void deleteLink(link.page, link.id);
+      return true;
+    }
     const store = useEditStore.getState();
     if (id === "edit.delete" && store.markSel !== null && !store.session) {
       store.removeMark(store.markSel);
@@ -190,6 +218,9 @@ function start(): () => void {
     offMarks();
     offChanged();
     offDoc();
+    offLinkTool();
+    offLinkDoc();
+    useLinkStore.getState().reset();
     // pending marks never outlive the mode (the leave guard asked, where it could)
     dropMarks();
     // leaving 편집 keeps what was typed

@@ -189,6 +189,13 @@ pub fn run() {
             commands::security::set_password,
             commands::security::remove_metadata,
             commands::security::set_metadata,
+            // --- document structure: outline, links, page labels (P2) ---
+            commands::structure::set_outline,
+            commands::structure::create_link,
+            commands::structure::update_link,
+            commands::structure::delete_link,
+            commands::structure::set_page_labels,
+            commands::structure::get_page_labels,
             // --- stamps and compression (Stage 4) ---
             commands::stamp::add_stamp,
             commands::stamp::remove_stamps,

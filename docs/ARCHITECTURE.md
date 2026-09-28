@@ -403,6 +403,20 @@ and a run of nothing but a space has a zero-width rect that `CPDF_TextPage` skip
 automatic). Latin-1-only words use `helvetica()` (no embedding); everything else uses the bundled Hangul
 font (`load_true_type_from_bytes(bytes, true)`, once per document).
 
+### 6.7 Document structure — outline, links, page labels (P2, `engine/structure/`)
+
+PDFium reads `/Outlines`, `/PageLabels` and a Link's `/Dest` but writes none of them, so these three go
+through `registry::mutate_bytes_checked`: the Stage 3 byte-level path (`save::serialize` → rewrite with
+lopdf → reopen → `replace`, one undo step) plus a **check closure** that runs PDFium's own readers on the
+reopened bytes (`FPDFBookmark_*` for the tree, `FPDF_GetPageLabel` for every page, `FPDFLink_GetDest` for the
+link found by its `/NM`) and compares them with what was meant; a mismatch is `verifyFailed` and the snapshot
+comes back with no undo entry. What PDFium *can* write stays on the cheap in-memory path through
+`registry::mutate`: a web link (`FPDFPage_CreateAnnot(LINK)` + `FPDFAnnot_SetURI`), moving a link's rect,
+deleting a link. `get_outline` is a raw `FPDFBookmark_GetFirstChild` / `GetNextSibling` walk
+(`engine/raw/outline.rs`, visited set + depth ≤ 32 + node cap) so it can report `/Count`'s sign (`open`) and
+URI actions (`url`). Encrypted documents refuse every lopdf rewrite (`unsupported`), as metadata does: lopdf
+would have to re-encrypt, which needs the owner password. Contract: `IPC_CONTRACT.md` §7.10.
+
 ---
 
 ## 7. Undo / redo (snapshots)

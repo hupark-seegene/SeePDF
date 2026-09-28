@@ -18,7 +18,7 @@ import type { DocInfo, PageIndex } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
-import { useViewStore } from "../store/viewStore";
+import { setViewProbe, useViewStore } from "../store/viewStore";
 import { useAnnotStore } from "../store/annotStore";
 import {
   devicePixelRatio,
@@ -398,6 +398,46 @@ export function Scroller({
     commitScroll(scrollRef.current);
     settle();
   }, [scrollRequest, info, commitScroll, settle]);
+
+  // 현재 위치 (P2): the inverse of the jump above — the page under the viewport's top edge (plus
+  // the same 12 px) and that edge's y in PDF user space, so a destination made here lands here.
+  useEffect(() => {
+    setViewProbe(() => {
+      const el = elRef.current;
+      if (!el) return null;
+      const l = layoutRef.current;
+      const edge = el.scrollTop + 12;
+      const current = useViewStore.getState().currentPage;
+      const inside = (it: { y: number; h: number } | undefined) => !!it && edge >= it.y && edge < it.y + it.h;
+      let item = l.byPage.get(current);
+      if (!inside(item)) {
+        for (const it of l.byPage.values()) {
+          if (inside(it)) {
+            item = it;
+            break;
+          }
+        }
+      }
+      if (!item) return { page: current };
+      const geom = info.pages[item.page];
+      const rotation = useViewStore.getState().rotation;
+      // a sideways view has no "top" in the page's y: the page alone
+      if (!geom || !inside(item) || rotation === 90 || rotation === 270) return { page: item.page };
+      const ctx = makePageLayerContext({
+        docId: info.docId,
+        docGeneration: info.docGeneration,
+        page: geom,
+        rotation,
+        zoomPercent: useViewStore.getState().zoomPercent,
+        width: item.w,
+        height: item.h,
+      });
+      const [, y] = ctx.toPage(0, edge - item.y);
+      const clamped = Math.min(geom.crop.t, Math.max(geom.crop.b, y));
+      return { page: item.page, y: Math.round(clamped * 100) / 100 };
+    });
+    return () => setViewProbe(null);
+  }, [info]);
 
   // A search hit is scrolled into view by its rectangle, not by its page.
   const navNonce = useSearchStore((s) => s.navNonce);

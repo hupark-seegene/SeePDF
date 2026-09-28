@@ -20,6 +20,7 @@ pub mod consts;
 pub mod doc;
 pub mod form;
 pub mod object;
+pub mod outline;
 pub mod page;
 pub mod render;
 pub mod save;

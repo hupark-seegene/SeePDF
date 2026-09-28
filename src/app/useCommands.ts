@@ -114,6 +114,10 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "tools.compare":
         if (info) openDialog("compare");
         return;
+      // P2: 페이지 레이블… (페이지 mode rail, 문서 정보)
+      case "pages.labels":
+        if (info) openDialog("pageLabels");
+        return;
       case "file.reveal":
         if (info?.path) void api.revealInFileManager({ path: info.path });
         return;

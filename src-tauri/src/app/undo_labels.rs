@@ -93,7 +93,8 @@ mod tests {
             "undo.objectDuplicate", "undo.ocrApply", "undo.redact", "undo.watermark",
             "undo.headerFooter", "undo.removeStamps", "undo.compress", "undo.pageOps", "undo.pageMove",
             "undo.pageDelete", "undo.pageRotate", "undo.pageInsert", "undo.pageDuplicate",
-            "undo.pageInsertFrom", "undo.pageReverse",
+            "undo.pageInsertFrom", "undo.pageReverse", "undo.outlineEdit", "undo.linkCreate",
+            "undo.linkEdit", "undo.linkDelete", "undo.pageLabels",
         ];
         for key in keys {
             for locale in [Locale::Ko, Locale::En] {

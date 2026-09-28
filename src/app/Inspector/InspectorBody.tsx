@@ -17,6 +17,7 @@ import { isStyledTool, toolOfKind } from "../../store/toolStyles";
 import { reopenStampPicker } from "../../tools/stamp";
 import { makeApply } from "./apply";
 import { EditPanel } from "./EditPanel";
+import { LinkPanel } from "../../edit/LinkPanel";
 import { Swatches } from "../Swatches";
 import type { PropertyId } from "./patch";
 
@@ -139,6 +140,8 @@ export function InspectorBody() {
   if (mode !== "annotate") return <p className="empty">{t("prop.empty")}</p>;
 
   const one = selection.length === 1 ? selection[0] : null;
+  // P2: a link has no style — its section is the target
+  if (one?.kind === "link") return <LinkPanel link={{ page: one.page, id: one.id }} />;
   const kind = one?.kind ?? kindOfTool(tool);
   const colour = one?.color ?? style.color;
   const opacity = one?.opacity ?? style.opacity;

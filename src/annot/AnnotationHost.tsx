@@ -36,6 +36,7 @@ import { dragPatch, endDrag, startDragHide } from "./dragHide";
 import { startToolDefaultsSync } from "./toolDefaults";
 import { AnnotOverlay } from "./AnnotOverlay";
 import { ToolSurface } from "./ToolSurface";
+import { LinkLayer } from "./LinkLayer";
 import { NotePopover, TextBoxEditor, type TextDraft } from "./editors";
 import { FormLayer } from "../forms/FormLayer";
 import { startFormSync } from "../forms/formStore";
@@ -200,6 +201,8 @@ function onKeyDownCapture(e: KeyboardEvent): void {
   const target = e.target as HTMLElement | null;
   const tag = target?.tagName?.toLowerCase();
   if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+  // a widget with its own ⌫ / arrows (the 목차 editor's tree, P2)
+  if (target?.closest?.("[data-own-keys]")) return;
   const hasSelection = useAnnotStore.getState().selected.length > 0;
 
   if (e.key === "Escape") {
@@ -292,6 +295,8 @@ function SurfaceSlot({ ctx }: { ctx: PageLayerContext }) {
 
   return (
     <>
+      {/* P2: links are live in 읽기 mode (hover outline, click follows) */}
+      {mode === "read" && <LinkLayer ctx={ctx} />}
       {active && <ToolSurface ctx={ctx} tool={active} />}
       {editTarget?.kind === "note" && <NotePopover ctx={ctx} annot={editTarget} />}
       {editTarget?.kind === "textbox" && (

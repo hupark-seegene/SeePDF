@@ -94,7 +94,7 @@ pub struct PageGeom {
     pub rotation: Rotation,
     /// Unrotated user space — what the page→device matrix is built from.
     pub crop: Rect,
-    /// From `/PageLabels`; read-only in v1.
+    /// From `/PageLabels` (`FPDF_GetPageLabel`); written by `set_page_labels` (P2).
     pub label: Option<String>,
 }
 
@@ -211,24 +211,38 @@ pub struct DocInfo {
     pub meta: DocMeta,
     pub pdf_version: String,
     pub tagged: bool,
+    /// P2 page labels: every page's `/PageLabels` label as `FPDF_GetPageLabel` reads it (`""`
+    /// for a page the number tree gives no label), **absent** when no page has a label — the UI
+    /// then shows plain page numbers. The same values as `pages[i].label`, as one array.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub page_labels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutlineNode {
     pub title: String,
+    #[serde(default)]
     pub page: Option<PageIndex>,
     /// Stage 2 (`STAGE1C_NOTES.md` §7.1): where on the page the heading is, in PDF user space,
     /// so 목차 scrolls to the heading rather than to the top of the page. `None` when the
     /// destination is a plain page reference or a fit-to-window view, which is the common case.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub dest: Option<OutlineDest>,
+    /// P2: a web link (`/A << /S /URI >>`) instead of a page; `page` is then `None`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub url: Option<String>,
+    /// P2: whether the node's children start expanded (`/Count` > 0). Read back only for a
+    /// node with children; on `set_outline` a missing flag on such a node means open.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub open: Option<bool>,
+    #[serde(default)]
     pub children: Vec<OutlineNode>,
 }
 
 /// A `/Dest` reduced to what a scroller can use. All three are optional because the PDF
 /// "retain the current value" convention writes them as null.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutlineDest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -238,6 +252,34 @@ pub struct OutlineDest {
     /// Zoom **factor** (1.0 == 100 %), as the PDF stores it; 0 means "retain".
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub zoom: Option<f32>,
+}
+
+/// P2 page labels (`set_page_labels` / `get_page_labels`): one `/PageLabels` number-tree
+/// entry. `start` is the first page of the range (0-based); it runs to the next range's start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageLabelRange {
+    pub start: PageIndex,
+    pub style: PageLabelStyle,
+    /// `/P`, written before the number (`"App-"` → `App-1`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prefix: Option<String>,
+    /// `/St`, the number of the range's first page (≥ 1; 1 when absent).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub first: Option<u32>,
+}
+
+/// `/S`: `D` decimal, `r` / `R` roman, `a` / `A` letters; `none` = no `/S` (the prefix alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PageLabelStyle {
+    Decimal,
+    Roman,
+    RomanUpper,
+    Alpha,
+    AlphaUpper,
+    #[serde(rename = "none")]
+    NoNumber,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,10 +454,42 @@ pub struct Annot {
     pub image_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub uri: Option<String>,
+    /// P2 link: the go-to-page target of a Link annotation (`/Dest`, or a GoTo `/A`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub dest: Option<LinkDest>,
     pub hidden: bool,
     pub printed: bool,
     pub locked: bool,
     pub editable: Editability,
+}
+
+/// A go-to-page destination: the page plus the optional `/XYZ` left / top / zoom (PDF user
+/// space; zoom is a factor, 1.0 = 100 %). All three absent = the whole page (`/Fit`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkDest {
+    pub page: PageIndex,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub x: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub y: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub zoom: Option<f32>,
+}
+
+/// A web address target (`/A << /S /URI /URI (…) >>`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkUrl {
+    pub url: String,
+}
+
+/// `create_link` / `update_link`'s `target`: `{ page, x?, y?, zoom? }` or `{ url }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LinkTarget {
+    Page(LinkDest),
+    Url(LinkUrl),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

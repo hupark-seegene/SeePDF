@@ -124,7 +124,7 @@ fails with `stale` and the frontend re-lists and retries.
 ```ts
 export interface PageGeom {
   index: PageIndex; widthPt: number; heightPt: number;   // display size (rotation applied)
-  rotation: Rotation; crop: Rect; label: string | null;  // label from /PageLabels, read-only in v1
+  rotation: Rotation; crop: Rect; label: string | null;  // label from /PageLabels (written by set_page_labels, P2)
 }
 export interface Permissions {
   print: boolean; modify: boolean; extractText: boolean; annotate: boolean;
@@ -141,11 +141,15 @@ export interface DocInfo {
   canUndo: boolean; canRedo: boolean; undoLabel: string | null; redoLabel: string | null;  // i18n keys
   encrypted: boolean; permissions: Permissions; hasForm: boolean; xfa: boolean;
   hasOutline: boolean; meta: DocMeta; pdfVersion: string; tagged: boolean;
+  pageLabels?: string[];   // P2: every page's label ("" where a page has none); absent when no page has one
 }
 /** Stage 2: where on the page the heading is (PDF user space). Absent for a plain page jump. */
 export interface OutlineDest { x?: number; y?: number; zoom?: number }
 export interface OutlineNode {
-  title: string; page: PageIndex | null; dest?: OutlineDest; children: OutlineNode[];
+  title: string; page: PageIndex | null; dest?: OutlineDest;
+  url?: string;            // P2: a web node (/A /URI); page is then null
+  open?: boolean;          // P2: children start expanded (/Count > 0); read back only on nodes with children
+  children: OutlineNode[];
 }
 export interface OpenRequest { path: string; source: 'argv' | 'macos-opened' | 'drop' | 'dialog' | 'recent' }
 
@@ -174,7 +178,7 @@ pub async fn open_document(engine: State<'_, EngineHandle>, path: String, passwo
 | `open_document` | `registry::open` → `load_pdf_from_byte_vec` + `page_sizes()` | S0 engine-core | F-01 |
 | `close_document` | `registry::close` (pages → form → doc) | S0 | F-01 |
 | `get_document` | registry read | S0 | F-01 |
-| `get_outline` | `bookmarks().iter()` (depth-first; `root()` is the first top-level node, not a synthetic root) | S0 | F-05 |
+| `get_outline` | depth-first `FPDFBookmark_GetFirstChild` / `GetNextSibling` walk (P2: raw, so it can read `/Count`'s sign → `open` and a URI action → `url`; cycle- and depth-guarded) | S0, P2 | F-05 |
 | `take_pending_opens` | `PendingOpens` queue drain | S0 | F-01 |
 | `open_in_new_window`, `window_bind_document` | `app/windows.rs` | S0 | F-01 |
 
@@ -273,7 +277,8 @@ export interface Annot {
   contents: string; author: string | null; created: string | null; modified: string | null;
   text?: string; fontSize?: number;     // textbox
   stampKind?: string; imageId?: string; // stamp/signature
-  uri?: string;                         // link
+  uri?: string;                         // link: a web address (/A /URI)
+  dest?: LinkDest;                      // link: a go-to-page target (/Dest or a GoTo /A) — P2
   hidden: boolean; printed: boolean; locked: boolean;
   editable: 'full' | 'moveOnly' | 'readOnly';   // moveOnly = third-party AP we would regenerate
 }
@@ -929,6 +934,70 @@ and Korean always brings English. `ocr_capabilities` lists `vision` only on macO
 `ko-KR`; elsewhere the command answers `unsupported`. `ocr_apply` with a wrapped page whose `page` differs
 from `ocr.page` is `invalidArgument`. 여러 파일 OCR applies each file's pages in one call (one snapshot).
 
+### 7.10 Document structure — outline, links, page labels (P2)
+
+```ts
+// OutlineNode (§4) gains `url?` and `open?`; Annot (§7.1) gains `dest?`; DocInfo (§4) gains `pageLabels?`.
+export interface LinkDest { page: PageIndex; x?: number; y?: number; zoom?: number }   // /XYZ left, top, zoom factor
+export type LinkTarget = LinkDest | { url: string };
+export type PageLabelStyle = 'decimal' | 'roman' | 'romanUpper' | 'alpha' | 'alphaUpper' | 'none';
+export interface PageLabelRange { start: PageIndex; style: PageLabelStyle; prefix?: string; first?: number }
+
+set_outline(a: { docId: DocId; nodes: OutlineNode[] }): Promise<DocInfo>                 // [] removes /Outlines
+create_link(a: { docId: DocId; page: PageIndex; rect: Rect; target: LinkTarget }): Promise<AnnotResult>
+update_link(a: { docId: DocId; page: PageIndex; id: AnnotId; rect?: Rect; target?: LinkTarget }): Promise<AnnotResult>
+delete_link(a: { docId: DocId; page: PageIndex; id: AnnotId }): Promise<AnnotResult>
+set_page_labels(a: { docId: DocId; ranges: PageLabelRange[] }): Promise<DocInfo>        // [] removes /PageLabels
+get_page_labels(a: { docId: DocId }): Promise<PageLabelRange[]>                         // the ranges as written
+```
+
+PDFium reads all three structures but writes none of them (no `FPDFBookmark_*` setter, no `/PageLabels`
+writer, no way to give a Link a `/Dest`), so they go through the Stage 3 byte-level path
+(`STAGE3_SECURITY_NOTES.md` §2) on the engine thread: undo snapshot → `save::serialize` → rewrite the bytes
+with **lopdf** → reopen with PDFium and **check the result with PDFium's own readers** → `replace` (generation
++ 1, `doc-changed`) — one undo step. A check that fails is `verifyFailed` with the snapshot restored and no
+undo entry. Module `engine/structure/` (`outline.rs`, `links.rs`, `labels.rs`), commands in
+`commands/structure.rs`.
+
+| Command | Engine op | Undo label | Feature |
+|---|---|---|---|
+| `set_outline` | deletes every old outline object, writes `/Outlines` + items (`/Title` UTF-16BE for Hangul, `/Parent` `/Prev` `/Next` `/First` `/Last`, `/Count` = +visible descendants when open / −descendants when closed, root `/Count` = visible items) with `/Dest [page /XYZ x y zoom]` (`/Fit` when x, y and zoom are all absent) or `/A << /S /URI >>`; check: the `FPDFBookmark_*` walk reads back the same titles, pages, urls, open flags and shape | `undo.outlineEdit` | P2 outline |
+| `create_link` | web target: **PDFium** — `FPDFPage_CreateAnnot(LINK)` + `SetRect` + `FPDFAnnot_SetURI` + `/Border [0 0 0]` + `/F 4` + `/NM`, inside `registry::mutate`; page target: **lopdf** — a `/Link` dictionary with `/Dest`, `/Border [0 0 0]`, `/F 4`, `/NM`, `/P` appended to the page's `/Annots`; check: `FPDFLink_GetDest` resolves to the requested page | `undo.linkCreate` | P2 links |
+| `update_link` | rect only, or web → web on a link without `/Dest`: PDFium (`SetRect` / `SetURI`); anything that adds or removes a `/Dest`: lopdf (sets `/Dest` and drops `/A`, or sets `/A /URI` and drops `/Dest`) | `undo.linkEdit` | P2 links |
+| `delete_link` | `FPDFPage_RemoveAnnot` (PDFium) | `undo.linkDelete` | P2 links |
+| `set_page_labels` | writes `/PageLabels << /Nums [start << /S /P /St >> …] >>` (sorted; a leading `0 << /S /D >>` is added when the first range starts later — the tree must cover page 0; `/St` omitted when 1; no `/S` for `none`); check: `FPDF_GetPageLabel` of every page equals the labels the engine computes (letters repeat: 27 = `aa`) | `undo.pageLabels` | P2 labels |
+| `get_page_labels` | lopdf read of the catalog's `/PageLabels` number tree (`/Nums` and `/Kids`) from the document's bytes | — | P2 labels |
+
+Semantics:
+* `set_outline` replaces the **whole** tree. `page` out of range or a tree deeper than 32 levels →
+  `invalidArgument`. A node with neither `page` nor `url` is written with no destination; `open` missing on a
+  node with children means open. `get_outline` reads back exactly what was written: `dest` only when x, y or
+  zoom is set, `open` only on nodes with children, `url` nodes with `page: null`. What a rewrite loses: named
+  destinations become explicit ones; actions other than GoTo and URI (Launch, JavaScript, GoToR) become
+  title-only nodes; item colour and style (`/C`, `/F`) are dropped. The old items are deleted from the file, not
+  just unlinked.
+* Links: `rect` is normalised; smaller than 1 pt, an empty `url`, a target page out of range, an `update_link`
+  with neither `rect` nor `target` → `invalidArgument`; the link's own `page` out of range or an unknown `id` →
+  `notFound`; an id that is not a Link → `invalidArgument`. A URI is 7-bit: non-ASCII bytes and spaces are
+  percent-encoded (`https://예.kr/a b` reads back `https://%EC%98%88.kr/a%20b`; the frontend already sends it
+  encoded, so it reads back as sent). A page target with no x, y or zoom is written `/Fit` and reads back with
+  no position; otherwise `/XYZ` with `null` for a missing value (zoom ≤ 0 dropped). New links carry
+  `/Border [0 0 0]` and the Print flag. `AnnotResult.list` is the
+  page's annotations after the change, `annot` the link (`null` after a delete), `previous` the link before an
+  update / delete. `doc-changed` names only that page. Links are listed by `list_annotations` /
+  `scan_annotations` as `kind: 'link'` with `uri` or `dest`.
+* `set_page_labels`: a start outside the document, two ranges on one page, or `first` outside 1–1 000 000 →
+  `invalidArgument`. `DocInfo.pageLabels` (and `pages[i].label`) are re-read from PDFium after the reload.
+  `get_page_labels` normalises what it reads (`first: 1` and an empty `prefix` come back absent) and reads the
+  bytes the document was last loaded from — PDFium never writes `/PageLabels`, so no later edit can have
+  changed them.
+* `set_outline`: a node with both `url` and `page` is written as a web node (the url wins).
+* **Encrypted documents** (opened with a password, or `encrypted`): `set_outline`, `set_page_labels`,
+  `get_page_labels` and every link change that needs a `/Dest` (a page `create_link`, an `update_link` that adds
+  or removes one) answer `unsupported` ("remove the password first") and push no undo entry — re-encrypting
+  would need the owner password, exactly as for `set_metadata`. Web links, rect moves and `delete_link` go
+  through PDFium and work on encrypted documents.
+
 ---
 
 ## 8. Events and progress
@@ -1136,6 +1205,7 @@ paths to the fs scope automatically.
 | `compress_estimate`, `compress_apply`, `compress_discard` | Stage 4, `engine/compress.rs` | P1-5 |
 | `compare_documents` | Stage 5, `engine/compare.rs` | P1-6 |
 | `write_recovery`, `clear_recovery`, `list_recovery`, `discard_recovery` | Stage 5, `engine/recovery.rs` | P1-8 |
+| `set_outline`, `create_link`, `update_link`, `delete_link`, `set_page_labels`, `get_page_labels` | P2, `engine/structure/` + `commands/structure.rs` | P2 outline / links / labels |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

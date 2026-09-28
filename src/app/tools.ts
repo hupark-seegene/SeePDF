@@ -4,7 +4,7 @@
  */
 import {
   Circle, Eraser, Highlighter, ImagePlus, Minus, MessageSquarePlus, MousePointer2, MoveUpRight, PenLine,
-  Signature, Square, SquareDashed, SquarePen, Stamp, Strikethrough, Type, Underline, Waves, Eye, Trash2,
+  Signature, Square, SquareDashed, SquarePen, Stamp, Strikethrough, Type, Underline, Waves, Eye, Trash2, Link2,
 } from "lucide-react";
 import type { Mode, ToolId } from "../store/appStore";
 import type { IconProps } from "./IconButton";
@@ -47,6 +47,8 @@ export const TOOL_STRIP: Record<Mode, ToolDef[]> = {
     { id: "addText", labelKey: "tool.addText", icon: Type },
     { id: "addImage", labelKey: "tool.addImage", icon: ImagePlus },
     { id: "redact", labelKey: "tool.redact", icon: SquareDashed, keyId: "tool.redact" },
+    // P2: drag a rectangle → 페이지로 이동 | 웹 주소
+    { id: "link", labelKey: "tool.link", icon: Link2 },
   ],
   pages: [],
   form: [

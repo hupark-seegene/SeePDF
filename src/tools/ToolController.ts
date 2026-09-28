@@ -178,6 +178,7 @@ const CURSORS: Partial<Record<ToolId, string>> = {
   addText: "crosshair",
   addImage: "crosshair",
   redact: "crosshair",
+  link: "crosshair",
   fillForm: "default",
 };
 

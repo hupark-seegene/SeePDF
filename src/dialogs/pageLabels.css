@@ -1,0 +1,75 @@
+/* 페이지 레이블 (P2) — the range rows and the preview. Tokens only. */
+
+.labels-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.labels-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.labels-head,
+.labels-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1.3fr) minmax(0, 1fr) 76px 28px;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.labels-row .field {
+  width: 100%;
+  min-width: 0;
+}
+
+.labels-row .field[aria-invalid] {
+  border-color: var(--danger);
+}
+
+.labels-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--danger);
+}
+
+.labels-add {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.labels-preview-title {
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+.labels-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: var(--space-1);
+  max-height: 168px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-2);
+  list-style: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-app);
+}
+
+.labels-preview-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 2px var(--space-1);
+}
+
+.labels-preview-item > .text-sm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

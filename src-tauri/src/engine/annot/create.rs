@@ -11,7 +11,7 @@
 //! | line / arrow | **`Ink`** + `/Subj "SeePDF:Line"`/`"SeePDF:Arrow"` | `FPDFPage_CreateAnnot(FPDF_ANNOT_LINE)` returns NULL |
 //! | textbox | **`Stamp`** + text objects + `/Subj "SeePDF:TextBox"`, `/DA` for size and colour | FreeText persists only with `/DA`, and `/Helv` cannot render 한글 |
 //! | stamp | `Stamp` + an image object, or a built-in label | `signature: true` adds `/Subj "SeePDF:Signature"` → read back as `signature` (Stage 8) |
-//! | link | `Link` + `FPDFAnnot_SetURI` | not reachable from `AnnotSpec` (P2 in the contract); the engine entry point exists and is tested |
+//! | link | `Link` + `FPDFAnnot_SetURI` + `/Border [0 0 0]` | not in `AnnotSpec`: the P2 `create_link` command (`engine::structure::links`) calls [`create_link`] for a web address and writes a go-to-page link with lopdf |
 //!
 //! Every annotation is created with the `/F 4` Print flag, because
 //! `FPDFPage_Flatten(FLAT_PRINT)` silently *deletes* annotations without it and
@@ -110,8 +110,9 @@ pub fn create(
     Ok(id)
 }
 
-/// `Link` + `FPDFAnnot_SetURI`. Not reachable from `AnnotSpec` (link creation is P2 in the
-/// contract) but complete and tested, so the tool only has to call it.
+/// `Link` + `FPDFAnnot_SetURI` + `/Border [0 0 0]` (no box drawn). Not reachable from
+/// `AnnotSpec`: the P2 `create_link` command (`engine::structure::links`) calls it for a web
+/// address; a go-to-page link needs a `/Dest`, which PDFium cannot write, and goes through lopdf.
 pub fn create_link(
     doc: &mut OpenDoc<'_>,
     page_index: PageIndex,
@@ -134,6 +135,7 @@ pub fn create_link(
                 "FPDFAnnot_SetURI failed",
             ));
         }
+        a.set_no_border();
         write_identity(&mut a, &id, None);
     }
     drop(scratch);

@@ -269,7 +269,22 @@ impl<'p> OpenDoc<'p> {
             meta: self.meta.clone(),
             pdf_version: self.pdf_version.clone(),
             tagged: self.tagged,
+            page_labels: self.page_labels(),
         }
+    }
+
+    /// `DocInfo.pageLabels`: every page's label (`""` where a page has none), or `None` when
+    /// no page of the document has a label.
+    pub fn page_labels(&self) -> Option<Vec<String>> {
+        if self.pages_meta.iter().all(|p| p.label.is_none()) {
+            return None;
+        }
+        Some(
+            self.pages_meta
+                .iter()
+                .map(|p| p.label.clone().unwrap_or_default())
+                .collect(),
+        )
     }
 
     pub fn summary(&self) -> DocSummary {
@@ -288,72 +303,15 @@ impl<'p> OpenDoc<'p> {
         Ok(Arc::from(bytes.into_boxed_slice()))
     }
 
-    /// The document's outline as the contract's nested node list. `PdfBookmarks::root()` is
-    /// the **first top-level bookmark**, not a synthetic root, so siblings are walked too.
+    /// The document's outline as the contract's nested node list, depth-first.
+    ///
+    /// Read with the raw `FPDFBookmark_*` API (`raw::outline::read`) because pdfium-render
+    /// hides the sign of `/Count` (open / closed, P2) and has no URI accessor for a node. The
+    /// destination mapping is unchanged since Stage 2 (`STAGE1C_NOTES.md` §7.1): document-level
+    /// calls only, no `FPDF_LoadPage`, so it stays affordable for every node at open.
     pub fn outline(&self) -> Vec<OutlineNode> {
-        let bookmarks = self.doc.bookmarks();
-        let Some(root) = bookmarks.root() else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        collect_bookmark(&root, &mut out, 0);
-        for sibling in root.iter_siblings() {
-            collect_bookmark(&sibling, &mut out, 0);
-        }
-        out
+        raw::outline::read(self.bindings, self.doc.raw_handle())
     }
-}
-
-fn collect_bookmark(node: &PdfBookmark<'_>, out: &mut Vec<OutlineNode>, depth: u8) {
-    // Guard against a malformed cyclic outline.
-    if depth > 32 {
-        return;
-    }
-    let mut children = Vec::new();
-    for child in node.iter_direct_children() {
-        collect_bookmark(&child, &mut children, depth + 1);
-    }
-    let destination = node.destination();
-    out.push(OutlineNode {
-        title: node.title().unwrap_or_default(),
-        page: destination
-            .as_ref()
-            .and_then(|d| d.page_index().ok())
-            .map(|i| i as u16),
-        dest: destination.as_ref().and_then(outline_dest),
-        children,
-    });
-}
-
-/// `FPDFDest_GetView` + `FPDFDest_GetLocationInPage`, reduced to the (x, y, zoom) a scroller
-/// can act on. Both calls are document-level and need no `FPDF_LoadPage`, which is why the
-/// destination rect is affordable for every node at open (`STAGE1C_NOTES.md` §7.1).
-fn outline_dest(d: &PdfDestination<'_>) -> Option<crate::ipc::types::OutlineDest> {
-    use crate::ipc::types::OutlineDest;
-    use pdfium_render::prelude::PdfDestinationViewSettings as View;
-    let out = match d.view_settings().ok()? {
-        View::SpecificCoordinatesAndZoom(x, y, zoom) => OutlineDest {
-            x: x.map(|p| p.value),
-            y: y.map(|p| p.value),
-            zoom: zoom.filter(|z| *z > 0.0),
-        },
-        View::FitPageHorizontallyToWindow(y) | View::FitBoundsHorizontallyToWindow(y) => {
-            OutlineDest { x: None, y: y.map(|p| p.value), zoom: None }
-        }
-        View::FitPageVerticallyToWindow(x) | View::FitBoundsVerticallyToWindow(x) => {
-            OutlineDest { x: x.map(|p| p.value), y: None, zoom: None }
-        }
-        View::FitPageToRectangle(rect) => OutlineDest {
-            x: Some(rect.left().value),
-            y: Some(rect.top().value),
-            zoom: None,
-        },
-        View::Unknown | View::FitPageToWindow | View::FitBoundsToWindow => return None,
-    };
-    if out.x.is_none() && out.y.is_none() && out.zoom.is_none() {
-        return None;
-    }
-    Some(out)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -723,6 +681,22 @@ pub fn mutate_bytes(
     opts: MutateOpts,
     f: impl FnOnce(&[u8], &OpenDoc<'_>) -> Result<Vec<u8>, EngineError>,
 ) -> Result<DocInfo, EngineError> {
+    mutate_bytes_checked(st, doc_id, opts, f, |_, _| Ok(()))
+}
+
+/// [`mutate_bytes`] with a structural check of the rewrite (P2): `check` runs on the
+/// PDFium-reopened bytes in step 4, **before** anything replaces the open document, so a
+/// rewrite PDFium reads differently from what was meant (an outline whose `/Count` or links
+/// it does not follow, a `/PageLabels` tree it labels differently, a link whose `/Dest` it
+/// cannot resolve) fails with the check's error — by convention `verifyFailed` — the undo
+/// entry is dropped and the document is exactly as it was.
+pub fn mutate_bytes_checked(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    opts: MutateOpts,
+    f: impl FnOnce(&[u8], &OpenDoc<'_>) -> Result<Vec<u8>, EngineError>,
+    check: impl FnOnce(&'static dyn PdfiumLibraryBindings, &PdfDocument<'_>) -> Result<(), EngineError>,
+) -> Result<DocInfo, EngineError> {
     let doc = st
         .docs
         .get_mut(doc_id)
@@ -739,7 +713,7 @@ pub fn mutate_bytes(
         let doc = st.doc(doc_id)?;
         let (pages, password) = (doc.page_count(), doc.password.clone());
         let out = f(&current, doc)?;
-        super::save::verify_bytes(st, &out, pages, password)?;
+        super::save::verify_bytes_with(st, &out, pages, password, check)?;
         replace(st, doc_id, Arc::from(out.into_boxed_slice()))
     })();
     if let Err(e) = rewritten {

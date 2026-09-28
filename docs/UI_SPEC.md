@@ -69,12 +69,37 @@ dimmer weight. The active tool has an `--accent-subtle` background and a 1 px ac
 
 | Tab | Icon | Content | Empty state |
 |---|---|---|---|
-| 축소판 | `rectangle-vertical` | 1–2 column thumbnail list, page number under each, current page with a 2 px accent ring, drag to reorder, ⌘/⇧ multi-select, context menu | — |
-| 목차 | `list-tree` | outline tree with disclosure triangles, current section highlighted on scroll | `sidebar.outline.empty` |
+| 축소판 | `rectangle-vertical` | 1–2 column thumbnail list, page number under each (the page label when the document has `/PageLabels`, P2 — the number in the tooltip), current page with a 2 px accent ring, drag to reorder, ⌘/⇧ multi-select, context menu | — |
+| 목차 | `list-tree` | outline tree with disclosure triangles, current section highlighted on scroll; a node written closed (`open: false`) starts collapsed; the page column shows labels; a web node (`url`, `globe` icon) asks before opening its address. Header: 목차 + **편집** (P2, disabled on an encrypted document with the reason as tooltip) — see §4.1 | `sidebar.outline.empty` |
 | 주석 | `message-square` | flat list grouped by page: type icon, author, excerpt, timestamp; click scrolls and selects; filter chips by type | `sidebar.annotations.empty` |
 | 검색 | `search` | query field, 대소문자 구분 / 단어 단위 toggles, result count, results with ±40 characters of context and the match in bold, grouped by page, streaming in as they arrive | `sidebar.search.empty` |
 
 Sidebar open/closed, active tab and width persist per app (not per document) in `settings.json`.
+
+### 4.1 목차 편집 (P2)
+
+편집 swaps the tree for the editor (its own lazy chunk) on a **local draft** — nothing reaches the document
+until 완료. Toolbar (16 px icon buttons): 현재 페이지 추가 (`plus`) · 이름 바꾸기 (`pencil`) · 목적지를 현재 보기로
+(`locate-fixed`) · 들여쓰기 / 내어쓰기 (`indent-increase` / `indent-decrease`) · 위로 / 아래로 이동 · 삭제 (danger).
+Rows: disclosure triangle, title, page label (or `globe` for a web node, — for none); click selects,
+double-click renames.
+
+* **현재 페이지 추가** inserts after the selection (at the end when nothing is selected) a node `새 항목` whose
+  destination is the current view — the page under the viewport's top edge and that edge's y (PDF user space,
+  so a jump lands where the user was reading; a sideways view rotation keeps the page only) — and opens it
+  for renaming with the text selected.
+* **Keyboard** (the list has focus; its keys never reach the canvas or the 편집 / 주석 handlers):
+  ↑ / ↓ select · Enter renames (Enter / blur commits, Esc restores; an empty title keeps the old one) ·
+  Delete / ⌫ removes the node **and its children** · Tab / ⇧Tab indents into the previous sibling / outdents
+  to right after the parent · ⌥↑ / ⌥↓ moves among the siblings.
+* **Drag** a row onto another: top quarter = before, bottom quarter = after, the middle = inside (last child);
+  a 2 px accent line or an accent ring shows where; a node never drops into its own subtree.
+* **완료** writes the whole tree with `set_outline` (one undo step 목차 편집), reloads the sidebar from
+  `get_outline` and toasts 목차를 저장했습니다 + 실행 취소; an unchanged draft just closes. **취소** throws the
+  draft away. An `unsupported` answer toasts `structure.encrypted`.
+
+A node whose destination PDFium cannot resolve (a named destination that no longer exists, a non-URI action)
+reads back with no page and no url and is written back as a title only (IPC_CONTRACT §7.10).
 
 ---
 
@@ -100,7 +125,7 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
 
 | Mode | Tool | Cursor | Drag / click | Esc → |
 |---|---|---|---|---|
-| 읽기 | 선택(텍스트) | `text` | drag selects text; click clears | — |
+| 읽기 | 선택(텍스트) | `text` | drag selects text; click clears. **Links** (P2): every Link annotation is a hit box with the `pointer` cursor, an accent outline + 8 % tint on hover and a tooltip (`{{page}}쪽으로 이동` or the address); a click on a page link scrolls to its destination (page + y); a web link asks 웹 주소 열기 — 브라우저에서 이 주소를 엽니다: {{url}} (열기 / 취소) before the opener plugin hands it to the browser; only `http(s):` and `mailto:` are ever handed over (anything else toasts 이 주소는 열 수 없습니다). A drag that starts on a link does not select text | — |
 | 읽기 | 손 | `grab`/`grabbing` | pans | 선택 |
 | 읽기 | 스냅샷 | `crosshair` | marquee copies the region as an image | 선택 |
 | 주석 | 형광펜 / 밑줄 / 취소선 / 물결선 | `text` + colour dot | drag over text → markup annotation on the selected line runs | 선택 |
@@ -116,6 +141,7 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
 | 편집 | 텍스트 추가 | `crosshair` | click → the same editing box, empty, in the tool default (12 pt black unless `toolDefaults.addText`); 완료 writes `add_text_object` sized to the typed text | 선택 |
 | 편집 | 이미지 추가 | `crosshair` | drag a box, or click for a 240 pt box at the click (kept on the page) → PNG/JPEG picker → placed inside the box with its aspect kept | 선택 |
 | 편집 | 영역 표시 | `crosshair` | drag marks a region, snapped to the whole of every text run it crosses (a run is removed whole, so the box covers it) and keeping its own extent elsewhere — shown that way while dragging; a click on text marks that run's bounds (`list_page_objects`); every mark is clipped to the page box; a click on a mark selects it (× / ⌫ removes). Marks are pending (nothing is written), kept per page, drawn hatched in every 편집 tool, and survive tool switches; leaving 편집, closing the document or opening another with marks asks 표시한 영역을 버릴까요?; undo / redo / page ops / OCR drop them (toast). Text the preview says goes although it reaches outside a mark is outlined amber | 선택 |
+| 편집 | 링크 (P2, `link-2`) | `crosshair` | the page's links are outlined (accent dashed = page link, green = web link, solid when selected); click on a link selects it (the panel edits it, §7; ⌫ / ⌦ deletes it — `delete_link`); a drag of at least 4 × 4 pt elsewhere draws a new rectangle and opens the **링크 popover** under it (above it near the page bottom; 272 px, `--elevation-2`): 페이지로 이동 \| 웹 주소 segmented · 페이지 (a label or a number, `/ total`) + 현재 위치 사용 (page + y of the current view; the hint says 현재 보기 위치 (y N pt) or 페이지 맨 위) · 주소 (`https://` added when there is no scheme, `mailto:` for an e-mail address, non-ASCII percent-encoded) · 취소 / 만들기 → `create_link` (one undo step 링크 추가), toast 링크를 만들었습니다 + 실행 취소, the new link selected. On an encrypted document 페이지로 이동 is disabled with `structure.encrypted` (a `/Dest` is a lopdf rewrite); 웹 주소 works | 선택 해제 → 선택 |
 | 페이지 | — | arrow | grid: click selects, drag reorders, double-click opens that page in 읽기 | — |
 | 양식 | 채우기 | arrow / `text` over text fields / `pointer` over buttons | click focuses the field (HTML overlay input) | — |
 
@@ -137,6 +163,7 @@ tapping a tool key latches it, holding it switches momentarily and reverts on re
 | 이미지 객체 | 위치 X/Y, 크기 W/H (비율 고정), 삭제 — in 편집 the same X · Y · 너비 · 높이 fields as a text object |
 | 페이지 선택 (페이지 mode) | 페이지 크기, 회전, 회전/삭제/추출/복제 buttons |
 | 양식 필드 focused | 필드 이름 (read-only), 유형, 값, 필수 여부, 값 지우기 |
+| 링크 (P2: the 편집 링크 tool's selection, or a link selected with the 주석 선택 tool) | 링크 — what it does (`3쪽으로 이동` / the address), 이동할 곳: the popover's form (페이지로 이동 \| 웹 주소, 현재 위치 사용) with 적용 → `update_link` (one undo step 링크 편집), 링크 열기 (follows it exactly as 읽기 mode does), 삭제 → `delete_link`. Nothing selected: 링크를 선택하거나, 페이지에서 영역을 끌어 새 링크를 만드세요 |
 | 영역 표시 pending | 채우기 색상 (검정 · 회색 · 흰색, 기본 검정), 덮어쓸 문구, 표시된 영역 {{count}}개, 제거될 내용 per marked page (`redact_preview`, 250 ms debounce: text / image / annotation counts, the text runs, **collateral** in amber with why — PDFium cannot split a text object), **적용** (destructive, confirms "removed from the document; undo only until you save"; disabled with the reason when a mark covers a form field) → ONE `apply_redactions_batch` with every marked page (one undo step 영역 삭제); any failure leaves every mark — `verifyFailed` toasts that the document was restored; 표시 모두 지우기 |
 
 A second surface exists for speed: an **inline popover** 8 px above a selected annotation (280 px wide,
@@ -147,7 +174,10 @@ outside click, or a scroll of more than 40 px; opening the panel closes the popo
 
 ## 8. Status bar (28 px)
 
-`◀ [page input] / [total] ▶` · view layout segmented (단일 / 연속 / 두 쪽) · 왼쪽/오른쪽 회전 ·
+`◀ [page input] / [total] ▶` (P2: with page labels the input is 64 px, shows the current page's label and is
+followed by `(n / total)`; it accepts a label — exact, then case-insensitive — or a plain page number, a label
+winning over a number that is also a label; anything else restores the current value) ·
+view layout segmented (단일 / 연속 / 두 쪽) · 왼쪽/오른쪽 회전 ·
 야간 모드 `moon` (cycles, pressed while on) · zoom `− [slider] +` with a numeric combo (25/50/75/100/125/150/200/400 %, 페이지 맞춤, 너비 맞춤,
 실제 크기) · right side: save state (저장됨 / 저장되지 않은 변경 사항 / 저장 중…) and a progress slot used
 by OCR, export, search and save (label + determinate bar + cancel ×).
@@ -164,7 +194,8 @@ by OCR, export, search and save (label + determinate bar + cancel ×).
 * Selection: click, ⇧click range, ⌘click toggle, marquee on empty space, ⌘A.
 * Drag: a 2 px vertical insertion caret between cells; a multi-selection drags as a stacked ghost with a
   count badge. Dropping a PDF or an image from the OS inserts at the caret.
-* Right-side action list: 회전 · 삭제 · 추출… · 복제 · 빈 페이지 삽입 · 파일에서 삽입… · 순서 뒤집기 · 분할…
+* Right-side action list: 회전 · 삭제 · 추출… · 복제 · 빈 페이지 삽입 · 파일에서 삽입… · 순서 뒤집기 · 분할… ·
+  페이지 레이블… (P2, `tags`, §10). The page-number chip shows the page label when there is one.
 * Everything is undoable and lives in the in-memory document until save. The status bar shows
   `변경됨 · 페이지 148 → 143`.
 
@@ -257,6 +288,18 @@ nothing written). The first enabled answer has the focus. While any prompt is op
 arrows, ⌘C / ⌘V / ⌘D) stay off, so Esc answers the prompt instead of cancelling the editor underneath. Leaving
 편집 (another mode, 페이지 정리, closing or replacing the document) commits an open editor first, so the prompt can
 appear there too; 계속 편집 (or a declined font) keeps the mode and the typed text.
+
+**페이지 레이블** (P2, 640 px, 페이지 mode's rail, 문서 정보's footer — it stacks over 문서 정보, which comes back
+when it closes — and the command id `pages.labels`): the document's `/PageLabels` as rows (`get_page_labels`)
+시작 페이지 (1-based) · 스타일 (1, 2, 3 / i, ii, iii / I, II, III / a, b, c / A, B, C / 번호 없음) · 접두사 · 시작 번호
+(blank = 1; off for 번호 없음) · × — plus 범위 추가 (the first row starts at page 1 as i, ii, iii; the next one page
+after the last start as 1, 2, 3). A row with a start outside 1–N, a start another row already has, or a first
+number outside 1–1 000 000 shows the reason under it (`role=alert`) and disables 적용. No rows: 레이블이 없습니다. 페이지 번호가
+그대로 표시됩니다. When the first range starts after page 1, a hint says the pages before it are numbered 1, 2, 3…
+(the engine adds that leading decimal range). **미리 보기**: every page `n  label` in a scrolling grid, computed
+the way PDFium computes them (letters repeat: 27 = aa). 모두 제거 (footer, left) empties the rows; 적용 (enabled
+once the rows differ from the file) → `set_page_labels` (one undo step 페이지 레이블), toast 페이지 레이블을
+적용했습니다 / 제거했습니다 + 실행 취소. On an encrypted document everything is read-only with `structure.encrypted`.
 
 **Others**: 암호 입력 (on `passwordRequired`, retries in place) · 저장하지 않은 변경 사항 (저장 / 저장 안 함 /
 취소) · 파일 합치기 (ordered list with drag, per-file range field, warnings for forms/outline) ·
@@ -1029,6 +1072,36 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `edit.flow.fitted` | 글자 크기를 {{pct}}%로 줄여 맞췄습니다 | Shrank the text to {{pct}}% to fit |
 
 `edit.paragraph.overflow` (Stage 7's "may overlap the text below" toast) is gone: the flow above replaces it.
+
+### 15.20b P2 — 목차 편집, 링크, 페이지 레이블 (`outline.*`, `link.*`, `pageLabels.*`)
+| Key | ko | en |
+|---|---|---|
+| `structure.encrypted` | 암호가 걸린 문서에서는 할 수 없습니다. 보안에서 암호를 먼저 제거하세요. | Not available on an encrypted document. Remove the password in Security first. |
+| `outline.edit` / `outline.done` | 편집 / 완료 | Edit / Done |
+| `outline.add` / `outline.rename` / `outline.setDest` | 현재 페이지 추가 / 이름 바꾸기 / 목적지를 현재 보기로 | Add Current Page / Rename / Set Destination to Current View |
+| `outline.indent` / `outline.outdent` / `outline.moveUp` / `outline.moveDown` / `outline.delete` | 들여쓰기 / 내어쓰기 / 위로 이동 / 아래로 이동 / 삭제 | Indent / Outdent / Move Up / Move Down / Delete |
+| `outline.untitled` / `outline.titleField` / `outline.webLink` | 새 항목 / 항목 이름 / 웹 주소 | New Bookmark / Bookmark title / Web address |
+| `outline.saved` | 목차를 저장했습니다 | Bookmarks saved |
+| `outline.editHint` | Enter 이름 바꾸기 · Delete 삭제 · Tab 들여쓰기 · 끌어서 순서 바꾸기 | Enter to rename · Delete to remove · Tab to indent · drag to reorder |
+| `outline.emptyEdit` | 항목이 없습니다. 현재 페이지 추가로 시작하세요. | No bookmarks yet. Start with Add Current Page. |
+| `tool.link` / `link.title` / `link.new` / `link.create` | 링크 / 링크 / 새 링크 / 만들기 | Link / Link / New Link / Create |
+| `link.target` / `link.kind.page` / `link.kind.url` | 이동할 곳 / 페이지로 이동 / 웹 주소 | Goes to / Go to Page / Web Address |
+| `link.page` / `link.url` / `link.useCurrent` | 페이지 / 주소 / 현재 위치 사용 | Page / Address / Use Current View |
+| `link.position` / `link.positionTop` | 현재 보기 위치 (y {{y}}pt) / 페이지 맨 위 | At the current view (y {{y}} pt) / Top of the page |
+| `link.goToPage` / `link.noTarget` / `link.follow` | {{page}}쪽으로 이동 / 대상 없음 / 링크 열기 | Go to page {{page}} / No target / Open Link |
+| `link.emptyPanel` | 링크를 선택하거나, 페이지에서 영역을 끌어 새 링크를 만드세요. | Select a link, or drag an area on the page to make a new one. |
+| `link.created` / `link.updated` / `link.deleted` | 링크를 만들었습니다 / 링크를 바꿨습니다 / 링크를 삭제했습니다 | Link created / Link changed / Link deleted |
+| `link.openTitle` / `link.openBody` / `link.open` | 웹 주소 열기 / 브라우저에서 이 주소를 엽니다: {{url}} / 열기 | Open Web Address / This opens the address in your browser: {{url}} / Open |
+| `link.blocked` | 이 주소는 열 수 없습니다: {{url}} | This address cannot be opened: {{url}} |
+| `pageLabels.title` / `pageLabels.open` | 페이지 레이블 / 페이지 레이블… | Page Labels / Page Labels… |
+| `pageLabels.start` / `.style` / `.prefix` / `.first` | 시작 페이지 / 스타일 / 접두사 / 시작 번호 | Start page / Style / Prefix / Start at |
+| `pageLabels.style.{decimal,roman,romanUpper,alpha,alphaUpper,none}` | 1, 2, 3 / i, ii, iii / I, II, III / a, b, c / A, B, C / 번호 없음 | (same) / No number |
+| `pageLabels.add` / `.remove` / `.removeAll` / `.preview` | 범위 추가 / 범위 삭제 / 모두 제거 / 미리 보기 | Add Range / Remove Range / Remove All / Preview |
+| `pageLabels.empty` | 레이블이 없습니다. 페이지 번호가 그대로 표시됩니다. | No labels: pages show their numbers. |
+| `pageLabels.leadingHint` | 첫 범위가 1쪽에서 시작하지 않으면 그 앞 페이지는 1, 2, 3…으로 표시됩니다. | Pages before the first range are numbered 1, 2, 3…. |
+| `pageLabels.error.start` / `.duplicate` / `.first` | 1–{{count}} 사이의 페이지를 입력하세요 / 같은 페이지에서 시작하는 범위가 이미 있습니다 / 1–1000000 사이의 수를 입력하세요 | Enter a page from 1 to {{count}} / Another range already starts on this page / Enter a number from 1 to 1000000 |
+| `pageLabels.applied` / `pageLabels.removed` | 페이지 레이블을 적용했습니다 / 페이지 레이블을 제거했습니다 | Page labels applied / Page labels removed |
+| `undo.outlineEdit` / `undo.linkCreate` / `undo.linkEdit` / `undo.linkDelete` / `undo.pageLabels` | 목차 편집 / 링크 추가 / 링크 편집 / 링크 삭제 / 페이지 레이블 | Edit Bookmarks / Add Link / Edit Link / Delete Link / Page Labels |
 
 ### 15.21 Notes for the implementer
 

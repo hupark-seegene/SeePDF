@@ -33,17 +33,22 @@ import {
 import { TextEditor } from "./TextEditor";
 import { markArea, markAt, markRectFor, markTextRunAt } from "./redact";
 import type { RedactMark } from "./editStore";
+import type { Annot } from "../ipc/types";
+import { useAnnotStore } from "../store/annotStore";
+import { createLink, MIN_LINK_PT, useLinkStore } from "./linkActions";
+import { LinkTargetForm } from "./LinkTargetForm";
 
 const EMPTY: ObjectId[] = [];
 const NO_OBJECTS: PageObject[] = [];
 const NO_MARKS: RedactMark[] = [];
+const NO_ANNOTS: Annot[] = [];
 /** CSS px a press must travel before it is a drag rather than a click */
 const DRAG_PX = 3;
 
 type Drag =
   | { kind: "move"; ids: ObjectId[]; x0: number; y0: number; dx: number; dy: number; moved: boolean }
   | { kind: "resize"; id: ObjectId; corner: Corner; from: Rect; to: Rect; x0: number; y0: number }
-  | { kind: "image" | "mark"; start: Point; end: Point; x0: number; y0: number; moved: boolean }
+  | { kind: "image" | "mark" | "link"; start: Point; end: Point; x0: number; y0: number; moved: boolean }
   | { kind: "marquee"; start: Point; end: Point; x0: number; y0: number; moved: boolean; additive: boolean };
 
 export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
@@ -57,6 +62,11 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
   const allMarks = useEditStore((s) => s.marks);
   const markSel = useEditStore((s) => s.markSel);
   const preview = useEditStore((s) => s.previews[ctx.index]);
+  // 링크 (P2): the page's links (annotations) and what the tool points at
+  const pageAnnots = useAnnotStore((s) => (tool === "link" ? s.byPage[ctx.index] : undefined)) ?? NO_ANNOTS;
+  const links = tool === "link" ? pageAnnots.filter((a) => a.kind === "link") : NO_ANNOTS;
+  const linkSel = useLinkStore((s) => (s.selected?.page === ctx.index ? s.selected.id : null));
+  const linkDraft = useLinkStore((s) => (s.draft?.page === ctx.index ? s.draft.rect : null));
   const [hover, setHover] = useState<ObjectId | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -95,6 +105,17 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
     }
     if (tool === "addText") {
       beginAddText(ctx.index, at);
+      return;
+    }
+    if (tool === "link") {
+      // a click on a link selects it (the inspector edits it); anywhere else a drag draws a new one
+      const hit = [...links].reverse().find((a) => inside(a.rect, at[0], at[1]));
+      if (hit) {
+        useLinkStore.getState().select({ page: ctx.index, id: hit.id });
+        return;
+      }
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      setDrag({ kind: "link", start: at, end: at, x0: e.clientX, y0: e.clientY, moved: false });
       return;
     }
     if (tool === "addImage" || tool === "redact") {
@@ -174,6 +195,11 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
     } else if (drag.kind === "mark") {
       if (drag.moved) markArea(ctx.index, rectFromPoints(drag.start, drag.end));
       else markTextRunAt(ctx.index, drag.start);
+    } else if (drag.kind === "link") {
+      const rect = rectFromPoints(drag.start, drag.end);
+      const big = rect.r - rect.l >= MIN_LINK_PT && rect.t - rect.b >= MIN_LINK_PT;
+      if (drag.moved && big) useLinkStore.getState().setDraft({ page: ctx.index, rect });
+      else useLinkStore.getState().select(null);
     } else if (drag.kind === "marquee") {
       const store = useEditStore.getState();
       const inside = drag.moved ? objectsInside(objects, rectFromPoints(drag.start, drag.end)).map((o) => o.objectId) : [];
@@ -308,6 +334,17 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
           .filter((o) => !selected.includes(o.objectId))
           .map((o) => <Outline key={`m-${o.objectId}`} ctx={ctx} rect={o.rect} state="hover" />)}
       {marquee && <div className="edit-marquee" data-testid="edit-marquee" style={boxStyle(ctx.rectToBox(marquee))} />}
+      {links.map((a) => (
+        <div
+          key={a.id}
+          className="edit-link"
+          data-selected={a.id === linkSel || undefined}
+          data-kind={a.dest ? "page" : "url"}
+          style={boxStyle(ctx.rectToBox(a.rect))}
+        />
+      ))}
+      {drag?.kind === "link" && drag.moved && <div className="edit-link" data-draft style={boxStyle(ctx.rectToBox(rectFromPoints(drag.start, drag.end)))} />}
+      {linkDraft && tool === "link" && <LinkPopover ctx={ctx} rect={linkDraft} />}
       {session && <TextEditor key={sessionKey(session)} ctx={ctx} session={session} />}
     </div>
   );
@@ -324,6 +361,45 @@ function sessionKey(s: NonNullable<ReturnType<typeof useEditStore.getState>["ses
 
 function boxStyle(box: { x: number; y: number; w: number; h: number }): React.CSSProperties {
   return { left: box.x, top: box.y, width: box.w, height: box.h };
+}
+
+function inside(r: Rect, x: number, y: number): boolean {
+  return x >= Math.min(r.l, r.r) && x <= Math.max(r.l, r.r) && y >= Math.min(r.b, r.t) && y <= Math.max(r.b, r.t);
+}
+
+/**
+ * The 링크 popover (P2): right under the rectangle just drawn (above it near the page's bottom
+ * edge) — 페이지로 이동 | 웹 주소, 만들기 / 취소. The rectangle stays outlined until it is answered.
+ */
+function LinkPopover({ ctx, rect }: { ctx: PageLayerContext; rect: Rect }) {
+  const t = useT();
+  const box = ctx.rectToBox(rect);
+  const below = box.y + box.h + 6;
+  const top = below + 190 > ctx.height ? Math.max(0, box.y - 196) : below;
+  const left = Math.max(0, Math.min(box.x, ctx.width - 280));
+  const close = () => useLinkStore.getState().setDraft(null);
+  return (
+    <>
+      <div className="edit-link" data-draft style={boxStyle(box)} />
+      <div
+        className="link-popover"
+        role="dialog"
+        aria-label={t("link.new")}
+        style={{ left, top }}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <LinkTargetForm
+          submitKey="link.create"
+          autoFocus
+          onCancel={close}
+          onSubmit={(target) => {
+            close();
+            void createLink(ctx.index, rect, target);
+          }}
+        />
+      </div>
+    </>
+  );
 }
 
 function round2(v: number): number {

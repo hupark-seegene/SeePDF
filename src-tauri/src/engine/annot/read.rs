@@ -161,6 +161,10 @@ pub fn read_one(
             AnnotKind::Link => a.uri(document),
             _ => None,
         },
+        dest: match kind {
+            AnnotKind::Link => a.link_dest(document),
+            _ => None,
+        },
         hidden: flags & consts::FPDF_ANNOT_FLAG_HIDDEN != 0,
         printed: flags & consts::FPDF_ANNOT_FLAG_PRINT != 0,
         locked: flags & consts::FPDF_ANNOT_FLAG_LOCKED != 0,

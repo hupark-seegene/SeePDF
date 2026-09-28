@@ -9,6 +9,7 @@ import { formatBytes } from "../i18n";
 import { useDocStore } from "../store/docStore";
 import { toast } from "../app/toastStore";
 import { Dialog } from "./Dialog";
+import { openDialog } from "./dialogState";
 import { dirName, message } from "./flows";
 import { encryptionKey, formatPdfDate, metaChanged, metaFormOf, metaFromForm, type MetaForm } from "./docInfo";
 
@@ -64,6 +65,12 @@ export function DocInfoDialog({ onClose }: { onClose(): void }) {
       titleKey="dialog.docInfo.title"
       onClose={onClose}
       primary={{ labelKey: "common.apply", onSelect: () => void apply(), disabled: !changed || info.encrypted || busy }}
+      footerExtra={
+        // P2: stacks over 문서 정보, which comes back when it closes
+        <button type="button" className="btn quiet" onClick={() => openDialog("pageLabels")}>
+          {t("pageLabels.open")}
+        </button>
+      }
     >
       <div className="docinfo-fields">
         {FIELDS.map((f) => (

@@ -306,3 +306,30 @@
   opacity: 0;
   cursor: pointer;
 }
+
+/* ------------------------------------------------------- 읽기 mode links (P2) */
+
+/* The layer itself lets the pointer through (text selection works between links); only the
+   link boxes take it. Three classes: it must beat `.page-surface > *` above. */
+.viewer .page-surface > .link-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.link-layer .link-hit {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.link-layer .link-hit:hover,
+.link-layer .link-hit:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 1px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}

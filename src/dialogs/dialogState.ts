@@ -22,7 +22,9 @@ export type DialogName =
   // generic 확인 prompt (Stage 7: 글꼴 바꾸기)
   | "confirm"
   // generic choice prompt (Stage 9: 문단이 들어갈 자리가 부족합니다)
-  | "choice";
+  | "choice"
+  // 페이지 레이블 (P2)
+  | "pageLabels";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";

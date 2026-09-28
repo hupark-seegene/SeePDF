@@ -33,6 +33,8 @@ const RecoveryDialog = lazy(() => import("./RecoveryDialog"));
 const BatchOcrDialog = lazy(() => import("../ocr/batch/BatchOcrDialog"));
 // 도장 선택 (Stage 6b, P1-12): only 주석 mode opens it.
 const StampPickerDialog = lazy(() => import("./StampPickerDialog"));
+// 페이지 레이블 (P2): rare, its own chunk.
+const PageLabelsDialog = lazy(() => import("./PageLabelsDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -147,6 +149,12 @@ function Current({ entry }: { entry: DialogEntry }) {
             onImage={p.onImage as ((s: ImageSignature) => void) | undefined}
             onChooseImage={p.onChooseImage as () => void}
           />
+        </Suspense>
+      );
+    case "pageLabels":
+      return (
+        <Suspense fallback={null}>
+          <PageLabelsDialog onClose={close} />
         </Suspense>
       );
     case "stampPicker":
