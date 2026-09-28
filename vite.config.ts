@@ -50,6 +50,8 @@ export default defineConfig(() => ({
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     css: false,
     restoreMocks: true,
+    // Headroom for the 5 s `findBy*` timeout in src/test/setup.ts on a slow runner.
+    testTimeout: 15000,
     // The component tests are written against the macOS layout (Finder, ⌘ shortcuts). jsdom's
     // default user agent names the host OS, so on a Windows runner `detectOs()` said "windows"
     // and every "Finder에서 보기" assertion failed. Tests that need Windows pass their own UA.

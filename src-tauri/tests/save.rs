@@ -172,7 +172,8 @@ fn save_document_as_repoints_the_document() {
 /// An abort at any point leaves the original byte-identical and removes the temp file.
 ///
 /// Two failure modes, because they abort at different points:
-/// 1. a read-only directory — `File::create` fails, so the temp never exists;
+/// 1. a read-only directory (macOS) / a read-only file (Windows) — the save stops before the
+///    temp exists;
 /// 2. a destination that cannot be renamed onto (here: a directory of that name) — the temp is
 ///    written and fsynced and the **rename** fails, which is the case that would leave litter.
 #[test]
@@ -186,15 +187,19 @@ fn save_atomic_abort() {
     let before = std::fs::read(&target).expect("read original");
 
     let doc = open_path(&target, None);
-    let original = std::fs::metadata(&dir).expect("metadata").permissions();
+    // Windows ignores the read-only attribute on a directory (Explorer uses it to mark a
+    // customised folder; files can still be created inside), so there the read-only thing is
+    // the file itself — which is also the case a Windows user actually meets.
+    let locked = if cfg!(windows) { &target } else { &dir };
+    let original = std::fs::metadata(locked).expect("metadata").permissions();
     let mut permissions = original.clone();
     permissions.set_readonly(true);
-    std::fs::set_permissions(&dir, permissions).expect("make the directory read-only");
+    std::fs::set_permissions(locked, permissions).expect("make it read-only");
 
     let failed = save_to(&doc.doc_id, None);
-    std::fs::set_permissions(&dir, original).expect("restore permissions");
+    std::fs::set_permissions(locked, original).expect("restore permissions");
 
-    let err = failed.expect_err("a read-only directory cannot be saved into");
+    let err = failed.expect_err("a read-only target cannot be saved over");
     assert!(
         matches!(err.code, ErrorCode::ReadOnly | ErrorCode::Io),
         "got {err:?}"
