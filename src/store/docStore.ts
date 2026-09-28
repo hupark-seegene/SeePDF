@@ -7,9 +7,19 @@
  */
 import { create } from "zustand";
 import * as api from "../ipc/api";
+import { windowLabel } from "../ipc/env";
 import type { DocChangedEvent, DocInfo, OutlineNode, PageIndex } from "../ipc/types";
 
 export type DocStatus = "empty" | "opening" | "ready" | "error";
+
+/**
+ * Tell the backend which document this window shows, so the native 편집 menu names the right
+ * undo step and window-close cleanup finds the document. Fire-and-forget: a failure only costs
+ * the menu label.
+ */
+function bindWindow(docId: string | null): void {
+  void api.windowBindDocument({ label: windowLabel(), docId }).catch(() => undefined);
+}
 
 export interface DocState {
   docId: string | null;
@@ -21,7 +31,8 @@ export interface DocState {
   changeNonce: number;
   changedPages: PageIndex[] | "all";
 
-  open(path: string, password?: string): Promise<DocInfo | null>;
+  /** `displayName`: what the title shows instead of the file name (a recovered copy, Stage 8) */
+  open(path: string, password?: string, displayName?: string): Promise<DocInfo | null>;
   /** Take a `DocInfo` the caller already has (merge, page ops, save) as the open document. */
   adopt(info: DocInfo): void;
   close(): Promise<void>;
@@ -40,12 +51,13 @@ export const useDocStore = create<DocState>((set, get) => ({
   changeNonce: 0,
   changedPages: "all",
 
-  async open(path, password) {
+  async open(path, password, displayName) {
     set({ status: "opening", error: null });
     try {
-      const info = await api.openDocument({ path, password });
+      const info = await api.openDocument(displayName ? { path, password, displayName } : { path, password });
       const outline = info.hasOutline ? await api.getOutline({ docId: info.docId }).catch(() => []) : [];
       set({ docId: info.docId, info, outline, status: "ready", changeNonce: get().changeNonce + 1 });
+      bindWindow(info.docId);
       return info;
     } catch (e) {
       const err = api.isSeePdfError(e) ? { code: e.code, message: e.message } : { code: "pdfium", message: String(e) };
@@ -65,6 +77,7 @@ export const useDocStore = create<DocState>((set, get) => ({
       changedPages: "all",
       changeNonce: get().changeNonce + 1,
     });
+    bindWindow(info.docId);
     if (info.hasOutline && outline.length === 0) {
       void api
         .getOutline({ docId: info.docId })
@@ -79,6 +92,7 @@ export const useDocStore = create<DocState>((set, get) => ({
     const docId = get().docId;
     if (docId) await api.closeDocument({ docId }).catch(() => undefined);
     set({ docId: null, info: null, outline: [], status: "empty", error: null });
+    if (docId) bindWindow(null);
   },
 
   async refresh() {

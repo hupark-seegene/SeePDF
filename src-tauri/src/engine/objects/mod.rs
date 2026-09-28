@@ -31,9 +31,9 @@ use crate::engine::registry::{self, MutateOpts, OpenDoc};
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
-    ChangeReason, DocGeneration, Editability, Mat6, NotEditableReason, ObjectId, PageIndex,
-    PageObject, PageObjectList, PageObjectType, Point, Rect, Rgb, TextAlign, TextEditProbe,
-    TextEditStrategy, TextObjectPatch,
+    ChangeReason, DocGeneration, DuplicateObjectsResult, Editability, Mat6, NotEditableReason,
+    ObjectId, PageIndex, PageObject, PageObjectList, PageObjectType, Point, Rect, Rgb, TextAlign,
+    TextEditProbe, TextEditStrategy, TextObjectPatch,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
@@ -914,6 +914,195 @@ pub fn delete(
         },
     )?;
     relist(st, doc_id, page_index)
+}
+
+// ---------------------------------------------------------------------------------------
+// duplicate_objects (Stage 8)
+// ---------------------------------------------------------------------------------------
+
+/// `duplicate_objects` — copies of `object_ids` (on `page_index`), moved by `offset`, appended
+/// to `target_page` (default: the same page). One undo step, `undo.objectDuplicate`.
+///
+/// PDFium has no "clone page object", so the copies come from a **second parse** of the
+/// source page: its objects at the same indices are complete, independent copies that share the
+/// document's fonts, images and Form XObjects by reference. They are moved (same document, so
+/// allowed) onto a fresh handle of the target page, translated — clip path included — and the
+/// target's content is regenerated once. The second parse is never regenerated and is dropped,
+/// so the source page is untouched. Glyphs are written from the original char codes, so a
+/// subset font copies exactly (no re-encoding, unlike `set_text`).
+///
+/// Supported: text, image, path and Form XObject objects, on the same page or another one.
+/// Shading objects (and anything PDFium lists as "other") are `unsupported`: PDFium's content
+/// generator does not write them, so the copy would silently vanish. An inline image is the
+/// same case and is caught after the fact: the regenerated target page is re-parsed inside the
+/// edit, and a copy that did not survive fails the whole command (rolled back).
+///
+/// `newObjectIds` are found in the re-listed target page by type and expected bounds (the
+/// original's bounds moved by `offset`), highest index first: a copy lands after its original
+/// in the same content stream, so with a zero offset on the same page the later match is the
+/// copy.
+#[allow(clippy::too_many_arguments)]
+pub fn duplicate(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page_index: PageIndex,
+    object_ids: &[ObjectId],
+    expect_generation: DocGeneration,
+    offset: [f32; 2],
+    target_page: Option<PageIndex>,
+) -> Result<DuplicateObjectsResult, EngineError> {
+    check_generation(st.doc(doc_id)?, expect_generation)?;
+    let target = target_page.unwrap_or(page_index);
+    let [dx, dy] = offset;
+    if !dx.is_finite() || !dy.is_finite() {
+        return Err(EngineError::invalid("offset must be finite"));
+    }
+    let mut ids: Vec<ObjectId> = object_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Err(EngineError::invalid("no objects to duplicate"));
+    }
+    {
+        let doc = st.doc(doc_id)?;
+        for p in [page_index, target] {
+            doc.geom(p)?;
+        }
+    }
+
+    // What is being copied, from the page as listed (the ids the caller holds).
+    let listed = relist(st, doc_id, page_index)?;
+    let mut expected: Vec<(PageObjectType, Rect)> = Vec::with_capacity(ids.len());
+    for &id in &ids {
+        let object = listed.objects.get(id as usize).ok_or_else(|| {
+            EngineError::not_found(format!("object {id} of {}", listed.objects.len()))
+                .with_page(page_index)
+        })?;
+        match object.object_type {
+            PageObjectType::Text
+            | PageObjectType::Image
+            | PageObjectType::Path
+            | PageObjectType::Form => {}
+            other => {
+                return Err(EngineError::new(
+                    ErrorCode::Unsupported,
+                    format!(
+                        "object {id} is a {other:?} object, which PDFium cannot write back; \
+                         it cannot be duplicated"
+                    ),
+                )
+                .with_page(page_index)
+                .with_detail("unsupportedObjectType"));
+            }
+        }
+        let r = object.rect;
+        expected.push((
+            object.object_type,
+            Rect::new(r.l + dx, r.b + dy, r.r + dx, r.t + dy),
+        ));
+    }
+    let before = if target == page_index {
+        listed.objects.len()
+    } else {
+        relist(st, doc_id, target)?.objects.len()
+    };
+
+    let indices: Vec<usize> = ids.iter().map(|&id| id as usize).collect();
+    registry::mutate(
+        st,
+        doc_id,
+        MutateOpts::new("undo.objectDuplicate", ChangeReason::Edit).page(target),
+        |doc| {
+            let bindings = doc.bindings();
+            let mut scratch = ScratchPage::open(doc, target)?;
+            {
+                // The throw-away second parse the copies come from (see the doc comment).
+                let mut source = doc
+                    .pdf()
+                    .pages()
+                    .get(page_index as PdfPageIndex)
+                    .ctx(&format!("load page {page_index}"))?;
+                source.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+                if source.objects().len() != listed.objects.len() {
+                    return Err(EngineError::stale(
+                        "the page's objects changed since they were listed; re-list them",
+                    ));
+                }
+                crate::engine::raw::object::transplant(
+                    bindings,
+                    &source,
+                    &indices,
+                    &scratch.page,
+                    dx,
+                    dy,
+                )?;
+            }
+            scratch
+                .page
+                .regenerate_content()
+                .ctx("regenerate page content")?;
+            drop(scratch);
+            // A copy PDFium could not write (an inline image) is simply missing from the new
+            // content stream: re-parse and refuse rather than report a copy that is not there.
+            let reparsed = ScratchPage::open(doc, target)?;
+            let after = reparsed.page.objects().len();
+            if after < before + indices.len() {
+                return Err(EngineError::new(
+                    ErrorCode::Unsupported,
+                    format!(
+                        "{} of {} object(s) could not be copied (an inline image, for example)",
+                        before + indices.len() - after,
+                        indices.len()
+                    ),
+                )
+                .with_page(page_index)
+                .with_detail("notWritten"));
+            }
+            Ok(())
+        },
+    )?;
+
+    let list = relist(st, doc_id, target)?;
+    let new_object_ids = match_copies(&list.objects, &expected, before);
+    Ok(DuplicateObjectsResult {
+        doc_generation: list.doc_generation,
+        objects: list.objects,
+        new_object_ids,
+    })
+}
+
+/// The ids of the copies in the re-listed target page, in the order of `expected`.
+fn match_copies(
+    objects: &[PageObject],
+    expected: &[(PageObjectType, Rect)],
+    before: usize,
+) -> Vec<ObjectId> {
+    let close = |a: &Rect, b: &Rect| {
+        let tol = 0.75_f32.max(0.01 * (b.width().abs() + b.height().abs()));
+        (a.l - b.l).abs() <= tol
+            && (a.b - b.b).abs() <= tol
+            && (a.r - b.r).abs() <= tol
+            && (a.t - b.t).abs() <= tol
+    };
+    let mut claimed = vec![false; objects.len()];
+    let mut out: Vec<Option<ObjectId>> = vec![None; expected.len()];
+    // Last copy first, each taking the highest matching index still free.
+    for (slot, (kind, rect)) in expected.iter().enumerate().rev() {
+        if let Some(i) = (0..objects.len())
+            .rev()
+            .find(|&i| !claimed[i] && objects[i].object_type == *kind && close(&objects[i].rect, rect))
+        {
+            claimed[i] = true;
+            out[slot] = Some(i as ObjectId);
+        }
+    }
+    // Fallback (bounds moved by more than the tolerance): the unclaimed tail of the page.
+    let mut tail = (before..objects.len()).filter(|&i| !claimed[i]);
+    out.into_iter()
+        .map(|id| id.or_else(|| tail.next().map(|i| i as ObjectId)))
+        .map(|id| id.unwrap_or(u32::MAX))
+        .filter(|&id| id != u32::MAX)
+        .collect()
 }
 
 fn relist(

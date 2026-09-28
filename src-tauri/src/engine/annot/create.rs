@@ -10,7 +10,7 @@
 //! | square / circle | `Square` / `Circle` | Circle has no high-level constructor in 0.9.4 |
 //! | line / arrow | **`Ink`** + `/Subj "SeePDF:Line"`/`"SeePDF:Arrow"` | `FPDFPage_CreateAnnot(FPDF_ANNOT_LINE)` returns NULL |
 //! | textbox | **`Stamp`** + text objects + `/Subj "SeePDF:TextBox"`, `/DA` for size and colour | FreeText persists only with `/DA`, and `/Helv` cannot render 한글 |
-//! | stamp | `Stamp` + an image object, or a built-in label | |
+//! | stamp | `Stamp` + an image object, or a built-in label | `signature: true` adds `/Subj "SeePDF:Signature"` → read back as `signature` (Stage 8) |
 //! | link | `Link` + `FPDFAnnot_SetURI` | not reachable from `AnnotSpec` (P2 in the contract); the engine entry point exists and is tested |
 //!
 //! Every annotation is created with the `/F 4` Print flag, because
@@ -530,6 +530,11 @@ fn stamp(
     if let Some(rotate) = spec.rotate {
         // Recorded for the UI; PDFium has no annotation rotation entry of its own.
         a.set_string("SeePDFRotate", &format!("{rotate}"));
+    }
+    // Stage 8: a typed / image signature is a Stamp tagged `SeePDF:Signature`, which
+    // `kind_of` reads back as `signature` (서명), like the drawn one (Ink + the same tag).
+    if spec.signature {
+        subj = Some(SUBJ_SIGNATURE.to_string());
     }
     write_identity(&mut a, id, subj.as_deref());
     Ok(())

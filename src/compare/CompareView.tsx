@@ -2,7 +2,9 @@
  * 문서 비교 view (P1-6): full window, current document (A) on the left, the other file (B) on the
  * right. One scroller; every row holds both pages of one `ComparePage` pair, so the two sides stay
  * aligned by construction. Deleted / replaced words are marked red on A, inserted / replaced words
- * green on B. The window's document is never touched; 닫기 (or Esc) closes B.
+ * green on B. Pages are paired by text similarity (Stage 8 `alignPages`), so a page only B has is
+ * a row labelled 삽입된 페이지 and a page only A has one labelled 삭제된 페이지. The window's
+ * document is never touched; 닫기 (or Esc) closes B.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useT } from "../i18n/useT";
@@ -172,17 +174,24 @@ function Row({
   const hB = pageHeight(infoB, row.pageB, column);
   const height = Math.max(hA ?? 0, hB ?? 0, 120);
   const label = (p: PageIndex | null) => (p === null ? t("compare.none") : String(p + 1));
+  // a null side is a page the alignment found in one document only
+  const side = row.pageA === null && row.pageB !== null ? "inserted" : row.pageB === null && row.pageA !== null ? "deleted" : null;
   return (
     <section
       className="cmp-row"
       data-row={row.index}
       data-changed={row.changed || undefined}
       data-current={current || undefined}
+      data-side={side ?? undefined}
       aria-label={t("compare.rowLabel", { a: label(row.pageA), b: label(row.pageB) })}
     >
       <div className="cmp-row-head text-xs">
         <span>{t("compare.rowLabel", { a: label(row.pageA), b: label(row.pageB) })}</span>
-        {row.changed ? (
+        {side ? (
+          <span className={`cmp-badge ${side === "inserted" ? "cmp-ins" : "cmp-del"}`} data-testid="cmp-side">
+            {t(side === "inserted" ? "compare.insertedPage" : "compare.deletedPage")}
+          </span>
+        ) : row.changed ? (
           <span className="cmp-badge">
             {row.inserted > 0 && <span className="cmp-ins">+{row.inserted}</span>}
             {row.deleted > 0 && <span className="cmp-del">−{row.deleted}</span>}
@@ -193,22 +202,36 @@ function Row({
         )}
       </div>
       <div className="cmp-pair">
-        <PageCell info={infoA} page={row.pageA} rects={row.rectsA} tone="del" column={column} height={height} />
-        <PageCell info={infoB} page={row.pageB} rects={row.rectsB} tone="ins" column={column} height={height} />
+        <PageCell
+          info={infoA} page={row.pageA} rects={row.rectsA} tone="del" column={column} height={height}
+          missingKey={side === "inserted" ? "compare.insertedPage" : undefined}
+        />
+        <PageCell
+          info={infoB} page={row.pageB} rects={row.rectsB} tone="ins" column={column} height={height}
+          missingKey={side === "deleted" ? "compare.deletedPage" : undefined}
+        />
       </div>
     </section>
   );
 }
 
 function PageCell({
-  info, page, rects, tone, column, height,
-}: { info: DocInfo; page: PageIndex | null; rects: Rect[]; tone: "ins" | "del"; column: number; height: number }) {
+  info, page, rects, tone, column, height, missingKey,
+}: {
+  info: DocInfo; page: PageIndex | null; rects: Rect[]; tone: "ins" | "del"; column: number; height: number;
+  /** what the empty side says: 삽입된 페이지 (only B has it) / 삭제된 페이지 (only A has it) */
+  missingKey?: string;
+}) {
   const t = useT();
   const geom = page === null ? undefined : info.pages[page];
   if (page === null || !geom) {
     return (
-      <div className="cmp-page cmp-missing text-sm" style={{ width: column, height }}>
-        {t("compare.noPage")}
+      <div
+        className="cmp-page cmp-missing text-sm"
+        style={{ width: column, height }}
+        data-tone={missingKey ? (missingKey === "compare.insertedPage" ? "ins" : "del") : undefined}
+      >
+        {t(missingKey ?? "compare.noPage")}
       </div>
     );
   }

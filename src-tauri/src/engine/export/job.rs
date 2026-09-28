@@ -33,7 +33,9 @@ pub struct JobReporter {
     channel: JobSink,
     jobs: Arc<Jobs>,
     job_id: JobId,
-    total: u32,
+    /// Atomic because a job may only learn its real size part-way (Stage 8: `compare_documents`
+    /// with `alignPages` knows its row count after the align step). See [`JobReporter::set_total`].
+    total: AtomicU32,
     done: AtomicU32,
     finished: AtomicBool,
     started: Instant,
@@ -58,7 +60,7 @@ impl JobReporter {
             channel,
             jobs,
             job_id,
-            total,
+            total: AtomicU32::new(total),
             done: AtomicU32::new(0),
             finished: AtomicBool::new(false),
             started: Instant::now(),
@@ -70,6 +72,16 @@ impl JobReporter {
         self.job_id
     }
 
+    /// The job's unit count changed once its real size became known; the next `progress`
+    /// event carries it.
+    pub fn set_total(&self, total: u32) {
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    pub fn total(&self) -> u32 {
+        self.total.load(Ordering::Relaxed)
+    }
+
     /// One unit finished. `output` is the file it produced, if any.
     pub fn step(&self, page: Option<PageIndex>, output: Option<String>) -> u32 {
         if let Some(path) = output {
@@ -79,7 +91,7 @@ impl JobReporter {
         (self.channel)(JobEvent::Progress {
             job_id: self.job_id,
             done,
-            total: self.total,
+            total: self.total(),
             page,
             note: None,
         });
@@ -88,7 +100,7 @@ impl JobReporter {
 
     /// Sends `done` once every unit has reported. No-op until then.
     pub fn finish_if_complete(&self) {
-        if self.done.load(Ordering::Relaxed) < self.total {
+        if self.done.load(Ordering::Relaxed) < self.total() {
             return;
         }
         if !self.claim() {

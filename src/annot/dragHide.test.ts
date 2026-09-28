@@ -16,6 +16,10 @@ import { toolController } from "../tools/ToolController";
 import { movePatch } from "../tools/hit";
 import { PATCH_COALESCE_MS, createAnnotation, hasPendingPatches, resetPatchQueue } from "./actions";
 import { canRepaint, dragHidePage, dragPatch, endDrag, startDragHide } from "./dragHide";
+import { isDragHiding, resetDragGate, trackWrite, whenDragIdle } from "./dragGate";
+import { getSnapshot } from "./snapshots";
+import { undoWithAnnots } from "./sync";
+import { AutosaveController } from "../app/autosave";
 
 const SQUARE: AnnotSpec = { kind: "square", rect: { l: 10, b: 10, r: 60, t: 60 }, color: [245, 83, 61], fillColor: null, width: 2, opacity: 1 };
 
@@ -55,6 +59,7 @@ describe("dragHide — hide the bitmap copy while an annotation is dragged", () 
   beforeEach(() => {
     useAnnotStore.getState().reset();
     resetPatchQueue();
+    resetDragGate();
   });
   afterEach(async () => {
     await endDrag();
@@ -164,23 +169,134 @@ describe("dragHide — hide the bitmap copy while an annotation is dragged", () 
     expect(calls).toEqual([`hidden:true:${annot.id}`, `hidden:false:${annot.id}`, `update:${annot.id}`]);
   });
 
-  it("does not hide what the overlay cannot repaint (an image stamp): the old path is untouched", async () => {
+  it("an image stamp is hidden too: its pixels are snapshotted first and the ghost paints them (Stage 8)", async () => {
     const annot = await setup({ kind: "stamp", rect: { l: 10, b: 10, r: 60, t: 60 }, image: { path: "/tmp/seal.png" } });
-    expect(canRepaint(annot)).toBe(false);
+    expect(canRepaint(annot)).toBe(true);
+    const real = api.renderPageRaw;
+    const raw = vi.spyOn(api, "renderPageRaw").mockImplementation(async (a) => {
+      calls.push(`snapshot:${a.page}`);
+      return real(a);
+    });
     spyHidden();
     spyUpdate();
     dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 3, 0) }], true);
+    await vi.waitFor(() => expect(calls).toContain(`hidden:true:${annot.id}`));
+    // the snapshot of the stamp's own rect comes before the hide, so it still shows the stamp
+    expect(calls.slice(0, 2)).toEqual(["snapshot:0", `hidden:true:${annot.id}`]);
+    expect(raw.mock.calls[0][0].rect).toEqual(annot.rect);
+    expect(getSnapshot(annot.id)?.url).toMatch(/^(data:image\/png|blob:)/);
+    expect(useAnnotStore.getState().ghosts.map((g) => g.annot.id)).toEqual([annot.id]);
+
     dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 4, 0) }], false);
     await endDrag();
-    expect(calls).toEqual([`update:${annot.id}`]);
-    expect(useAnnotStore.getState().ghosts).toHaveLength(0);
+    expect(calls.slice(1)).toEqual([`hidden:true:${annot.id}`, `hidden:false:${annot.id}`, `update:${annot.id}`]);
   });
 
-  it("repaints built-in stamps (결재) and drawn ink, not optimistic ghosts", () => {
+  it("a failed snapshot still hides; the ghost falls back to an outline", async () => {
+    const annot = await setup({ kind: "stamp", rect: { l: 10, b: 10, r: 60, t: 60 }, image: { path: "/tmp/seal.png" } });
+    vi.spyOn(api, "renderPageRaw").mockRejectedValue(new Error("render failed"));
+    spyHidden();
+    spyUpdate();
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 3, 0) }], true);
+    await vi.waitFor(() => expect(calls).toContain(`hidden:true:${annot.id}`));
+    expect(getSnapshot(annot.id)).toBeUndefined();
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 4, 0) }], false);
+    await endDrag();
+    expect(calls).toEqual([`hidden:true:${annot.id}`, `hidden:false:${annot.id}`, `update:${annot.id}`]);
+  });
+
+  it("repaints built-in, image and foreign stamps, drawn ink and image signatures — not optimistic ghosts", () => {
     const base = { id: "a", page: 0, subtype: "Stamp", rect: { l: 0, b: 0, r: 1, t: 1 }, color: [0, 0, 0], fillColor: null, opacity: 1, borderWidth: 1, contents: "", author: null, created: null, modified: null, hidden: false, printed: true, locked: false, editable: "full" } as unknown as Annot;
     expect(canRepaint({ ...base, kind: "stamp", stampKind: "결재" })).toBe(true);
-    expect(canRepaint({ ...base, kind: "stamp", stampKind: "SeePDF:Signature" })).toBe(false);
+    expect(canRepaint({ ...base, kind: "stamp", stampKind: "image" })).toBe(true);
+    expect(canRepaint({ ...base, kind: "stamp", stampKind: "Approved" })).toBe(true);
+    expect(canRepaint({ ...base, kind: "signature", stampKind: "image" })).toBe(true);
     expect(canRepaint({ ...base, kind: "ink", inkPaths: [[0, 0, 1, 1]] })).toBe(true);
+    expect(canRepaint({ ...base, kind: "ink" })).toBe(false);
+    expect(canRepaint({ ...base, kind: "link" })).toBe(false);
     expect(canRepaint({ ...base, kind: "square", id: "ghost-3" })).toBe(false);
+  });
+});
+
+describe("dragGate — nothing snapshots the document while an annotation is hidden (Stage 8)", () => {
+  beforeEach(() => {
+    useAnnotStore.getState().reset();
+    resetPatchQueue();
+    resetDragGate();
+  });
+  afterEach(async () => {
+    await endDrag();
+    vi.restoreAllMocks();
+  });
+
+  it("⌘Z mid-drag is refused; the gate opens only once the drop has committed", async () => {
+    const annot = await setup();
+    spyHidden();
+    spyUpdate();
+    const undo = vi.spyOn(useDocStore.getState(), "undo");
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 5, 0) }], true);
+    expect(isDragHiding()).toBe(true);
+    await undoWithAnnots();
+    expect(undo).not.toHaveBeenCalled();
+
+    let idle = false;
+    void whenDragIdle().then(() => (idle = true));
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 6, 0) }], false);
+    await tick();
+    await endDrag();
+    expect(idle).toBe(true);
+    expect(isDragHiding()).toBe(false);
+    // the update landed before the gate opened
+    expect(calls.at(-1)).toBe(`update:${annot.id}`);
+    await undoWithAnnots();
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("⌘S mid-drag is queued until the drop: the save sees the annotation shown again", async () => {
+    const annot = await setup();
+    spyHidden();
+    spyUpdate();
+    const save = vi.spyOn(api, "saveDocument").mockImplementation(async (a) => {
+      calls.push("save");
+      return { docId: a.docId, path: "/tmp/sample.pdf", bytes: 1, docGeneration: 9, elapsedMs: 1 };
+    });
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 5, 0) }], true);
+    const { saveFlow } = await import("../dialogs/flows");
+    const saving = saveFlow();
+    await tick();
+    expect(save).not.toHaveBeenCalled();
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 6, 0) }], false);
+    await saving;
+    expect(calls).toEqual([`hidden:true:${annot.id}`, `hidden:false:${annot.id}`, `update:${annot.id}`, "save"]);
+  });
+
+  it("an autosave beat mid-drag waits for the drop; a write in flight delays the hide", async () => {
+    const annot = await setup();
+    spyHidden();
+    spyUpdate();
+    // a write already in flight when the drag starts: the hide goes only after it lands
+    let land: () => void = () => undefined;
+    void trackWrite(new Promise<void>((r) => (land = () => { calls.push("write:landed"); r(); })));
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 5, 0) }], true);
+    await tick();
+    expect(calls).toEqual([]);
+    land();
+    await vi.waitFor(() => expect(calls).toEqual(["write:landed", `hidden:true:${annot.id}`]));
+
+    // a beat now waits until the drop has settled
+    const info = { ...useDocStore.getState().info!, dirty: true, docGeneration: 99 };
+    const ctl = new AutosaveController({
+      current: () => info,
+      write: async () => void calls.push("write:copy"),
+      clear: async () => undefined,
+      onFail: () => undefined,
+      idle: whenDragIdle,
+    });
+    const beat = ctl.tick();
+    await tick();
+    expect(calls).not.toContain("write:copy");
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 6, 0) }], false);
+    await beat;
+    expect(calls.slice(-2)).toEqual([`update:${annot.id}`, "write:copy"]);
   });
 });

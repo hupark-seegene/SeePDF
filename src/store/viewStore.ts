@@ -7,6 +7,7 @@
  */
 import { create } from "zustand";
 import type { PageIndex, Rotation, ViewLayout } from "../ipc/types";
+import { useAppStore } from "./appStore";
 
 export type ZoomMode = "fit-width" | "fit-page" | "actual" | "custom";
 export type NightMode = "off" | "dark" | "sepia";
@@ -17,6 +18,16 @@ export const NIGHT_MODES: readonly NightMode[] = ["off", "dark", "sepia"];
 /** 끄기 → 어둡게 → 세피아 → 끄기. */
 export function nextNight(night: NightMode): NightMode {
   return NIGHT_MODES[(NIGHT_MODES.indexOf(night) + 1) % NIGHT_MODES.length];
+}
+
+/** `Settings.night`, defended against a file written before Stage 8 or edited by hand. */
+export function readNight(value: unknown): NightMode {
+  return NIGHT_MODES.includes(value as NightMode) ? (value as NightMode) : "off";
+}
+
+/** 야간 모드 is remembered across launches (Stage 8): every change goes to `Settings.night`. */
+function persistNight(night: NightMode): void {
+  void useAppStore.getState().patchSettings({ night });
 }
 
 /** The numeric steps of the status-bar zoom combo (UI_SPEC §8). */
@@ -86,10 +97,14 @@ export const useViewStore = create<ViewState>((set, get) => ({
     set({ rotation: (((get().rotation + delta + 360) % 360) as Rotation) });
   },
   setNight(night) {
+    if (night === get().night) return;
     set({ night });
+    persistNight(night);
   },
   cycleNight() {
-    set({ night: nextNight(get().night) });
+    const night = nextNight(get().night);
+    set({ night });
+    persistNight(night);
   },
   setCurrentPage(page) {
     if (page !== get().currentPage) set({ currentPage: page });
@@ -101,3 +116,8 @@ export const useViewStore = create<ViewState>((set, get) => ({
     });
   },
 }));
+
+// Settings arrive once per window (`appStore.bootstrap`): start in the remembered 야간 모드.
+useAppStore.subscribe((s, prev) => {
+  if (s.settings && !prev.settings) useViewStore.setState({ night: readNight(s.settings.night) });
+});

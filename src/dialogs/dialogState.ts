@@ -107,6 +107,8 @@ export interface ConfirmRequest {
   bodyKey: string;
   bodyParams?: Record<string, string | number>;
   confirmKey?: string;
+  /** the secondary button's label (default 취소); it still resolves `false` */
+  cancelKey?: string;
   /** a destructive primary button (영역 표시 적용) */
   danger?: boolean;
 }

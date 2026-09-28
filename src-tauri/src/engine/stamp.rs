@@ -9,10 +9,12 @@
 //!
 //! Everything is laid out in **visual space**: origin at the bottom-left of the page *as the
 //! user sees it* (after `/Rotate`), y up, size = the crop box with width/height swapped for
-//! 90° / 270°. The stamp box is placed by anchor + margin there, rotated about its own centre
-//! by `rotateDeg` (counter-clockwise, as seen), and the result is mapped into the page's
-//! unrotated user space with [`visual_to_user`]. That one matrix is why a "top-left" header
-//! stays top-left and upright on a page with `/Rotate 90`.
+//! 90° / 270°. The stamp box is rotated about its own centre by `rotateDeg`
+//! (counter-clockwise, as seen) and its **rotated bounding box** is what anchor + margin place
+//! (Stage 8: before, the unrotated box was anchored, so a 45° watermark in a corner poked past
+//! the page edge). The result is mapped into the page's unrotated user space with
+//! [`visual_to_user`]. That one matrix is why a "top-left" header stays top-left and upright
+//! on a page with `/Rotate 90`.
 //!
 //! ## Opacity
 //!
@@ -23,24 +25,29 @@
 //!
 //! ## Marking
 //!
-//! Every object we add carries the marked-content tag `SeePDF:Stamp` (`FPDFPageObj_AddMark`),
-//! so a later "remove watermark" can find exactly what this command wrote.
+//! Every object we add carries the marked-content tag `SeePDF:Stamp` (`FPDFPageObj_AddMark`)
+//! with a `role` string param (Stage 8: `watermark` / `header` / `footer`), so
+//! [`remove_stamps`] can find exactly what this command wrote — all of it, or one role.
+//! Stamps written before Stage 8 carry the bare mark and are removed only by an
+//! all-roles removal.
 
 use crate::engine::annot::ScratchPage;
 use crate::engine::raw;
-use crate::engine::raw::object::{Matrix, XObject};
+use crate::engine::raw::object::{Mark, Matrix, XObject};
 use crate::engine::registry::{self, MutateOpts};
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
-    ChangeReason, PageIndex, PageSelection, PageStampSource, PageStampSpec, Rect, StampAnchor,
-    StampResult, StampRole,
+    ChangeReason, PageIndex, PageSelection, PageStampSource, PageStampSpec, Rect,
+    RemoveStampsResult, StampAnchor, StampResult, StampRole,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
 
 /// The content-mark name every stamp object carries.
 pub const STAMP_MARK: &str = "SeePDF:Stamp";
+/// The mark's string param naming the stamp's [`StampRole`] (Stage 8).
+pub const ROLE_PARAM: &str = "role";
 /// Line spacing, as a multiple of the font size (same as `add_text_object`).
 const LINE_HEIGHT: f32 = 1.2;
 
@@ -53,12 +60,12 @@ pub fn add_stamp(
     validate(spec)?;
     let (page_count, file_stem) = {
         let doc = st.doc(doc_id)?;
-        let stem = doc
-            .path
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Untitled".to_string());
+        // `displayName` first: a recovered copy stamps the original name, not `<uuid>`.
+        let stem = if doc.path.is_some() || doc.display_name.is_some() {
+            doc.name_stem()
+        } else {
+            "Untitled".to_string()
+        };
         (doc.page_count(), stem)
     };
     let pages = resolve_pages(&spec.pages, page_count)?;
@@ -150,7 +157,15 @@ pub fn add_stamp(
                     // The scratch page was `w × h` points, so the Form XObject already has the
                     // stamp's size and only needs placing.
                     let matrix = placement(&spec, &space, *w, *h);
-                    xobject.place(&page, matrix, Some(STAMP_MARK))?;
+                    let role = [(ROLE_PARAM, spec.role.as_str())];
+                    xobject.place(
+                        &page,
+                        matrix,
+                        Some(Mark {
+                            name: STAMP_MARK,
+                            params: &role,
+                        }),
+                    )?;
                 }
                 (PageStampSource::Image { .. }, None) => unreachable!("image source prepared"),
             }
@@ -308,12 +323,21 @@ pub fn anchor_origin(anchor: StampAnchor, margin: f32, space: &VisualSpace, w: f
     (x, y)
 }
 
-/// Box-local → user space: place by anchor, rotate about the box centre, un-rotate the page.
+/// Width and height of the axis-aligned bounding box of a `w × h` box rotated by `deg`.
+pub fn rotated_extent(w: f32, h: f32, deg: f32) -> (f32, f32) {
+    let (s, c) = deg.to_radians().sin_cos();
+    let (s, c) = (s.abs(), c.abs());
+    (w * c + h * s, w * s + h * c)
+}
+
+/// Box-local → user space: rotate about the box centre, place the **rotated bounding box** by
+/// anchor + margin (so a rotated corner stamp stays inside the margin), un-rotate the page.
 fn placement(spec: &PageStampSpec, space: &VisualSpace, w: f32, h: f32) -> Matrix {
-    let (x, y) = anchor_origin(spec.anchor, spec.margin_pt, space, w, h);
+    let (bw, bh) = rotated_extent(w, h, spec.rotate_deg);
+    let (x, y) = anchor_origin(spec.anchor, spec.margin_pt, space, bw, bh);
     let about_centre = mul(
         mul(translate(-w / 2.0, -h / 2.0), rotate(spec.rotate_deg)),
-        translate(x + w / 2.0, y + h / 2.0),
+        translate(x + bw / 2.0, y + bh / 2.0),
     );
     mul(about_centre, space.to_user)
 }
@@ -375,11 +399,118 @@ fn place_text<'p>(
                 .add_text_object(object)
                 .ctx("add text object")?;
             let index = raw::object::object_count(bindings, page).saturating_sub(1);
-            raw::object::add_mark(bindings, page, index, STAMP_MARK)?;
+            let role = [(ROLE_PARAM, spec.role.as_str())];
+            raw::object::add_mark(
+                bindings,
+                document,
+                page,
+                index,
+                Mark {
+                    name: STAMP_MARK,
+                    params: &role,
+                },
+            )?;
         }
         baseline -= size * LINE_HEIGHT;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// remove_stamps (Stage 8)
+// ---------------------------------------------------------------------------------------
+
+/// `remove_stamps` — deletes the page objects carrying the `SeePDF:Stamp` mark on `pages`
+/// (default: every page), of `role` only when given. One undo step `undo.removeStamps`;
+/// finding nothing is not an error and changes nothing (no undo step, same generation).
+///
+/// Stamps written before Stage 8 have no `role` param, so a role-filtered removal leaves them
+/// alone; an all-roles removal takes them too.
+pub fn remove_stamps(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    pages: Option<&PageSelection>,
+    role: Option<StampRole>,
+) -> Result<RemoveStampsResult, EngineError> {
+    let count = st.doc(doc_id)?.page_count();
+    let pages = match pages {
+        None | Some(PageSelection::All(_)) => (0..count).collect::<Vec<_>>(),
+        Some(selection) => resolve_pages(selection, count)?,
+    };
+
+    // Read-only pass first: which pages have anything to remove.
+    let mut hits: Vec<PageIndex> = Vec::new();
+    {
+        let doc = st.doc_mut(doc_id)?;
+        let bindings = doc.bindings();
+        for &p in &pages {
+            let page = open_direct(doc.pdf(), p)?;
+            if !stamp_indices(bindings, &page, role).is_empty() {
+                hits.push(p);
+            }
+        }
+    }
+    if hits.is_empty() {
+        return Ok(RemoveStampsResult {
+            info: st.doc(doc_id)?.info(),
+            removed: 0,
+        });
+    }
+
+    let opts = MutateOpts::new("undo.removeStamps", ChangeReason::Edit).pages(hits.clone());
+    let removed = registry::mutate(st, doc_id, opts, move |doc| {
+        let mut removed = 0u32;
+        for &p in &hits {
+            let mut scratch = ScratchPage::open(doc, p)?;
+            let indices = stamp_indices(doc.bindings(), &scratch.page, role);
+            for &index in indices.iter().rev() {
+                scratch
+                    .page
+                    .objects_mut()
+                    .remove_object_at_index(index)
+                    .ctx(&format!("remove stamp object {index}"))?;
+                removed += 1;
+            }
+            scratch
+                .page
+                .regenerate_content()
+                .ctx("regenerate page content")?;
+        }
+        Ok(removed)
+    })?;
+    Ok(RemoveStampsResult {
+        info: st.doc(doc_id)?.info(),
+        removed,
+    })
+}
+
+fn open_direct<'p>(document: &PdfDocument<'p>, p: PageIndex) -> Result<PdfPage<'p>, EngineError> {
+    let mut page = document
+        .pages()
+        .get(p as PdfPageIndex)
+        .ctx(&format!("load page {p}"))?;
+    page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+    Ok(page)
+}
+
+/// Indices (ascending) of the top-level objects on `page` that are stamps of `role` (any role
+/// when `None`).
+pub fn stamp_indices(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    role: Option<StampRole>,
+) -> Vec<usize> {
+    (0..raw::object::object_count(bindings, page))
+        .filter(|&i| {
+            match raw::object::mark_param(bindings, page, i, STAMP_MARK, ROLE_PARAM) {
+                None => false,
+                Some(found) => match role {
+                    None => true,
+                    Some(role) => found.as_deref().and_then(StampRole::from_name) == Some(role),
+                },
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -475,6 +606,49 @@ mod tests {
             "3 / 9 a {{x}}"
         );
         assert_eq!(substitute("{{date}}", 1, 1, "2026-09-28", "a"), "2026-09-28");
+    }
+
+    #[test]
+    fn rotated_box_is_anchored_by_its_bounding_box() {
+        let space = VisualSpace::new(0, Rect::new(0.0, 0.0, 600.0, 800.0));
+        let (w, h) = (300.0, 60.0);
+        for anchor in [
+            StampAnchor::Tl,
+            StampAnchor::Tc,
+            StampAnchor::Tr,
+            StampAnchor::Ml,
+            StampAnchor::Mr,
+            StampAnchor::Bl,
+            StampAnchor::Bc,
+            StampAnchor::Br,
+        ] {
+            for deg in [-180.0, -135.0, -45.0, 30.0, 45.0, 90.0, 135.0] {
+                let spec = PageStampSpec {
+                    role: StampRole::Watermark,
+                    source: PageStampSource::Text {
+                        text: "x".into(),
+                        font_size_pt: 10.0,
+                        color: [0, 0, 0],
+                    },
+                    anchor,
+                    margin_pt: 20.0,
+                    rotate_deg: deg,
+                    opacity: 1.0,
+                    pages: PageSelection::All(crate::ipc::types::AllPages::All),
+                };
+                let m = placement(&spec, &space, w, h);
+                for (u, v) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
+                    let (x, y) = apply(m, u, v);
+                    assert!(
+                        x >= 20.0 - 1e-2 && x <= 580.0 + 1e-2 && y >= 20.0 - 1e-2 && y <= 780.0 + 1e-2,
+                        "{anchor:?} {deg}°: corner ({x}, {y}) outside the margin"
+                    );
+                }
+            }
+        }
+        assert_eq!(rotated_extent(10.0, 4.0, 0.0), (10.0, 4.0));
+        let (bw, bh) = rotated_extent(10.0, 4.0, 90.0);
+        assert!((bw - 4.0).abs() < 1e-4 && (bh - 10.0).abs() < 1e-4);
     }
 
     #[test]

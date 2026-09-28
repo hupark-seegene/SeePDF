@@ -16,6 +16,7 @@ import type { AnnotScanEvent, DocChangedEvent, DocId, PageIndex } from "../ipc/t
 import { useAnnotStore } from "../store/annotStore";
 import { useDocStore } from "../store/docStore";
 import { flushPatches } from "./actions";
+import { isDragHiding } from "./dragGate";
 
 /** The document the store currently describes; a change resets everything. */
 let boundDoc: DocId | null = null;
@@ -109,13 +110,19 @@ export function startAnnotSync(): () => void {
   };
 }
 
-/** Undo/redo: flush anything coalesced first, or the engine would undo a patch we never sent. */
+/**
+ * Undo/redo: flush anything coalesced first, or the engine would undo a patch we never sent.
+ * Refused while a drag has an annotation hidden (Stage 8): the step would snapshot `/F HIDDEN`,
+ * and the drop's own `update_annotation` would land on top of the undone state.
+ */
 export async function undoWithAnnots(): Promise<void> {
+  if (isDragHiding()) return;
   await flushPatches();
   await useDocStore.getState().undo();
 }
 
 export async function redoWithAnnots(): Promise<void> {
+  if (isDragHiding()) return;
   await flushPatches();
   await useDocStore.getState().redo();
 }

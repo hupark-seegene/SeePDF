@@ -19,8 +19,13 @@
  * the update keeps the HIDDEN bit out of the undo snapshot; every step tolerates the one
  * before it failing, so an annotation can never be left hidden by an error.
  *
- * Only annotations the overlay can repaint faithfully are hidden (`canRepaint`): an image stamp
- * would turn into a dashed box, so it keeps the old behaviour (bitmap copy + moving outline).
+ * Only annotations the overlay can repaint are hidden (`canRepaint`). Since Stage 8 that includes
+ * image stamps, foreign stamps and image signatures: before the hide, `snapshots.ts` takes the
+ * engine's pixels of their rectangle and the ghost paints that bitmap (an outline if it fails).
+ *
+ * Stage 8 safety (`dragGate.ts`): the session holds the gate from the first live patch until the
+ * drop has settled, so an autosave beat, ⌘S and ⌘Z wait (or are refused) instead of capturing
+ * the transient HIDDEN bit; and the hide itself waits for an autosave write already in flight.
  */
 import * as api from "../ipc/api";
 import type { Annot, AnnotId, AnnotPatch, PageIndex } from "../ipc/types";
@@ -29,6 +34,8 @@ import { useDocStore } from "../store/docStore";
 import { toolController } from "../tools/ToolController";
 import { isBuiltinStampKind } from "../tools/stampCatalog";
 import { annotsOnPage, flushPatches, holdPatchFlush, patchAnnotation } from "./actions";
+import { dragBegan, dragSettled, hasPendingWrites, writesSettled } from "./dragGate";
+import { needsSnapshot, pruneSnapshots, takeSnapshots } from "./snapshots";
 
 interface Session {
   docId: string;
@@ -54,8 +61,10 @@ const PAINTED: ReadonlySet<Annot["kind"]> = new Set([
 /** Can `AnnotShape` draw `a` well enough that the bitmap copy may go? */
 export function canRepaint(a: Annot): boolean {
   if (a.id.startsWith("ghost-")) return false; // not in the engine yet
-  if (a.kind === "ink" || a.kind === "signature") return (a.inkPaths?.length ?? 0) > 0;
-  if (a.kind === "stamp") return isBuiltinStampKind(a.stampKind);
+  if (a.kind === "ink") return (a.inkPaths?.length ?? 0) > 0;
+  // drawn signatures are strokes; typed / image ones are stamps painted from a snapshot
+  if (a.kind === "signature") return (a.inkPaths?.length ?? 0) > 0 || needsSnapshot(a);
+  if (a.kind === "stamp") return isBuiltinStampKind(a.stampKind) || needsSnapshot(a);
   return PAINTED.has(a.kind);
 }
 
@@ -70,6 +79,9 @@ function begin(page: PageIndex, ids: AnnotId[]): void {
   const store = useAnnotStore.getState();
   const targets = annotsOnPage(page).filter((a) => ids.includes(a.id) && canRepaint(a));
   holdPatchFlush(true);
+  dragBegan();
+  // snapshots of ghosts already gone are no longer needed
+  pruneSnapshots(new Set(store.ghosts.map((g) => g.annot.id)));
   for (const a of targets) store.addGhost({ ...a });
   const s: Session = {
     docId,
@@ -81,8 +93,16 @@ function begin(page: PageIndex, ids: AnnotId[]): void {
     applied: false,
   };
   if (s.ids.length) {
-    s.hide = api
-      .setAnnotationsHidden({ docId, page, ids: s.ids, hidden: true })
+    // The pixels of what the overlay cannot draw, and any autosave write in flight, come first:
+    // both must see the annotation before it is hidden.
+    const shots = targets.filter(needsSnapshot);
+    const rotation = useDocStore.getState().info?.pages[page]?.rotation ?? 0;
+    const before =
+      shots.length || hasPendingWrites()
+        ? Promise.all([shots.length ? takeSnapshots(docId, page, rotation, shots) : undefined, writesSettled()])
+        : null;
+    const hide = () => api.setAnnotationsHidden({ docId, page, ids: s.ids, hidden: true });
+    s.hide = (before ? before.then(hide) : hide())
       .then(({ viewNonce }) => {
         // A drop that beat the answer must not switch the page to the hidden render.
         if (!s.closed) {
@@ -117,6 +137,15 @@ export function endDrag(): Promise<void> {
 }
 
 async function finish(s: Session): Promise<void> {
+  try {
+    await restoreAndCommit(s);
+  } finally {
+    // autosave, ⌘S and ⌘Z may proceed: nothing is hidden any more and the move is committed
+    dragSettled();
+  }
+}
+
+async function restoreAndCommit(s: Session): Promise<void> {
   let restored: number | null = null;
   try {
     await s.hide;
@@ -130,7 +159,7 @@ async function finish(s: Session): Promise<void> {
   } finally {
     holdPatchFlush(false);
   }
-  await flushPatches();
+  await flushPatches().catch(() => undefined);
   const store = useAnnotStore.getState();
   const generation = store.pageGeneration[s.page] ?? s.generation;
   const moved = generation > s.generation;

@@ -7,8 +7,9 @@
 use crate::engine::objects;
 use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
-    DocGeneration, ObjectId, PageIndex, PageObjectList, ParagraphEdit, ParagraphEditResult,
-    ParagraphProbe, Point, Rect, Rgb, TextAlign, TextEditProbe, TextObjectPatch,
+    DocGeneration, DuplicateObjectsResult, ObjectId, PageIndex, PageObjectList, ParagraphEdit,
+    ParagraphEditResult, ParagraphProbe, Point, Rect, Rgb, TextAlign, TextEditProbe,
+    TextObjectPatch,
 };
 use crate::ipc::EngineError;
 use tauri::State;
@@ -161,6 +162,34 @@ pub async fn delete_objects(
     engine
         .call(Lane::Edit, "delete_objects", move |st| {
             objects::delete(st, &doc_id, page, &object_ids, expect_generation)
+        })
+        .await
+}
+
+/// Stage 8: copies of `objectIds` moved by `offset` (PDF points), on `targetPage` when given.
+/// One undo step `undo.objectDuplicate`; `unsupported` for shading / other objects.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn duplicate_objects(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    object_ids: Vec<ObjectId>,
+    expect_generation: DocGeneration,
+    offset: [f32; 2],
+    target_page: Option<PageIndex>,
+) -> Result<DuplicateObjectsResult, EngineError> {
+    engine
+        .call(Lane::Edit, "duplicate_objects", move |st| {
+            objects::duplicate(
+                st,
+                &doc_id,
+                page,
+                &object_ids,
+                expect_generation,
+                offset,
+                target_page,
+            )
         })
         .await
 }

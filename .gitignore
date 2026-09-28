@@ -33,3 +33,6 @@ fixtures/out/
 
 # OCR asset bundle (produced by `npm run prepare:ocr`, 8.1 MB)
 public/ocr/
+
+# agent worktrees
+.claude/worktrees/

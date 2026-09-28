@@ -1,9 +1,19 @@
 //! Compare two documents — a word diff per page pair (P1-6, `IPC_CONTRACT.md` §7.6b).
 //!
-//! Both documents are already open in the registry. [`begin`] validates the request and
-//! returns the page pairs; [`dispatch`] queues one `Lane::Background` command per pair (so
-//! Cancel is observed between pairs and the viewer's tiles interleave) plus a final command
-//! that assembles the [`CompareReport`] and sends it on the `done` event.
+//! Both documents are already open in the registry. [`begin`] validates the request;
+//! [`dispatch`] queues one `Lane::Background` command per row (so Cancel is observed between
+//! rows and the viewer's tiles interleave) plus a final command that assembles the
+//! [`CompareReport`] and sends it on the `done` event. A document closed mid-job ends the
+//! job with `cancelled` (every command checks both documents first).
+//!
+//! ## Rows (Stage 8 `alignPages`, default on)
+//!
+//! With `alignPages: false` the candidate lists pair by position, as in Stage 5. Otherwise one
+//! scan command per candidate page collects its words, an align command pairs the pages by
+//! word-set similarity ([`align`]: identical head / tail pair directly, the middle is a
+//! Needleman–Wunsch with free gaps) and then queues the row diffs, which reuse the scanned
+//! words. An inserted or deleted page becomes a null-sided row — `changed: true` even when the
+//! page has no words — instead of shifting every later pair.
 //!
 //! ## Words
 //!
@@ -48,17 +58,59 @@ pub const MAX_EDIT_DISTANCE: usize = 2000;
 /// One row of the report: which page of each document (either may be absent).
 pub type Pair = (Option<PageIndex>, Option<PageIndex>);
 
+/// One row as positions in the candidate lists (`pagesA` / `pagesB`).
+pub type Row = (Option<usize>, Option<usize>);
+
+/// Above this many DP cells (candidate pages A × B, after the identical head and tail are
+/// trimmed) the alignment falls back to positional pairing for the middle: each cell costs a
+/// word-set Jaccard, and 250 000 of them is ≈ 0.2 s on the engine thread.
+pub const MAX_ALIGN_CELLS: usize = 250_000;
+
 /// A running compare. Shared by the job's commands; nothing lives on the `OpenDoc`s.
 pub struct Work {
     pub doc_a: DocId,
     pub doc_b: DocId,
-    pub pairs: Vec<Pair>,
+    /// The candidate pages of each side, in order.
+    pub pages_a: Vec<PageIndex>,
+    pub pages_b: Vec<PageIndex>,
     pub ignore_case: bool,
+    /// Stage 8 `alignPages`.
+    pub align: bool,
     started: Instant,
+    /// Report rows: known at [`begin`] for positional pairing, set by the align step otherwise.
+    rows: Mutex<Vec<Row>>,
+    /// `alignPages`: each candidate page's words, from the scan steps (taken by the row diffs).
+    words_a: Mutex<Vec<Option<PageWords>>>,
+    words_b: Mutex<Vec<Option<PageWords>>>,
     results: Mutex<Vec<Option<ComparePage>>>,
 }
 
-/// Validates the request and returns the job's shared state (pairs in report order).
+impl Work {
+    /// The report rows known so far — all of them for positional pairing, none before the
+    /// align step otherwise.
+    pub fn pairs(&self) -> Vec<Pair> {
+        self.rows
+            .lock()
+            .iter()
+            .map(|&(a, b)| (a.map(|i| self.pages_a[i]), b.map(|i| self.pages_b[i])))
+            .collect()
+    }
+
+    /// The job's initial unit count. Positional pairing: one per row. Aligning: one per
+    /// candidate page (the scans) plus a lower bound of the rows (every page is in exactly one
+    /// row, so there are at least `max(|A|, |B|)`); the align step raises it to the exact
+    /// figure with `JobReporter::set_total`.
+    pub fn initial_total(&self) -> u32 {
+        if self.align {
+            let (a, b) = (self.pages_a.len(), self.pages_b.len());
+            (a + b + a.max(b)) as u32
+        } else {
+            self.rows.lock().len() as u32
+        }
+    }
+}
+
+/// Validates the request and returns the job's shared state.
 pub fn begin(
     st: &EngineState<'_>,
     doc_a: &str,
@@ -85,66 +137,168 @@ pub fn begin(
     };
     let pages_a = pages(&options.pages_a, count_a, "A")?;
     let pages_b = pages(&options.pages_b, count_b, "B")?;
-    let n = pages_a.len().max(pages_b.len());
-    let pairs: Vec<Pair> = (0..n)
-        .map(|i| (pages_a.get(i).copied(), pages_b.get(i).copied()))
-        .collect();
+    let align = options.align();
+    let rows: Vec<Row> = if align {
+        Vec::new()
+    } else {
+        positional(0..pages_a.len(), 0..pages_b.len())
+    };
+    let slots = |n: usize, on: bool| -> Vec<Option<PageWords>> {
+        if on {
+            (0..n).map(|_| None).collect()
+        } else {
+            Vec::new()
+        }
+    };
     Ok(Arc::new(Work {
         doc_a: doc_a.to_string(),
         doc_b: doc_b.to_string(),
-        results: Mutex::new(vec![None; pairs.len()]),
-        pairs,
+        results: Mutex::new((0..rows.len()).map(|_| None).collect()),
+        rows: Mutex::new(rows),
+        words_a: Mutex::new(slots(pages_a.len(), align)),
+        words_b: Mutex::new(slots(pages_b.len(), align)),
+        pages_a,
+        pages_b,
         ignore_case: options.ignore_case,
+        align,
         started: Instant::now(),
     }))
 }
 
-/// Queues the job: one command per pair, then the report.
+/// Pairs two position ranges by position; the longer one's extra positions get a null side.
+fn positional(a: std::ops::Range<usize>, b: std::ops::Range<usize>) -> Vec<Row> {
+    let n = a.len().max(b.len());
+    (0..n)
+        .map(|k| {
+            (
+                (k < a.len()).then(|| a.start + k),
+                (k < b.len()).then(|| b.start + k),
+            )
+        })
+        .collect()
+}
+
+fn submit(token: &JobToken, label: &'static str) -> Submit {
+    Submit::new(Lane::Background, label).cancel(token.cancel.clone())
+}
+
+/// Queues the job. Positional pairing: one diff command per row, then the report. Aligning:
+/// one scan command per candidate page, then the align command, which queues the row diffs
+/// and the report itself once it knows the rows.
 pub fn dispatch(engine: &EngineHandle, work: Arc<Work>, token: &JobToken, reporter: Arc<JobReporter>) {
-    let submit = |label: &'static str| Submit::new(Lane::Background, label).cancel(token.cancel.clone());
-    let mut queued: Result<(), EngineError> = Ok(());
-    for index in 0..work.pairs.len() {
-        let (work, reporter) = (work.clone(), reporter.clone());
-        queued = queued.and_then(|_| {
-            engine.dispatch(submit("compare_page"), move |st, status| {
-                if !proceed(&reporter, status) {
-                    return;
-                }
-                let (page_a, page_b) = work.pairs[index];
-                match compare_pair(st, &work.doc_a, &work.doc_b, page_a, page_b, work.ignore_case) {
-                    Ok(page) => {
-                        work.results.lock()[index] = Some(page);
-                        reporter.step(Some(index as PageIndex), None);
-                    }
-                    Err(e) => fail(&reporter, e),
-                }
-            })
-        });
-    }
-    {
-        let (work, reporter) = (work.clone(), reporter.clone());
-        queued = queued.and_then(|_| {
-            engine.dispatch(submit("compare_finish"), move |_st, status| {
-                if !proceed(&reporter, status) {
-                    return;
-                }
-                match finish(&work) {
-                    Ok(report) => reporter.finish_with_compare(report),
-                    Err(e) => fail(&reporter, e),
-                }
-            })
-        });
-    }
+    let queued = if work.align {
+        dispatch_scans(engine, &work, token, &reporter)
+    } else {
+        dispatch_rows(engine, &work, token, &reporter)
+    };
     if let Err(e) = queued {
         reporter.fail(e);
     }
 }
 
-fn proceed(reporter: &JobReporter, status: CmdStatus) -> bool {
+#[derive(Clone, Copy)]
+enum Side {
+    A,
+    B,
+}
+
+fn dispatch_scans(
+    engine: &EngineHandle,
+    work: &Arc<Work>,
+    token: &JobToken,
+    reporter: &Arc<JobReporter>,
+) -> Result<(), EngineError> {
+    for (side, n) in [(Side::A, work.pages_a.len()), (Side::B, work.pages_b.len())] {
+        for i in 0..n {
+            let (work, reporter) = (work.clone(), reporter.clone());
+            engine.dispatch(submit(token, "compare_scan"), move |st, status| {
+                if !proceed(&reporter, st, &work, status) {
+                    return;
+                }
+                let (doc, page, slots) = match side {
+                    Side::A => (&work.doc_a, work.pages_a[i], &work.words_a),
+                    Side::B => (&work.doc_b, work.pages_b[i], &work.words_b),
+                };
+                match page_words(st, doc, Some(page), work.ignore_case) {
+                    Ok(words) => {
+                        slots.lock()[i] = Some(words);
+                        reporter.step(None, None);
+                    }
+                    Err(e) => fail(&reporter, e),
+                }
+            })?;
+        }
+    }
+    let (w, r, e, t) = (work.clone(), reporter.clone(), engine.clone(), token.clone());
+    engine.dispatch(submit(token, "compare_align"), move |st, status| {
+        if !proceed(&r, st, &w, status) {
+            return;
+        }
+        let rows = align_work(&w);
+        let n = rows.len();
+        *w.results.lock() = (0..n).map(|_| None).collect();
+        *w.rows.lock() = rows;
+        r.set_total((w.pages_a.len() + w.pages_b.len() + n) as u32);
+        if let Err(err) = dispatch_rows(&e, &w, &t, &r) {
+            r.fail(err);
+        }
+    })?;
+    Ok(())
+}
+
+fn dispatch_rows(
+    engine: &EngineHandle,
+    work: &Arc<Work>,
+    token: &JobToken,
+    reporter: &Arc<JobReporter>,
+) -> Result<(), EngineError> {
+    let rows = work.rows.lock().len();
+    for index in 0..rows {
+        let (work, reporter) = (work.clone(), reporter.clone());
+        engine.dispatch(submit(token, "compare_page"), move |st, status| {
+            if !proceed(&reporter, st, &work, status) {
+                return;
+            }
+            let (ia, ib) = work.rows.lock()[index];
+            let page_a = ia.map(|i| work.pages_a[i]);
+            let page_b = ib.map(|i| work.pages_b[i]);
+            let row = if work.align {
+                // Each position is in exactly one row, so its words can be moved out.
+                let a = ia.and_then(|i| work.words_a.lock()[i].take()).unwrap_or_default();
+                let b = ib.and_then(|i| work.words_b.lock()[i].take()).unwrap_or_default();
+                Ok(compare_words(page_a, page_b, &a, &b))
+            } else {
+                compare_pair(st, &work.doc_a, &work.doc_b, page_a, page_b, work.ignore_case)
+            };
+            match row {
+                Ok(page) => {
+                    work.results.lock()[index] = Some(page);
+                    reporter.step(Some(index as PageIndex), None);
+                }
+                Err(e) => fail(&reporter, e),
+            }
+        })?;
+    }
+    let (work, reporter) = (work.clone(), reporter.clone());
+    engine.dispatch(submit(token, "compare_finish"), move |st, status| {
+        if !proceed(&reporter, st, &work, status) {
+            return;
+        }
+        match finish(&work) {
+            Ok(report) => reporter.finish_with_compare(report),
+            Err(e) => fail(&reporter, e),
+        }
+    })?;
+    Ok(())
+}
+
+/// Every job command's preamble. A cancelled job — or one whose document was **closed** while
+/// it ran — ends with `cancelled`, not `error`.
+fn proceed(reporter: &JobReporter, st: &EngineState<'_>, work: &Work, status: CmdStatus) -> bool {
     if reporter.is_finished() {
         return false;
     }
-    if status != CmdStatus::Run {
+    if status != CmdStatus::Run || st.doc(&work.doc_a).is_err() || st.doc(&work.doc_b).is_err() {
         reporter.cancel();
         return false;
     }
@@ -157,6 +311,127 @@ fn fail(reporter: &JobReporter, e: EngineError) {
     } else {
         reporter.fail(e);
     }
+}
+
+/// The align step: word sets of every candidate page, interned across both documents.
+fn align_work(work: &Work) -> Vec<Row> {
+    let words_a = work.words_a.lock();
+    let words_b = work.words_b.lock();
+    fn set<'k>(ids: &mut HashMap<&'k str, u32>, w: &'k Option<PageWords>) -> Vec<u32> {
+        let mut out: Vec<u32> = w
+            .as_ref()
+            .map(|w| intern(ids, &w.keys))
+            .unwrap_or_default();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+    let mut ids: HashMap<&str, u32> = HashMap::new();
+    let sets_a: Vec<Vec<u32>> = words_a.iter().map(|w| set(&mut ids, w)).collect();
+    let sets_b: Vec<Vec<u32>> = words_b.iter().map(|w| set(&mut ids, w)).collect();
+    align(&sets_a, &sets_b)
+}
+
+/// Jaccard similarity of two sorted, deduplicated sets; two empty pages are identical.
+pub fn jaccard<T: Ord>(a: &[T], b: &[T]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let (mut i, mut j, mut inter) = (0, 0, 0usize);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                inter += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    inter as f64 / (a.len() + b.len() - inter) as f64
+}
+
+/// Page alignment (Stage 8 `alignPages`): a monotone pairing of the two page sequences that
+/// maximises the summed word-set similarity — Needleman–Wunsch with free gaps. A page that has
+/// no counterpart becomes a null-sided row instead of shifting every later pair.
+///
+/// * Identical leading and trailing pages (equal word sets) pair directly, so one inserted
+///   page in a 500-page document costs one DP cell, not 250 000.
+/// * Every match scores its Jaccard similarity plus a tiny bonus, so among equally similar
+///   alignments the one with more pairs wins: a completely rewritten page still pairs with
+///   the page in its place instead of becoming two one-sided rows.
+/// * A middle larger than [`MAX_ALIGN_CELLS`] is paired by position (the Stage 5 behaviour).
+pub fn align<T: Ord>(a: &[Vec<T>], b: &[Vec<T>]) -> Vec<Row> {
+    const MATCH_BONUS: f64 = 1e-6;
+    let (n, m) = (a.len(), b.len());
+    let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (a1, b1) = (n - suffix, m - suffix);
+    let (h, w) = (a1 - prefix, b1 - prefix);
+
+    let mut rows: Vec<Row> = (0..prefix).map(|i| (Some(i), Some(i))).collect();
+    if h == 0 || w == 0 || h * w > MAX_ALIGN_CELLS {
+        rows.extend(positional(prefix..a1, prefix..b1));
+    } else {
+        // score[i][j]: best total for a[prefix..prefix+i] against b[prefix..prefix+j].
+        // step: 0 = pair, 1 = A-only, 2 = B-only.
+        let mut score = vec![0f64; (h + 1) * (w + 1)];
+        let mut step = vec![0u8; (h + 1) * (w + 1)];
+        let at = |i: usize, j: usize| i * (w + 1) + j;
+        for i in 1..=h {
+            step[at(i, 0)] = 1;
+        }
+        for j in 1..=w {
+            step[at(0, j)] = 2;
+        }
+        for i in 1..=h {
+            for j in 1..=w {
+                let pair = score[at(i - 1, j - 1)]
+                    + jaccard(&a[prefix + i - 1], &b[prefix + j - 1])
+                    + MATCH_BONUS;
+                let up = score[at(i - 1, j)];
+                let left = score[at(i, j - 1)];
+                let (best, s) = if pair >= up && pair >= left {
+                    (pair, 0)
+                } else if up >= left {
+                    (up, 1)
+                } else {
+                    (left, 2)
+                };
+                score[at(i, j)] = best;
+                step[at(i, j)] = s;
+            }
+        }
+        let mut middle: Vec<Row> = Vec::with_capacity(h + w);
+        let (mut i, mut j) = (h, w);
+        while i > 0 || j > 0 {
+            match step[at(i, j)] {
+                0 => {
+                    middle.push((Some(prefix + i - 1), Some(prefix + j - 1)));
+                    i -= 1;
+                    j -= 1;
+                }
+                1 => {
+                    middle.push((Some(prefix + i - 1), None));
+                    i -= 1;
+                }
+                _ => {
+                    middle.push((None, Some(prefix + j - 1)));
+                    j -= 1;
+                }
+            }
+        }
+        middle.reverse();
+        rows.extend(middle);
+    }
+    rows.extend((0..suffix).map(|k| (Some(a1 + k), Some(b1 + k))));
+    rows
 }
 
 /// Assembles the report once every pair has a result.
@@ -335,7 +610,10 @@ pub fn compare_words(
     ComparePage {
         page_a,
         page_b,
-        changed: ops.iter().any(|op| op.kind != DiffKind::Equal),
+        // A page present on one side only is a change even when it has no words (an inserted
+        // blank page), or 변경된 페이지만 would hide it.
+        changed: page_a.is_none() != page_b.is_none()
+            || ops.iter().any(|op| op.kind != DiffKind::Equal),
         words_a: a.keys.len() as u32,
         words_b: b.keys.len() as u32,
         ops,

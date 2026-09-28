@@ -77,6 +77,8 @@ interface EditState {
   closeSession(): void;
   addMarks(page: PageIndex, rects: Rect[]): number[];
   removeMark(id: number): void;
+  /** drop these marks; a page left with none loses its preview too */
+  removeMarks(ids: number[]): void;
   /** drop the marks (and previews) of `pages`, or of every page */
   clearMarks(pages?: PageIndex[]): void;
   selectMark(id: number | null): void;
@@ -148,6 +150,16 @@ export const useEditStore = create<EditState>((set, get) => ({
     const marks = get().marks.filter((m) => m.id !== id);
     if (marks.length === get().marks.length) return;
     set({ marks, ...(get().markSel === id ? { markSel: null } : null) });
+  },
+
+  removeMarks(ids) {
+    const drop = new Set(ids);
+    const { marks, previews, markSel } = get();
+    const kept = marks.filter((m) => !drop.has(m.id));
+    if (kept.length === marks.length) return;
+    const nextPreviews = { ...previews };
+    for (const m of marks) if (drop.has(m.id) && !kept.some((k) => k.page === m.page)) delete nextPreviews[m.page];
+    set({ marks: kept, previews: nextPreviews, markSel: markSel !== null && drop.has(markSel) ? null : markSel });
   },
 
   clearMarks(pages) {

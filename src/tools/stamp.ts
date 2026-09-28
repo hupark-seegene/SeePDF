@@ -187,7 +187,9 @@ export function makeStampTool(id: "stamp" | "signature"): ToolModule<StampState>
       }
       const dragged = state.from ? rectFrom(state.from, p.pt) : placementRect(id, p.pt, image);
       const rect = rectIsEmpty(dragged, 4) ? placementRect(id, p.pt, image) : dragged;
-      const spec: AnnotSpec = { kind: "stamp", rect, image };
+      // A typed / picked-image 서명 is written with `/Subj "SeePDF:Signature"` (Stage 8) so it
+      // lists as 서명, not 도장.
+      const spec: AnnotSpec = id === "signature" ? { kind: "stamp", rect, image, signature: true } : { kind: "stamp", rect, image };
       return { state: { ...EMPTY }, preview: null, commit: { page, spec }, done: true };
     },
 

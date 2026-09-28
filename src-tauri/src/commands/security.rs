@@ -13,8 +13,8 @@
 use crate::engine::redact;
 use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
-    BytesWritten, DocInfo, DocMeta, PageIndex, PermissionsRequest, RedactOptions, RedactPreview,
-    RedactResult, Rect,
+    BytesWritten, DocInfo, DocMeta, PageIndex, PermissionsRequest, RedactBatchMark,
+    RedactBatchResult, RedactOptions, RedactPreview, RedactResult, Rect,
 };
 use crate::ipc::EngineError;
 use tauri::State;
@@ -54,6 +54,22 @@ pub async fn apply_redactions(
                 verified: true,
                 doc_generation: st.doc(&doc_id)?.generation,
             })
+        })
+        .await
+}
+
+/// Stage 8: every marked page in ONE undo step (`undo.redact`); a `verifyFailed` on any page
+/// rolls all of them back. See `engine::redact::apply_batch`.
+#[tauri::command]
+pub async fn apply_redactions_batch(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    marks: Vec<RedactBatchMark>,
+    options: RedactOptions,
+) -> Result<RedactBatchResult, EngineError> {
+    engine
+        .call(Lane::Edit, "apply_redactions_batch", move |st| {
+            redact::apply_batch(st, &doc_id, &marks, &options)
         })
         .await
 }

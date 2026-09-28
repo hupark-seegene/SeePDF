@@ -8,6 +8,10 @@
  *
  * Items that belong to the annotation tools (붙여넣기 · 메모 추가 · 스냅샷) are deliberately absent:
  * module (d) owns them and can push them into `items` from the same seam.
+ *
+ * While a text selection exists the canvas menu opens with UI_SPEC §12 "Text selection": 복사 ·
+ * 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색 (the actions live in the lazy
+ * `textMenu.ts`; 복사 runs here, inside the click's user gesture).
  */
 import { openContextMenu, type MenuEntry } from "./contextMenuStore";
 import { openDialog } from "../dialogs/dialogState";
@@ -16,7 +20,8 @@ import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
 import { usePagesStore } from "../store/pagesStore";
 import { editLeaveGuard } from "../tools/commands";
-import { isEmptySelection, useSelectionStore } from "../viewer";
+import { copyToClipboard, currentSelectionText, isEmptySelection, useSelectionStore } from "../viewer";
+import { shortcutFor } from "../keys/keymap";
 import type { PageIndex, PageOp } from "../ipc/types";
 
 /** The page a context-menu event happened on, or `null` when it was not over a page. */
@@ -39,6 +44,12 @@ export function pageFromEvent(target: EventTarget | null): { page: PageIndex; so
 
 function run(ops: PageOp[]): void {
   void import("../dialogs/flows").then((m) => m.runPageOps(ops));
+}
+
+type TextMenu = typeof import("./textMenu");
+
+function textMenu(fn: (m: TextMenu) => unknown): void {
+  void import("./textMenu").then(fn);
 }
 
 export function openPageContextMenu(page: PageIndex, source: "canvas" | "thumbnail", x: number, y: number): void {
@@ -105,19 +116,39 @@ export function openPageContextMenu(page: PageIndex, source: "canvas" | "thumbna
     },
   ];
 
-  // UI_SPEC §12 text selection: 영역 표시로 표시 → 편집 · 영역 표시 with the selection's line rects
+  // UI_SPEC §12 text selection: 복사 · 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색
   const selection = useSelectionStore.getState().selection;
-  const textItems: MenuEntry[] =
-    source === "canvas" && selection?.docId === info.docId && !isEmptySelection(selection)
-      ? [
-          {
-            id: "redactSelection",
-            labelKey: "redact.markSelection",
-            onSelect: () => void import("../edit/redact").then((m) => m.markTextSelection()),
-          },
-          { id: "sep0", separator: true },
-        ]
-      : [];
+  const hasText = source === "canvas" && selection?.docId === info.docId && !isEmptySelection(selection);
+  const selectedText = hasText ? currentSelectionText() : "";
+  const textItems: MenuEntry[] = hasText
+    ? [
+        {
+          id: "copyText",
+          labelKey: "menu.edit.copy",
+          shortcut: shortcutFor("edit.copy", app.os),
+          disabled: !selectedText,
+          onSelect: () => void copyToClipboard(selectedText),
+        },
+        { id: "sepText1", separator: true },
+        { id: "highlightSelection", labelKey: "tool.highlight", onSelect: () => textMenu((m) => m.markupSelection("highlight")) },
+        { id: "underlineSelection", labelKey: "tool.underline", onSelect: () => textMenu((m) => m.markupSelection("underline")) },
+        { id: "strikeoutSelection", labelKey: "tool.strikeout", onSelect: () => textMenu((m) => m.markupSelection("strikeout")) },
+        { id: "noteSelection", labelKey: "textMenu.addNote", onSelect: () => textMenu((m) => m.noteOnSelection()) },
+        {
+          id: "redactSelection",
+          labelKey: "redact.markSelection",
+          onSelect: () => void import("../edit/redact").then((m) => m.markTextSelection()),
+        },
+        { id: "sepText2", separator: true },
+        {
+          id: "searchSelection",
+          labelKey: "textMenu.search",
+          disabled: !selectedText.trim(),
+          onSelect: () => textMenu((m) => m.searchSelectedText(selectedText)),
+        },
+        { id: "sep0", separator: true },
+      ]
+    : [];
 
   openContextMenu({
     x,

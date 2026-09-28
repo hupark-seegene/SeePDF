@@ -2,7 +2,7 @@
  * Pure logic behind 워터마크 / 머리글·바닥글 (P1-4): per-role defaults, token insertion, the
  * token preview and the `add_stamp` payload. Kept out of the component so it is unit-testable.
  */
-import type { PageIndex, Rgb, StampAnchor, StampRole, StampSpec } from "../ipc/types";
+import type { PageGeom, PageIndex, Rgb, StampAnchor, StampRole, StampSpec } from "../ipc/types";
 
 export const STAMP_TOKENS = ["page", "total", "date", "filename"] as const;
 export type StampToken = (typeof STAMP_TOKENS)[number];
@@ -143,6 +143,37 @@ export function buildStampSpec(form: StampForm, pages: PageIndex[], allPages: bo
     opacity: clamp(form.opacityPct, 0, 100) / 100,
     pages: allPages ? "all" : pages,
   };
+}
+
+/**
+ * The page the engine lays a stamp out on, as the user sees it (`stamp.rs` "visual space"): the
+ * crop box, width and height swapped for `/Rotate` 90 / 270. Falls back to the display size when
+ * the crop is degenerate (a page the engine has not opened yet reports a provisional one).
+ */
+export function visualPageSize(geom: PageGeom | undefined): { widthPt: number; heightPt: number } {
+  if (!geom) return { widthPt: 612, heightPt: 792 };
+  const cw = Math.abs(geom.crop.r - geom.crop.l);
+  const ch = Math.abs(geom.crop.t - geom.crop.b);
+  if (!(cw > 1 && ch > 1)) return { widthPt: geom.widthPt || 612, heightPt: geom.heightPt || 792 };
+  return geom.rotation % 180 === 90 ? { widthPt: ch, heightPt: cw } : { widthPt: cw, heightPt: ch };
+}
+
+/** Height ÷ width of an image stamp's box: the image's own aspect once known, else a placeholder. */
+export const PLACEHOLDER_IMAGE_ASPECT = 0.6;
+
+export function imageStampHeight(widthPt: number, naturalW?: number, naturalH?: number): number {
+  const aspect = naturalW && naturalH && naturalW > 0 && naturalH > 0 ? naturalH / naturalW : PLACEHOLDER_IMAGE_ASPECT;
+  return widthPt * aspect;
+}
+
+/** The `remove_stamps` payload: `role` omitted = every role, including stamps from before Stage 8. */
+export function removeStampsArgs(
+  scope: "role" | "all",
+  role: StampRole,
+  pages: PageIndex[],
+  allPages: boolean,
+): { pages: PageIndex[] | "all"; role?: StampRole } {
+  return scope === "all" ? { pages: allPages ? "all" : pages } : { pages: allPages ? "all" : pages, role };
 }
 
 /**

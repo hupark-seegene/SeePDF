@@ -353,3 +353,120 @@ fn redact_handles_a_repeated_word() {
         "at least one occurrence went ({before} -> {after})"
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Stage 8 — apply_redactions_batch
+// ---------------------------------------------------------------------------------------
+
+fn apply_batch(
+    doc_id: &str,
+    marks: Vec<(PageIndex, Vec<Rect>)>,
+) -> Result<seepdf_lib::ipc::types::RedactBatchResult, seepdf_lib::ipc::EngineError> {
+    let doc_id = doc_id.to_string();
+    let marks: Vec<seepdf_lib::ipc::types::RedactBatchMark> = marks
+        .into_iter()
+        .map(|(page, rects)| seepdf_lib::ipc::types::RedactBatchMark { page, rects })
+        .collect();
+    with_state(move |st| {
+        redact::apply_batch(
+            st,
+            &doc_id,
+            &marks,
+            &RedactOptions {
+                fill: [0, 0, 0],
+                overlay_text: None,
+            },
+        )
+    })
+}
+
+/// A word of at least `min` letters that occurs exactly once on `page`.
+fn unique_word(doc_id: &str, page: PageIndex, min: usize) -> String {
+    let text = page_text(doc_id, page);
+    text.split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.chars().count() >= min)
+        .find(|w| text.matches(w).count() == 1)
+        .expect("a unique word")
+        .to_string()
+}
+
+/// Two pages in one call: one generation, one undo step, both words gone from the saved file.
+#[test]
+fn redact_batch_two_pages_is_one_undo_step() {
+    let doc = open("tracemonkey.pdf");
+    let word1 = unique_word(&doc.doc_id, 1, 7);
+    let r0 = word_rect(&doc.doc_id, 0, TARGET);
+    let r1 = word_rect(&doc.doc_id, 1, &word1);
+    let before_generation = generation(&doc.doc_id);
+    let (text0, text1) = (page_text(&doc.doc_id, 0), page_text(&doc.doc_id, 1));
+
+    // Out of order, and page 1 split over two entries: merged and sorted.
+    let r = apply_batch(
+        &doc.doc_id,
+        vec![(1, vec![r1]), (0, vec![r0]), (1, vec![])],
+    )
+    .expect("batch");
+    assert!(r.verified);
+    assert_eq!(r.pages, vec![0, 1]);
+    assert!(r.removed_objects >= 2, "{}", r.removed_objects);
+    assert_eq!(r.doc_generation, before_generation + 1, "one generation for both pages");
+    let info = with_doc(&doc.doc_id, |d| Ok(d.info())).unwrap();
+    assert_eq!(info.undo_label.as_deref(), Some("undo.redact"));
+    assert!(!page_text(&doc.doc_id, 0).contains(TARGET));
+    assert!(!page_text(&doc.doc_id, 1).contains(&word1));
+
+    let saved = reopen(save_bytes(&doc.doc_id));
+    assert!(!page_text(&saved.doc_id, 0).contains(TARGET));
+    assert!(!page_text(&saved.doc_id, 1).contains(&word1));
+
+    // One undo restores both pages.
+    let d = doc.doc_id.clone();
+    let undone = with_state(move |st| registry::undo(st, &d, false)).expect("undo");
+    assert!(!undone.can_undo, "the batch was a single step");
+    assert_eq!(page_text(&doc.doc_id, 0), text0);
+    assert_eq!(page_text(&doc.doc_id, 1), text1);
+}
+
+/// A page that fails verification rolls back the pages already redacted in the same call; a
+/// form field under a mark refuses before anything changes.
+#[test]
+fn redact_batch_rolls_back_every_page() {
+    let doc = open("TAMReview.pdf");
+    let needle = unremovable_word(&doc.doc_id, 1);
+    let word0 = unique_word(&doc.doc_id, 0, 6);
+    let (text0, text1) = (page_text(&doc.doc_id, 0), page_text(&doc.doc_id, 1));
+    let before_generation = generation(&doc.doc_id);
+    let err = apply_batch(
+        &doc.doc_id,
+        vec![
+            (0, vec![word_rect(&doc.doc_id, 0, &word0)]),
+            (1, vec![word_rect(&doc.doc_id, 1, &needle)]),
+        ],
+    )
+    .expect_err("page 1's text is inside a Form XObject");
+    assert_eq!(err.code, ErrorCode::VerifyFailed, "{err}");
+    assert_eq!(err.page, Some(1));
+    assert_eq!(generation(&doc.doc_id), before_generation);
+    assert_eq!(page_text(&doc.doc_id, 0), text0, "page 0 was rolled back too");
+    assert_eq!(page_text(&doc.doc_id, 1), text1);
+    let can_undo = with_doc(&doc.doc_id, |d| Ok(d.info().can_undo)).unwrap();
+    assert!(!can_undo, "no undo step was left behind");
+
+    let form = open("160F-2019.pdf");
+    let widget = {
+        let doc_id = form.doc_id.clone();
+        with_doc(&doc_id.clone(), move |doc| {
+            let fields = seepdf_lib::engine::form::list(doc, Some(0))?;
+            Ok(fields.iter().map(|f| f.rect).find(|r| r.width() > 40.0).expect("a widget"))
+        })
+        .unwrap()
+    };
+    let g = generation(&form.doc_id);
+    let err = apply_batch(&form.doc_id, vec![(0, vec![widget])]).expect_err("form field");
+    assert_eq!(err.code, ErrorCode::Unsupported);
+    assert_eq!(generation(&form.doc_id), g);
+    let err = apply_batch(&form.doc_id, vec![(0, vec![])]).expect_err("no rects");
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+    let err = apply_batch(&form.doc_id, vec![(999, vec![widget])]).expect_err("bad page");
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+}

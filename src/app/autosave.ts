@@ -1,8 +1,13 @@
 /**
  * 자동 저장 / 복구 (P1-8): while a document is open, dirty and `settings.autosaveSec > 0`, a timer
  * writes a recovery copy (`write_recovery`) — only when `docGeneration` moved since the last write.
- * A successful 저장 / 다른 이름으로 저장 and a clean close drop the copy (`clear_recovery`). A failed
- * write is toasted at most once per document. The user's file is never touched.
+ * A successful 저장 / 다른 이름으로 저장 and a clean close drop the copy (`clear_recovery`), and so
+ * does an undo that brings the document back to clean (Stage 8). A failed write is toasted at most
+ * once per document. The user's file is never touched.
+ *
+ * While an annotation drag has something hidden in the engine (`annot/dragGate.ts`), a beat waits
+ * for the drop to settle, so a copy never captures the transient `/F HIDDEN` bit; the write itself
+ * is tracked so a drag that starts meanwhile hides only after it has landed.
  *
  * Entry chunk (the hook is mounted once by `App.tsx`), so it stays small and imports no dialog code.
  */
@@ -13,6 +18,7 @@ import { useAppStore } from "../store/appStore";
 import { toast } from "./toastStore";
 import { openDialog } from "../dialogs/dialogState";
 import { windowLabel } from "../ipc/env";
+import { trackWrite, whenDragIdle } from "../annot/dragGate";
 import type { DocGeneration, DocId, DocInfo, RecoveryEntry, Settings } from "../ipc/types";
 
 export const DEFAULT_AUTOSAVE_SEC = 60;
@@ -31,6 +37,8 @@ export interface AutosaveDeps {
   write(docId: DocId): Promise<unknown>;
   clear(docId: DocId): Promise<unknown>;
   onFail(info: DocInfo, error: unknown): void;
+  /** resolves when nothing is transiently hidden (an annotation drag); default: at once */
+  idle?(): Promise<void>;
 }
 
 export class AutosaveController {
@@ -42,11 +50,15 @@ export class AutosaveController {
   private readonly written = new Set<DocId>();
   private readonly failed = new Set<DocId>();
   private inFlight: Promise<void> | null = null;
+  /** a beat is waiting for a drag to settle */
+  private waiting = false;
 
   constructor(private readonly deps: AutosaveDeps) {}
 
   /** (Re)arm the timer for the current document; call whenever the document, its dirty state or the interval changes. */
   sync(info: DocInfo | null, sec: number): void {
+    // Undo took the document back to clean: the copy describes changes that no longer exist.
+    if (info && !info.dirty && this.written.has(info.docId)) void this.clear(info.docId);
     const key = info && info.dirty && sec > 0 ? `${info.docId}:${sec}` : null;
     if (key === this.armed) return;
     this.stop();
@@ -56,6 +68,15 @@ export class AutosaveController {
 
   /** One timer beat; exposed for tests. */
   async tick(): Promise<void> {
+    if (this.waiting) return;
+    if (this.deps.idle) {
+      this.waiting = true;
+      try {
+        await this.deps.idle();
+      } finally {
+        this.waiting = false;
+      }
+    }
     const info = this.deps.current();
     if (!info || !info.dirty || this.inFlight) return;
     if (this.covered.get(info.docId) === info.docGeneration) return;
@@ -108,12 +129,14 @@ export class AutosaveController {
     this.written.clear();
     this.failed.clear();
     this.inFlight = null;
+    this.waiting = false;
   }
 }
 
 export const autosave = new AutosaveController({
   current: () => useDocStore.getState().info,
-  write: (docId) => api.writeRecovery({ docId }),
+  write: (docId) => trackWrite(api.writeRecovery({ docId })),
+  idle: whenDragIdle,
   clear: (docId) => api.clearRecovery({ docId }),
   onFail: (info, e) =>
     toast("autosave.failed", { name: info.name }, { tone: "danger", detail: e instanceof Error ? e.message : String(e) }),
@@ -144,6 +167,11 @@ const recovered = new Map<DocId, RecoveryEntry>();
 export function markRecovered(docId: DocId, entry: RecoveryEntry): void {
   recovered.set(docId, entry);
 }
+
+// The window's document went away (closed, or replaced by another): forget its mark.
+useDocStore.subscribe((s, prev) => {
+  if (prev.docId && prev.docId !== s.docId) recovered.delete(prev.docId);
+});
 
 export function recoveredEntry(docId: DocId | null | undefined): RecoveryEntry | undefined {
   return docId ? recovered.get(docId) : undefined;

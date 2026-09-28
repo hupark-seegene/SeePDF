@@ -25,8 +25,8 @@ use crate::engine::text;
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
-    ChangeReason, PageIndex, RedactImageObject, RedactOptions, RedactPreview, RedactTextObject,
-    Rect,
+    ChangeReason, PageIndex, RedactBatchMark, RedactBatchResult, RedactImageObject,
+    RedactOptions, RedactPreview, RedactTextObject, Rect,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
@@ -257,6 +257,87 @@ pub fn apply_verified(
     }
 }
 
+/// `apply_redactions_batch` (Stage 8) — every marked page in **one** `registry::mutate`, so
+/// the whole 영역 표시 batch is one undo step (`undo.redact`) and one generation.
+///
+/// Marks for the same page are merged; pages are processed in ascending order, each through
+/// [`apply`] (its own pre-flight, removal and post-condition). The form-field refusal is
+/// checked for **every** page before anything changes; any later failure — a `verifyFailed`
+/// on the third page included — makes `mutate` reload its snapshot, so the pages already
+/// redacted in this call are rolled back too. As in [`apply_verified`], a byte snapshot is
+/// restored on `verifyFailed` as a second safety net.
+pub fn apply_batch(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    marks: &[RedactBatchMark],
+    options: &RedactOptions,
+) -> Result<RedactBatchResult, EngineError> {
+    let count = st.doc(doc_id)?.page_count();
+    let mut by_page: BTreeMap<PageIndex, Vec<Rect>> = BTreeMap::new();
+    for mark in marks {
+        if mark.page >= count {
+            return Err(EngineError::invalid(format!(
+                "page {} is out of range (page count {count})",
+                mark.page
+            ))
+            .with_page(mark.page));
+        }
+        if !mark.rects.is_empty() {
+            by_page
+                .entry(mark.page)
+                .or_default()
+                .extend(mark.rects.iter().copied());
+        }
+    }
+    if by_page.is_empty() {
+        return Err(EngineError::invalid("redaction needs at least one rect"));
+    }
+
+    // Pre-flight for every page before the first one is touched.
+    for (&page, rects) in &by_page {
+        let plan = preview(st.doc_mut(doc_id)?, page, rects)?;
+        if !plan.form_fields.is_empty() {
+            return Err(EngineError::new(
+                ErrorCode::Unsupported,
+                format!(
+                    "{} form field(s) are under the marks on page {}; flatten the form first",
+                    plan.form_fields.len(),
+                    page + 1
+                ),
+            )
+            .with_page(page));
+        }
+    }
+
+    let pages: Vec<PageIndex> = by_page.keys().copied().collect();
+    let snapshot = st.doc(doc_id)?.to_bytes()?;
+    let result = registry::mutate(
+        st,
+        doc_id,
+        MutateOpts::new("undo.redact", ChangeReason::Redact).pages(pages.clone()),
+        |doc| {
+            let mut removed = 0u32;
+            for (&page, rects) in &by_page {
+                removed += apply(doc, page, rects, options)?;
+            }
+            Ok(removed)
+        },
+    );
+    let removed = match result {
+        Err(e) if e.code == ErrorCode::VerifyFailed => {
+            registry::replace(st, doc_id, snapshot)?;
+            return Err(e);
+        }
+        other => other?,
+    };
+    Ok(RedactBatchResult {
+        removed_objects: removed,
+        verified: true,
+        doc_generation: st.doc(doc_id)?.generation,
+        pages,
+    })
+}
+
 /// One contiguous run of characters under the marks, and whether it can actually be deleted.
 struct MarkedRun {
     text: String,
@@ -315,7 +396,7 @@ fn marked_runs(
     Ok(runs)
 }
 
-/// The marked string whose occurrence count did not drop, if any./// The marked string whose occurrence count did not drop, if any.
+/// The marked string whose occurrence count did not drop, if any.
 ///
 /// Counting rather than "is it absent" is what makes this correct for a word that also occurs
 /// somewhere else on the page: redacting one "the" must not require every "the" to vanish.

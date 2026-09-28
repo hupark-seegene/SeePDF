@@ -86,6 +86,7 @@ function Current({ entry }: { entry: DialogEntry }) {
           bodyKey={p.bodyKey as string}
           bodyParams={p.bodyParams as Record<string, string | number> | undefined}
           confirmKey={p.confirmKey as string | undefined}
+          cancelKey={p.cancelKey as string | undefined}
           danger={p.danger === true}
           resolve={p.resolve as (v: boolean) => void}
         />

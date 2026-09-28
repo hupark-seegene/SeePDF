@@ -54,6 +54,34 @@ describe("autosave.timer", () => {
     h.ctl.stop();
   });
 
+  it("an undo back to clean clears the copy (Stage 8); a redo writes it again", async () => {
+    const h = harness(docInfo());
+    h.ctl.sync(docInfo(), 60);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.write).toHaveBeenCalledTimes(1);
+    // undo → the document is clean again: the copy describes changes that are gone
+    h.set({ dirty: false, docGeneration: 6 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.clear).toHaveBeenCalledTimes(1);
+    expect(h.clear).toHaveBeenCalledWith("d1");
+    // a second clean sync has nothing left to clear
+    h.set({ dirty: false, docGeneration: 6 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.clear).toHaveBeenCalledTimes(1);
+    // redo → dirty at a new generation → the next beat writes again
+    h.set({ dirty: true, docGeneration: 7 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.write).toHaveBeenCalledTimes(2);
+    h.ctl.stop();
+  });
+
+  it("a clean document that never had a copy clears nothing", async () => {
+    const h = harness(docInfo({ dirty: false }));
+    h.ctl.sync(docInfo({ dirty: false }), 60);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.clear).not.toHaveBeenCalled();
+  });
+
   it("does nothing when autosave is off or no document is open", async () => {
     const h = harness(docInfo());
     h.ctl.sync(docInfo(), 0);

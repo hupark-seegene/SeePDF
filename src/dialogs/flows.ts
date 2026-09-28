@@ -13,8 +13,10 @@ import { useAppStore } from "../store/appStore";
 import { useJobStore } from "../store/jobStore";
 import { usePagesStore } from "../store/pagesStore";
 import { toast } from "../app/toastStore";
-import { askMultipleFiles, askPassword, askUnsaved, closeDialog, openDialog } from "./dialogState";
+import { askConfirm, askMultipleFiles, askPassword, askUnsaved, closeDialog, openDialog } from "./dialogState";
 import { autosave, markRecovered, recoveredEntry, settleRecovered } from "../app/autosave";
+import { whenDragIdle } from "../annot/dragGate";
+import { editLeaveGuard } from "../tools/commands";
 import type { DocInfo, PageIndex, PageOp, RecentEntry, RecoveryEntry } from "../ipc/types";
 
 // ---------------------------------------------------------------------------
@@ -55,12 +57,13 @@ export async function openPath(
   path: string,
   opts: { guard?: boolean; recovery?: RecoveryEntry } = {},
 ): Promise<DocInfo | null> {
-  if (opts.guard !== false && !(await confirmUnsaved())) return null;
+  if (opts.guard !== false && !(await confirmLeaveDocument())) return null;
   const docs = useDocStore.getState();
   const previous = docs.info;
   let password: string | undefined;
   for (;;) {
-    const info = await docs.open(path, password);
+    // a 복구 copy opens under the original document's name, not `<uuid>.pdf` (Stage 8)
+    const info = await docs.open(path, password, opts.recovery?.name);
     if (info) {
       // the document this one replaced was dealt with by the unsaved gate: its copy can go
       if (previous && previous.docId !== info.docId) await autosave.clear(previous.docId);
@@ -157,6 +160,8 @@ export async function mergePaths(inputs: { path: string; range?: string }[]): Pr
 
 /** ⌘S. Atomic on the backend; a read-only target falls through to Save As with an explanation. */
 export async function saveFlow(): Promise<boolean> {
+  // ⌘S mid-drag is queued until the drop has settled: never save the transient `/F HIDDEN`
+  await whenDragIdle();
   const info = useDocStore.getState().info;
   if (!info) return false;
   // a 복구 copy is not the user's file: never save over it in place
@@ -182,6 +187,7 @@ export async function saveFlow(): Promise<boolean> {
 
 /** ⇧⌘S — the native save panel, then `save_document_as`. */
 export async function saveAsFlow(): Promise<boolean> {
+  await whenDragIdle();
   const info = useDocStore.getState().info;
   if (!info) return false;
   const path = await api.saveFileDialog({ defaultPath: recoveredEntry(info.docId)?.name ?? info.name });
@@ -212,11 +218,41 @@ export async function confirmUnsaved(): Promise<boolean> {
   const answer = await askUnsaved(info.name);
   if (answer === "cancel") return false;
   if (answer === "save") return saveFlow();
+  await askKeepRecovery(info);
   return true;
 }
 
+/**
+ * 저장 안 함 on a document opened from a 복구 copy (Stage 8): keep the copy for the next launch
+ * (the default, 보관 / Esc) or delete it now.
+ */
+async function askKeepRecovery(info: DocInfo): Promise<void> {
+  const entry = recoveredEntry(info.docId);
+  if (!entry) return;
+  const discard = await askConfirm({
+    titleKey: "recovery.keep.title",
+    bodyKey: "recovery.keep.body",
+    bodyParams: { name: entry.name },
+    confirmKey: "recovery.keep.discard",
+    cancelKey: "recovery.keep.keep",
+    danger: true,
+  });
+  if (discard) await settleRecovered(info.docId);
+}
+
+/**
+ * The gate in front of closing or replacing the document: pending 편집 · 영역 표시 marks first
+ * (F-22 — they are not in the document, so not even 저장 keeps them; 버리기 drops them, 취소 stops
+ * the caller), then the 저장 / 저장 안 함 / 취소 gate.
+ */
+export async function confirmLeaveDocument(): Promise<boolean> {
+  const pending = editLeaveGuard();
+  if (pending && !(await pending)) return false;
+  return confirmUnsaved();
+}
+
 export async function closeDocumentFlow(): Promise<boolean> {
-  if (!(await confirmUnsaved())) return false;
+  if (!(await confirmLeaveDocument())) return false;
   const info = useDocStore.getState().info;
   if (info) {
     await touchRecent(info).catch(() => undefined);

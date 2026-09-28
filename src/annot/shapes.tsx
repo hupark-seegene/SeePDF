@@ -16,6 +16,7 @@
 import type { Annot, Rect, Rgb } from "../ipc/types";
 import type { ToolPreview } from "../tools/ToolController";
 import { builtinColor, builtinLabel, isBuiltinStampKind } from "../tools/stampCatalog";
+import { getSnapshot, type AppearanceSnapshot } from "./snapshots";
 
 export function rgb(c: Rgb): string {
   return `rgb(${c[0]} ${c[1]} ${c[2]})`;
@@ -73,6 +74,40 @@ function StampLabel({ rect, label, color, dashed }: { rect: Rect; label: string;
           {label}
         </text>
       </g>
+    </g>
+  );
+}
+
+/**
+ * An image / foreign stamp or an image signature: the engine's pixels of it (taken before a drag
+ * hid it, `snapshots.ts`) stretched over `rect`, counter-rotated by the page's `/Rotate` because the
+ * bitmap is already in the orientation the user sees; a dashed outline without one.
+ */
+function StampImage({ a }: { a: Annot }) {
+  const shot: AppearanceSnapshot | undefined = getSnapshot(a.id);
+  const b = box(a.rect);
+  if (!shot) {
+    return (
+      <g opacity={a.opacity}>
+        <rect {...b} fill="none" stroke={rgb(a.color)} strokeWidth={1} strokeDasharray="4 3" />
+      </g>
+    );
+  }
+  const quarter = shot.rotation % 180 === 90;
+  const w = quarter ? b.height : b.width;
+  const h = quarter ? b.width : b.height;
+  // the snapshot already has the annotation's opacity composited in
+  return (
+    <g transform={`translate(${b.x + b.width / 2} ${b.y + b.height / 2}) scale(1 -1) rotate(${-shot.rotation})`}>
+      <image
+        href={shot.url}
+        x={-w / 2}
+        y={-h / 2}
+        width={w}
+        height={h}
+        preserveAspectRatio="none"
+        data-testid="annot-snapshot"
+      />
     </g>
   );
 }
@@ -144,6 +179,8 @@ export function AnnotShape({ annot: a }: { annot: Annot }) {
     }
     case "ink":
     case "signature":
+      // a typed / image signature is a stamp (Stage 8 `signature: true`), not strokes
+      if (a.kind === "signature" && !a.inkPaths?.length) return <StampImage a={a} />;
       return (
         <g stroke={stroke} strokeWidth={a.borderWidth} fill="none" opacity={a.opacity} strokeLinecap="round" strokeLinejoin="round">
           {(a.inkPaths ?? []).map((path, i) => (
@@ -193,11 +230,7 @@ export function AnnotShape({ annot: a }: { annot: Annot }) {
           </g>
         );
       }
-      return (
-        <g opacity={a.opacity}>
-          <rect {...box(a.rect)} fill="none" stroke={stroke} strokeWidth={1} strokeDasharray="4 3" />
-        </g>
-      );
+      return <StampImage a={a} />;
     default:
       return <rect {...box(a.rect)} fill="none" stroke={stroke} strokeWidth={1} opacity={a.opacity} />;
   }

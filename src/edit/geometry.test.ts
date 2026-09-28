@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { PageGeom, PageObject, Rotation } from "../ipc/types";
 import { makePageLayerContext } from "../viewer";
 import {
-  deltaToPage, fontStack, hitObject, imageRectAt, resizeRect, scaleArgs, textRectFor, cornerPoint,
+  clipRect, crossesRun, deltaToPage, editorRotation, fontStack, hitObject, imageRectAt, objectsInside, resizeRect,
+  scaleArgs, snapMark, textRectFor, cornerPoint, unionRects,
 } from "./geometry";
 
 const PAGE: PageGeom = { index: 0, widthPt: 600, heightPt: 800, rotation: 0, crop: { l: 0, b: 0, r: 600, t: 800 }, label: null };
@@ -80,5 +81,46 @@ describe("edit geometry", () => {
     expect(fontStack("NotoSansKR-Regular")).toMatch(/Apple SD Gothic Neo/);
     expect(fontStack("CourierNew")).toMatch(/monospace$/);
     expect(fontStack("HYMyeongJo")).toMatch(/serif$/);
+  });
+});
+
+describe("edit geometry · Stage 8", () => {
+  const box = { l: 0, b: 0, r: 600, t: 800 };
+
+  it("clips, unions and picks what a marquee wholly contains", () => {
+    expect(clipRect({ l: -10, b: 790, r: 50, t: 900 }, box)).toEqual({ l: 0, b: 790, r: 50, t: 800 });
+    expect(clipRect({ l: 700, b: 0, r: 800, t: 10 }, box)).toBeNull();
+    expect(unionRects([])).toBeNull();
+    expect(unionRects([{ l: 1, b: 2, r: 3, t: 4 }, { l: 0, b: 3, r: 5, t: 3.5 }])).toEqual({ l: 0, b: 2, r: 5, t: 4 });
+    const objects = [obj(0, 10, 10, 50, 20), obj(1, 40, 15, 120, 30), obj(2, 0, 0, 600, 800, "path")];
+    expect(objectsInside(objects, { l: 5, b: 5, r: 60, t: 25 }).map((o) => o.objectId)).toEqual([0]);
+  });
+
+  it("a drag crosses a run it overlaps by a third of the line (or half a thin drag), not a graze", () => {
+    const run = { l: 72, b: 700, r: 400, t: 715 }; // 15 pt tall
+    expect(crossesRun({ l: 100, b: 690, r: 200, t: 720 }, run)).toBe(true);
+    expect(crossesRun({ l: 100, b: 706, r: 200, t: 709 }, run)).toBe(true); // thin, inside the line
+    expect(crossesRun({ l: 100, b: 713, r: 200, t: 740 }, run)).toBe(false); // grazes its top 2 pt
+    expect(crossesRun({ l: 399.5, b: 690, r: 500, t: 720 }, run)).toBe(false); // grazes its right end
+  });
+
+  it("snapMark grows to the runs crossed, keeps its own extent, ignores non-text and clips", () => {
+    const objects = [obj(0, 72, 700, 400, 715), obj(1, 72, 680, 300, 695), obj(2, 50, 600, 500, 760, "image")];
+    // crosses run 0 only, reaching past its right end
+    expect(snapMark({ l: 200, b: 702, r: 450, t: 712 }, objects, box)).toEqual({ l: 72, b: 700, r: 450, t: 715 });
+    // two runs → their union with the drag
+    expect(snapMark({ l: 100, b: 685, r: 150, t: 710 }, objects, box)).toEqual({ l: 72, b: 680, r: 400, t: 715 });
+    // nothing crossed: the raw rect, clipped to the page
+    expect(snapMark({ l: 550, b: -20, r: 650, t: 40 }, objects, box)).toEqual({ l: 550, b: 0, r: 600, t: 40 });
+    expect(snapMark({ l: 610, b: 10, r: 650, t: 40 }, objects, box)).toBeNull();
+  });
+
+  it("the editing frame turns by page + view rotation", () => {
+    expect(editorRotation(0, 0)).toBe(0);
+    expect(editorRotation(90, 0)).toBe(90);
+    expect(editorRotation(0, 270)).toBe(270);
+    expect(editorRotation(90, 270)).toBe(0);
+    expect(editorRotation(180, 180)).toBe(0);
+    expect(editorRotation(270, 180)).toBe(90);
   });
 });

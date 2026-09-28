@@ -60,6 +60,9 @@
   border-radius: var(--radius-md);
   color: var(--text-inverse);
 }
+/* a page only one document has (Stage 8 page alignment) */
+.cmp-missing[data-tone="ins"] { border-color: var(--success); border-style: solid; font-weight: 600; }
+.cmp-missing[data-tone="del"] { border-color: var(--danger); border-style: solid; font-weight: 600; }
 .cmp-mark { position: absolute; border-radius: 2px; mix-blend-mode: multiply; pointer-events: none; }
 .cmp-mark.del { background: rgb(217 63 63 / 0.28); box-shadow: inset 0 -2px 0 var(--danger); }
 .cmp-mark.ins { background: rgb(46 158 91 / 0.28); box-shadow: inset 0 -2px 0 var(--success); }

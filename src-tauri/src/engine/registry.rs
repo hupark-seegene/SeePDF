@@ -61,6 +61,9 @@ pub struct OpenDoc<'p> {
     pub bytes: Arc<[u8]>,
     /// `None` for untitled / merged documents.
     pub path: Option<PathBuf>,
+    /// Stage 8 `open_document { displayName }`: what [`OpenDoc::name`] reports instead of the
+    /// file name, so a recovered copy (`<uuid>.pdf`) shows the original document's name.
+    pub display_name: Option<String>,
     pub password: Option<String>,
     /// +1 on every mutation; part of every cache key and tile URL.
     pub generation: DocGeneration,
@@ -225,11 +228,23 @@ impl<'p> OpenDoc<'p> {
     }
 
     pub fn name(&self) -> String {
+        if let Some(name) = self.display_name.as_ref().filter(|n| !n.trim().is_empty()) {
+            return name.clone();
+        }
         self.path
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled.pdf".to_string())
+    }
+
+    /// [`OpenDoc::name`] without its extension — the `{{filename}}` stamp token.
+    pub fn name_stem(&self) -> String {
+        let name = self.name();
+        std::path::Path::new(&name)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or(name)
     }
 
     pub fn info(&self) -> DocInfo {
@@ -352,6 +367,20 @@ pub fn open<'p>(
     bytes: Vec<u8>,
     password: Option<String>,
 ) -> Result<DocInfo, EngineError> {
+    open_named(st, path, bytes, password, None)
+}
+
+/// [`open`] with `open_document`'s `displayName` (Stage 8): when given (and not blank), the
+/// document reports it as `DocInfo.name` — used for recovered copies, whose file is
+/// `<uuid>.pdf` but whose title must be the original document's name.
+pub fn open_named<'p>(
+    st: &mut EngineState<'p>,
+    path: Option<PathBuf>,
+    bytes: Vec<u8>,
+    password: Option<String>,
+    display_name: Option<String>,
+) -> Result<DocInfo, EngineError> {
+    let display_name = display_name.filter(|n| !n.trim().is_empty());
     let doc_id = st.alloc_doc_id();
     let byte_len = bytes.len();
     let shared_bytes: Arc<[u8]> = Arc::from(bytes.clone().into_boxed_slice());
@@ -395,6 +424,7 @@ pub fn open<'p>(
         bindings,
         bytes: shared_bytes,
         path,
+        display_name,
         password,
         generation: 1,
         saved_generation: 1,
@@ -442,6 +472,10 @@ pub fn close(st: &mut EngineState<'_>, doc_id: &str) -> Result<(), EngineError> 
     doc.history.clear();
     st.shared.docs.write().remove(doc_id);
     st.shared.tiles.drop_document(doc_id);
+    #[cfg(target_os = "macos")]
+    if let Some(app) = &st.app {
+        crate::app::menu::forget_document(app, doc_id);
+    }
     let spill = doc.history.spill_dir().to_path_buf();
     drop(doc);
     let _ = std::fs::remove_dir_all(spill);
@@ -650,6 +684,8 @@ fn announce(
         can_redo: doc.history.can_redo(),
     };
     let summary = doc.summary();
+    #[cfg(target_os = "macos")]
+    let labels = (doc.history.undo_label(), doc.history.redo_label());
 
     st.shared.docs.write().insert(doc_id.to_string(), summary);
     match tiles {
@@ -658,6 +694,10 @@ fn announce(
     }
     if let Some(app) = &st.app {
         let _ = app.emit("doc-changed", payload);
+        // Stage 8: the native 편집 menu names the step (실행 취소: 워터마크) for the focused
+        // window's document.
+        #[cfg(target_os = "macos")]
+        crate::app::menu::history_changed(app, doc_id, labels.0, labels.1);
     }
     Ok(())
 }

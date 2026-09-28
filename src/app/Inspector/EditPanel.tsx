@@ -1,12 +1,15 @@
 /**
  * UI_SPEC §7 "텍스트 객체 (편집)" / "이미지 객체" — the properties of the 편집 mode selection
  * (Stage 7): type, 글꼴 (read-only), the editability badge and reason, 크기 / 색상 for a text
- * object (`edit_text_object`), 위치 / 크기 read-outs and 삭제.
+ * object (`edit_text_object`), 위치 / 크기 as X · Y · 너비 · 높이 fields (Stage 8: X / Y move the
+ * selection's bounding box, 너비 / 높이 scale one object — both `transform_object`) and 삭제.
  */
+import { useState } from "react";
 import { useT } from "../../i18n/useT";
 import type { PageObject } from "../../ipc/types";
 import { useEditStore } from "../../edit/editStore";
-import { deleteSelection, reasonKey, restyleText } from "../../edit/actions";
+import { deleteSelection, reasonKey, restyleText, setSelectionGeometry } from "../../edit/actions";
+import { unionRects } from "../../edit/geometry";
 import { Swatches } from "../Swatches";
 import { useAppStore } from "../../store/appStore";
 import { RedactPanel } from "./RedactPanel";
@@ -40,6 +43,9 @@ function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
   if (!selection || chosen.length === 0) return hideEmpty ? null : <p className="empty">{t("edit.empty")}</p>;
   const one = chosen.length === 1 ? chosen[0] : null;
   const canDelete = chosen.every((o) => o.editable !== "readOnly");
+  const box = unionRects(chosen.map((o) => o.rect))!;
+  const canMove = chosen.some((o) => o.editable !== "readOnly");
+  const canScale = one?.editable === "full";
 
   return (
     <>
@@ -82,18 +88,31 @@ function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
             )}
           </>
         )}
-        {one && (
-          <dl className="inspector-meta">
-            <dt>{t("prop.position")}</dt>
-            <dd className="mono">
-              {fmt(one.rect.l)}, {fmt(one.rect.b)}
-            </dd>
-            <dt>{t("prop.size")}</dt>
-            <dd className="mono">
-              {fmt(one.rect.r - one.rect.l)} × {fmt(one.rect.t - one.rect.b)}
-            </dd>
-          </dl>
-        )}
+      </section>
+      <section className="field-group" aria-label={`${t("prop.position")} · ${t("prop.size")}`}>
+        <h3 className="field-label text-xs">
+          {t("prop.position")} · {t("prop.size")}
+        </h3>
+        {/* keyed by the selection: a half-typed value never carries over to another object */}
+        <div className="edit-geom" key={`${selection.page}:${selection.ids.join(",")}`}>
+          <NumberField label={t("edit.geometry.x")} value={box.l} disabled={!canMove} onCommit={(x) => void setSelectionGeometry({ x })} />
+          <NumberField label={t("edit.geometry.y")} value={box.b} disabled={!canMove} onCommit={(y) => void setSelectionGeometry({ y })} />
+          <NumberField
+            label={t("edit.geometry.w")}
+            value={box.r - box.l}
+            min={1}
+            disabled={!canScale}
+            onCommit={(w) => void setSelectionGeometry({ w })}
+          />
+          <NumberField
+            label={t("edit.geometry.h")}
+            value={box.t - box.b}
+            min={1}
+            disabled={!canScale}
+            onCommit={(h) => void setSelectionGeometry({ h })}
+          />
+        </div>
+        <p className="text-xs dim">{t("edit.geometry.hint")}</p>
       </section>
       {canDelete && (
         <section className="field-group">
@@ -103,5 +122,52 @@ function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * A points field that commits on Enter or blur (Esc restores): typing "1", "12", "120" must not
+ * send three transforms, and every commit is one undo step.
+ */
+function NumberField({ label, value, min, disabled, onCommit }: {
+  label: string;
+  value: number;
+  min?: number;
+  disabled?: boolean;
+  onCommit(v: number): void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const v = Number(draft.trim().replace(",", "."));
+    setDraft(null);
+    if (!draft.trim() || !Number.isFinite(v) || (min !== undefined && v < min)) return;
+    if (Math.abs(v - value) >= 0.05) onCommit(v);
+  };
+  return (
+    <label className="edit-geom-field text-xs">
+      <span className="dim">{label}</span>
+      <input
+        className="field mono"
+        type="number"
+        step={0.5}
+        min={min}
+        inputMode="decimal"
+        value={draft ?? fmt(value)}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.currentTarget.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            setDraft(null);
+          }
+        }}
+      />
+    </label>
   );
 }

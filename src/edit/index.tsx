@@ -3,8 +3,14 @@
  * mode is entered and puts `renderSurface` into every page's `surface` slot while 편집 is active.
  *
  * `start()` binds the store to the open document and owns the mode's keys — ⌫ / ⌦ delete (the
- * selected object, or the selected 영역 표시 mark), arrows nudge (⇧ × 10), Esc closes the editor /
- * deselects / returns to 선택 — but only while no text field has focus. Undo / redo stay global.
+ * selected object, or the selected 영역 표시 mark), arrows nudge (⇧ × 10), ⌘C / ⌘V / ⌘D copy,
+ * paste and duplicate objects (`duplicate_objects`), Esc closes the editor / deselects / returns
+ * to 선택 — but only while no text field has focus. Undo / redo stay global.
+ *
+ * ⌘C / ⌘V arrive three ways and each claims the event only when it acts: a `keydown` (Windows,
+ * tests), the DOM `copy` / `paste` events the native Edit menu's predefined items raise on macOS
+ * (the key never reaches JS there — see `AnnotationHost.tsx`), and `edit.copy` / `edit.paste` /
+ * `edit.duplicate` from the command bus (the menu's custom 복제 item).
  * It also runs the 영역 표시 lifecycle (`redact.ts`): previews while marks change, the leave guard,
  * and dropping the marks when the document moves under them or the mode is left.
  */
@@ -15,7 +21,10 @@ import { onDocChanged } from "../ipc/events";
 import { setEditCommandHandler, setEditLeaveGuard } from "../tools/commands";
 import { toolController } from "../tools/ToolController";
 import { useEditStore } from "./editStore";
-import { cancelSession, commitSession, deleteSelection, moveObjects } from "./actions";
+import {
+  cancelSession, clearObjectClipboard, commitSession, copySelection, deleteSelection, duplicateSelection,
+  hasObjectClipboard, moveObjects, pasteObjects,
+} from "./actions";
 import { EditLayer } from "./EditLayer";
 import { confirmLeave, dropMarks, onDocChangedForMarks, watchMarks } from "./redact";
 import "./edit.css";
@@ -59,8 +68,23 @@ export function onEditKeyDown(e: KeyboardEvent): void {
     store.removeMark(store.markSel);
     return;
   }
+  const letter = shortcutLetter(e);
+  if (letter === "v" && !store.session && hasObjectClipboard()) {
+    claim();
+    void pasteObjects();
+    return;
+  }
   const sel = store.selection;
   if (!sel || store.session) return;
+  if (letter === "c") {
+    if (copySelection()) claim();
+    return;
+  }
+  if (letter === "d") {
+    claim();
+    void duplicateSelection();
+    return;
+  }
   if (e.key === "Backspace" || e.key === "Delete") {
     claim();
     void deleteSelection();
@@ -80,6 +104,29 @@ export function onEditKeyDown(e: KeyboardEvent): void {
   }
 }
 
+/**
+ * The letter of a plain ⌘/Ctrl + letter chord, or "". With the Korean input source on, `e.key` is
+ * the jamo ("ㅊ" for C), so a non-Latin key falls back to the physical key (`KeyC`).
+ */
+function shortcutLetter(e: KeyboardEvent): string {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return "";
+  const key = e.key.toLowerCase();
+  if (/^[a-z]$/.test(key)) return key;
+  return e.code?.startsWith("Key") ? e.code.slice(3).toLowerCase() : "";
+}
+
+/** The macOS route of ⌘C / ⌘V (see the header). A field keeps its own clipboard. */
+function onClipboardEvent(e: ClipboardEvent): void {
+  if (useAppStore.getState().mode !== "edit" || typing(e.target)) return;
+  if (useEditStore.getState().session) return;
+  if (e.type === "copy") {
+    if (copySelection()) e.preventDefault();
+  } else if (e.type === "paste" && hasObjectClipboard()) {
+    e.preventDefault();
+    void pasteObjects();
+  }
+}
+
 function renderSurface(ctx: PageLayerContext) {
   return <EditLayer ctx={ctx} />;
 }
@@ -88,7 +135,10 @@ function start(): () => void {
   const bind = () => useEditStore.getState().bind(useDocStore.getState().info?.docId ?? null);
   bind();
   const offDoc = useDocStore.subscribe((s, prev) => {
-    if (s.info?.docId !== prev.info?.docId) bind();
+    if (s.info?.docId !== prev.info?.docId) {
+      bind();
+      clearObjectClipboard();
+    }
   });
   window.addEventListener("keydown", onEditKeyDown, true);
   setEditCommandHandler((id) => {
@@ -102,13 +152,26 @@ function start(): () => void {
       void deleteSelection();
       return true;
     }
+    if (id === "edit.copy") return copySelection();
+    if (id === "edit.duplicate" && store.selection && !store.session) {
+      void duplicateSelection();
+      return true;
+    }
+    if (id === "edit.paste" && hasObjectClipboard() && !store.session) {
+      void pasteObjects();
+      return true;
+    }
     return false;
   });
+  document.addEventListener("copy", onClipboardEvent, true);
+  document.addEventListener("paste", onClipboardEvent, true);
   setEditLeaveGuard(confirmLeave);
   const offMarks = watchMarks();
   const offChanged = onDocChanged(onDocChangedForMarks);
   return () => {
     window.removeEventListener("keydown", onEditKeyDown, true);
+    document.removeEventListener("copy", onClipboardEvent, true);
+    document.removeEventListener("paste", onClipboardEvent, true);
     setEditCommandHandler(null);
     setEditLeaveGuard(null);
     offMarks();

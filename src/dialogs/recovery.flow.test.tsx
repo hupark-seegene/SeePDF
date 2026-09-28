@@ -71,11 +71,15 @@ describe("dialogs.recovery.flow", () => {
     const save = vi.spyOn(mock, "saveDocument");
     const saveAs = vi.spyOn(mock, "saveDocumentAs");
     const discard = vi.spyOn(mock, "discardRecovery");
+    const open = vi.spyOn(mock, "openDocument");
     await showDialog();
     fireEvent.click(screen.getByRole("button", { name: "계약서 초안.pdf 열기" }));
 
     await waitFor(() => expect(useDocStore.getState().info?.path).toBe(ENTRIES[0].recoveryPath));
     const info = useDocStore.getState().info!;
+    // Stage 8: the title shows the original name, not `<uuid>.pdf`
+    expect(open).toHaveBeenCalledWith({ path: ENTRIES[0].recoveryPath, password: undefined, displayName: "계약서 초안.pdf" });
+    expect(info.name).toBe("계약서 초안.pdf");
     expect(useDialogStore.getState().stack).toHaveLength(0);
     await waitFor(() =>
       expect(useToastStore.getState().toasts.map((t) => t.messageKey)).toContain("recovery.opened"),
@@ -90,6 +94,57 @@ describe("dialogs.recovery.flow", () => {
     expect(discard).toHaveBeenCalledWith({ id: ENTRIES[0].id });
     expect(recoveredEntry(info.docId)).toBeUndefined();
     expect(updateRecent).toHaveBeenCalled();
+  });
+});
+
+describe("dialogs.recovery.dontSave (Stage 8)", () => {
+  async function openRecoveredDirty() {
+    await showDialog();
+    fireEvent.click(screen.getByRole("button", { name: "계약서 초안.pdf 열기" }));
+    await waitFor(() => expect(useDocStore.getState().info?.path).toBe(ENTRIES[0].recoveryPath));
+    const info = useDocStore.getState().info!;
+    act(() => useDocStore.setState({ info: { ...info, dirty: true } }));
+    return info;
+  }
+
+  it("저장 안 함 on a recovered document asks; 삭제 discards the recovery copy", async () => {
+    const discard = vi.spyOn(mock, "discardRecovery");
+    const info = await openRecoveredDirty();
+    const flows = await import("./flows");
+    const closing = flows.closeDocumentFlow();
+    fireEvent.click(await screen.findByRole("button", { name: "저장 안 함" }));
+    const ask = await screen.findByRole("dialog", { name: "복구 사본을 보관할까요?" });
+    expect(ask).toHaveTextContent("계약서 초안.pdf");
+    fireEvent.click(within(ask).getByRole("button", { name: "삭제" }));
+    expect(await closing).toBe(true);
+    expect(discard).toHaveBeenCalledWith({ id: ENTRIES[0].id });
+    expect(recoveredEntry(info.docId)).toBeUndefined();
+    expect((await api.listRecovery()).map((e) => e.id)).not.toContain(ENTRIES[0].id);
+  });
+
+  it("보관 (the default) keeps it for the next launch", async () => {
+    const discard = vi.spyOn(mock, "discardRecovery");
+    await openRecoveredDirty();
+    const flows = await import("./flows");
+    const closing = flows.closeDocumentFlow();
+    fireEvent.click(await screen.findByRole("button", { name: "저장 안 함" }));
+    const ask = await screen.findByRole("dialog", { name: "복구 사본을 보관할까요?" });
+    fireEvent.click(within(ask).getByRole("button", { name: "보관" }));
+    expect(await closing).toBe(true);
+    expect(discard).not.toHaveBeenCalled();
+    expect((await api.listRecovery()).map((e) => e.id)).toContain(ENTRIES[0].id);
+  });
+
+  it("a document that is not a recovered copy is not asked", async () => {
+    await useDocStore.getState().open("/Users/veri/Documents/SeePDF-샘플.pdf");
+    const info = useDocStore.getState().info!;
+    act(() => useDocStore.setState({ info: { ...info, dirty: true } }));
+    render(<DialogHost />);
+    const flows = await import("./flows");
+    const closing = flows.closeDocumentFlow();
+    fireEvent.click(await screen.findByRole("button", { name: "저장 안 함" }));
+    expect(await closing).toBe(true);
+    expect(screen.queryByRole("dialog", { name: "복구 사본을 보관할까요?" })).toBeNull();
   });
 });
 

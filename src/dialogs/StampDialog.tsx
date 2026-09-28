@@ -1,12 +1,21 @@
 /**
  * 워터마크 / 머리글·바닥글 (P1-4). One dialog, three roles: the role only picks the defaults
  * (anchor, rotation, size, opacity) and the undo label; the engine lays the stamp out from the
- * anchor + margin. The preview is a CSS approximation on a page-shaped box — no rendering.
+ * anchor + margin. The preview is a CSS approximation over the first page of the range (its
+ * thumbnail, in the page's visual size: crop box, `/Rotate` applied — the space the engine lays
+ * the stamp out in). An image stamp shows the picked file when the webview can load it
+ * (`convertFileSrc`, the Tauri asset protocol), else a placeholder box.
+ *
+ * 워터마크 제거 (Stage 8): `remove_stamps` over the same page range, for the current role or every
+ * SeePDF stamp (모두 제거 — the only way to reach stamps written before roles were recorded).
  * Lazy-loaded from `DialogHost`.
  */
 import { useMemo, useRef, useState } from "react";
 import { Image as ImageIcon } from "lucide-react";
 import * as api from "../ipc/api";
+import { tauriInternals } from "../ipc/env";
+import { thumbUrl } from "../ipc/protocol";
+import { devicePixelRatio } from "../viewer/geometry";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
@@ -19,13 +28,25 @@ import { RangePicker } from "./RangePicker";
 import { resolveRange, type RangeChoice } from "./pageRange";
 import { message } from "./flows";
 import {
-  ANCHORS, STAMP_TOKENS, anchorStyle, buildStampSpec, expandTokens, initialStampForm, insertToken, isoDate, stemOf,
-  switchRole, validateStamp, type StampForm, type StampToken,
+  ANCHORS, STAMP_TOKENS, anchorStyle, buildStampSpec, expandTokens, imageStampHeight, initialStampForm, insertToken,
+  isoDate, removeStampsArgs, stemOf, switchRole, validateStamp, visualPageSize, type StampForm, type StampToken,
 } from "./stamp";
 
 const ROLES: StampRole[] = ["watermark", "header", "footer"];
 /** preview page width in CSS px */
 const PREVIEW_W = 168;
+
+/**
+ * A local image as a URL the webview can load: the Tauri asset protocol via `convertFileSrc`, when
+ * there is one. `null` (mock / browser) keeps the placeholder; so does a load error (the protocol
+ * not enabled, or the CSP refusing it). Replaceable in tests.
+ */
+export const stampImageSource = {
+  resolve(path: string): string | null {
+    const convert = tauriInternals()?.convertFileSrc;
+    return convert ? convert(path, "asset") : null;
+  },
+};
 
 export default function StampDialog({ onClose, role: initialRole }: { onClose(): void; role?: StampRole }) {
   const t = useT();
@@ -36,6 +57,9 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
   const [form, setForm] = useState<StampForm>(() => initialStampForm(initialRole ?? "watermark", watermarkText));
   const [range, setRange] = useState<RangeChoice>({ mode: "all", text: "" });
   const [busy, setBusy] = useState(false);
+  /** the picked image as the webview loaded it: its URL and natural size */
+  const [image, setImage] = useState<{ path: string; src: string; w: number; h: number } | null>(null);
+  const [imageFailed, setImageFailed] = useState<string | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
 
   const pageCount = info?.pageCount ?? 0;
@@ -47,10 +71,15 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
 
   const patch = (p: Partial<StampForm>) => setForm((f) => ({ ...f, ...p }));
   const error = validateStamp(form, pages);
-  const first = info.pages[0];
-  const pageW = first?.widthPt || 612;
-  const pageH = first?.heightPt || 792;
+  // the first page of the range, in the space the engine lays the stamp out in
+  const previewPage = pages?.[0] ?? 0;
+  const { widthPt: pageW, heightPt: pageH } = visualPageSize(info.pages[previewPage]);
   const scale = PREVIEW_W / pageW;
+  const imageSrc =
+    form.source === "image" && form.imagePath && imageFailed !== form.imagePath
+      ? stampImageSource.resolve(form.imagePath)
+      : null;
+  const loaded = image && image.path === form.imagePath ? image : null;
 
   const addToken = (token: StampToken) => {
     const el = textRef.current;
@@ -91,8 +120,29 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
     }
   };
 
+  /** 워터마크 제거: the chosen role (or every role) on the chosen range; the dialog stays open. */
+  const remove = async (scope: "role" | "all") => {
+    if (!pages?.length) return;
+    setBusy(true);
+    try {
+      const args = removeStampsArgs(scope, form.role, pages, range.mode === "all");
+      const result = await api.removeStamps({ docId: info.docId, ...args });
+      useDocStore.getState().adopt(result.info);
+      if (result.removed === 0) toast("stamp.remove.none", undefined, { tone: "info" });
+      else
+        toast("stamp.remove.done", { count: result.removed }, {
+          tone: "success",
+          actions: [{ labelKey: "common.undo", onSelect: () => void import("../annot/sync").then((m) => m.undoWithAnnots()) }],
+        });
+    } catch (e) {
+      toast("stamp.remove.failed", undefined, { tone: "danger", detail: message(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const previewText = expandTokens(form.text, {
-    page: 1,
+    page: previewPage + 1,
     total: info.pageCount,
     date: isoDate(),
     filename: stemOf(info.name),
@@ -282,10 +332,49 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
           <Row labelKey="pages.range">
             <RangePicker value={range} onChange={setRange} pageCount={pageCount} selectedCount={selected.length} />
           </Row>
+
+          <Row labelKey="stamp.remove.section">
+            <div className="inline-row">
+              <button
+                type="button"
+                className="btn"
+                data-danger
+                disabled={busy || !pages?.length}
+                onClick={() => void remove("role")}
+              >
+                {t(`stamp.remove.role.${form.role}`)}
+              </button>
+              <button
+                type="button"
+                className="btn quiet"
+                data-danger
+                disabled={busy || !pages?.length}
+                onClick={() => void remove("all")}
+              >
+                {t("stamp.remove.all")}
+              </button>
+            </div>
+            <p className="dlg-hint text-xs">{t("stamp.remove.hint")}</p>
+          </Row>
         </div>
 
         <figure className="stamp-preview" aria-label={t("stamp.preview")}>
-          <div className="stamp-page" style={{ width: PREVIEW_W, height: Math.round(pageH * scale) }}>
+          <div
+            className="stamp-page"
+            data-testid="stamp-preview-page"
+            style={{ width: PREVIEW_W, height: Math.round(pageH * scale) }}
+          >
+            <img
+              className="stamp-thumb"
+              src={thumbUrl({
+                doc: info.docId,
+                gen: info.docGeneration,
+                page: previewPage,
+                w: Math.round(PREVIEW_W * devicePixelRatio()),
+              })}
+              alt=""
+              draggable={false}
+            />
             <div
               className="stamp-mark"
               data-testid="stamp-preview-mark"
@@ -304,9 +393,28 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
               ) : (
                 <span
                   className="stamp-image"
-                  style={{ width: Math.max(8, form.imageWidthPt * scale), height: Math.max(6, form.imageWidthPt * scale * 0.6) }}
+                  data-loaded={loaded ? true : undefined}
+                  style={{
+                    width: Math.max(8, form.imageWidthPt * scale),
+                    height: Math.max(6, imageStampHeight(form.imageWidthPt, loaded?.w, loaded?.h) * scale),
+                  }}
                 >
-                  <ImageIcon size={12} strokeWidth={1.75} aria-hidden />
+                  {imageSrc && form.imagePath ? (
+                    <img
+                      key={imageSrc}
+                      src={imageSrc}
+                      alt=""
+                      data-testid="stamp-preview-image"
+                      draggable={false}
+                      hidden={!loaded}
+                      onLoad={(e) => {
+                        const el = e.currentTarget;
+                        setImage({ path: form.imagePath ?? "", src: imageSrc, w: el.naturalWidth, h: el.naturalHeight });
+                      }}
+                      onError={() => setImageFailed(form.imagePath)}
+                    />
+                  ) : null}
+                  {!loaded && <ImageIcon size={12} strokeWidth={1.75} aria-hidden />}
                 </span>
               )}
             </div>

@@ -360,3 +360,166 @@ fn stamp_encrypted_document_keeps_its_password() {
     let without = with_state(move |st| registry::open(st, None, bytes, None).map(|i| i.doc_id));
     assert_eq!(without.unwrap_err().code, ErrorCode::PasswordRequired);
 }
+
+// ---------------------------------------------------------------------------------------
+// Stage 8 — remove_stamps, the role param, rotated stamps inside the margin
+// ---------------------------------------------------------------------------------------
+
+fn remove(
+    doc_id: &str,
+    pages: Option<PageSelection>,
+    role: Option<StampRole>,
+) -> seepdf_lib::ipc::types::RemoveStampsResult {
+    let doc_id = doc_id.to_string();
+    with_state(move |st| stamp::remove_stamps(st, &doc_id, pages.as_ref(), role))
+        .expect("remove_stamps")
+}
+
+fn counts(doc_id: &str, pages: u16) -> Vec<usize> {
+    (0..pages).map(|p| object_count(doc_id, p)).collect()
+}
+
+/// A pre-Stage 8 stamp: a text object carrying the bare `SeePDF:Stamp` mark (no `role`).
+fn add_legacy_stamp(doc_id: &str, page: u16) {
+    use seepdf_lib::engine::annot::ScratchPage;
+    use seepdf_lib::engine::raw::object::Mark;
+    use seepdf_lib::engine::registry::MutateOpts;
+    use seepdf_lib::ipc::types::{ChangeReason, Rect, TextAlign};
+    let id = doc_id.to_string();
+    with_state(move |st| {
+        objects::add_text(
+            st,
+            &id,
+            page,
+            Rect::new(72.0, 300.0, 400.0, 340.0),
+            "LEGACY STAMP",
+            18.0,
+            [0, 0, 200],
+            TextAlign::Left,
+        )?;
+        registry::mutate(
+            st,
+            &id,
+            MutateOpts::new("undo.objectEdit", ChangeReason::Edit).page(page),
+            |doc| {
+                let bindings = doc.bindings();
+                let mut scratch = ScratchPage::open(doc, page)?;
+                let last = raw::object::object_count(bindings, &scratch.page) - 1;
+                raw::object::add_mark(bindings, doc.pdf(), &scratch.page, last, Mark::plain(STAMP_MARK))?;
+                scratch.page.regenerate_content().unwrap();
+                Ok(())
+            },
+        )
+    })
+    .expect("legacy stamp");
+}
+
+#[test]
+fn remove_stamps_by_role_and_all_with_undo() {
+    let doc = open("tracemonkey.pdf");
+    let n = doc.info.page_count;
+    let base = counts(&doc.doc_id, n);
+
+    let mut watermark = text_spec(StampRole::Watermark, "DRAFT", StampAnchor::Mc);
+    watermark.rotate_deg = 45.0;
+    add(&doc.doc_id, watermark).expect("watermark");
+    let mut header = text_spec(StampRole::Header, "p. {{page}}", StampAnchor::Tc);
+    header.pages = PageSelection::List(vec![0, 2]);
+    add(&doc.doc_id, header).expect("header");
+    add(
+        &doc.doc_id,
+        text_spec(StampRole::Footer, "footer one\nfooter two", StampAnchor::Bc),
+    )
+    .expect("footer");
+    add_legacy_stamp(&doc.doc_id, 1);
+    let stamped = counts(&doc.doc_id, n);
+    for p in 0..n as usize {
+        let header = if p == 0 || p == 2 { 1 } else { 0 };
+        let legacy = if p == 1 { 1 } else { 0 };
+        assert_eq!(stamped[p], base[p] + 1 + header + 2 + legacy, "page {p}");
+    }
+
+    // The role survives serialisation: a reopened copy filters by role too.
+    let copy = reopen(save_bytes(&doc.doc_id), None);
+    assert_eq!(remove(&copy.doc_id, None, Some(StampRole::Header)).removed, 2);
+
+    // One role.
+    let r = remove(&doc.doc_id, None, Some(StampRole::Header));
+    assert_eq!(r.removed, 2);
+    assert_eq!(r.info.undo_label.as_deref(), Some("undo.removeStamps"));
+    assert_eq!(object_count(&doc.doc_id, 0), stamped[0] - 1);
+    assert_eq!(object_count(&doc.doc_id, 1), stamped[1]);
+    // One role on a page subset.
+    let r = remove(&doc.doc_id, Some(PageSelection::List(vec![1])), Some(StampRole::Watermark));
+    assert_eq!(r.removed, 1);
+    assert_eq!(object_count(&doc.doc_id, 1), stamped[1] - 1);
+    // Nothing left of a role: not an error, no undo step, same generation.
+    let generation = r.info.doc_generation;
+    let none = remove(&doc.doc_id, None, Some(StampRole::Header));
+    assert_eq!(none.removed, 0);
+    assert_eq!(none.info.doc_generation, generation);
+    assert_eq!(none.info.undo_label.as_deref(), Some("undo.removeStamps"));
+    // The legacy stamp has no role: only an all-roles removal takes it.
+    let r = remove(&doc.doc_id, None, Some(StampRole::Footer));
+    assert_eq!(r.removed, 2 * n as u32);
+    assert_eq!(object_count(&doc.doc_id, 1), stamped[1] - 1 - 2);
+    let before_all = counts(&doc.doc_id, n);
+    let r = remove(&doc.doc_id, None, None);
+    assert_eq!(r.removed, (n - 1) as u32 + 1, "the other watermarks and the legacy stamp");
+    assert_eq!(counts(&doc.doc_id, n), base);
+    assert!(!page_text(&doc.doc_id, 1).contains("LEGACY STAMP"));
+    assert!(!page_text(&doc.doc_id, 0).contains("DRAFT"));
+
+    // One undo step brings exactly that removal back.
+    undo(&doc.doc_id);
+    assert_eq!(counts(&doc.doc_id, n), before_all);
+    assert!(page_text(&doc.doc_id, 1).contains("LEGACY STAMP"));
+}
+
+/// Stage 8: a rotated stamp is anchored by its rotated bounding box, so at every corner and
+/// edge of every page (a `/Rotate 90` one included) its ink stays inside the page — inside
+/// the margin, give or take the glyphs' side bearings.
+#[test]
+fn rotated_stamp_stays_inside_the_page_at_every_corner() {
+    let margin = 12.0;
+    for fixture_name in ["tracemonkey.pdf", "rotation.pdf"] {
+        for anchor in [
+            StampAnchor::Tl,
+            StampAnchor::Tc,
+            StampAnchor::Tr,
+            StampAnchor::Ml,
+            StampAnchor::Mr,
+            StampAnchor::Bl,
+            StampAnchor::Bc,
+            StampAnchor::Br,
+        ] {
+            for deg in [45.0, -30.0, 90.0] {
+                let doc = open(fixture_name);
+                let pages: Vec<u16> = (0..doc.info.page_count.min(2)).collect();
+                let mut spec = text_spec(StampRole::Watermark, "CONFIDENTIAL 대외비", anchor);
+                spec.source = PageStampSource::Text {
+                    text: "CONFIDENTIAL 대외비".into(),
+                    font_size_pt: 48.0,
+                    color: [200, 0, 0],
+                };
+                spec.margin_pt = margin;
+                spec.rotate_deg = deg;
+                spec.pages = PageSelection::List(pages.clone());
+                add(&doc.doc_id, spec).expect("add_stamp");
+                for &p in &pages {
+                    let crop = doc.info.pages[p as usize].crop;
+                    let (kind, rect, _, _, marked) = last_object(&doc.doc_id, p);
+                    assert!(marked && kind == PageObjectType::Text);
+                    let slack = 3.0;
+                    assert!(
+                        rect[0] >= crop.l + margin - slack
+                            && rect[1] >= crop.b + margin - slack
+                            && rect[2] <= crop.r - margin + slack
+                            && rect[3] <= crop.t - margin + slack,
+                        "{fixture_name} p{p} {anchor:?} {deg}°: {rect:?} outside {crop:?} − {margin}"
+                    );
+                }
+            }
+        }
+    }
+}

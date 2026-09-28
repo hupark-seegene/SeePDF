@@ -18,12 +18,18 @@ import { ALL_HANDLES, handlePoint, isResizable } from "../tools/hit";
 import { HANDLE_PX } from "../tools/select";
 import { useAnnotStore } from "../store/annotStore";
 import { AnnotShape, PreviewShape } from "./shapes";
+import { snapshotVersion, subscribeSnapshots } from "./snapshots";
 
 function usePreview() {
   return useSyncExternalStore(
     (l) => toolController.subscribe(l),
     () => toolController.version(),
   );
+}
+
+/** A drag's appearance snapshot arrived: repaint the ghosts that use it. */
+function useSnapshots() {
+  return useSyncExternalStore(subscribeSnapshots, snapshotVersion);
 }
 
 /** The dashed outline that says "this is an annotation" without repainting it. */
@@ -71,6 +77,7 @@ export interface AnnotOverlayProps {
 
 export const AnnotOverlay = memo(function AnnotOverlay({ ctx }: AnnotOverlayProps) {
   usePreview();
+  useSnapshots();
   const annots = useAnnotStore((s) => s.byPage[ctx.index]);
   const ghosts = useAnnotStore((s) => s.ghosts);
   const selected = useAnnotStore((s) => s.selected);

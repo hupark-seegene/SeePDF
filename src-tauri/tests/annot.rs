@@ -637,6 +637,7 @@ fn annot_stamp_image_roundtrip() {
                 path: image_path.display().to_string(),
             },
             rotate: None,
+            signature: false,
         }),
     );
     let builtin = create(
@@ -648,6 +649,7 @@ fn annot_stamp_image_roundtrip() {
                 builtin: "approved".to_string(),
             },
             rotate: None,
+            signature: false,
         }),
     );
 
@@ -702,6 +704,7 @@ fn annot_stamp_korean_builtin() {
                         builtin: name.to_string(),
                     },
                     rotate: None,
+                    signature: false,
                 }),
             )
         })
@@ -786,6 +789,7 @@ fn annot_stamp_png_keeps_transparency() {
                 path: path.display().to_string(),
             },
             rotate: None,
+            signature: false,
         }),
     );
     let bytes = save_bytes(&doc.doc_id);
@@ -1319,4 +1323,92 @@ fn annot_drag_hide_unhides_before_the_undo_snapshot() {
         find(&list(&doc.doc_id, 0), &id).hidden,
         "an update made while hidden snapshots /F HIDDEN — which is why dragHide.ts unhides first"
     );
+}
+
+/// Stage 8: a typed / image signature is a Stamp with `signature: true` — written with
+/// `/Subj "SeePDF:Signature"`, read back (also after save → reopen) as `kind: signature`,
+/// editable, movable in place; a plain image stamp stays a stamp.
+#[test]
+fn annot_stamp_signature_reads_back_as_signature() {
+    let doc = open("tracemonkey.pdf");
+    let image_path = out_dir().join("signature-source.png");
+    write_test_png(&image_path);
+    let rect = Rect::new(100.0, 100.0, 220.0, 150.0);
+    let signature = create(
+        &doc.doc_id,
+        0,
+        AnnotSpec::Stamp(StampSpec {
+            rect,
+            image: StampImage::Path {
+                path: image_path.display().to_string(),
+            },
+            rotate: None,
+            signature: true,
+        }),
+    );
+    let plain = create(
+        &doc.doc_id,
+        0,
+        AnnotSpec::Stamp(StampSpec {
+            rect: Rect::new(300.0, 100.0, 360.0, 160.0),
+            image: StampImage::Path {
+                path: image_path.display().to_string(),
+            },
+            rotate: None,
+            signature: false,
+        }),
+    );
+    let annots = list(&doc.doc_id, 0);
+    let s = find(&annots, &signature);
+    assert_eq!(s.kind, AnnotKind::Signature);
+    assert_eq!(s.subtype, "Stamp");
+    assert_eq!(s.stamp_kind.as_deref(), Some(annot::SUBJ_SIGNATURE));
+    assert_eq!(s.editable, seepdf_lib::ipc::types::Editability::Full);
+    assert_eq!(find(&annots, &plain).kind, AnnotKind::Stamp);
+
+    // Moving it keeps it a signature (the Stamp-backed in-place path, not an Ink rebuild).
+    let (d, id) = (doc.doc_id.clone(), signature.clone());
+    let moved = Rect::new(120.0, 400.0, 240.0, 450.0);
+    with_state(move |st| {
+        registry::mutate(
+            st,
+            &d,
+            MutateOpts::new("undo.annotEdit", seepdf_lib::ipc::types::ChangeReason::Edit).page(0),
+            |doc| {
+                annot::update::update(
+                    doc,
+                    0,
+                    &id,
+                    &seepdf_lib::ipc::types::AnnotPatch {
+                        rect: Some(moved),
+                        ..Default::default()
+                    },
+                )
+            },
+        )
+    })
+    .expect("move the signature");
+
+    let saved = reopen(save_bytes(&doc.doc_id));
+    let annots = list(&saved.doc_id, 0);
+    let s = find(&annots, &signature);
+    assert_eq!(s.kind, AnnotKind::Signature);
+    assert!((s.rect.b - moved.b).abs() < 0.5 && (s.rect.l - moved.l).abs() < 0.5, "{:?}", s.rect);
+    assert_eq!(find(&annots, &plain).kind, AnnotKind::Stamp);
+
+    // The wire shape: `signature` only when true.
+    let spec = serde_json::to_value(AnnotSpec::Stamp(StampSpec {
+        rect,
+        image: StampImage::Builtin { builtin: "approved".into() },
+        rotate: None,
+        signature: false,
+    }))
+    .unwrap();
+    assert!(spec.get("signature").is_none());
+    let parsed: AnnotSpec = serde_json::from_value(serde_json::json!({
+        "kind": "stamp", "rect": { "l": 0.0, "b": 0.0, "r": 1.0, "t": 1.0 },
+        "image": { "path": "/x.png" }, "signature": true
+    }))
+    .unwrap();
+    assert!(matches!(parsed, AnnotSpec::Stamp(StampSpec { signature: true, .. })));
 }

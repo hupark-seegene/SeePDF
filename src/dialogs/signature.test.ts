@@ -72,6 +72,30 @@ describe("placing a drawn signature", () => {
     expect(spec.opacity).toBe(1);
   });
 
+  it("a typed / picked-image 서명 is a stamp flagged `signature: true`; a 도장 is not (Stage 8)", async () => {
+    const at = { page: 0, pt: [300, 400] as [number, number], modifiers: { shift: false, alt: false, meta: false } };
+    const place = (id: "stamp" | "signature") => {
+      const tool = makeStampTool(id);
+      const down = tool.onDown(tool.init({} as ToolContext), at, {} as ToolContext);
+      return tool.onUp(down.state, at, {} as ToolContext).commit!.spec;
+    };
+    setStampImage("signature", { path: "/tmp/sig.png" }, 4);
+    const sig = place("signature");
+    expect(sig).toMatchObject({ kind: "stamp", image: { path: "/tmp/sig.png" }, signature: true });
+    setStampImage("stamp", { path: "/tmp/seal.png" });
+    const seal = place("stamp");
+    expect(seal.kind).toBe("stamp");
+    expect("signature" in seal).toBe(false);
+
+    // …and it reads back as a 서명 (the mock mirrors `/Subj "SeePDF:Signature"` → kind signature)
+    const { mock } = await import("../ipc/mock");
+    const info = await mock.openDocument({ path: "/tmp/sig-kind.pdf" });
+    const out = await mock.createAnnotation({ docId: info.docId, page: 0, spec: sig });
+    expect(out.annot?.kind).toBe("signature");
+    const plain = await mock.createAnnotation({ docId: info.docId, page: 0, spec: seal });
+    expect(plain.annot?.kind).toBe("stamp");
+  });
+
   it("a picked image replaces a drawn signature and vice versa", () => {
     setDrawnSignature({ paths: [[0, 0, 1, 1]], aspect: 2 });
     expect(drawnSignature()).not.toBeNull();

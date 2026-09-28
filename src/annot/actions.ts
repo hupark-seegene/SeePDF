@@ -36,7 +36,7 @@ export function ghostFromSpec(page: PageIndex, spec: AnnotSpec, author: string |
   const base: Annot = {
     id: `ghost-${++ghostSeq}`,
     page,
-    kind: spec.kind === "signature" ? "signature" : (spec.kind as Annot["kind"]),
+    kind: spec.kind === "signature" || (spec.kind === "stamp" && spec.signature) ? "signature" : (spec.kind as Annot["kind"]),
     subtype: "Square",
     rect: { l: 0, b: 0, r: 0, t: 0 },
     color: [0, 0, 0],
@@ -292,6 +292,8 @@ export function specFromAnnot(a: Annot, dx = 0, dy = 0): AnnotSpec | null {
       return { kind: "note", at: [a.rect.l + dx, a.rect.t - dy], color: a.color, contents: a.contents };
     case "ink":
     case "signature":
+      // a typed / image signature is a stamp: its image path is not known here, like any stamp's
+      if (!a.inkPaths?.length) return null;
       return {
         kind: "ink",
         paths: (a.inkPaths ?? []).map((p) => p.map((v, i) => (i % 2 === 0 ? v + dx : v - dy))),

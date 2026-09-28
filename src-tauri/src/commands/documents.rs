@@ -11,17 +11,20 @@ use crate::ipc::EngineError;
 use std::path::PathBuf;
 use tauri::{AppHandle, State};
 
+/// `displayName` (Stage 8): what `DocInfo.name` reports instead of the file name — a recovered
+/// copy (`<uuid>.pdf`) opens under the original document's name.
 #[tauri::command]
 pub async fn open_document(
     engine: State<'_, EngineHandle>,
     path: String,
     password: Option<String>,
+    display_name: Option<String>,
 ) -> Result<DocInfo, EngineError> {
     let bytes = super::read_file(&path).await?;
     let path_buf = PathBuf::from(&path);
     engine
         .call(Lane::Edit, "open_document", move |st| {
-            registry::open(st, Some(path_buf), bytes, password)
+            registry::open_named(st, Some(path_buf), bytes, password, display_name)
         })
         .await
 }
@@ -74,10 +77,15 @@ pub fn open_in_new_window(app: AppHandle, path: Option<String>) -> Result<String
 
 #[tauri::command]
 pub fn window_bind_document(
+    app: AppHandle,
     windows: State<'_, WindowDocs>,
     label: String,
     doc_id: Option<String>,
 ) -> Result<(), EngineError> {
+    #[cfg(target_os = "macos")]
+    crate::app::menu::document_bound(&app, &label, doc_id.as_deref());
+    #[cfg(not(target_os = "macos"))]
+    let _ = &app;
     windows.bind(&label, doc_id);
     Ok(())
 }

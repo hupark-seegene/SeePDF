@@ -12,8 +12,8 @@
 
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
-    PdfDocument, PdfPage, PdfiumLibraryBindings, FPDF_FILEACCESS, FPDF_PAGE, FPDF_PAGEOBJECT,
-    FPDF_XOBJECT, FS_MATRIX,
+    PdfDocument, PdfPage, PdfiumLibraryBindings, FPDF_DOCUMENT, FPDF_FILEACCESS, FPDF_PAGE,
+    FPDF_PAGEOBJECT, FPDF_PAGEOBJECTMARK, FPDF_XOBJECT, FS_MATRIX,
 };
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -42,29 +42,74 @@ fn object_at(
     Ok(handle)
 }
 
-/// `FPDFPageObj_AddMark(object, name)` — tags the object at `index` with a parameterless
-/// marked-content sequence (`/name BMC … EMC` once the content is regenerated).
+/// A content mark to put on an object: `/name <</key (value) …>> BDC … EMC` once the content
+/// is regenerated (`/name BMC … EMC` when there are no params).
+#[derive(Debug, Clone, Copy)]
+pub struct Mark<'a> {
+    pub name: &'a str,
+    pub params: &'a [(&'a str, &'a str)],
+}
+
+impl<'a> Mark<'a> {
+    pub fn plain(name: &'a str) -> Self {
+        Self { name, params: &[] }
+    }
+}
+
+/// `FPDFPageObj_AddMark` (+ `FPDFPageObjMark_SetStringParam` per param) on the object at
+/// `index` of `page`, which belongs to `document`.
 pub fn add_mark(
     bindings: &dyn PdfiumLibraryBindings,
+    document: &PdfDocument<'_>,
     page: &PdfPage<'_>,
     index: usize,
-    name: &str,
+    mark: Mark<'_>,
 ) -> Result<(), EngineError> {
     let handle = object_at(bindings, page, index)?;
-    mark_handle(bindings, handle, name)
+    mark_handle(bindings, document.raw_handle(), handle, mark)
 }
 
 fn mark_handle(
     bindings: &dyn PdfiumLibraryBindings,
+    document: FPDF_DOCUMENT,
     handle: FPDF_PAGEOBJECT,
-    name: &str,
+    mark: Mark<'_>,
 ) -> Result<(), EngineError> {
     // SAFETY: `handle` belongs to a live page (or is a fresh, not-yet-inserted object).
-    let mark = unsafe { bindings.FPDFPageObj_AddMark(handle, name) };
-    if mark.is_null() {
+    let created = unsafe { bindings.FPDFPageObj_AddMark(handle, mark.name) };
+    if created.is_null() {
         return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPageObj_AddMark failed"));
     }
+    for (key, value) in mark.params {
+        // SAFETY: `document` owns `handle`'s page (or will); `created` lives with the object.
+        let ok = unsafe {
+            bindings.FPDFPageObjMark_SetStringParam(document, handle, created, key, value)
+        };
+        if !bindings.is_true(ok) {
+            return Err(EngineError::new(
+                ErrorCode::Pdfium,
+                "FPDFPageObjMark_SetStringParam failed",
+            ));
+        }
+    }
     Ok(())
+}
+
+/// The first mark called `name` on the object at `index`.
+fn find_mark(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    index: usize,
+    name: &str,
+) -> Option<FPDF_PAGEOBJECTMARK> {
+    let handle = object_at(bindings, page, index).ok()?;
+    // SAFETY: as above.
+    let count = unsafe { bindings.FPDFPageObj_CountMarks(handle) };
+    (0..count).find_map(|i| {
+        // SAFETY: `i` is in range; the mark handle lives as long as the object.
+        let mark = unsafe { bindings.FPDFPageObj_GetMark(handle, i as c_ulong) };
+        (!mark.is_null() && mark_name(bindings, mark).as_deref() == Some(name)).then_some(mark)
+    })
 }
 
 /// Does the object at `index` carry a content mark called `name`?
@@ -74,16 +119,42 @@ pub fn has_mark(
     index: usize,
     name: &str,
 ) -> bool {
-    let Ok(handle) = object_at(bindings, page, index) else {
-        return false;
+    find_mark(bindings, page, index, name).is_some()
+}
+
+/// `None` when the object at `index` has no mark called `name`; otherwise the mark's string
+/// param `key`, if it has one (`Some(None)` for a parameterless mark).
+pub fn mark_param(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    index: usize,
+    name: &str,
+    key: &str,
+) -> Option<Option<String>> {
+    let mark = find_mark(bindings, page, index, name)?;
+    let mut len: c_ulong = 0;
+    // SAFETY: a null buffer asks for the length only; `mark` lives with the object.
+    let ok = unsafe {
+        bindings.FPDFPageObjMark_GetParamStringValue(mark, key, std::ptr::null_mut(), 0, &mut len)
     };
-    // SAFETY: as above.
-    let count = unsafe { bindings.FPDFPageObj_CountMarks(handle) };
-    (0..count).any(|i| {
-        // SAFETY: `i` is in range; the mark handle lives as long as the object.
-        let mark = unsafe { bindings.FPDFPageObj_GetMark(handle, i as c_ulong) };
-        !mark.is_null() && mark_name(bindings, mark).as_deref() == Some(name)
-    })
+    if !bindings.is_true(ok) || len < 2 {
+        return Some(None);
+    }
+    let mut buf = vec![0u8; len as usize];
+    // SAFETY: `buf` is `len` bytes, as PDFium asked for.
+    let ok = unsafe {
+        bindings.FPDFPageObjMark_GetParamStringValue(
+            mark,
+            key,
+            buf.as_mut_ptr() as *mut _,
+            len,
+            &mut len,
+        )
+    };
+    if !bindings.is_true(ok) {
+        return Some(None);
+    }
+    Some(crate::engine::raw::doc::decode_utf16le(&buf))
 }
 
 fn mark_name(
@@ -114,6 +185,8 @@ fn mark_name(
 /// references the same stream, so a logo stamped on 300 pages is stored once.
 pub struct XObject<'a> {
     handle: FPDF_XOBJECT,
+    /// The destination document (marks with params need it).
+    dest: FPDF_DOCUMENT,
     bindings: &'static dyn PdfiumLibraryBindings,
     _docs: PhantomData<&'a ()>,
 }
@@ -143,6 +216,7 @@ impl<'a> XObject<'a> {
         }
         Ok(Self {
             handle,
+            dest: dest.raw_handle(),
             bindings,
             _docs: PhantomData,
         })
@@ -154,7 +228,7 @@ impl<'a> XObject<'a> {
         &self,
         page: &PdfPage<'_>,
         matrix: Matrix,
-        mark: Option<&str>,
+        mark: Option<Mark<'_>>,
     ) -> Result<(), EngineError> {
         let b = self.bindings;
         // SAFETY: `self.handle` is live until drop.
@@ -179,8 +253,8 @@ impl<'a> XObject<'a> {
             if !b.is_true(ok) {
                 return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPageObj_SetMatrix failed"));
             }
-            if let Some(name) = mark {
-                mark_handle(b, object, name)?;
+            if let Some(mark) = mark {
+                mark_handle(b, self.dest, object, mark)?;
             }
             Ok(())
         })();
@@ -204,6 +278,48 @@ impl Drop for XObject<'_> {
         // SAFETY: closes only the wrapper; placed form objects keep the stream alive.
         unsafe { self.bindings.FPDF_CloseXObject(self.handle) };
     }
+}
+
+/// Stage 8 `duplicate_objects`: moves the objects at `indices` of `from` to the end of `to`,
+/// translated by `(dx, dy)` — clip path and soft-mask matrices included, so a clipped image
+/// does not end up clipped away.
+///
+/// `from` must be a **second, throw-away parse** of a page (never regenerated, dropped
+/// afterwards): its page dictionary is untouched, and what moves are complete copies of the
+/// objects that share the document's fonts, images and Form XObjects by reference. Both pages
+/// must belong to the same document (PDFium cannot move objects across documents).
+pub fn transplant(
+    bindings: &dyn PdfiumLibraryBindings,
+    from: &PdfPage<'_>,
+    indices: &[usize],
+    to: &PdfPage<'_>,
+    dx: f32,
+    dy: f32,
+) -> Result<(), EngineError> {
+    // Handles first: every removal shifts the indices after it.
+    let handles = indices
+        .iter()
+        .map(|&i| object_at(bindings, from, i))
+        .collect::<Result<Vec<_>, _>>()?;
+    for handle in handles {
+        // SAFETY: `handle` belongs to `from`, which is live; ownership passes to us.
+        let ok = unsafe { bindings.FPDFPage_RemoveObject(from.raw_handle(), handle) };
+        if !bindings.is_true(ok) {
+            return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPage_RemoveObject failed"));
+        }
+        let (dx, dy) = (dx as f64, dy as f64);
+        // SAFETY: `handle` is an unowned, live page object.
+        unsafe {
+            bindings.FPDFPageObj_Transform(handle, 1.0, 0.0, 0.0, 1.0, dx, dy);
+            bindings.FPDFPageObj_TransformClipPath(handle, 1.0, 0.0, 0.0, 1.0, dx, dy);
+        }
+        // SAFETY: `to` is live and in the same document; the page takes ownership.
+        let ok = unsafe { bindings.FPDFPage_InsertObject(to.raw_handle(), handle) };
+        if !bindings.is_true(ok) {
+            return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPage_InsertObject failed"));
+        }
+    }
+    Ok(())
 }
 
 /// `FPDFImageObj_LoadJpegFileInline` on the **existing** image object at `index`: the stream

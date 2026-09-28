@@ -15,12 +15,27 @@
 //! The strings live in [`LABELS`] rather than in `src/i18n/*.json`: the menu is built before
 //! the webview exists, and a Rust-side copy of two dozen labels is cheaper than a round trip
 //! through the frontend. `menu_labels_cover_every_item` asserts the table is complete.
+//!
+//! **실행 취소 / 다시 실행 name the step** (Stage 8): `실행 취소: 워터마크` / `Undo Watermark`,
+//! for the document of the focused window. The engine calls [`history_changed`] from
+//! `registry::announce` on every mutation, undo and redo, [`forget_document`] on close; window
+//! focus ([`window_focused`]) and `window_bind_document` ([`document_bound`]) switch which
+//! document the items describe. The step names come from `src/i18n/*.json` through
+//! [`crate::app::undo_labels`], the same keys the frontend's tooltips use.
 
 #![cfg(target_os = "macos")]
 
-use crate::ipc::types::Locale;
+use crate::app::undo_labels::{self, HistoryItem};
+use crate::app::WindowDocs;
+use crate::ipc::types::{DocId, Locale};
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::sync::LazyLock;
 use tauri::menu::{AboutMetadata, Menu, MenuEvent, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, Runtime, Wry};
+
+/// The id of the 편집 submenu, so the history items can be found again after `build`.
+const EDIT_MENU_ID: &str = "edit";
 
 /// Every id this menu can emit. Kept public so a test (and the frontend's keymap) can assert
 /// the two tables agree.
@@ -214,7 +229,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&item("file.revealInFinder", None)?)
         .build()?;
 
-    let edit_menu = SubmenuBuilder::new(app, t("edit"))
+    let edit_menu = SubmenuBuilder::with_id(app, EDIT_MENU_ID, t("edit"))
         .item(&item("edit.undo", Some("CmdOrCtrl+Z"))?)
         .item(&item("edit.redo", Some("CmdOrCtrl+Shift+Z"))?)
         .separator()
@@ -303,6 +318,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&item("help.shortcuts", None)?)
         .build()?;
 
+    HISTORY.lock().locale = locale;
     Menu::with_items(
         app,
         &[
@@ -331,6 +347,8 @@ pub fn rebuild(app: &AppHandle<Wry>, locale: Locale) {
                 tracing::warn!("set_menu after a locale change failed: {e}");
             } else {
                 tracing::info!(?locale, "menu bar rebuilt");
+                // The new items start plain; put the current step names back.
+                refresh(&handle);
             }
         }
         Err(e) => tracing::warn!("rebuilding the menu failed: {e}"),
@@ -359,6 +377,138 @@ pub fn on_menu_event(app: &AppHandle<Wry>, event: MenuEvent) {
     };
     if let Err(e) = result {
         tracing::warn!("emit {topic} failed: {e}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// 실행 취소 / 다시 실행 step names (Stage 8)
+// ---------------------------------------------------------------------------------------
+
+/// What the history items currently describe.
+struct HistoryMenu {
+    locale: Locale,
+    /// Label of the window that last gained focus.
+    focused: Option<String>,
+    /// `(undoLabel, redoLabel)` per document, as last announced by the engine.
+    labels: HashMap<DocId, (Option<String>, Option<String>)>,
+    /// The document the items describe: the focused window's bound document, or — for a
+    /// window the frontend has not bound — the last document that changed.
+    current: Option<DocId>,
+}
+
+static HISTORY: LazyLock<Mutex<HistoryMenu>> = LazyLock::new(|| {
+    Mutex::new(HistoryMenu {
+        locale: Locale::Ko,
+        focused: None,
+        labels: HashMap::new(),
+        current: None,
+    })
+});
+
+fn bound_doc(app: &AppHandle<Wry>, label: Option<&String>) -> Option<DocId> {
+    let label = label?;
+    app.try_state::<WindowDocs>()?.doc_of(label)
+}
+
+/// The engine announced a change of `doc_id` (edit, undo, redo); `undo` / `redo` are the
+/// history's top label keys. Called on the engine thread: the menu work is posted to the main
+/// thread, never waited for.
+pub fn history_changed(
+    app: &AppHandle<Wry>,
+    doc_id: &str,
+    undo: Option<String>,
+    redo: Option<String>,
+) {
+    let mut s = HISTORY.lock();
+    s.labels
+        .insert(doc_id.to_string(), (undo.clone(), redo.clone()));
+    let shown = match bound_doc(app, s.focused.as_ref()) {
+        Some(bound) => bound == doc_id,
+        None => true,
+    };
+    if shown {
+        s.current = Some(doc_id.to_string());
+        let locale = s.locale;
+        drop(s);
+        apply(app, locale, undo, redo);
+    }
+}
+
+/// `close_document`: the document's labels are gone; plain items if it was the one shown.
+pub fn forget_document(app: &AppHandle<Wry>, doc_id: &str) {
+    let mut s = HISTORY.lock();
+    s.labels.remove(doc_id);
+    if s.current.as_deref() == Some(doc_id) {
+        s.current = None;
+        let locale = s.locale;
+        drop(s);
+        apply(app, locale, None, None);
+    }
+}
+
+/// A window gained focus: describe its document.
+pub fn window_focused(app: &AppHandle<Wry>, label: &str) {
+    let mut s = HISTORY.lock();
+    s.focused = Some(label.to_string());
+    if let Some(doc) = bound_doc(app, s.focused.as_ref()) {
+        let (undo, redo) = s.labels.get(&doc).cloned().unwrap_or_default();
+        s.current = Some(doc);
+        let locale = s.locale;
+        drop(s);
+        apply(app, locale, undo, redo);
+    }
+}
+
+/// `window_bind_document`: when it is the focused window, its (new) document is the one shown.
+pub fn document_bound(app: &AppHandle<Wry>, label: &str, doc_id: Option<&str>) {
+    let mut s = HISTORY.lock();
+    if s.focused.as_deref() != Some(label) {
+        return;
+    }
+    s.current = doc_id.map(str::to_owned);
+    let (undo, redo) = doc_id
+        .and_then(|d| s.labels.get(d).cloned())
+        .unwrap_or_default();
+    let locale = s.locale;
+    drop(s);
+    apply(app, locale, undo, redo);
+}
+
+/// Re-applies the current document's step names (after a rebuild).
+fn refresh(app: &AppHandle<Wry>) {
+    let s = HISTORY.lock();
+    let (undo, redo) = s
+        .current
+        .as_ref()
+        .and_then(|d| s.labels.get(d).cloned())
+        .unwrap_or_default();
+    let locale = s.locale;
+    drop(s);
+    apply(app, locale, undo, redo);
+}
+
+fn apply(app: &AppHandle<Wry>, locale: Locale, undo: Option<String>, redo: Option<String>) {
+    let undo = undo_labels::item_label(HistoryItem::Undo, undo.as_deref(), locale);
+    let redo = undo_labels::item_label(HistoryItem::Redo, redo.as_deref(), locale);
+    let handle = app.clone();
+    let posted = app.run_on_main_thread(move || {
+        let Some(edit) = handle
+            .menu()
+            .and_then(|m| m.get(EDIT_MENU_ID))
+            .and_then(|k| k.as_submenu().cloned())
+        else {
+            return;
+        };
+        for (id, text) in [("edit.undo", &undo), ("edit.redo", &redo)] {
+            if let Some(item) = edit.get(id).and_then(|k| k.as_menuitem().cloned()) {
+                if let Err(e) = item.set_text(text) {
+                    tracing::warn!("relabel {id} failed: {e}");
+                }
+            }
+        }
+    });
+    if let Err(e) = posted {
+        tracing::warn!("run_on_main_thread for the history items failed: {e}");
     }
 }
 

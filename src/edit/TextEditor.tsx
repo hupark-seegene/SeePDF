@@ -5,6 +5,11 @@
  *
  * Korean-IME safe like `annot/editors.tsx`: the textarea is uncontrolled and read on commit, never
  * re-rendered from React state while a Hangul syllable is being composed.
+ *
+ * Rotation (Stage 8): the engine writes the text along the page's own +x, so under a /Rotate or a
+ * view rotation the mask, the textarea and the width handle sit in one frame anchored at the text's
+ * top-left and turned with the page (`rotate(deg)`) — the text reads the way it will be written.
+ * The bar and the notice stay upright, placed off the frame's on-screen extent.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlignCenter, AlignJustify, AlignLeft, AlignRight } from "lucide-react";
@@ -15,7 +20,7 @@ import { useViewStore } from "../store/viewStore";
 import { Swatches, rgbCss } from "../app/Swatches";
 import { useEditStore, type EditSession } from "./editStore";
 import { cancelSession, commitSession, setSessionTextReader } from "./actions";
-import { fontStack } from "./geometry";
+import { deltaToPage, editorRotation, fontStack } from "./geometry";
 
 const ALIGNS: { id: ParagraphAlign; icon: typeof AlignLeft }[] = [
   { id: "left", icon: AlignLeft },
@@ -45,13 +50,25 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
 
   const probe = session.kind === "paragraph" ? session.probe : null;
   const rect = sessionRect(session);
-  const box = ctx.rectToBox(rect);
   const s = ctx.scale;
+  const deg = editorRotation(ctx.page.rotation, ctx.rotation);
+  // the frame's local space: origin at the text's top-left, x along the page's +x, y down its −y
+  const [originX, originY] = ctx.toDevice(rect.l, rect.t);
+  const boxW = (rect.r - rect.l) * s;
+  const boxH = (rect.t - rect.b) * s;
   const fontPx = session.fontSizePt * s;
   const leadingPt = probe ? probe.lineHeightPt * (session.fontSizePt / probe.fontSizePt) : session.fontSizePt * 1.2;
-  const widthPx = session.kind === "paragraph" || session.width > 0 ? session.width * s : Math.max(box.w, fontPx * 8);
+  const widthPx = session.kind === "paragraph" || session.width > 0 ? session.width * s : Math.max(boxW, fontPx * 8);
   // the first line's box starts at the ascender; CSS centres the glyphs in the line box
-  const topPx = box.y - Math.max(0, (leadingPt - session.fontSizePt) / 2) * s;
+  const topPx = -Math.max(0, (leadingPt - session.fontSizePt) / 2) * s;
+  const bottomPx = Math.max(boxH, topPx + heightPx);
+  // the frame's on-screen extent (upright), for the bar and the notice
+  const extent = ctx.rectToBox({
+    l: rect.l,
+    r: rect.l + Math.max(boxW, widthPx) / s,
+    t: rect.t - topPx / s,
+    b: rect.t - bottomPx / s,
+  });
 
   const grow = () => {
     const el = ref.current;
@@ -87,16 +104,21 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
   }, []);
 
   const colour = night === "dark" ? "var(--page-ink)" : rgbCss(session.color);
-  const barTop = box.y - BAR_H - 8 >= 0 ? box.y - BAR_H - 8 : box.y + Math.max(box.h, heightPx) + 8;
+  const barTop = extent.y - BAR_H - 8 >= 0 ? extent.y - BAR_H - 8 : extent.y + extent.h + 8;
 
   const startWidthDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation();
     e.preventDefault();
     const startX = e.clientX;
+    const startY = e.clientY;
     const startW = session.width > 0 ? session.width : widthPx / s;
     const el = e.currentTarget;
     el.setPointerCapture?.(e.pointerId);
-    const move = (ev: PointerEvent) => patch({ width: Math.max(session.fontSizePt * 2, startW + (ev.clientX - startX) / s) });
+    // the pointer's travel along the page's +x, whatever the rotation
+    const move = (ev: PointerEvent) => {
+      const [dxPt] = deltaToPage(ctx.inverse, ev.clientX - startX, ev.clientY - startY);
+      patch({ width: Math.max(session.fontSizePt * 2, startW + dxPt) });
+    };
     const up = () => {
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
@@ -115,50 +137,56 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
       onPointerDown={(e) => e.stopPropagation()}
       onKeyDown={(e) => e.stopPropagation()}
     >
-      {probe && <div className="edit-mask" style={{ left: box.x - 1, top: box.y - 1, width: box.w + 2, height: box.h + 2 }} />}
-      <textarea
-        ref={ref}
-        className="edit-text"
-        defaultValue={probe?.text ?? ""}
-        aria-label={t(probe ? "edit.paragraph.label" : "edit.addText.label")}
-        spellCheck={false}
-        style={{
-          left: box.x,
-          top: topPx,
-          width: widthPx,
-          minHeight: Math.max(box.h, leadingPt * s),
-          fontSize: fontPx,
-          lineHeight: `${leadingPt * s}px`,
-          fontFamily: fontStack(probe?.fontName ?? "SeePDF Hangul"),
-          textAlign: session.align,
-          textAlignLast: session.align === "justify" ? "left" : undefined,
-          textIndent: probe ? probe.firstLineIndentPt * s : 0,
-          color: colour,
-        }}
-        onInput={grow}
-        onCompositionStart={() => setComposing(true)}
-        onCompositionEnd={() => setComposing(false)}
-        onKeyDown={(e) => {
-          e.stopPropagation();
-          if (composing || e.nativeEvent.isComposing) return;
-          if (e.key === "Escape") {
-            e.preventDefault();
-            cancelSession();
-          } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            void commitSession();
-          }
-        }}
-      />
       <div
-        className="edit-width-handle"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={t("edit.paragraph.width")}
-        style={{ left: box.x + widthPx - 3, top: topPx, height: Math.max(box.h, heightPx) }}
-        onPointerDown={startWidthDrag}
-      />
-      <div className="edit-bar" style={{ left: Math.max(4, Math.min(box.x, ctx.width - BAR_W)), top: barTop }}>
+        className="edit-frame"
+        data-rotation={deg}
+        style={{ left: originX, top: originY, transform: deg ? `rotate(${deg}deg)` : undefined }}
+      >
+        {probe && <div className="edit-mask" style={{ left: -1, top: -1, width: boxW + 2, height: boxH + 2 }} />}
+        <textarea
+          ref={ref}
+          className="edit-text"
+          defaultValue={probe?.text ?? ""}
+          aria-label={t(probe ? "edit.paragraph.label" : "edit.addText.label")}
+          spellCheck={false}
+          style={{
+            left: 0,
+            top: topPx,
+            width: widthPx,
+            minHeight: Math.max(boxH, leadingPt * s),
+            fontSize: fontPx,
+            lineHeight: `${leadingPt * s}px`,
+            fontFamily: fontStack(probe?.fontName ?? "SeePDF Hangul"),
+            textAlign: session.align,
+            textAlignLast: session.align === "justify" ? "left" : undefined,
+            textIndent: probe ? probe.firstLineIndentPt * s : 0,
+            color: colour,
+          }}
+          onInput={grow}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (composing || e.nativeEvent.isComposing) return;
+            if (e.key === "Escape") {
+              e.preventDefault();
+              cancelSession();
+            } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void commitSession();
+            }
+          }}
+        />
+        <div
+          className="edit-width-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("edit.paragraph.width")}
+          style={{ left: widthPx - 3, top: topPx, height: Math.max(boxH, heightPx) }}
+          onPointerDown={startWidthDrag}
+        />
+      </div>
+      <div className="edit-bar" style={{ left: Math.max(4, Math.min(extent.x, ctx.width - BAR_W)), top: barTop }}>
         <label className="edit-bar-size text-xs">
           <span className="visually-hidden">{t("prop.fontSize")}</span>
           <input
@@ -200,7 +228,7 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
         </button>
       </div>
       {probe?.mixedStyles && (
-        <p className="edit-notice text-xs" style={{ left: Math.max(4, box.x), top: box.y + Math.max(box.h, heightPx) + 4 }}>
+        <p className="edit-notice text-xs" style={{ left: Math.max(4, extent.x), top: extent.y + extent.h + 4 }}>
           {t("edit.paragraph.mixedStyles")}
         </p>
       )}

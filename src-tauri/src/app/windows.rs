@@ -93,6 +93,11 @@ pub fn attach_handlers(app: &AppHandle, window: &tauri::WebviewWindow) {
         WindowEvent::Destroyed => {
             handle.state::<WindowDocs>().bind(&label, None);
         }
+        // Stage 8: the native 편집 menu names the focused window's undo step.
+        #[cfg(target_os = "macos")]
+        WindowEvent::Focused(true) => {
+            crate::app::menu::window_focused(&handle, &label);
+        }
         _ => {}
     });
 }

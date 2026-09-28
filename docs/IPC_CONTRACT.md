@@ -149,7 +149,9 @@ export interface OutlineNode {
 }
 export interface OpenRequest { path: string; source: 'argv' | 'macos-opened' | 'drop' | 'dialog' | 'recent' }
 
-open_document(a: { path: string; password?: string }): Promise<DocInfo>
+// Stage 8: `displayName` — what `DocInfo.name` reports instead of the file name (a recovered copy
+// `<uuid>.pdf` opens under the original name; also the `{{filename}}` stamp token). Blank = file name.
+open_document(a: { path: string; password?: string; displayName?: string }): Promise<DocInfo>
 close_document(a: { docId: DocId }): Promise<void>
 get_document(a: { docId: DocId }): Promise<DocInfo>
 get_outline(a: { docId: DocId }): Promise<OutlineNode[]>
@@ -178,6 +180,12 @@ pub async fn open_document(engine: State<'_, EngineHandle>, path: String, passwo
 
 `open_document` errors: `passwordRequired` (no password given), `passwordWrong` (one was), `notFound`,
 `pdfium` (corrupt). `DocInfo.xfa` true ⇒ the form layer is read-only with a banner.
+
+`window_bind_document` (Stage 8) also tells the native macOS 편집 menu which document the window shows: its
+실행 취소 / 다시 실행 items name the focused window's top undo / redo step (`menu.edit.undoAction` with the
+`undo.*` step name, e.g. `실행 취소: 워터마크` / `Undo Watermark`), updated on every `doc-changed`, on window
+focus and on bind; the strings come from `src/i18n/{ko,en}.json` (compiled in). A window that is never bound
+shows the last document that changed.
 
 ---
 
@@ -281,9 +289,12 @@ export type AnnotSpec =
       heads?: [start: boolean, end: boolean] }
   | { kind: 'textbox'; rect: Rect; text: string; fontSize: number; color: Rgb;
       align: 'left' | 'center' | 'right'; fillColor: Rgb | null }
-  | { kind: 'stamp'; rect: Rect; image: { path: string } | { builtin: string }; rotate?: number };
+  | { kind: 'stamp'; rect: Rect; image: { path: string } | { builtin: string }; rotate?: number;
+      signature?: boolean };
     // builtin (Stage 6b): '결재' | '승인' | '기밀' (인주 red, Hangul label from the bundled subset) |
     // 'approved' | 'final' | 'draft' | 'confidential' (label upper-cased); /Subj = the id = Annot.stampKind
+    // signature (Stage 8): a typed / image signature — written with /Subj "SeePDF:Signature" and read
+    // back as kind 'signature' (stampKind "SeePDF:Signature"), like the drawn one (Ink + the same /Subj)
 
 export interface AnnotPatch {
   rect?: Rect; rects?: Rect[]; paths?: number[][]; p1?: Point; p2?: Point;
@@ -398,7 +409,22 @@ transform_object(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectG
   Promise<{ objects: PageObject[]; docGeneration: DocGeneration }>
 delete_objects(a: { docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration }):
   Promise<{ objects: PageObject[]; docGeneration: DocGeneration }>
+// Stage 8: copies moved by `offset` (PDF points), onto `targetPage` when given; `objects` and
+// `newObjectIds` belong to `targetPage ?? page`. One undo step `undo.objectDuplicate`.
+duplicate_objects(a: { docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration;
+  offset: [dx: number, dy: number]; targetPage?: PageIndex }):
+  Promise<{ objects: PageObject[]; docGeneration: DocGeneration; newObjectIds: ObjectId[] }>
 ```
+
+`duplicate_objects` (Stage 8): the copies come from a second, throw-away parse of the source page (complete
+objects sharing the document's fonts / images / Form XObjects by reference, glyphs written from their original
+char codes) moved onto the target page — clip path translated too — and the target's content is regenerated
+once. Text, image, path and Form XObject objects copy on the same page **and across pages**; a shading or
+`other` object → `unsupported` (detail `unsupportedObjectType`: PDFium's content writer drops them), and a
+copy PDFium could not write (an inline image) → `unsupported` (detail `notWritten`), rolled back. A copy lands
+at the end of its original's content stream, so on a page with several streams it may sit below later
+objects. `newObjectIds` are matched by type and expected bounds in the re-listed page, in request order
+(sorted, deduplicated ids). `stale` / `notFound` as for the other object commands.
 
 Engine: `engine/objects/`. `probe_text_edit` runs the trial coverage check (apply `set_text`, reopen
 `page.text()`, require `loose_bounds().width() > 0` for every non-generated char **including spaces**,
@@ -480,6 +506,9 @@ export interface StampSpec {
 }
 export interface StampResult { info: DocInfo; pagesStamped: number }
 add_stamp(a: { docId: DocId; spec: StampSpec }): Promise<StampResult>
+// Stage 8 — 워터마크 제거. Every role when `role` is omitted; `removed == 0` is not an error (no undo step).
+export interface RemoveStampsResult { info: DocInfo; removed: number }
+remove_stamps(a: { docId: DocId; pages?: PageIndex[] | 'all'; role?: StampRole }): Promise<RemoveStampsResult>
 ```
 
 Engine: `engine/stamp.rs` (Rust type names `PageStampSpec` / `PageStampSource`, because `StampSpec` is
@@ -493,10 +522,16 @@ already the stamp *annotation*; the wire shape is the one above). One `mutate` =
 * Image: drawn once on a scratch page and copied in as **one Form XObject** that every stamped page
   references (a logo on 300 pages is stored once). Opacity is baked into the image's alpha (`/SMask`).
 * Geometry is computed on the crop box *as displayed*: `/Rotate` is honoured, so `tl` is top-left and
-  upright on screen for any page rotation. The box is placed by anchor + margin, then rotated about its
-  centre (a rotated box at a corner anchor can therefore extend past the margin).
+  upright on screen for any page rotation. The box is rotated about its centre and its **rotated bounding
+  box** is placed by anchor + margin (Stage 8), so a rotated stamp at a corner or edge anchor stays inside
+  the margin.
 * Text opacity = fill + stroke alpha (`/ExtGState /ca /CA`).
-* Every object carries the marked-content tag `SeePDF:Stamp` (`FPDFPageObj_AddMark`).
+* Every object carries the marked-content tag `SeePDF:Stamp` (`FPDFPageObj_AddMark`); since Stage 8 with a
+  string param `role` = `watermark` | `header` | `footer` (`/SeePDF:Stamp <</role (watermark)>> BDC`).
+* `remove_stamps` (Stage 8) deletes the top-level objects carrying that mark on `pages` (default all), of
+  `role` only when given — stamps written before Stage 8 have no `role` and go only when `role` is omitted.
+  One `mutate` over the affected pages = one undo step `undo.removeStamps`; nothing found → `{ removed: 0 }`
+  with the unchanged `DocInfo` (same generation, no undo entry). Out-of-range page → `invalidArgument`.
 * Errors: blank text, font size ∉ (0, 1638], `widthPt` ∉ (0, 14400], `marginPt` < 0, `rotateDeg` ∉
   [-180, 180], `opacity` ∉ [0, 1], empty or out-of-range page list → `invalidArgument`; image file
   missing → `notFound`; undecodable image → `invalidArgument`; Hangul outside the bundled subset →
@@ -517,6 +552,11 @@ redact_preview(a: { docId: DocId; page: PageIndex; rects: Rect[] }): Promise<Red
 apply_redactions(a: { docId: DocId; page: PageIndex; rects: Rect[];
   options: { fill: Rgb; overlayText?: string } }):
   Promise<{ removedObjects: number; verified: boolean; docGeneration: DocGeneration }>
+// Stage 8: every marked page in ONE undo step (`undo.redact`); a verifyFailed on any page rolls back all.
+export interface RedactBatchMark { page: PageIndex; rects: Rect[] }
+export interface RedactBatchResult { removedObjects: number; verified: boolean; docGeneration: DocGeneration; pages: PageIndex[] }
+apply_redactions_batch(a: { docId: DocId; marks: RedactBatchMark[]; options: { fill: Rgb; overlayText?: string } }):
+  Promise<RedactBatchResult>
 
 remove_password(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }>                 // P1, implemented
 set_password(a: { docId: DocId; outPath: string; userPassword?: string; ownerPassword: string;
@@ -527,6 +567,11 @@ set_metadata(a: { docId: DocId; meta: DocMeta }): Promise<DocInfo>              
 
 `apply_redactions` re-extracts the page text after `regenerate_content()` and fails with `verifyFailed`
 (rolling back to the snapshot) if any marked string survives — a fake redaction is never shipped.
+`apply_redactions_batch` (Stage 8) merges the marks per page (entries with no rects are ignored), checks the
+form-field refusal (`unsupported`) on **every** page before touching any, then runs the per-page apply for each
+page in ascending order inside one `mutate`: one generation, one undo step `undo.redact`, `pages` = the pages
+redacted. Any failure — `verifyFailed` on a later page included — restores the whole document. No rects at all or
+a page out of range → `invalidArgument`.
 Owner (a) for redaction, (b) for the metadata and security file rewrites. Features F-22, P1-1, P1-2, P1-3.
 
 Stage 3 semantics (`docs/STAGE3_SECURITY_NOTES.md`):
@@ -578,9 +623,18 @@ out of range → `invalidArgument`, promise rejected, no job), serialises the do
 page, then `done{elapsedMs, report}` — or `cancelled` / `error`. The open document is never touched.
 * Candidates: top-level image objects whose effective DPI (PDFium image metadata: pixels ÷ on-page
   size × 72) exceeds `targetDpi × 1.1` on both axes. Skipped (counted in `imagesTotal` only):
-  transparency (`/SMask`, `/Mask`, soft-mask state), 1-bit / stencil images, images inside Form
-  XObjects (not counted), and images whose encoded stream appears more than once on the selected pages
-  (a shared XObject — per-object replacement would store one copy per page).
+  transparency (`/SMask`, `/Mask`, soft-mask state), 1-bit / stencil images, and images whose encoded
+  stream appears more than once on the selected pages (a shared XObject — per-object replacement would
+  store one copy per page; an occurrence inside a Form XObject counts too).
+* Stage 8 — images inside Form XObjects (nested forms too, 8 levels) are counted in `imagesTotal` and are
+  candidates when every occurrence on the selected pages is above the threshold, measured through the
+  combined matrix (their size on the page; the lowest DPI sets the scale). PDFium cannot repoint a form's
+  content, so the re-encoded data (JPEG q80 for DCT/JPX, else 8-bit samples Flated) is written into the
+  **same image stream object** of the serialised copy with `lopdf`, matched by the encoded stream's hash and
+  length — every form (on every page) that draws it gets the smaller image, and the occurrences count in
+  `imagesDownsampled`. Only when smaller; never on an encrypted document (its streams are encrypted), so
+  those nested images are left alone there. An image outside `pages` that shares the stream is replaced too.
+* Encrypted documents compress like any other (top-level images); the result keeps the password.
 * Re-encoding: `/DCTDecode` / `/JPXDecode` originals → JPEG q80 via `FPDFImageObj_LoadJpegFileInline` on
   the existing object, only when smaller; everything else → `FPDFImageObj_SetBitmap` (24-bit BGR or
   8-bit gray; PDFium writes Flate, which can come out larger — `afterBytes` shows it).
@@ -596,9 +650,10 @@ page, then `done{elapsedMs, report}` — or `cancelled` / `error`. The open docu
 ```ts
 export interface CompareOptions {
   pagesA?: PageIndex[];        // default all pages of A
-  pagesB?: PageIndex[];        // default all pages of B; paired with pagesA by position; the longer list's
-                               // extra pages become ComparePage rows with pageA/pageB = null
+  pagesB?: PageIndex[];        // default all pages of B; the candidates, in order
   ignoreCase?: boolean;        // default false; whitespace runs are always normalised
+  alignPages?: boolean;        // Stage 8, default true: pair pages by text similarity (below); false = by
+                               // position, the longer list's extra pages becoming rows with a null side
 }
 export type DiffKind = 'equal' | 'insert' | 'delete' | 'replace';
 export interface DiffOp {
@@ -611,7 +666,7 @@ export interface DiffOp {
 }
 export interface ComparePage {
   pageA: PageIndex | null; pageB: PageIndex | null;
-  changed: boolean;            // any op that is not equal (a null side counts as changed if the other has words)
+  changed: boolean;            // any op that is not equal; since Stage 8 a row with a null side is always changed
   wordsA: number; wordsB: number;
   ops: DiffOp[];
 }
@@ -626,9 +681,18 @@ compare_documents(a: { docA: DocId; docB: DocId; options: CompareOptions }, onPr
 
 Engine: `engine/compare.rs`. Both documents must already be open (the frontend opens B with
 `open_document`). Validation runs before the job id is returned: unknown doc → `notFound`, docA == docB or
-a page out of range → `invalidArgument` (promise rejected, no job). Events: `started{total = pairs}`, one
-`progress{done, page = index into pages[]}` per pair, then `done{elapsedMs, compare}` — or `cancelled` /
-`error`. One `Lane::Background` command per pair; Cancel (`cancel_job`) is observed between pairs.
+a page out of range → `invalidArgument` (promise rejected, no job). Events with `alignPages: false`:
+`started{total = pairs}`, one `progress{done, page = index into pages[]}` per pair, then
+`done{elapsedMs, compare}` — or `cancelled` / `error`. One `Lane::Background` command per pair; Cancel
+(`cancel_job`) is observed between pairs. **A document closed mid-job ends it with `cancelled`**, not `error`
+(Stage 8).
+* `alignPages` (Stage 8, default): `started{total = |A| + |B| + max(|A|, |B|)}`, one page-less `progress` per
+  scanned candidate page, then an align step that sets the exact total (`|A| + |B| + rows`, carried by the
+  following `progress` events), then one `progress{page = index into pages[]}` per row. Pages pair by
+  sequence alignment over per-page word **sets** (Jaccard similarity; identical head and tail pages pair
+  directly; the middle is a Needleman–Wunsch with free gaps and a tiny per-pair bonus, so a rewritten page
+  still pairs with the page in its place). An inserted / deleted page becomes one null-sided row instead of
+  shifting every later pair. A middle larger than 250 000 page pairs falls back to positional pairing.
 * Words: text-layer chars split on Unicode whitespace and PDFium-generated chars; with `ignoreCase` each
   char is case-folded (`text::layer::fold`) before comparison; reported text is the original.
 * Diff: Myers O(ND) on interned words after trimming the common prefix/suffix; adjacent delete+insert
@@ -869,6 +933,7 @@ export interface Settings {
   toolDefaults: Record<string, unknown>;   // Stage 6b: per-tool style overrides, see below
   autosaveSec: number;          // Stage 5: autosave interval in seconds, 0 = off; default 60 (absent in old files → 60)
   signatures: SavedSignature[]; // Stage 6b (P1-9): 서명 보관함, ≤ 10, newest last; absent in old files → []
+  night: 'off' | 'dark' | 'sepia';   // Stage 8 (P1-10): persisted 야간 모드; absent (or unknown) in old files → 'off'
 }
 export type SavedSignature =
   | { kind: 'drawn'; id: string; paths: number[][]; aspect: number; createdAt: string }  // unit space, y-down
@@ -915,15 +980,17 @@ paths to the fs scope automatically.
 | `list_annotations`, `scan_annotations`, `create_annotation`, `update_annotation`, `delete_annotations`, `set_annotations_hidden` | (a) backend annotations | F-08…F-14 |
 | `list_form_fields`, `set_form_field_value`, `reset_form` | (a) backend forms | F-20 |
 | `redact_preview`, `apply_redactions` | (a) backend redaction | F-22 |
+| `apply_redactions_batch` | Stage 8, `engine/redact` | F-22 |
 | `page_ops`, `extract_pages`, `split_document`, `merge_documents` | (b) backend pages | F-16 |
 | `list_page_objects`, `probe_text_edit`, `edit_text_object`, `add_text_object`, `add_image_object`, `transform_object`, `delete_objects` | (b) backend objects | F-17, F-18, F-19 |
 | `probe_paragraph`, `edit_paragraph` | Stage 7, `engine/objects/paragraph.rs` | F-17 |
+| `duplicate_objects` | Stage 8, `engine/objects` | F-17, F-19 |
 | `save_document`, `save_document_as` | (b) backend save | F-23 |
 | `path_exists` | Stage 6a, `commands/save.rs` | P1-7 |
 | `export_images`, `export_text`, `export_flattened`, `estimate_export`, `print_prepare` | (b) backend export | F-24, F-25, F-26 |
 | `ocr_capabilities`, `ocr_page_status`, `ocr_apply` | (b) engine OCR layer + (f) worker pipeline | F-21 |
 | `remove_password`, `set_password`, `remove_metadata`, `set_metadata`, `ocr_recognize_native` | (b), P1 | P1-1, P1-2, P1-3, P1-11 |
-| `add_stamp` | Stage 4, `engine/stamp.rs` | P1-4 |
+| `add_stamp`, `remove_stamps` (Stage 8) | Stage 4, `engine/stamp.rs` | P1-4 |
 | `compress_estimate`, `compress_apply`, `compress_discard` | Stage 4, `engine/compress.rs` | P1-5 |
 | `compare_documents` | Stage 5, `engine/compare.rs` | P1-6 |
 | `write_recovery`, `clear_recovery`, `list_recovery`, `discard_recovery` | Stage 5, `engine/recovery.rs` | P1-8 |

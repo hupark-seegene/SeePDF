@@ -1,10 +1,10 @@
 //! Stage 4 — P1-5 compress (`compress_estimate` / `compress_apply` / `compress_discard`,
 //! `IPC_CONTRACT.md` §7.6a).
 //!
-//! The fixtures' own images are either shared across pages (TAMReview's logo) or inside Form
-//! XObjects (tracemonkey), which the compressor deliberately leaves alone, so the tests that
-//! need something to downsample place their own high-DPI images first: a PNG (Flate path) and
-//! a real JPEG (`/DCTDecode` path).
+//! The fixtures' own images are either shared across pages (TAMReview's logo) or small images
+//! inside Form XObjects (tracemonkey's 90, all below every preset), so the tests that need
+//! something to downsample place their own high-DPI images first: a PNG (Flate path) and a
+//! real JPEG (`/DCTDecode` path) — and, since Stage 8, a JPEG inside a Form XObject.
 
 mod common;
 use common::*;
@@ -174,7 +174,9 @@ fn compress_estimate_downsamples_and_apply_is_undoable() {
     let progress = events.iter().filter(|e| matches!(e, JobEvent::Progress { .. })).count();
     assert_eq!(progress, 14);
     let report = report_of(&events);
-    assert_eq!(report.images_total, 2);
+    // 2 placed + tracemonkey's 90 inside Form XObjects (Stage 8 counts them; none is above
+    // 96 DPI, so only the two placed ones go).
+    assert_eq!(report.images_total, 2 + TRACEMONKEY_FORM_IMAGES);
     assert_eq!(report.images_downsampled, 2);
     assert!(report.before_bytes > 0 && report.after_bytes > 0);
     assert!(
@@ -215,7 +217,10 @@ fn compress_presets_and_page_subset() {
     add_png(&doc.doc_id);
     // 300 DPI halves the 600-DPI image; a page subset without it downsamples nothing.
     let report = report_of(&estimate(&doc.doc_id, opts(300)).unwrap());
-    assert_eq!((report.images_total, report.images_downsampled), (1, 1));
+    assert_eq!(
+        (report.images_total, report.images_downsampled),
+        (1 + TRACEMONKEY_FORM_IMAGES, 1)
+    );
     let subset = CompressOptions {
         target_dpi: 150,
         pages: Some(vec![3, 2]),
@@ -223,7 +228,8 @@ fn compress_presets_and_page_subset() {
     let events = estimate(&doc.doc_id, subset).unwrap();
     assert!(matches!(events[0], JobEvent::Started { total: 2, .. }));
     let report2 = report_of(&events);
-    assert_eq!((report2.images_total, report2.images_downsampled), (0, 0));
+    assert_eq!(report2.images_downsampled, 0);
+    assert!(report2.images_total < TRACEMONKEY_FORM_IMAGES, "only pages 2 and 3 were scanned");
     // A newer estimate replaced the older pending entry.
     assert_eq!(apply(&doc.doc_id, report.token).unwrap_err().code, ErrorCode::NotFound);
 
@@ -240,12 +246,41 @@ fn compress_presets_and_page_subset() {
 fn compress_leaves_shared_images_alone() {
     // TAMReview's two ~105-DPI images (80×15 and 47×161 px) are the same XObjects on all 23
     // pages. Downsampling them per object would store one copy per page, so they are counted
-    // and skipped; the only image downsampled is page 0's unshared 161×47 at 109 DPI.
+    // and skipped; the top-level image downsampled is page 0's unshared 161×47 at 109 DPI.
+    // Stage 8: one image inside a Form XObject is above 96 DPI too, and is replaced in place.
     let doc = open("TAMReview.pdf");
     let report = report_of(&estimate(&doc.doc_id, opts(96)).unwrap());
-    assert!(report.images_total >= 46, "{} images", report.images_total);
-    assert_eq!(report.images_downsampled, 1);
-    assert!(report.after_bytes <= report.before_bytes + report.before_bytes / 100);
+    assert!(report.images_total >= 46 + 8, "{} images", report.images_total);
+    assert_eq!(report.images_downsampled, 2);
+    assert!(report.after_bytes < report.before_bytes);
+
+    // What the reader sees is the same page, only softer: every page renders close to before.
+    let pages = doc.info.page_count;
+    let before: Vec<Vec<u8>> = (0..pages).map(|p| render_page(&doc.doc_id, p)).collect();
+    apply(&doc.doc_id, report.token).expect("apply");
+    for p in 0..pages {
+        let after = render_page(&doc.doc_id, p);
+        let diff = mean_abs_diff(&before[p as usize], &after);
+        assert!(diff < 6.0, "page {p} changed by {diff:.2} per channel");
+    }
+}
+
+/// tracemonkey's images inside Form XObjects (small; below every preset).
+const TRACEMONKEY_FORM_IMAGES: u32 = 90;
+
+fn render_page(doc_id: &str, page: u16) -> Vec<u8> {
+    let doc_id = doc_id.to_string();
+    let buffer = with_state(move |st| {
+        seepdf_lib::engine::render::tiles::render_raw_buffer(st, &doc_id, page, 0.5, None)
+    })
+    .expect("render");
+    buffer[32..].to_vec()
+}
+
+fn mean_abs_diff(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let total: u64 = a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as u64).sum();
+    total as f64 / a.len().max(1) as f64
 }
 
 #[test]
@@ -332,4 +367,176 @@ fn compress_cancel_mid_job_frees_the_scratch_copy() {
     .unwrap();
     assert!(!work && !pending);
     assert!(!engine().jobs.cancel(token.id), "the job id is released");
+}
+
+
+// ---------------------------------------------------------------------------------------
+// Stage 8 — images inside Form XObjects; encrypted documents
+// ---------------------------------------------------------------------------------------
+
+/// Puts one Form XObject holding a 1600×1200 JPEG (a real `/DCTDecode` stream) at 192×144 pt
+/// — 600 DPI — on every page of `pages`: one stream, drawn by the same form on each page.
+fn add_form_jpeg(doc_id: &str, pages: Vec<u16>) {
+    use seepdf_lib::engine::raw::object::XObject;
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 92)
+        .encode_image(&noisy_rgb(1600, 1200))
+        .unwrap();
+    let doc_id = doc_id.to_string();
+    with_state(move |st| {
+        let pdfium = st.pdfium;
+        let mut scratch = pdfium.create_new_pdf().unwrap();
+        {
+            let mut page = scratch
+                .pages_mut()
+                .create_page_at_end(PdfPagePaperSize::Custom(PdfPoints::new(192.0), PdfPoints::new(144.0)))
+                .unwrap();
+            let mut object =
+                PdfPageImageObject::new_from_jpeg_reader(&scratch, std::io::Cursor::new(jpeg)).unwrap();
+            object.scale(192.0, 144.0).unwrap();
+            page.objects_mut().add_image_object(object).unwrap();
+            page.regenerate_content().unwrap();
+        }
+        registry::mutate(
+            st,
+            &doc_id,
+            MutateOpts::new("undo.objectAdd", ChangeReason::Edit).pages(pages.clone()),
+            move |doc| {
+                let bindings = doc.bindings();
+                for &p in &pages {
+                    doc.invalidate_page_handle(p);
+                }
+                let document = doc.pdf();
+                let xobject = XObject::from_page(bindings, document, &scratch, 0)?;
+                for &p in &pages {
+                    let mut page = document.pages().get(p as PdfPageIndex).unwrap();
+                    page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+                    xobject.place(&page, [1.0, 0.0, 0.0, 1.0, 300.0, 72.0], None)?;
+                    page.regenerate_content().unwrap();
+                }
+                Ok(())
+            },
+        )
+    })
+    .expect("add form jpeg");
+}
+
+/// `(pixel width, filters)` of every image inside a Form XObject on `page` (one level).
+fn form_images(doc_id: &str, page: u16) -> Vec<(i32, Vec<String>)> {
+    let doc_id = doc_id.to_string();
+    with_doc(&doc_id, move |d| {
+        let p = d.page(page)?;
+        let mut out = Vec::new();
+        for o in p.objects().iter() {
+            if let Some(form) = o.as_x_object_form_object() {
+                for i in 0..form.len() {
+                    let child = form.get(i).unwrap();
+                    if let Some(img) = child.as_image_object() {
+                        out.push((
+                            img.width().unwrap_or(0),
+                            img.filters().iter().map(|f| f.name().to_string()).collect(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    })
+    .unwrap()
+}
+
+#[test]
+fn compress_reaches_images_inside_form_xobjects() {
+    let doc = open("tracemonkey.pdf");
+    add_form_jpeg(&doc.doc_id, vec![0, 1]);
+    let big = |p| form_images(&doc.doc_id, p).into_iter().filter(|(w, _)| *w == 1600).count();
+    assert_eq!((big(0), big(1)), (1, 1));
+
+    let report = report_of(&estimate(&doc.doc_id, opts(96)).unwrap());
+    assert_eq!(report.images_total, 2 + TRACEMONKEY_FORM_IMAGES);
+    // One stream, drawn on two pages: both occurrences count.
+    assert_eq!(report.images_downsampled, 2);
+    assert!(
+        report.after_bytes + 200_000 < report.before_bytes,
+        "{} → {}",
+        report.before_bytes,
+        report.after_bytes
+    );
+    let before_render = render_page(&doc.doc_id, 0);
+    apply(&doc.doc_id, report.token).expect("apply");
+    for p in [0u16, 1] {
+        let images = form_images(&doc.doc_id, p);
+        // 1600 px over 2⅔ in → 256 px at 96 DPI; still a JPEG.
+        assert!(!images.iter().any(|(w, _)| *w == 1600), "page {p}: {images:?}");
+        assert!(
+            images
+                .iter()
+                .any(|(w, f)| (*w - 256).abs() <= 1 && f == &vec!["DCTDecode".to_string()]),
+            "page {p}: {images:?}"
+        );
+    }
+    let diff = mean_abs_diff(&before_render, &render_page(&doc.doc_id, 0));
+    assert!(diff < 6.0, "the page still looks the same: {diff:.2}");
+    // The replaced stream survives a save → reopen.
+    let bytes = with_doc(&doc.doc_id, |d| Ok(d.bytes.to_vec())).unwrap();
+    let reopened = with_state(move |st| registry::open(st, None, bytes, None)).expect("reopen");
+    let copy = TestDoc { doc_id: reopened.doc_id.clone(), info: reopened };
+    assert!(form_images(&copy.doc_id, 1).iter().any(|(w, _)| (*w - 256).abs() <= 1));
+}
+
+/// A password-protected document compresses and stays protected by the same password — RC4
+/// (the fixture) and AES-256 (our own `set_password` output). Images inside Form XObjects are
+/// left alone there (their serialised streams are encrypted).
+#[test]
+fn compress_encrypted_document_keeps_its_password() {
+    let aes_path = out_dir().join("compress-aes256.pdf");
+    {
+        let plain = open("tracemonkey.pdf");
+        let (d, path) = (plain.doc_id.clone(), aes_path.display().to_string());
+        with_state(move |st| {
+            seepdf_lib::engine::security::set_password(
+                st,
+                &d,
+                &path,
+                Some("user"),
+                "owner",
+                Default::default(),
+            )
+        })
+        .expect("set_password");
+    }
+    for (label, path) in [
+        ("rc4", fixture("gen/encrypted-rc4-40.pdf")),
+        ("aes256", aes_path.clone()),
+    ] {
+        let bytes = std::fs::read(&path).unwrap();
+        let info = with_state(move |st| registry::open(st, Some(path), bytes, Some("user".into())))
+            .expect("open with the user password");
+        let doc = TestDoc { doc_id: info.doc_id.clone(), info };
+        assert!(doc.info.encrypted, "{label}");
+        add_png(&doc.doc_id);
+        if doc.info.page_count > 1 {
+            add_form_jpeg(&doc.doc_id, vec![1]);
+        }
+        let report = report_of(&estimate(&doc.doc_id, opts(96)).expect("estimate"));
+        assert_eq!(report.images_downsampled, 1, "{label}: the placed PNG only");
+        let info = apply(&doc.doc_id, report.token).expect("apply");
+        assert!(info.encrypted, "{label}");
+        assert!((images(&doc.doc_id, 0).last().unwrap().0 - 192).abs() <= 1, "{label}");
+
+        let saved = with_state({
+            let d = doc.doc_id.clone();
+            move |st| seepdf_lib::engine::save::serialize(st, &d)
+        })
+        .expect("serialize");
+        let without = saved.clone();
+        let err = with_state(move |st| registry::open(st, None, without, None).map(|i| i.doc_id))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::PasswordRequired, "{label}: still protected");
+        let reopened = with_state(move |st| registry::open(st, None, saved, Some("user".into())))
+            .expect("reopen with the same password");
+        let copy = TestDoc { doc_id: reopened.doc_id.clone(), info: reopened };
+        assert!(copy.info.encrypted, "{label}");
+        assert!((images(&copy.doc_id, 0).last().unwrap().0 - 192).abs() <= 1, "{label}");
+    }
 }

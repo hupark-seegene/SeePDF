@@ -518,6 +518,10 @@ pub struct StampSpec {
     pub image: StampImage,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub rotate: Option<f32>,
+    /// Stage 8: a typed / image signature. Written with `/Subj "SeePDF:Signature"` and read
+    /// back as `kind: 'signature'` (서명, not 도장). Absent = `false`.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub signature: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -814,6 +818,16 @@ pub struct PageObjectList {
     pub objects: Vec<PageObject>,
 }
 
+/// Stage 8 `duplicate_objects`: `ObjectsResult & { newObjectIds }`. `objects` and
+/// `newObjectIds` belong to `targetPage ?? page`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateObjectsResult {
+    pub doc_generation: DocGeneration,
+    pub objects: Vec<PageObject>,
+    pub new_object_ids: Vec<ObjectId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TextEditStrategy {
@@ -961,6 +975,25 @@ pub struct RedactResult {
     pub removed_objects: u32,
     pub verified: bool,
     pub doc_generation: DocGeneration,
+}
+
+/// Stage 8 `apply_redactions_batch`: one page's marks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedactBatchMark {
+    pub page: PageIndex,
+    pub rects: Vec<Rect>,
+}
+
+/// Stage 8 `apply_redactions_batch`: every marked page in one undo step (`undo.redact`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedactBatchResult {
+    pub removed_objects: u32,
+    pub verified: bool,
+    pub doc_generation: DocGeneration,
+    /// The pages that were redacted, ascending and deduplicated.
+    pub pages: Vec<PageIndex>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1118,6 +1151,27 @@ pub enum StampRole {
     Footer,
 }
 
+impl StampRole {
+    /// The wire name, which is also what Stage 8 stores as the `SeePDF:Stamp` mark's `role`
+    /// parameter so `remove_stamps` can filter by role.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StampRole::Watermark => "watermark",
+            StampRole::Header => "header",
+            StampRole::Footer => "footer",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "watermark" => Some(StampRole::Watermark),
+            "header" => Some(StampRole::Header),
+            "footer" => Some(StampRole::Footer),
+            _ => None,
+        }
+    }
+}
+
 /// Contract `StampSource`. `{{page}}`, `{{total}}`, `{{date}}` and `{{filename}}` are
 /// replaced per page in `text`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1165,6 +1219,15 @@ pub struct StampResult {
     pub pages_stamped: u32,
 }
 
+/// Stage 8 `remove_stamps`: `removed == 0` is not an error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveStampsResult {
+    pub info: DocInfo,
+    /// Page objects removed, over every page.
+    pub removed: u32,
+}
+
 /// `compress_estimate`'s options. `target_dpi` is one of the presets 300 / 150 / 96.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1205,6 +1268,17 @@ pub struct CompareOptions {
     pub pages_b: Option<Vec<PageIndex>>,
     #[serde(default)]
     pub ignore_case: bool,
+    /// Stage 8, default `true`: pair pages by text similarity (sequence alignment over per-page
+    /// word sets) so an inserted / deleted page becomes a null-sided row instead of shifting
+    /// every later pair. `false` = the Stage 5 positional pairing.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub align_pages: Option<bool>,
+}
+
+impl CompareOptions {
+    pub fn align(&self) -> bool {
+        self.align_pages.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1493,6 +1567,28 @@ pub struct Settings {
     /// dropped on its own instead of resetting every setting to the default.
     #[serde(default, deserialize_with = "lenient_signatures")]
     pub signatures: Vec<SavedSignature>,
+    /// 야간 모드 (P1-10), persisted since Stage 8. `serde(default)` = `off` for settings files
+    /// written before it; an unknown value also reads as `off` rather than resetting everything.
+    #[serde(default, deserialize_with = "lenient_night")]
+    pub night: NightMode,
+}
+
+/// `Settings.night`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NightMode {
+    #[default]
+    Off,
+    Dark,
+    Sepia,
+}
+
+fn lenient_night<'de, D>(deserializer: D) -> Result<NightMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 fn default_autosave_sec() -> u32 {
@@ -1566,6 +1662,7 @@ impl Default for Settings {
             tool_defaults: serde_json::Map::new(),
             autosave_sec: default_autosave_sec(),
             signatures: Vec::new(),
+            night: NightMode::Off,
         }
     }
 }
@@ -2001,6 +2098,67 @@ mod tests {
         old.as_object_mut().unwrap().remove("autosaveSec");
         let back: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(back.autosave_sec, 60);
+    }
+
+    /// Stage 8: `night` round-trips, defaults to `off` for settings written before it, and an
+    /// unknown value reads as `off` without resetting the other settings.
+    #[test]
+    fn settings_night_round_trip_and_default() {
+        for (mode, wire) in [
+            (NightMode::Off, "off"),
+            (NightMode::Dark, "dark"),
+            (NightMode::Sepia, "sepia"),
+        ] {
+            let settings = Settings {
+                night: mode,
+                ..Settings::default()
+            };
+            let value = serde_json::to_value(&settings).unwrap();
+            assert_eq!(value["night"], json!(wire));
+            let back: Settings = serde_json::from_value(value).unwrap();
+            assert_eq!(back.night, mode);
+        }
+        // Written before Stage 8: no `night` key.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("night");
+        old["author"] = json!("박현우");
+        let back: Settings = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(back.night, NightMode::Off);
+        assert_eq!(back.author, "박현우");
+        // A value from the future is `off`, the rest survives.
+        old["night"] = json!("amber");
+        let back: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!((back.night, back.author.as_str()), (NightMode::Off, "박현우"));
+
+        // Stage 8 shapes the frontend mocks: remove_stamps / duplicate / redact batch results.
+        let dup = DuplicateObjectsResult {
+            doc_generation: 3,
+            objects: Vec::new(),
+            new_object_ids: vec![7, 8],
+        };
+        assert_eq!(
+            serde_json::to_value(&dup).unwrap(),
+            json!({ "docGeneration": 3, "objects": [], "newObjectIds": [7, 8] })
+        );
+        let batch = RedactBatchResult {
+            removed_objects: 4,
+            verified: true,
+            doc_generation: 9,
+            pages: vec![0, 2],
+        };
+        assert_eq!(
+            serde_json::to_value(&batch).unwrap(),
+            json!({ "removedObjects": 4, "verified": true, "docGeneration": 9, "pages": [0, 2] })
+        );
+        let mark: RedactBatchMark =
+            serde_json::from_value(json!({ "page": 1, "rects": [{ "l": 0.0, "b": 0.0, "r": 1.0, "t": 1.0 }] }))
+                .unwrap();
+        assert_eq!((mark.page, mark.rects.len()), (1, 1));
+        let options: CompareOptions = serde_json::from_value(json!({})).unwrap();
+        assert!(options.align());
+        let options: CompareOptions = serde_json::from_value(json!({ "alignPages": false })).unwrap();
+        assert!(!options.align());
+        assert_eq!(StampRole::from_name(StampRole::Header.as_str()), Some(StampRole::Header));
     }
 
     /// Stage 6b (P1-9): the 서명 보관함 wire shape, the default for settings written before it,

@@ -16,9 +16,10 @@ import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, DocGeneration, DocId, DocInfo, EngineError,
   EngineStats, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, Mat6, MergeWarning, OcrPage, OutlineNode,
   PageGeom, PageIndex, Permissions, PageObject, PageOp, RecentEntry, Rect, RedactPreview, SaveResult, SearchEvent, SearchHit,
-  Settings, StampResult, StampSpec, TextEditProbe, ViewportHint, CompressOptions, CompressReport,
+  Settings, StampResult, StampSpec, StampRole, RemoveStampsResult, TextEditProbe, ViewportHint, CompressOptions, CompressReport,
   ObjectId, ObjectsResult, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, Rgb,
   CompareOptions, CompareReport, ComparePage, DiffOp, RecoveryEntry,
+  DuplicateObjectsResult, RedactBatchMark, RedactBatchResult,
 } from "./types";
 
 import documentFixture from "../test/ipc-samples/document.json";
@@ -67,7 +68,14 @@ let nextAnnot = 1;
 /** Files the mock "wrote" (Save As): `path_exists` answers true for them (여러 파일 OCR). */
 const writtenFiles = new Set<string>();
 let recents: RecentEntry[] = structuredClone(recentsFixture) as unknown as RecentEntry[];
-let settings: Settings = structuredClone(settingsFixture) as unknown as Settings;
+// `night` (Stage 8) defaults like the engine's serde default for a file written before it
+const settingsSeed = structuredClone(settingsFixture) as unknown as Partial<Settings>;
+let settings = { ...settingsSeed, night: settingsSeed.night ?? "off" } as Settings;
+/**
+ * Stamps `add_stamp` put on each document (Stage 8 `remove_stamps`), one entry per page. Not part
+ * of the undo snapshot: the mock only needs the counts to be plausible.
+ */
+const stampsOf = new Map<DocId, { role: StampRole; page: PageIndex }[]>();
 const pendingOpens: { path: string; source: "argv" | "macos-opened" | "drop" | "dialog" | "recent" }[] = [];
 
 function err(code: EngineError["code"], message: string, extra: Partial<EngineError> = {}): EngineError {
@@ -414,12 +422,14 @@ const PAGE_OP_LABEL: Record<PageOp["kind"], string> = {
 
 export const mock = {
   // 4. documents -------------------------------------------------------------
-  async openDocument(a: { path: string; password?: string }): Promise<DocInfo> {
+  async openDocument(a: { path: string; password?: string; displayName?: string }): Promise<DocInfo> {
     if (/encrypted/i.test(a.path) && !a.password) throw err("passwordRequired", "document is encrypted");
     // a path that names itself damaged fails to open, so a batch can exercise its 실패 row
     if (/damaged/i.test(a.path)) throw err("pdfium", "the file is damaged or not a PDF");
     const recent = recents.find((r) => r.path === a.path);
     const d = makeDoc(a.path, recent?.pages ?? BASE_DOC.pageCount);
+    // Stage 8: a recovered copy reports the original name, not `<uuid>.pdf`
+    if (a.displayName) d.info.name = a.displayName;
     docs.set(d.info.docId, d);
     const entry: RecentEntry = recent ?? {
       path: a.path, name: baseName(a.path), dir: dirName(a.path), pages: d.info.pageCount, bytes: d.info.bytes,
@@ -434,6 +444,7 @@ export const mock = {
   async closeDocument(a: { docId: DocId }): Promise<void> {
     docs.delete(a.docId);
     pendingCompress.delete(a.docId);
+    stampsOf.delete(a.docId);
   },
   async getDocument(a: { docId: DocId }): Promise<DocInfo> {
     return structuredClone(doc(a.docId).info);
@@ -750,6 +761,39 @@ export const mock = {
       return () => listObjects(d, a.page);
     })();
   },
+  // Stage 8: copies are appended to the target page's list (new ids = its old length onwards).
+  // Like the engine, a form XObject / shading / other object cannot be carried to another page.
+  async duplicateObjects(a: { docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration;
+    offset: [number, number]; targetPage?: PageIndex }): Promise<DuplicateObjectsResult> {
+    const d = doc(a.docId);
+    checkGeneration(d, a.expectGeneration);
+    const target = a.targetPage ?? a.page;
+    if (target < 0 || target >= d.info.pageCount) throw err("invalidArgument", `no page ${target}`);
+    if (a.objectIds.length === 0) throw err("invalidArgument", "no objects");
+    const list = pageObjects(d, a.page);
+    for (const id of a.objectIds) {
+      const o = list[id];
+      if (!o) throw err("notFound", `no object ${id}`);
+      if (o.editable === "readOnly") throw err("unsupported", "object is read-only");
+      if (target !== a.page && (o.type === "form" || o.type === "shading" || o.type === "other")) {
+        throw err("unsupported", `a ${o.type} object cannot be copied to another page`);
+      }
+    }
+    return mutate(d, { reason: "edit", pages: [target], undoLabel: "undo.objectDuplicate" }, () => {
+      const [dx, dy] = a.offset;
+      const dest = pageObjects(d, target);
+      const copies = a.objectIds.map((id) => structuredClone(list[id]));
+      const newObjectIds: ObjectId[] = [];
+      for (const c of copies) {
+        c.rect = { l: c.rect.l + dx, b: c.rect.b + dy, r: c.rect.r + dx, t: c.rect.t + dy };
+        c.matrix = [c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4] + dx, c.matrix[5] + dy];
+        c.ours = true;
+        newObjectIds.push(dest.length);
+        dest.push(c);
+      }
+      return () => ({ ...listObjects(d, target), newObjectIds });
+    })();
+  },
   async deleteObjects(a: { docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration }) {
     const d = doc(a.docId);
     checkGeneration(d, a.expectGeneration);
@@ -824,6 +868,24 @@ export const mock = {
       docGeneration: d.info.docGeneration + 1,
     }));
   },
+  // Stage 8: every page in one mutation (= one undo step); text / image objects the marks touch go.
+  async applyRedactionsBatch(a: { docId: DocId; marks: RedactBatchMark[]; options: { fill: Rgb; overlayText?: string } }): Promise<RedactBatchResult> {
+    const d = doc(a.docId);
+    const pages = [...new Set(a.marks.filter((m) => m.rects.length > 0).map((m) => m.page))].sort((x, y) => x - y);
+    if (pages.length === 0) throw err("invalidArgument", "no marks");
+    for (const p of pages) if (p < 0 || p >= d.info.pageCount) throw err("invalidArgument", `no page ${p}`);
+    return mutate(d, { reason: "redact", pages, undoLabel: "undo.redact" }, () => {
+      let removedObjects = 0;
+      for (const p of pages) {
+        const rects = a.marks.filter((m) => m.page === p).flatMap((m) => m.rects);
+        const list = pageObjects(d, p);
+        const kept = list.filter((o) => !((o.type === "text" || o.type === "image") && rects.some((r) => intersects(r, o.rect))));
+        removedObjects += list.length - kept.length;
+        d.objects.set(p, kept);
+      }
+      return () => ({ removedObjects, verified: true, docGeneration: d.info.docGeneration, pages });
+    })();
+  },
   // both write a copy to `outPath`; the open document is untouched
   async removePassword(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }> {
     const d = doc(a.docId);
@@ -873,8 +935,25 @@ export const mock = {
     mutate(d, { reason: "edit", pages: spec.pages === "all" ? "all" : pages, undoLabel }, () => {
       d.info.bytes += 900 * pages.length;
     });
+    stampsOf.set(a.docId, [...(stampsOf.get(a.docId) ?? []), ...pages.map((page) => ({ role: spec.role, page }))]);
     // like the engine: the DocInfo *after* the step (generation, history labels)
     return { info: structuredClone(d.info), pagesStamped: pages.length };
+  },
+  /** Stage 8 워터마크 제거: every role when `role` is omitted; nothing to remove is not an error. */
+  async removeStamps(a: { docId: DocId; pages?: PageIndex[] | "all"; role?: StampRole }): Promise<RemoveStampsResult> {
+    const d = doc(a.docId);
+    const pages = a.pages === undefined || a.pages === "all" ? null : new Set(a.pages);
+    if (pages && [...pages].some((p) => p < 0 || p >= d.info.pageCount)) throw err("invalidArgument", "page out of range");
+    const all = stampsOf.get(a.docId) ?? [];
+    const hit = (s: { role: StampRole; page: PageIndex }) => (!pages || pages.has(s.page)) && (!a.role || s.role === a.role);
+    const removed = all.filter(hit);
+    if (removed.length === 0) return { info: structuredClone(d.info), removed: 0 };
+    const touched = [...new Set(removed.map((s) => s.page))].sort((x, y) => x - y);
+    mutate(d, { reason: "edit", pages: touched, undoLabel: "undo.removeStamps" }, () => {
+      d.info.bytes = Math.max(0, d.info.bytes - 900 * removed.length);
+    });
+    stampsOf.set(a.docId, all.filter((s) => !hit(s)));
+    return { info: structuredClone(d.info), removed: removed.length };
   },
   async compressEstimate(
     a: { docId: DocId; options: CompressOptions },
@@ -928,7 +1007,8 @@ export const mock = {
     const pairs = Math.max(pagesA.length, pagesB.length);
     return runJob(Math.max(1, pairs), onEvent, {
       stepMs: 40,
-      compare: (elapsedMs) => mockCompare(dA, dB, pagesA, pagesB, Boolean(a.options.ignoreCase), elapsedMs),
+      compare: (elapsedMs) =>
+        mockCompare(dA, dB, pagesA, pagesB, Boolean(a.options.ignoreCase), elapsedMs, a.options.alignPages !== false),
     });
   },
   async writeRecovery(a: { docId: DocId }): Promise<RecoveryEntry> {
@@ -1284,7 +1364,12 @@ function annotFromSpec(page: PageIndex, spec: AnnotSpec, id: string, author: str
         color: spec.color, fillColor: spec.fillColor,
       };
     case "stamp":
-      return { ...base, subtype: "Stamp", rect: spec.rect, stampKind: "builtin" in spec.image ? spec.image.builtin : "image" };
+      return {
+        ...base,
+        // Stage 8: `/Subj "SeePDF:Signature"` reads back as a 서명
+        kind: spec.signature ? "signature" : "stamp",
+        subtype: "Stamp", rect: spec.rect, stampKind: "builtin" in spec.image ? spec.image.builtin : "image",
+      };
   }
 }
 
@@ -1387,18 +1472,69 @@ function diffWords(a: MockWord[], b: MockWord[], fold: (s: string) => string): D
   return ops;
 }
 
+/**
+ * Stage 8 `alignPages`: pair candidate pages by word-set similarity (Jaccard ≥ 0.5 may pair),
+ * maximising the total similarity in order — an inserted / deleted page becomes a null-sided row.
+ * Returns positions into `wordsA` / `wordsB`.
+ */
+function alignMockPages(wordsA: string[][], wordsB: string[][]): [number | null, number | null][] {
+  const sim = (x: string[], y: string[]) => {
+    const sx = new Set(x);
+    const sy = new Set(y);
+    let both = 0;
+    for (const w of sx) if (sy.has(w)) both += 1;
+    const union = sx.size + sy.size - both;
+    return union === 0 ? 1 : both / union;
+  };
+  const n = wordsA.length;
+  const m = wordsB.length;
+  const score: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      const s = sim(wordsA[i], wordsB[j]);
+      score[i][j] = Math.max(score[i + 1][j], score[i][j + 1], s >= 0.5 ? score[i + 1][j + 1] + s : -Infinity);
+    }
+  }
+  const out: [number | null, number | null][] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m) {
+      const s = sim(wordsA[i], wordsB[j]);
+      if (s >= 0.5 && score[i][j] === score[i + 1][j + 1] + s) {
+        out.push([i++, j++]);
+        continue;
+      }
+      if (score[i][j] === score[i + 1][j]) out.push([i++, null]);
+      else out.push([null, j++]);
+      continue;
+    }
+    out.push(i < n ? [i++, null] : [null, j++]);
+  }
+  return out;
+}
+
 function mockCompare(
   dA: MockDoc, dB: MockDoc, pagesA: PageIndex[], pagesB: PageIndex[], ignoreCase: boolean, elapsedMs: number,
+  alignPages = true,
 ): CompareReport {
   const fold = ignoreCase ? (s: string) => s.toLowerCase() : (s: string) => s;
   const pages: ComparePage[] = [];
   let inserted = 0;
   let deleted = 0;
-  for (let k = 0; k < Math.max(pagesA.length, pagesB.length); k++) {
-    const pageA = pagesA[k] ?? null;
-    const pageB = pagesB[k] ?? null;
+  // B's text is revised per position in `pagesB`, so pairing does not change what B says
+  const revisedB = pagesB.map((p, k) => revise(mockWords(dB, p), k));
+  const pairs: [number | null, number | null][] = alignPages
+    ? alignMockPages(pagesA.map((p) => mockWords(dA, p).map((w) => fold(w.text))), revisedB.map((ws) => ws.map((w) => fold(w.text))))
+    : Array.from({ length: Math.max(pagesA.length, pagesB.length) }, (_, k) => [
+        k < pagesA.length ? k : null,
+        k < pagesB.length ? k : null,
+      ]);
+  for (const [ka, kb] of pairs) {
+    const pageA = ka === null ? null : pagesA[ka];
+    const pageB = kb === null ? null : pagesB[kb];
     const wa = mockWords(dA, pageA);
-    const wb = pageB === null ? [] : revise(mockWords(dB, pageB), k);
+    const wb = kb === null ? [] : revisedB[kb];
     const ops = diffWords(wa, wb, fold);
     for (const op of ops) {
       if (op.kind === "delete" || op.kind === "replace") deleted += op.words;
@@ -1579,6 +1715,7 @@ export function resetMock(): void {
   nextCompressToken = 1;
   recoveryFiles.clear();
   recoveryIdOf.clear();
+  stampsOf.clear();
   writtenFiles.clear();
   nextRecovery = 1;
   for (const job of jobs.values()) job.cancel();

@@ -12,9 +12,10 @@ import { useMock } from "./env";
 import { parseRawPage, parseTextLayer, type RawPage, type TextLayerView } from "./binary";
 import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, CompareOptions, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
+  DuplicateObjectsResult, RedactBatchMark, RedactBatchResult,
   EngineError, EngineStats, ErrorCode, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, ObjectId,
   ObjectsResult, OcrEngine, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
-  RedactPreview, Rgb, SaveResult, SearchEvent, Settings, StampResult, StampSpec, TextEditProbe, ViewportHint,
+  RedactPreview, RemoveStampsResult, Rgb, SaveResult, SearchEvent, Settings, StampResult, StampRole, StampSpec, TextEditProbe, ViewportHint,
 } from "./types";
 
 export { parseTextLayer, parseRawPage };
@@ -119,7 +120,11 @@ function channel<T>(onEvent: (e: T) => void): Channel<T> | ((e: T) => void) {
 // 4. Documents
 // ---------------------------------------------------------------------------
 
-export function openDocument(a: { path: string; password?: string }): Promise<DocInfo> {
+/**
+ * `displayName` (Stage 8): what `DocInfo.name` reports instead of the file name — a recovered
+ * copy (`<uuid>.pdf`) opens under the original document's name.
+ */
+export function openDocument(a: { path: string; password?: string; displayName?: string }): Promise<DocInfo> {
   return call("open_document", a, (mock) => mock.openDocument(a));
 }
 
@@ -318,6 +323,17 @@ export function deleteObjects(
   return call("delete_objects", a, (mock) => mock.deleteObjects(a));
 }
 
+/**
+ * Stage 8: copy objects by `offset` points — onto `targetPage` when given (⌘V on another page).
+ * One undo step (`undo.objectDuplicate`); `unsupported` when an object cannot be copied there.
+ */
+export function duplicateObjects(a: {
+  docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration;
+  offset: [number, number]; targetPage?: PageIndex;
+}): Promise<DuplicateObjectsResult> {
+  return call("duplicate_objects", a, (mock) => mock.duplicateObjects(a));
+}
+
 /** Stage 7: the paragraph under `at` (PDF points on the page), or `null` when there is no text there. */
 export function probeParagraph(a: { docId: DocId; page: PageIndex; at: Point }): Promise<ParagraphProbe | null> {
   return call("probe_paragraph", a, (mock) => mock.probeParagraph(a));
@@ -342,6 +358,13 @@ export function applyRedactions(
   a: { docId: DocId; page: PageIndex; rects: Rect[]; options: { fill: Rgb; overlayText?: string } },
 ): Promise<{ removedObjects: number; verified: boolean; docGeneration: DocGeneration }> {
   return call("apply_redactions", a, (mock) => mock.applyRedactions(a));
+}
+
+/** Stage 8: every marked page in ONE undo step; `verifyFailed` rolls all of them back. */
+export function applyRedactionsBatch(
+  a: { docId: DocId; marks: RedactBatchMark[]; options: { fill: Rgb; overlayText?: string } },
+): Promise<RedactBatchResult> {
+  return call("apply_redactions_batch", a, (mock) => mock.applyRedactionsBatch(a));
 }
 
 export function removePassword(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }> {
@@ -369,6 +392,15 @@ export function setMetadata(a: { docId: DocId; meta: DocMeta }): Promise<DocInfo
 /** 워터마크 / 머리글·바닥글 — one undo step (`undo.watermark` / `undo.headerFooter`). */
 export function addStamp(a: { docId: DocId; spec: StampSpec }): Promise<StampResult> {
   return call("add_stamp", a, (mock) => mock.addStamp(a));
+}
+
+/**
+ * 워터마크 제거 (Stage 8): removes the page objects carrying the `SeePDF:Stamp` mark — every role
+ * when `role` is omitted (stamps from before Stage 8 have no role and only go then). One undo step
+ * `undo.removeStamps`; `removed == 0` is not an error.
+ */
+export function removeStamps(a: { docId: DocId; pages?: PageIndex[] | "all"; role?: StampRole }): Promise<RemoveStampsResult> {
+  return call("remove_stamps", a, (mock) => mock.removeStamps(a));
 }
 
 /**

@@ -1,16 +1,21 @@
 /**
  * 영역 표시 (F-22 redaction) flows for 편집 mode: pending marks → `redact_preview` (debounced, per
- * page) → 적용 → `apply_redactions` per page, sequentially, stopping on the first error.
+ * page) → 적용 → ONE `apply_redactions_batch` for every marked page (one undo step; a failed
+ * verification rolls all of them back, so the marks stay).
+ *
+ * A dragged mark snaps to the text runs it crosses (PDFium removes a text object whole, so the
+ * box must cover all of it) and every mark is clipped to the page box (`geometry.snapMark`).
  *
  * Marks are geometry only (page points, y-up) and live in `editStore` until applied. They survive
  * tool switches inside 편집, and are dropped when the mode is left (after a confirm — the leave
  * guard) or when the document moves under them (undo / redo / page ops / OCR): the preview would
  * describe content that is no longer there. Our own 편집 edits keep them and only re-preview.
+ * Closing or replacing the document asks first too (`dialogs/flows.ts` → `editLeaveGuard`).
  *
  * No React here; `redact.flow.test.tsx` drives it against the mock adapter.
  */
 import * as api from "../ipc/api";
-import type { DocChangedEvent, PageIndex, Point, Rect, RedactPreview } from "../ipc/types";
+import type { DocChangedEvent, PageIndex, Point, Rect, RedactBatchMark, RedactPreview } from "../ipc/types";
 import { toast } from "../app/toastStore";
 import { askConfirm } from "../dialogs/dialogState";
 import { useAppStore } from "../store/appStore";
@@ -18,7 +23,7 @@ import { useDocStore } from "../store/docStore";
 import { toolController } from "../tools/ToolController";
 import { clearTextSelection, getTextLayer, isEmptySelection, orderSelection, pageRange, useSelectionStore } from "../viewer";
 import { useEditStore, type RedactMark } from "./editStore";
-import { hitObject } from "./geometry";
+import { clipRect, hitObject, snapMark } from "./geometry";
 
 export const PREVIEW_DEBOUNCE_MS = 250;
 /** a drag smaller than this (points, either side) is a click */
@@ -49,10 +54,25 @@ export function markAt(marks: RedactMark[], x: number, y: number): RedactMark | 
 // Marking
 // ---------------------------------------------------------------------------
 
-/** A dragged rectangle; `false` when it was too small to be a mark. */
+const EVERYWHERE: Rect = { l: -Infinity, b: -Infinity, r: Infinity, t: Infinity };
+
+/** The page's box in user space (its crop box) — nothing outside it is visible or markable. */
+export function pageBox(page: PageIndex): Rect {
+  const info = useDocStore.getState().info;
+  return info && info.docId === docId() ? info.pages[page]?.crop ?? EVERYWHERE : EVERYWHERE;
+}
+
+/** What a drag of `rect` on `page` becomes: snapped to the text runs it crosses, clipped to the page. */
+export function markRectFor(page: PageIndex, rect: Rect): Rect | null {
+  return snapMark(rect, useEditStore.getState().pages[page]?.objects ?? [], pageBox(page));
+}
+
+/** A dragged rectangle (snapped + clipped); `false` when it was too small to be a mark. */
 export function markArea(page: PageIndex, rect: Rect): boolean {
   if (rect.r - rect.l < MIN_MARK_PT || rect.t - rect.b < MIN_MARK_PT) return false;
-  const [id] = useEditStore.getState().addMarks(page, [rect]);
+  const snapped = markRectFor(page, rect);
+  if (!snapped) return false;
+  const [id] = useEditStore.getState().addMarks(page, [snapped]);
   if (id !== undefined) useEditStore.getState().selectMark(id);
   return id !== undefined;
 }
@@ -61,11 +81,12 @@ export function markArea(page: PageIndex, rect: Rect): boolean {
 export function markTextRunAt(page: PageIndex, at: Point): boolean {
   const objects = (useEditStore.getState().pages[page]?.objects ?? []).filter((o) => o.type === "text");
   const hit = hitObject(objects, at[0], at[1]);
-  if (!hit) {
+  const rect = hit && clipRect(hit.rect, pageBox(page));
+  if (!rect) {
     useEditStore.getState().selectMark(null);
     return false;
   }
-  const [id] = useEditStore.getState().addMarks(page, [hit.rect]);
+  const [id] = useEditStore.getState().addMarks(page, [rect]);
   if (id !== undefined) useEditStore.getState().selectMark(id);
   return id !== undefined;
 }
@@ -86,7 +107,9 @@ export function markTextSelection(): number {
     const layer = getTextLayer(info.docId, info.docGeneration, page);
     const range = layer && pageRange(selection, page, layer.charCount);
     if (!layer || !range) continue;
-    added += useEditStore.getState().addMarks(page, layer.rangeRects(range[0], range[1])).length;
+    const box = pageBox(page);
+    const rects = layer.rangeRects(range[0], range[1]).flatMap((r) => clipRect(r, box) ?? []);
+    added += useEditStore.getState().addMarks(page, rects).length;
   }
   if (added === 0) return 0;
   clearTextSelection();
@@ -165,8 +188,9 @@ export function isApplying(): boolean {
 
 /**
  * 적용: fresh previews (the form-field refusal must not hang on a debounced answer) → confirm →
- * `apply_redactions` per marked page in page order, stopping on the first error. Each page's
- * marks are dropped as soon as that page is applied, so a failure leaves only what was not done.
+ * one `apply_redactions_batch` with every marked page — one undo step. On success exactly the
+ * marks that were sent go (one drawn while the call ran stays); on any failure, `verifyFailed`
+ * included, the engine rolled everything back and every mark stays.
  */
 export async function applyMarks(): Promise<boolean> {
   const doc = docId();
@@ -190,31 +214,29 @@ export async function applyMarks(): Promise<boolean> {
 
     const { redactFill, redactOverlay } = useEditStore.getState();
     const overlayText = redactOverlay.trim();
-    let removed = 0;
-    for (const page of pages) {
-      const rects = marksOn(page).map((m) => m.rect);
-      if (rects.length === 0) continue;
-      try {
-        await api.applyRedactions({
-          docId: doc,
-          page,
-          rects,
-          options: overlayText ? { fill: redactFill, overlayText } : { fill: redactFill },
-        });
-      } catch (e) {
-        const verify = api.isSeePdfError(e) && e.code === "verifyFailed";
-        toast(verify ? "redact.verifyFailed" : api.errorKey(e), undefined, {
-          tone: "danger",
-          detail: e instanceof Error ? e.message : String(e),
-        });
-        void runPreview(page);
-        return false;
-      }
-      removed += rects.length;
-      cancelTimer(page);
-      useEditStore.getState().clearMarks([page]);
+    const sent = useEditStore.getState().marks.filter((m) => pages.includes(m.page));
+    const marks: RedactBatchMark[] = pages
+      .map((page) => ({ page, rects: sent.filter((m) => m.page === page).map((m) => m.rect) }))
+      .filter((m) => m.rects.length > 0);
+    if (marks.length === 0) return false;
+    try {
+      await api.applyRedactionsBatch({
+        docId: doc,
+        marks,
+        options: overlayText ? { fill: redactFill, overlayText } : { fill: redactFill },
+      });
+    } catch (e) {
+      const verify = api.isSeePdfError(e) && e.code === "verifyFailed";
+      toast(verify ? "redact.verifyFailed" : api.errorKey(e), undefined, {
+        tone: "danger",
+        detail: e instanceof Error ? e.message : api.isSeePdfError(e) ? e.message : String(e),
+      });
+      for (const page of pages) schedulePreview(page);
+      return false;
     }
-    toast("redact.done", { count: removed }, { tone: "success" });
+    for (const page of pages) cancelTimer(page);
+    useEditStore.getState().removeMarks(sent.map((m) => m.id));
+    toast("redact.done", { count: sent.length }, { tone: "success" });
     return true;
   } finally {
     applying = false;

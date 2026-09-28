@@ -152,7 +152,11 @@ export type AnnotSpec =
       kind: 'textbox'; rect: Rect; text: string; fontSize: number; color: Rgb;
       align: 'left' | 'center' | 'right'; fillColor: Rgb | null;
     }
-  | { kind: 'stamp'; rect: Rect; image: { path: string } | { builtin: string }; rotate?: number };
+  | {
+      kind: 'stamp'; rect: Rect; image: { path: string } | { builtin: string }; rotate?: number;
+      /** Stage 8: written with `/Subj "SeePDF:Signature"` and read back as `kind: 'signature'` (서명, not 도장) */
+      signature?: boolean;
+    };
 
 export interface AnnotPatch {
   rect?: Rect; rects?: Rect[]; paths?: number[][]; p1?: Point; p2?: Point;
@@ -208,6 +212,8 @@ export interface TextEditProbe {
   reason?: PageObject['reason'] | 'glyphsMissing';
 }
 export interface ObjectsResult { objects: PageObject[]; docGeneration: DocGeneration }
+/** Stage 8 `duplicate_objects`: `objects` and `newObjectIds` belong to `targetPage ?? page`. */
+export type DuplicateObjectsResult = ObjectsResult & { newObjectIds: ObjectId[] };
 
 /** Stage 7 — paragraph editing with reflow (`probe_paragraph` / `edit_paragraph`). */
 export type ParagraphAlign = 'left' | 'center' | 'right' | 'justify';
@@ -243,6 +249,12 @@ export interface ParagraphEditResult {
 // 7.5 Redaction and security
 // ---------------------------------------------------------------------------
 
+/** Stage 8 `apply_redactions_batch`: one page's marks. */
+export interface RedactBatchMark { page: PageIndex; rects: Rect[] }
+/** Stage 8 `apply_redactions_batch`: every page in ONE undo step (`undo.redact`). */
+export interface RedactBatchResult {
+  removedObjects: number; verified: boolean; docGeneration: DocGeneration; pages: PageIndex[];
+}
 export interface RedactPreview {
   page: PageIndex;
   textObjects: { objectId: ObjectId; text: string; rect: Rect; fullyInside: boolean }[];
@@ -271,6 +283,8 @@ export interface StampSpec {
   pages: PageIndex[] | 'all';
 }
 export interface StampResult { info: DocInfo; pagesStamped: number }
+/** Stage 8 `remove_stamps`: `removed == 0` is not an error. */
+export interface RemoveStampsResult { info: DocInfo; removed: number }
 
 export type CompressPreset = 300 | 150 | 96;   // target DPI for raster images
 export interface CompressOptions {
@@ -293,6 +307,11 @@ export interface CompareOptions {
   pagesB?: PageIndex[];        // default all pages of B; paired with pagesA by position; the longer list's
                                // extra pages become ComparePage rows with pageA/pageB = null
   ignoreCase?: boolean;        // default false; whitespace runs are always normalised
+  /**
+   * Stage 8, default true: pair pages by text similarity (sequence alignment over per-page word
+   * sets), so an inserted / deleted page becomes a null-sided row instead of shifting every later pair.
+   */
+  alignPages?: boolean;
 }
 export type DiffKind = 'equal' | 'insert' | 'delete' | 'replace';
 export interface DiffOp {
@@ -399,6 +418,8 @@ export interface Settings {
   toolDefaults: Record<string, unknown>;
   /** 서명 보관함, at most 10, newest last (Stage 6b, P1-9); `[]` in settings written before it */
   signatures: SavedSignature[];
+  /** 야간 모드, persisted across launches (Stage 8); `'off'` in settings written before it */
+  night: 'off' | 'dark' | 'sepia';
 }
 
 /** One entry of the 서명 보관함. Drawn strokes are unit space (0…1 of the drawn box, y-down). */

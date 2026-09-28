@@ -8,6 +8,15 @@
  */
 import type { Mat6, ObjectId, PageGeom, PageObject, Point, Rect } from "../ipc/types";
 
+/**
+ * The angle (clockwise on screen) the 문단 편집 frame turns by: the page's /Rotate plus the view
+ * rotation — the same sum `viewer/geometry.ts` `pageToDevice` uses, so text along the page's +x
+ * reads on screen the way the engine will write it.
+ */
+export function editorRotation(pageRotation: number, viewRotation: number): 0 | 90 | 180 | 270 {
+  return ((((pageRotation + viewRotation) % 360) + 360) % 360) as 0 | 90 | 180 | 270;
+}
+
 /** A CSS-px drag delta → the same delta in page points (translation dropped). */
 export function deltaToPage(inverse: Mat6, dx: number, dy: number): Point {
   return [inverse[0] * dx + inverse[2] * dy, inverse[1] * dx + inverse[3] * dy];
@@ -137,6 +146,51 @@ export function fontStack(fontName: string): string {
     return '"Times New Roman", Times, Georgia, serif';
   }
   return 'Helvetica, Arial, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
+}
+
+/** `inner` lies inside `outer` (grown by `tolPt`). */
+export function rectInside(inner: Rect, outer: Rect, tolPt = 0.5): boolean {
+  return inner.l >= outer.l - tolPt && inner.r <= outer.r + tolPt && inner.b >= outer.b - tolPt && inner.t <= outer.t + tolPt;
+}
+
+/** The bounding box of several rects (`null` for none). */
+export function unionRects(rects: Rect[]): Rect | null {
+  if (rects.length === 0) return null;
+  return rects.reduce((u, r) => ({ l: Math.min(u.l, r.l), b: Math.min(u.b, r.b), r: Math.max(u.r, r.r), t: Math.max(u.t, r.t) }));
+}
+
+/** `r` clipped to `box`; `null` when nothing is left. */
+export function clipRect(r: Rect, box: Rect): Rect | null {
+  const out = { l: Math.max(r.l, box.l), b: Math.max(r.b, box.b), r: Math.min(r.r, box.r), t: Math.min(r.t, box.t) };
+  return out.r > out.l && out.t > out.b ? out : null;
+}
+
+/** Objects wholly inside a 선택 marquee. */
+export function objectsInside(objects: PageObject[], marquee: Rect): PageObject[] {
+  return objects.filter((o) => rectInside(o.rect, marquee));
+}
+
+/**
+ * Does a 영역 표시 drag *cross* this text run? More than a graze: the overlap must reach a third of
+ * the run's height — or half the drag's, for a drag thinner than a line — so the lines above and
+ * below a dragged line, whose boxes touch it, stay out; and more than a sliver of its width.
+ */
+export function crossesRun(drag: Rect, run: Rect): boolean {
+  const w = Math.min(drag.r, run.r) - Math.max(drag.l, run.l);
+  const h = Math.min(drag.t, run.t) - Math.max(drag.b, run.b);
+  const need = Math.min((run.t - run.b) / 3, (drag.t - drag.b) / 2);
+  return w > Math.min(1, (run.r - run.l) / 2) && h > 0 && h >= need;
+}
+
+/**
+ * 영역 표시 snap (Stage 8): a dragged rect grows to the whole of every text run it crosses — PDFium
+ * removes a text object entirely, so the black box must cover all of it — and keeps its own extent
+ * for whatever non-text content it covers. Clipped to the page box; `null` when nothing is left.
+ */
+export function snapMark(drag: Rect, objects: PageObject[], pageBox: Rect): Rect | null {
+  const runs = objects.filter((o) => o.type === "text" && crossesRun(drag, o.rect)).map((o) => o.rect);
+  const snapped = unionRects([drag, ...runs]) ?? drag;
+  return clipRect(snapped, pageBox);
 }
 
 /** `true` when the object with this id is on the list. */

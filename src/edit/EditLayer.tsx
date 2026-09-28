@@ -4,13 +4,15 @@
  * selection does.
  *
  *   선택        hover outlines · click selects (⇧ adds) · drag moves · corner handles scale ·
- *               double-click on text opens 문단 편집
+ *               drag on empty space draws a marquee that selects the objects wholly inside it
+ *               (⇧ adds) · double-click on text opens 문단 편집
  *   텍스트 수정  click → `probe_paragraph` → the editing box
  *   텍스트 추가  click → an empty editing box
  *   이미지 추가  click or drag a box → file picker → `add_image_object`
- *   영역 표시    drag marks an area · click on text marks that run · click a mark selects it (× / ⌫
- *               removes it). Marks show hatched in every 편집 tool; the text the preview says
- *               will go although it reaches outside the marks is outlined amber (`redact.ts`).
+ *   영역 표시    drag marks an area — snapped to the text runs it crosses, clipped to the page, and
+ *               drawn that way while dragging · click on text marks that run · click a mark
+ *               selects it (× / ⌫ removes it). Marks show hatched in every 편집 tool; the text the
+ *               preview says will go although it reaches outside the marks is outlined amber.
  *
  * The page's objects are listed on mount and again whenever the document generation moves past
  * the one we hold (object ids are per-generation, IPC_CONTRACT §7.4).
@@ -26,10 +28,10 @@ import {
   addImageFlow, beginAddText, beginParagraphEdit, loadPage, moveObjects, reasonKey, resizeObject,
 } from "./actions";
 import {
-  CORNERS, cornerPoint, deltaToPage, hitObject, imageRectAt, rectFromPoints, resizeRect, type Corner,
+  CORNERS, cornerPoint, deltaToPage, hitObject, imageRectAt, objectsInside, rectFromPoints, resizeRect, type Corner,
 } from "./geometry";
 import { TextEditor } from "./TextEditor";
-import { markArea, markAt, markTextRunAt } from "./redact";
+import { markArea, markAt, markRectFor, markTextRunAt } from "./redact";
 import type { RedactMark } from "./editStore";
 
 const EMPTY: ObjectId[] = [];
@@ -41,7 +43,8 @@ const DRAG_PX = 3;
 type Drag =
   | { kind: "move"; ids: ObjectId[]; x0: number; y0: number; dx: number; dy: number; moved: boolean }
   | { kind: "resize"; id: ObjectId; corner: Corner; from: Rect; to: Rect; x0: number; y0: number }
-  | { kind: "image" | "mark"; start: Point; end: Point; x0: number; y0: number; moved: boolean };
+  | { kind: "image" | "mark"; start: Point; end: Point; x0: number; y0: number; moved: boolean }
+  | { kind: "marquee"; start: Point; end: Point; x0: number; y0: number; moved: boolean; additive: boolean };
 
 export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
   const t = useT();
@@ -110,7 +113,9 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
 
     const hit = hitObject(objects, at[0], at[1]);
     if (!hit) {
-      store.clearSelection();
+      // empty space: a marquee (a plain click deselects on release)
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      setDrag({ kind: "marquee", start: at, end: at, x0: e.clientX, y0: e.clientY, moved: false, additive: e.shiftKey });
       return;
     }
     if (e.detail >= 2 && hit.type === "text") {
@@ -169,6 +174,12 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
     } else if (drag.kind === "mark") {
       if (drag.moved) markArea(ctx.index, rectFromPoints(drag.start, drag.end));
       else markTextRunAt(ctx.index, drag.start);
+    } else if (drag.kind === "marquee") {
+      const store = useEditStore.getState();
+      const inside = drag.moved ? objectsInside(objects, rectFromPoints(drag.start, drag.end)).map((o) => o.objectId) : [];
+      const ids = drag.additive ? [...selected, ...inside.filter((id) => !selected.includes(id))] : inside;
+      if (ids.length) store.select(ctx.index, ids);
+      else if (!drag.additive) store.clearSelection();
     } else {
       const rect = drag.moved ? rectFromPoints(drag.start, drag.end) : imageRectAt(drag.start, ctx.page);
       void addImageFlow(ctx.index, rect);
@@ -188,6 +199,8 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
   const hovered = hover !== null && !selected.includes(hover) ? objects.find((o) => o.objectId === hover) : undefined;
   const moveOffset = drag?.kind === "move" && drag.moved ? { x: drag.dx, y: drag.dy } : { x: 0, y: 0 };
   const single = selectedObjects.length === 1 && !drag ? selectedObjects[0] : null;
+  const marquee = drag?.kind === "marquee" && drag.moved ? rectFromPoints(drag.start, drag.end) : null;
+  const draftMark = drag?.kind === "mark" && drag.moved ? rectFromPoints(drag.start, drag.end) : null;
 
   return (
     <div
@@ -287,9 +300,14 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
           );
         })}
       {drag?.kind === "image" && drag.moved && <Outline ctx={ctx} rect={rectFromPoints(drag.start, drag.end)} state="draft" />}
-      {drag?.kind === "mark" && drag.moved && (
-        <div className="redact-mark" data-draft style={boxStyle(ctx.rectToBox(rectFromPoints(drag.start, drag.end)))} />
+      {draftMark && (
+        <div className="redact-mark" data-draft style={boxStyle(ctx.rectToBox(markRectFor(ctx.index, draftMark) ?? draftMark))} />
       )}
+      {marquee &&
+        objectsInside(objects, marquee)
+          .filter((o) => !selected.includes(o.objectId))
+          .map((o) => <Outline key={`m-${o.objectId}`} ctx={ctx} rect={o.rect} state="hover" />)}
+      {marquee && <div className="edit-marquee" data-testid="edit-marquee" style={boxStyle(ctx.rectToBox(marquee))} />}
       {session && <TextEditor key={sessionKey(session)} ctx={ctx} session={session} />}
     </div>
   );

@@ -9,7 +9,10 @@ use crate::engine::compress;
 use crate::engine::export::job::{channel_sink, JobReporter};
 use crate::engine::stamp;
 use crate::engine::{EngineHandle, Lane};
-use crate::ipc::types::{CompressOptions, DocInfo, JobEvent, JobId, PageStampSpec, StampResult};
+use crate::ipc::types::{
+    CompressOptions, DocInfo, JobEvent, JobId, PageSelection, PageStampSpec, RemoveStampsResult,
+    StampResult, StampRole,
+};
 use crate::ipc::EngineError;
 use tauri::ipc::Channel;
 use tauri::State;
@@ -23,6 +26,22 @@ pub async fn add_stamp(
     engine
         .call(Lane::Edit, "add_stamp", move |st| {
             stamp::add_stamp(st, &doc_id, &spec)
+        })
+        .await
+}
+
+/// 워터마크 제거 (Stage 8): removes the `SeePDF:Stamp` objects on `pages` (default all), of
+/// `role` only when given. One undo step `undo.removeStamps`; `removed == 0` is not an error.
+#[tauri::command]
+pub async fn remove_stamps(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    pages: Option<PageSelection>,
+    role: Option<StampRole>,
+) -> Result<RemoveStampsResult, EngineError> {
+    engine
+        .call(Lane::Edit, "remove_stamps", move |st| {
+            stamp::remove_stamps(st, &doc_id, pages.as_ref(), role)
         })
         .await
 }

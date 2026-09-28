@@ -4,12 +4,12 @@
  * colour, no colour transform — `render_night_is_transparent_not_inverted` on the Rust side) and the
  * CSS paper under it is exactly what the filter makes of white.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "../App";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
-import { NIGHT_MODES, nextNight, useViewStore } from "../store/viewStore";
+import { NIGHT_MODES, nextNight, readNight, useViewStore } from "../store/viewStore";
 import { MENU_IDS, shortcutFor } from "../keys/keymap";
 import { setMockAssetResolver } from "../ipc/protocol";
 import { readFileSync } from "node:fs";
@@ -101,6 +101,36 @@ describe("view.night", () => {
     const thumbs = requests.filter((r) => r.route === "/thumb");
     expect(thumbs.length).toBeGreaterThan(0);
     expect(thumbs.every((r) => r.query.night === undefined)).toBe(true);
+  });
+
+  it("is remembered across launches: every change goes to Settings.night, and a start restores it (Stage 8)", async () => {
+    const { mock } = await import("../ipc/mock");
+    const patch = vi.spyOn(mock, "setSettings");
+    useViewStore.getState().cycleNight();
+    expect(useViewStore.getState().night).toBe("dark");
+    await waitFor(() => expect(patch).toHaveBeenCalledWith({ patch: { night: "dark" } }));
+    useViewStore.getState().setNight("sepia");
+    await waitFor(() => expect(patch).toHaveBeenLastCalledWith({ patch: { night: "sepia" } }));
+    // setting the same mode again writes nothing
+    const calls = patch.mock.calls.length;
+    useViewStore.getState().setNight("sepia");
+    expect(patch.mock.calls.length).toBe(calls);
+    patch.mockRestore();
+
+    // a new window: the view starts dark-less, settings arrive → the remembered mode is back
+    useViewStore.setState({ night: "off" });
+    useAppStore.setState({ settings: null, ready: false });
+    await useAppStore.getState().bootstrap();
+    expect(useAppStore.getState().settings?.night).toBe("sepia");
+    expect(useViewStore.getState().night).toBe("sepia");
+
+    // a settings file from before Stage 8 (no `night`, or junk) starts with it off
+    useViewStore.setState({ night: "off" });
+    useAppStore.setState({ settings: null });
+    useAppStore.setState({ settings: { ...(useAppStore.getState().settings ?? {}), night: "bogus" } as never });
+    expect(useViewStore.getState().night).toBe("off");
+    expect(readNight(undefined)).toBe("off");
+    expect(readNight("dark")).toBe("dark");
   });
 });
 

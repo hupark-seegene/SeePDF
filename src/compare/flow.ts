@@ -129,6 +129,7 @@ export async function startCompare(): Promise<boolean> {
           }
           break;
         case "cancelled":
+          // 취소, or (Stage 8) either document closed mid-job: a quiet end, no error toast
           live.jobId = null;
           releaseB();
           idle();
@@ -138,14 +139,15 @@ export async function startCompare(): Promise<boolean> {
           live.jobId = null;
           releaseB();
           idle();
-          toast("compare.failed", undefined, { tone: "danger", detail: e.error.message });
+          if (e.error.code !== "cancelled") toast("compare.failed", undefined, { tone: "danger", detail: e.error.message });
           settle(false);
           break;
       }
     };
 
+    // Stage 8: pages are paired by text similarity, so an inserted / deleted page is its own row
     api
-      .compareDocuments({ docA: infoA.docId, docB: infoB.docId, options: { ignoreCase } }, onEvent)
+      .compareDocuments({ docA: infoA.docId, docB: infoB.docId, options: { ignoreCase, alignPages: true } }, onEvent)
       .then((jobId) => {
         // mock mode (and a fast engine) may have streamed every event before the id comes back
         if (finished) return;
@@ -156,7 +158,9 @@ export async function startCompare(): Promise<boolean> {
         if (!alive()) return;
         releaseB();
         idle();
-        toast("compare.failed", undefined, { tone: "danger", detail: message(e) });
+        if (!(api.isSeePdfError(e) && e.code === "cancelled")) {
+          toast("compare.failed", undefined, { tone: "danger", detail: message(e) });
+        }
         settle(false);
       });
   });

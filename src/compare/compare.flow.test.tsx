@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import * as api from "../ipc/api";
 import DialogHost from "../dialogs/DialogHost";
 import { openDialog, useDialogStore } from "../dialogs/dialogState";
@@ -58,7 +58,10 @@ describe("compare.flow", () => {
     fireEvent.click(run);
 
     const summary = await screen.findByTestId("compare-summary", {}, { timeout: 2000 });
-    expect(compare).toHaveBeenCalledWith({ docA: "d1", docB: "d2", options: { ignoreCase: true } }, expect.any(Function));
+    expect(compare).toHaveBeenCalledWith(
+      { docA: "d1", docB: "d2", options: { ignoreCase: true, alignPages: true } },
+      expect.any(Function),
+    );
     expect(useDialogStore.getState().stack).toHaveLength(0);
     // A has 3 pages, B 2: pair 1 is revised, pair 2 has no B page
     expect(summary.textContent).toContain("변경된 페이지 2");
@@ -67,7 +70,9 @@ describe("compare.flow", () => {
     const rows = document.querySelectorAll("[data-row]");
     expect(rows).toHaveLength(3);
     expect(document.querySelectorAll("[data-row][data-changed]")).toHaveLength(2);
-    expect(rows[2].textContent).toContain("페이지 없음");
+    // the aligned third row: a page only A has
+    expect(rows[2].textContent).toContain("삭제된 페이지");
+    expect(rows[2]).toHaveAttribute("data-side", "deleted");
     expect(screen.getAllByTestId("cmp-mark-del").length).toBeGreaterThan(0);
     expect(screen.getAllByTestId("cmp-mark-ins").length).toBeGreaterThan(0);
     // the window's document is untouched
@@ -115,6 +120,66 @@ describe("compare.flow", () => {
     expect(useDialogStore.getState().stack.map((e) => e.name)).toEqual(["compare"]);
     expect(screen.getByRole("button", { name: "비교" })).toBeEnabled();
     expect(useCompareStore.getState().session).toBeNull();
+  });
+
+  it("a document closed mid-job ends quietly: `cancelled` (or an error coded cancelled) toasts nothing", async () => {
+    for (const end of ["cancelled", "errorCancelled"] as const) {
+      vi.spyOn(mock, "compareDocuments").mockImplementationOnce(async (_a, onEvent) => {
+        setTimeout(() => {
+          onEvent({ type: "started", jobId: 77, total: 3 });
+          onEvent(
+            end === "cancelled"
+              ? { type: "cancelled", jobId: 77, done: 1 }
+              : { type: "error", jobId: 77, error: { code: "cancelled", message: "document closed" } },
+          );
+        }, 5);
+        return 77;
+      });
+      const close = vi.spyOn(mock, "closeDocument");
+      fireEvent.click(await pickAndCompare());
+      await waitFor(() => expect(close).toHaveBeenCalledWith({ docId: expect.any(String) }));
+      await waitFor(() => expect(useCompareRun.getState().phase).toBe("idle"));
+      expect(useToastStore.getState().toasts.filter((t) => t.tone === "danger")).toHaveLength(0);
+      expect(useCompareStore.getState().session).toBeNull();
+      cleanup();
+      useDialogStore.getState().closeAll();
+      useCompareRun.setState({ path: null, ignoreCase: false, phase: "idle", done: 0, total: 0 });
+      vi.restoreAllMocks();
+      vi.mocked(api.openFileDialog).mockImplementation(async () => [OTHER]);
+    }
+  });
+
+  it("an inserted and a deleted page show as their own rows, labelled 삽입된 페이지 / 삭제된 페이지", async () => {
+    const infoA = useDocStore.getState().info!;
+    const infoB = await api.openDocument({ path: OTHER });
+    const same = { changed: false, wordsA: 3, wordsB: 3, ops: [{ kind: "equal" as const, words: 3 }] };
+    act(() =>
+      useCompareStore.getState().enter({
+        infoA,
+        infoB,
+        report: {
+          docA: infoA.docId, docB: infoB.docId, changedPages: 2, inserted: 4, deleted: 5, elapsedMs: 1,
+          pages: [
+            { pageA: 0, pageB: 0, ...same },
+            { pageA: null, pageB: 1, changed: true, wordsA: 0, wordsB: 4, ops: [{ kind: "insert", words: 4, textB: "a b c d" }] },
+            { pageA: 1, pageB: null, changed: true, wordsA: 5, wordsB: 0, ops: [{ kind: "delete", words: 5, textA: "a b c d e" }] },
+            { pageA: 2, pageB: null, ...same, changed: true },
+          ],
+        },
+      }),
+    );
+    render(<CompareHost />);
+    const rows = document.querySelectorAll("[data-row]");
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).not.toHaveAttribute("data-side");
+    expect(rows[1]).toHaveAttribute("data-side", "inserted");
+    expect(within(rows[1] as HTMLElement).getAllByText("삽입된 페이지")).toHaveLength(2); // badge + the empty A side
+    expect(rows[1].textContent).toContain("A 없음쪽 · B 2쪽");
+    expect(rows[2]).toHaveAttribute("data-side", "deleted");
+    expect(within(rows[2] as HTMLElement).getAllByText("삭제된 페이지")).toHaveLength(2);
+    // 다음 변경 walks the null-sided rows like any other change
+    fireEvent.click(screen.getByRole("button", { name: "다음 변경" }));
+    expect(rows[1]).toHaveAttribute("data-current");
   });
 
   it("an encrypted B goes through the password prompt and the dialog comes back with its state", async () => {

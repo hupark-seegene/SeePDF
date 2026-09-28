@@ -184,12 +184,14 @@ pub fn run() {
             // --- redaction and security (Stage 1a / 1b / P1) ---
             commands::security::redact_preview,
             commands::security::apply_redactions,
+            commands::security::apply_redactions_batch,
             commands::security::remove_password,
             commands::security::set_password,
             commands::security::remove_metadata,
             commands::security::set_metadata,
             // --- stamps and compression (Stage 4) ---
             commands::stamp::add_stamp,
+            commands::stamp::remove_stamps,
             commands::stamp::compress_estimate,
             commands::stamp::compress_apply,
             commands::stamp::compress_discard,
@@ -213,6 +215,7 @@ pub fn run() {
             commands::objects::replace_image,
             commands::objects::transform_object,
             commands::objects::delete_objects,
+            commands::objects::duplicate_objects,
             commands::objects::probe_paragraph,
             commands::objects::edit_paragraph,
             // --- save (Stage 1b) ---

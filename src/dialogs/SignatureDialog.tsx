@@ -6,10 +6,11 @@
  * * **그리기** — draw with a pointer. Confirm hands unit-space strokes to `src/tools/stamp.ts`
  *   as the pending signature; the next click on a page commits `AnnotSpec { kind: "signature" }`,
  *   a real `/Ink` annotation with `/Subj "SeePDF:Signature"` (cargo `annot_signature_subj_roundtrip`).
- * * **입력** — type a name and pick one of three script-like styles (system fonts only, see
- *   `typedSignature.ts`). Confirm renders it to a transparent PNG, `write_signature_image` puts it
- *   under `$APPDATA/SeePDF/signatures/`, and the 서명 tool places it as `StampImage { path }` — the
- *   image-signature path that already existed, with the PNG's aspect kept.
+ * * **입력** — type a name and pick a script-like style (system fonts only, see
+ *   `typedSignature.ts`; a Hangul name gets the Korean faces the OS really has). Confirm renders
+ *   it to a transparent PNG, `write_signature_image` puts it under `$APPDATA/SeePDF/signatures/`,
+ *   and the 서명 tool places it as `StampImage { path }` with `signature: true` (Stage 8), so it
+ *   lists as 서명 — the PNG's aspect kept.
  * * **이미지** — hands over to the existing file picker (a scanned signature).
  *
  * **저장된 서명** (보관함): with 이 서명 저장 ticked, confirm also appends the signature to
@@ -37,7 +38,9 @@ import {
   savedFromDrawn,
   savedFromTyped,
 } from "./signatureLibrary";
-import { DEFAULT_SIGNATURE_STYLE, MAX_TYPED_LENGTH, SIGNATURE_STYLES, renderTypedSignature, signatureStyle } from "./typedSignature";
+import {
+  DEFAULT_SIGNATURE_STYLE, MAX_TYPED_LENGTH, effectiveStyle, renderTypedSignature, signatureCss, stylesFor,
+} from "./typedSignature";
 import "./dialogs.css";
 
 /** Canvas backing-store size. Points are normalised on confirm, so this is only resolution. */
@@ -184,8 +187,8 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
     if (tab === "type") {
       const text = typed.trim();
       if (!text) return;
-      if (await placeTyped(text, style)) {
-        remember(savedFromTyped(text, style));
+      if (await placeTyped(text, activeStyle)) {
+        remember(savedFromTyped(text, activeStyle));
         onClose();
       }
     }
@@ -205,6 +208,9 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
 
   const canConfirm = !busy && (tab === "draw" ? !empty : tab === "type" ? typed.trim().length > 0 : false);
   const sample = typed.trim() || t("sign.typeSample");
+  // the styles follow the name's script (Latin / Hangul); a choice that is not on offer falls to the first
+  const styles = stylesFor(sample);
+  const activeStyle = effectiveStyle(sample, style);
 
   return (
     <Dialog
@@ -267,17 +273,17 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
             }}
           />
           <div className="sign-styles" role="radiogroup" aria-label={t("sign.style")}>
-            {SIGNATURE_STYLES.map((s) => (
+            {styles.map((s) => (
               <button
                 key={s.id}
                 type="button"
                 role="radio"
-                aria-checked={style === s.id}
+                aria-checked={activeStyle === s.id}
                 className="sign-style"
-                data-active={style === s.id || undefined}
+                data-active={activeStyle === s.id || undefined}
                 onClick={() => setStyle(s.id)}
               >
-                <span className="sign-style-sample" style={{ fontFamily: s.fontFamily, fontStyle: s.fontStyle }}>
+                <span className="sign-style-sample" style={signatureCss(s.id)}>
                   {sample}
                 </span>
                 <span className="text-xs sign-style-name">{t(s.labelKey)}</span>
@@ -344,9 +350,8 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
 /** A saved signature as a thumbnail: the strokes as SVG, or the text in its style. */
 function SavedPreview({ entry }: { entry: SavedSignature }) {
   if (entry.kind === "typed") {
-    const style = signatureStyle(entry.style);
     return (
-      <span className="sign-saved-text" style={{ fontFamily: style.fontFamily, fontStyle: style.fontStyle }}>
+      <span className="sign-saved-text" style={signatureCss(entry.style)}>
         {entry.text}
       </span>
     );

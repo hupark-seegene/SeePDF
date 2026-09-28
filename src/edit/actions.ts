@@ -7,13 +7,14 @@
  * layer does not re-list a page it already knows.
  */
 import * as api from "../ipc/api";
-import type { DocGeneration, ObjectId, PageIndex, PageObject, ParagraphEdit, ParagraphEditResult, Point, Rect, Rgb } from "../ipc/types";
+import type { DocGeneration, DocId, ObjectId, PageIndex, PageObject, ParagraphEdit, ParagraphEditResult, Point, Rect, Rgb } from "../ipc/types";
 import { toast } from "../app/toastStore";
 import { askConfirm } from "../dialogs/dialogState";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
+import { useViewStore } from "../store/viewStore";
 import { useEditStore, type EditSession } from "./editStore";
-import { scaleArgs, textRectFor } from "./geometry";
+import { scaleArgs, textRectFor, unionRects } from "./geometry";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -35,6 +36,21 @@ export function objectsOn(page: PageIndex): PageObject[] {
   return useEditStore.getState().pages[page]?.objects ?? [];
 }
 
+/** The document generation: object generations are document-wide, so the newest of any page. */
+function latestGeneration(): DocGeneration {
+  const info = useDocStore.getState().info;
+  let g = info && info.docId === docId() ? info.docGeneration : 0;
+  for (const entry of Object.values(useEditStore.getState().pages)) g = Math.max(g, entry.docGeneration);
+  return g;
+}
+
+function selectedObjects(): { page: PageIndex; objects: PageObject[] } | null {
+  const sel = useEditStore.getState().selection;
+  if (!sel) return null;
+  const objects = objectsOn(sel.page).filter((o) => sel.ids.includes(o.objectId));
+  return objects.length ? { page: sel.page, objects } : null;
+}
+
 const inflight = new Map<string, Promise<void>>();
 
 /** List a page's objects (deduplicated per page + generation). */
@@ -53,10 +69,14 @@ export function loadPage(doc: string, page: PageIndex, generation = 0): Promise<
   return job;
 }
 
+function detailOf(e: unknown): string {
+  return e instanceof Error || api.isSeePdfError(e) ? e.message : String(e);
+}
+
 function fail(e: unknown, page: PageIndex): void {
   const doc = docId();
   if (api.isSeePdfError(e) && e.code === "stale" && doc) void loadPage(doc, page, -1);
-  toast(api.errorKey(e), undefined, { tone: "danger", detail: e instanceof Error ? e.message : String(e) });
+  toast(api.errorKey(e), undefined, { tone: "danger", detail: detailOf(e) });
 }
 
 /** i18n key for a `PageObject.reason` / probe reason. */
@@ -85,24 +105,62 @@ export function reasonKey(reason: string | undefined): string {
 // 선택: move / scale / delete
 // ---------------------------------------------------------------------------
 
-/** Translate objects by `(dx, dy)` points — one `transform_object` per object (the engine coalesces). */
+/**
+ * Translate objects by `(dx, dy)` points: one gesture, sent as one `transform_object` per object
+ * in order (the engine coalesces them). An object that fails does not stop the others unless the
+ * document moved on (`stale` — every later call would fail too); a part-way failure says how many
+ * moved instead of a bare error.
+ */
 export async function moveObjects(page: PageIndex, ids: ObjectId[], dx: number, dy: number): Promise<boolean> {
   const doc = docId();
   if (!doc || (dx === 0 && dy === 0)) return false;
   const movable = ids.filter((id) => objectsOn(page).find((o) => o.objectId === id)?.editable !== "readOnly");
   if (movable.length === 0) return false;
-  try {
-    for (const objectId of movable) {
+  let done = 0;
+  let error: unknown = null;
+  for (const objectId of movable) {
+    try {
       const result = await api.transformObject({
         docId: doc, page, objectId, expectGeneration: generationFor(page), translate: [dx, dy],
       });
       useEditStore.getState().setPage(page, result, true);
+      done += 1;
+    } catch (e) {
+      error ??= e;
+      if (api.isSeePdfError(e) && e.code === "stale") break;
     }
-    return true;
-  } catch (e) {
-    fail(e, page);
-    return false;
   }
+  if (error === null) return true;
+  if (done === 0) {
+    fail(error, page);
+  } else {
+    if (api.isSeePdfError(error) && error.code === "stale") void loadPage(doc, page, -1);
+    toast("edit.move.partial", { done, total: movable.length }, { tone: "danger", detail: detailOf(error) });
+  }
+  return false;
+}
+
+/**
+ * Inspector X / Y / 너비 / 높이 (PDF points, bottom-left origin — the read-out's convention). X / Y
+ * move the whole selection so its bounding box starts there; 너비 / 높이 scale one object about its
+ * bottom-left corner (the engine's anchor), which is `transform_object` scale with no translate.
+ */
+export async function setSelectionGeometry(patch: { x?: number; y?: number; w?: number; h?: number }): Promise<boolean> {
+  const chosen = selectedObjects();
+  const box = chosen && unionRects(chosen.objects.map((o) => o.rect));
+  if (!chosen || !box) return false;
+  if (patch.w !== undefined || patch.h !== undefined) {
+    if (chosen.objects.length !== 1) return false;
+    const o = chosen.objects[0];
+    const w = patch.w ?? o.rect.r - o.rect.l;
+    const h = patch.h ?? o.rect.t - o.rect.b;
+    if (!(w > 0) || !(h > 0)) return false;
+    return resizeObject(chosen.page, o.objectId, { l: o.rect.l, b: o.rect.b, r: o.rect.l + w, t: o.rect.b + h });
+  }
+  const dx = patch.x !== undefined ? patch.x - box.l : 0;
+  const dy = patch.y !== undefined ? patch.y - box.b : 0;
+  const round = (v: number) => Math.round(v * 100) / 100;
+  return moveObjects(chosen.page, chosen.objects.map((o) => o.objectId), round(dx), round(dy));
 }
 
 /** Scale one object so its box becomes `to` (anchored scale + translate, one call). */
@@ -146,6 +204,169 @@ export async function deleteSelection(): Promise<boolean> {
     fail(e, sel.page);
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// ⌘C / ⌘V / ⌘D — object copies (`duplicate_objects`, Stage 8)
+// ---------------------------------------------------------------------------
+
+/** A paste / duplicate lands this far right and down (points); repeated pastes cascade. */
+export const PASTE_OFFSET_PT = 10;
+
+interface ClipItem {
+  objectId: ObjectId;
+  type: PageObject["type"];
+  rect: Rect;
+  text?: string;
+}
+
+/**
+ * The object clipboard is in-process, like the annotation one: a reference to objects of this
+ * document (page + ids at a generation). Nothing goes to the system pasteboard. Ids only hold
+ * within one generation, so a paste after the document moved finds the objects again by their
+ * box and text (`resolveClip`).
+ */
+interface ObjectClip {
+  docId: DocId;
+  page: PageIndex;
+  generation: DocGeneration;
+  items: ClipItem[];
+  /** pastes so far per target page (each lands one more offset step away) */
+  pastes: Map<PageIndex, number>;
+}
+
+let clip: ObjectClip | null = null;
+
+export function hasObjectClipboard(): boolean {
+  return clip !== null && clip.docId === docId();
+}
+
+export function clearObjectClipboard(): void {
+  clip = null;
+}
+
+/** The selection minus read-only objects; `null` (with the reason toasted) when none are left. */
+function copyableSelection(): { page: PageIndex; objects: PageObject[] } | null {
+  const chosen = selectedObjects();
+  if (!chosen) return null;
+  const usable = chosen.objects.filter((o) => o.editable !== "readOnly");
+  if (usable.length === 0) {
+    toast(reasonKey(chosen.objects[0].reason), undefined, { tone: "danger" });
+    return null;
+  }
+  return { page: chosen.page, objects: usable };
+}
+
+/** ⌘C: remember the selected objects. `true` when there was a selection to claim the key for. */
+export function copySelection(): boolean {
+  const doc = docId();
+  const store = useEditStore.getState();
+  if (!doc || !store.selection || store.session) return false;
+  const chosen = copyableSelection();
+  if (!chosen) return true;
+  clip = {
+    docId: doc,
+    page: chosen.page,
+    generation: store.pages[chosen.page]?.docGeneration ?? generationFor(chosen.page),
+    items: chosen.objects.map((o) => ({ objectId: o.objectId, type: o.type, rect: o.rect, text: o.text })),
+    pastes: new Map(),
+  };
+  return true;
+}
+
+function sameRect(a: Rect, b: Rect, tol = 0.05): boolean {
+  return Math.abs(a.l - b.l) <= tol && Math.abs(a.b - b.b) <= tol && Math.abs(a.r - b.r) <= tol && Math.abs(a.t - b.t) <= tol;
+}
+
+/**
+ * The clipboard's ids at the current generation: unchanged ids when nothing moved, else the
+ * object with the same type, box and text (or, for our own moves, the same id with the same type
+ * and text). `null` when any of them is gone.
+ */
+async function resolveClip(c: ObjectClip): Promise<ObjectId[] | null> {
+  let entry = useEditStore.getState().pages[c.page];
+  if (!entry || entry.docGeneration < latestGeneration()) {
+    try {
+      entry = await api.listPageObjects({ docId: c.docId, page: c.page });
+    } catch {
+      return null;
+    }
+    useEditStore.getState().setPage(c.page, entry);
+  }
+  if (entry.docGeneration === c.generation) return c.items.map((i) => i.objectId);
+  const taken = new Set<ObjectId>();
+  const ids: ObjectId[] = [];
+  for (const item of c.items) {
+    const same = (o: PageObject) => !taken.has(o.objectId) && o.type === item.type && (o.text ?? "") === (item.text ?? "");
+    const found =
+      entry.objects.find((o) => o.objectId === item.objectId && same(o) && sameRect(o.rect, item.rect)) ??
+      entry.objects.find((o) => same(o) && sameRect(o.rect, item.rect)) ??
+      entry.objects.find((o) => o.objectId === item.objectId && same(o));
+    if (!found) return null;
+    taken.add(found.objectId);
+    ids.push(found.objectId);
+  }
+  c.generation = entry.docGeneration;
+  c.items = c.items.map((item, k) => ({ ...item, objectId: ids[k] }));
+  return ids;
+}
+
+/** `duplicate_objects`, then select the copies where they landed. */
+async function duplicate(page: PageIndex, ids: ObjectId[], offset: [number, number], target = page): Promise<boolean> {
+  const doc = docId();
+  if (!doc || ids.length === 0) return false;
+  try {
+    const result = await api.duplicateObjects({
+      docId: doc,
+      page,
+      objectIds: ids,
+      expectGeneration: latestGeneration(),
+      offset,
+      ...(target !== page ? { targetPage: target } : null),
+    });
+    const store = useEditStore.getState();
+    store.setPage(target, { objects: result.objects, docGeneration: result.docGeneration });
+    store.select(target, result.newObjectIds);
+    return true;
+  } catch (e) {
+    if (api.isSeePdfError(e) && e.code === "unsupported") {
+      toast(target !== page ? "edit.duplicate.crossPage" : "edit.duplicate.unsupported", undefined, {
+        tone: "danger",
+        detail: e.message,
+      });
+      return false;
+    }
+    fail(e, page);
+    return false;
+  }
+}
+
+/** ⌘D: copy the selection in place, one offset step away, and select the copies. */
+export async function duplicateSelection(): Promise<boolean> {
+  if (useEditStore.getState().session) return false;
+  const chosen = copyableSelection();
+  if (!chosen) return false;
+  return duplicate(chosen.page, chosen.objects.map((o) => o.objectId), [PASTE_OFFSET_PT, -PASTE_OFFSET_PT]);
+}
+
+/**
+ * ⌘V: the copied objects onto `target` (the page in view), one more offset step per paste onto
+ * that page. Another page goes through `targetPage`; an object the engine cannot carry there
+ * answers `unsupported`, which is a toast, not an error.
+ */
+export async function pasteObjects(target: PageIndex = useViewStore.getState().currentPage): Promise<boolean> {
+  const c = clip;
+  if (!c || c.docId !== docId() || useEditStore.getState().session) return false;
+  const ids = await resolveClip(c);
+  if (!ids) {
+    clip = null;
+    toast("edit.clipboard.gone", undefined, { tone: "danger" });
+    return false;
+  }
+  const n = (c.pastes.get(target) ?? 0) + 1;
+  const ok = await duplicate(c.page, ids, [PASTE_OFFSET_PT * n, -PASTE_OFFSET_PT * n], target);
+  if (ok) c.pastes.set(target, n);
+  return ok;
 }
 
 /** Inspector: 크기 / 색상 of one text object (`edit_text_object`). */

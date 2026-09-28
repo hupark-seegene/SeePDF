@@ -91,7 +91,8 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
   filtered. Night bitmaps are rendered on a transparent clear colour, so the page shell shows the night paper:
   어둡게 = `invert(0.9) hue-rotate(180deg)` over `--night-paper` (#1a, exactly the filtered white), 세피아 =
   `sepia(0.2)` multiplied onto `--sepia-paper`. The `--page-*` tokens are re-scoped to those papers while a
-  night mode is on; thumbnails, the organizer and the compare view stay day-rendered. Not persisted.
+  night mode is on; thumbnails, the organizer and the compare view stay day-rendered. Persisted in
+  `Settings.night` (Stage 8): every change is saved and each window starts in the remembered mode.
 
 ---
 
@@ -110,11 +111,11 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
 | 주석 | 선 / 화살표 | `crosshair` | drag; ⇧ snaps to 15° | 선택 |
 | 주석 | 텍스트 상자 | `crosshair` | drag a box or click for auto-size, then edit inline | 선택 |
 | 주석 | 도장 / 서명 | ghost preview follows the cursor (a built-in 도장 shows its label) | click places, drag sizes; first use opens 도장 선택 (결재 · 승인 · 기밀, APPROVED · FINAL · DRAFT · CONFIDENTIAL, 이미지 선택…) / 서명 만들기 (그리기 · 입력 · 이미지 + 저장된 서명); the panel's 도장 변경… / 서명 변경… reopens it | 선택 |
-| 편집 | 선택 | arrow (`move` over an object) | hover outlines the object under the pointer (the smallest one); click selects, ⇧click adds/removes; drag moves (one `transform_object` on drop); corner handles scale (⇧ or an image keeps the aspect); double-click on text opens 문단 편집; ⌫/⌦ deletes, arrows nudge 1 pt (⇧ 10); a 읽기 전용 / 이동만 가능 object shows its badge + reason and refuses the gesture | 선택 해제 |
-| 편집 | 텍스트 수정 | `text` over text | click → 문단 편집 (Stage 7): the whole paragraph (`probe_paragraph`) opens in an editing box over its own area — the original masked with the page paper, the text at the paragraph's size × zoom, leading, alignment, colour and an approximate font family; a right-edge handle sets the width; a floating bar has 크기 · 색상 · 정렬 (왼쪽/가운데/오른쪽/양쪽 맞춤) · 취소 · 완료. Mixed styles show 서식이 하나로 통일됩니다. 완료 / ⌘↵ / a click outside commits with reflow (`edit_paragraph`, one undo step 문단 편집), Esc cancels. Characters the paragraph's font lacks ask once to switch to the SeePDF 한글 글꼴; a paragraph that grows past its area toasts that it may overlap the text below. A refused paragraph toasts its reason | 선택 |
+| 편집 | 선택 | arrow (`move` over an object) | hover outlines the object under the pointer (the smallest one); click selects, ⇧click adds/removes; a drag on empty space draws a marquee that selects the objects wholly inside it (⇧ adds; a plain click deselects); drag moves (on drop: one `transform_object` per selected object, in order, as one gesture — a part-way failure toasts "개체 N개 중 M개만 이동했습니다"); corner handles scale (⇧ or an image keeps the aspect); double-click on text opens 문단 편집; ⌫/⌦ deletes, arrows nudge 1 pt (⇧ 10); ⌘D duplicates 10 pt right and down, ⌘C / ⌘V copy and paste onto the page in view (each further paste onto a page one more 10 pt step; another page through `duplicate_objects` `targetPage`; an object that cannot go there toasts, as does a clipboard whose objects changed) — the copies are selected; a 읽기 전용 / 이동만 가능 object shows its badge + reason and refuses the gesture | 선택 해제 |
+| 편집 | 텍스트 수정 | `text` over text | click → 문단 편집 (Stage 7): the whole paragraph (`probe_paragraph`) opens in an editing box over its own area — the original masked with the page paper, the text at the paragraph's size × zoom, leading, alignment, colour and an approximate font family; a right-edge handle sets the width; a floating bar has 크기 · 색상 · 정렬 (왼쪽/가운데/오른쪽/양쪽 맞춤) · 취소 · 완료. Mixed styles show 서식이 하나로 통일됩니다. On a rotated page or view the box (mask, text, width handle) turns with the page, so the text reads the way it will be written; the bar stays upright. 완료 / ⌘↵ / a click outside commits with reflow (`edit_paragraph`, one undo step 문단 편집), Esc cancels. Characters the paragraph's font lacks ask once to switch to the SeePDF 한글 글꼴; a paragraph that grows past its area toasts that it may overlap the text below. A refused paragraph toasts its reason | 선택 |
 | 편집 | 텍스트 추가 | `crosshair` | click → the same editing box, empty, in the tool default (12 pt black unless `toolDefaults.addText`); 완료 writes `add_text_object` sized to the typed text | 선택 |
 | 편집 | 이미지 추가 | `crosshair` | drag a box, or click for a 240 pt box at the click (kept on the page) → PNG/JPEG picker → placed inside the box with its aspect kept | 선택 |
-| 편집 | 영역 표시 | `crosshair` | drag marks a region; a click on text marks that run's bounds (`list_page_objects`); a click on a mark selects it (× / ⌫ removes). Marks are pending (nothing is written), kept per page, drawn hatched in every 편집 tool, and survive tool switches; leaving 편집 with marks asks 표시한 영역을 버릴까요?; undo / redo / page ops / OCR drop them (toast). Text the preview says goes although it reaches outside a mark is outlined amber | 선택 |
+| 편집 | 영역 표시 | `crosshair` | drag marks a region, snapped to the whole of every text run it crosses (a run is removed whole, so the box covers it) and keeping its own extent elsewhere — shown that way while dragging; a click on text marks that run's bounds (`list_page_objects`); every mark is clipped to the page box; a click on a mark selects it (× / ⌫ removes). Marks are pending (nothing is written), kept per page, drawn hatched in every 편집 tool, and survive tool switches; leaving 편집, closing the document or opening another with marks asks 표시한 영역을 버릴까요?; undo / redo / page ops / OCR drop them (toast). Text the preview says goes although it reaches outside a mark is outlined amber | 선택 |
 | 페이지 | — | arrow | grid: click selects, drag reorders, double-click opens that page in 읽기 | — |
 | 양식 | 채우기 | arrow / `text` over text fields / `pointer` over buttons | click focuses the field (HTML overlay input) | — |
 
@@ -132,11 +133,11 @@ tapping a tool key latches it, holding it switches momentarily and reverts on re
 | 펜 / 지우개 | 색상, 굵기 (1/2/4/8/12), 불투명도, 지우개 크기 |
 | 도형 | 선 색상, 채우기 색상 (+ 채우기 없음), 굵기, 시작/끝 화살표 (line only), 불투명도 |
 | 텍스트 상자 / 도장 | 글꼴 (bundled Hangul / Helvetica), 크기, 색상, 정렬, 채우기, 불투명도 |
-| 텍스트 객체 (편집) | 글꼴 (read-only) + editability badge and reason, 크기 chips and 색상 swatches (`edit_text_object`, editable objects only), 위치 / 크기 read-outs, 삭제; several objects: count + 삭제 |
-| 이미지 객체 | 위치 X/Y, 크기 W/H (비율 고정), 삭제 |
+| 텍스트 객체 (편집) | 글꼴 (read-only) + editability badge and reason, 크기 chips and 색상 swatches (`edit_text_object`, editable objects only), 위치 · 크기 fields X · Y · 너비 · 높이 (PDF points from the bottom left; Enter / blur commits, Esc restores; X / Y move, 너비 / 높이 scale about the bottom-left — `transform_object`), 삭제; several objects: count, X · Y of their bounding box (moves them all as one gesture), 삭제 |
+| 이미지 객체 | 위치 X/Y, 크기 W/H (비율 고정), 삭제 — in 편집 the same X · Y · 너비 · 높이 fields as a text object |
 | 페이지 선택 (페이지 mode) | 페이지 크기, 회전, 회전/삭제/추출/복제 buttons |
 | 양식 필드 focused | 필드 이름 (read-only), 유형, 값, 필수 여부, 값 지우기 |
-| 영역 표시 pending | 채우기 색상 (검정 · 회색 · 흰색, 기본 검정), 덮어쓸 문구, 표시된 영역 {{count}}개, 제거될 내용 per marked page (`redact_preview`, 250 ms debounce: text / image / annotation counts, the text runs, **collateral** in amber with why — PDFium cannot split a text object), **적용** (destructive, confirms "removed from the document; undo only until you save"; disabled with the reason when a mark covers a form field) → `apply_redactions` per page in page order, stops on the first error; `verifyFailed` toasts that the document was restored; 표시 모두 지우기 |
+| 영역 표시 pending | 채우기 색상 (검정 · 회색 · 흰색, 기본 검정), 덮어쓸 문구, 표시된 영역 {{count}}개, 제거될 내용 per marked page (`redact_preview`, 250 ms debounce: text / image / annotation counts, the text runs, **collateral** in amber with why — PDFium cannot split a text object), **적용** (destructive, confirms "removed from the document; undo only until you save"; disabled with the reason when a mark covers a form field) → ONE `apply_redactions_batch` with every marked page (one undo step 영역 삭제); any failure leaves every mark — `verifyFailed` toasts that the document was restored; 표시 모두 지우기 |
 
 A second surface exists for speed: an **inline popover** 8 px above a selected annotation (280 px wide,
 `--radius-lg`, `--elevation-2`) with only swatches, opacity, thickness, 메모 and 삭제. It closes on Esc,
@@ -197,8 +198,14 @@ progress in the status bar and a completion toast with Finder에서 보기 / 폴
 바닥글: 아래 가운데 `{{page}} / {{total}}`; both 0°, 10 pt, 100 %), switching keeps text the user typed ·
 내용 텍스트 | 이미지 (PNG/JPEG picker + 너비 pt) · text area with token chips 쪽 번호 / 전체 쪽수 / 날짜 /
 파일 이름 inserted at the caret · 글자 크기 · 색상 (the Inspector swatches) · 불투명도 slider · 회전 (워터마크 only)
-· 위치 3×3 anchor grid + 여백 pt · 페이지 범위 · a page-shaped preview on the right (CSS approximation, page 1
-tokens expanded). 적용 → one undo step (`undo.watermark` / `undo.headerFooter`) and a toast with 실행 취소.
+· 위치 3×3 anchor grid + 여백 pt · 페이지 범위 · a page-shaped preview on the right (CSS approximation over the
+first page of the range: its thumbnail at its visual size — crop box, `/Rotate` 90/270 swaps the sides — tokens
+expanded for that page; an image stamp shows the picked file at its real aspect when the webview can load it through
+the asset protocol, else a dashed placeholder). 적용 → one undo step (`undo.watermark` / `undo.headerFooter`) and a
+toast with 실행 취소. **기존 항목 제거** (Stage 8): 워터마크 제거 / 머리글 제거 / 바닥글 제거 (the current role) and
+모두 제거 (every SeePDF stamp, including ones from before roles were recorded) over the same 페이지 범위 →
+`remove_stamps`, one undo step `undo.removeStamps`, a toast `N개 항목을 제거했습니다` with 실행 취소 or 제거할 항목이
+없습니다 (info); the dialog stays open.
 
 **압축** (P1-5, 640 px, 도구 ▸ 압축… or ⋯): 이미지 품질 radio 인쇄 품질 · 300 DPI / 화면용 · 150 DPI (default) /
 최소 크기 · 96 DPI · 페이지 범위 · 예상 runs `compress_estimate` on a scratch copy with an inline progress bar and
@@ -214,8 +221,10 @@ through 암호 입력 and the dialog comes back with its state), runs `compare_d
 (under dialogs and toasts), a header with 변경된 페이지 N · 삽입 N단어 · 삭제 N단어, 이전 변경 / 다음 변경 (no
 wrap-around; disabled at the ends), 변경만 보기 and 닫기; column captions A / B with the file names; one scroller
 in which every row holds one page pair (A left, B right, each fit to half the width), so both sides scroll together
-by construction. Row caption `A 3쪽 · B 3쪽` with `+N −N` or 변경 없음; a missing side is a dashed placeholder
-페이지 없음. Deleted / replaced words are tinted red on A, inserted / replaced words green on B (one rect per
+by construction. Pages are paired by text similarity (Stage 8 `alignPages: true`), so a page only B has is its own
+row badged 삽입된 페이지 (green; the empty A side says the same) and a page only A has one badged 삭제된 페이지 (red).
+Row caption `A 3쪽 · B 3쪽` with `+N −N` or 변경 없음. A document closed mid-job ends the run quietly (`cancelled`,
+no error toast). Deleted / replaced words are tinted red on A, inserted / replaced words green on B (one rect per
 line fragment, PDF points mapped through the crop box and `/Rotate` like the viewer). 닫기 or Esc closes the
 view and B, and so does closing the window or replacing the window's document; the document shortcuts are off
 while it is open.
@@ -223,11 +232,16 @@ while it is open.
 **복구** (P1-8, 640 px, at launch in the main window only when `list_recovery` is non-empty): intro line, a table
 이름 / 저장 시각 (locale date + time) / 페이지 / 크기 with 열기 and 삭제 per row, footer 모두 삭제 (danger, left) and
 나중에 (keeps the copies for the next launch). 열기 opens the copy through the normal open path (password retry
-included) and toasts 복구 사본입니다. 다른 이름으로 저장하세요; that document's 저장 goes to 다른 이름으로 저장
-(suggesting the original name), its recovery path never enters 최근 항목, and saving it elsewhere discards the entry.
+included) under the original name (`open_document { displayName }`, so the title is not `<uuid>.pdf`) and toasts
+복구 사본입니다. 다른 이름으로 저장하세요; that document's 저장 goes to 다른 이름으로 저장 (suggesting the original
+name), its recovery path never enters 최근 항목, and saving it elsewhere discards the entry. 저장 안 함 on it asks
+복구 사본을 보관할까요? — 보관 (default, Esc) keeps the entry for the next launch, 삭제 discards it.
 **자동 저장**: every `autosaveSec` (설정 ▸ 일반 ▸ 자동 저장 간격 끄기 / 30초 / 1분 (default) / 5분) a dirty
 document whose generation moved since the last copy is written with `write_recovery`; 저장, 다른 이름으로 저장
-and a clean close (저장 / 저장 안 함 / nothing to save) call `clear_recovery`. A failed copy toasts once per document.
+and a clean close (저장 / 저장 안 함 / nothing to save) call `clear_recovery`, as does an undo that brings the
+document back to clean. A failed copy toasts once per document. While an annotation drag has something hidden, a
+beat waits for the drop, ⌘S is queued until it and ⌘Z / ⇧⌘Z are ignored (nothing may capture the transient HIDDEN
+bit); image / foreign stamps and image signatures are hidden too, the ghost painting an engine snapshot of them.
 
 **Others**: 암호 입력 (on `passwordRequired`, retries in place) · 저장하지 않은 변경 사항 (저장 / 저장 안 함 /
 취소) · 파일 합치기 (ordered list with drag, per-file range field, warnings for forms/outline) ·
@@ -252,9 +266,11 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 
 ## 12. Context menus (all rendered in the webview, themed and localised)
 
-* **Text selection**: 복사 · 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색 (영역 표시로 표시 is wired: it
-  sits at the top of the canvas menu while a text selection exists, marks the selection's line rects and
-  switches to 편집 · 영역 표시; the other items are not in the canvas menu yet)
+* **Text selection**: 복사 · 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색 — at the top of the canvas
+  menu while a text selection exists. 복사 writes the text; 형광펜 / 밑줄 / 취소선 make the same markup the tool
+  would (one per page, the tool's remembered style) and clear the selection; 메모 추가 puts a note just after
+  the selection's last line and opens it; 영역 표시로 표시 marks the line rects and switches to 편집 · 영역 표시;
+  검색 puts the selection (whitespace folded, ≤ 200 characters) into the 검색 panel and runs it
 * **Empty page area**: 붙여넣기 · 메모 추가 · 페이지 회전 · 이미지로 내보내기 · 스냅샷 · 페이지로 이동…
 * **Annotation**: 편집 · 속성… · 메모 열기 · 복사 · 삭제 · 이 스타일을 기본값으로
 * **Thumbnail / page cell**: 이 페이지로 이동 · 왼쪽/오른쪽 회전 · 삭제 · 복제 · 추출… · 뒤에 페이지 삽입… ·
@@ -274,7 +290,7 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 문서 정보 ⌘I / Ctrl+D · 설정 ⌘, / Ctrl+, · 종료 ⌘Q / Alt+F4
 
 **Edit** — 실행 취소 ⌘Z / Ctrl+Z · 다시 실행 ⇧⌘Z / Ctrl+Y · 잘라내기·복사·붙여넣기 ⌘X/⌘C/⌘V ·
-전체 선택 ⌘A / Ctrl+A · 삭제 ⌫ / Delete · 복제 ⌘D / Ctrl+D (페이지 mode) · 찾기 ⌘F / Ctrl+F ·
+전체 선택 ⌘A / Ctrl+A · 삭제 ⌫ / Delete · 복제 ⌘D / Ctrl+D (페이지 mode; 편집 · 선택 duplicates objects) · 찾기 ⌘F / Ctrl+F ·
 다음/이전 찾기 ⌘G / ⇧⌘G, F3 / Shift+F3
 
 **View** — 사이드바 ⌃⌘S / Ctrl+F9 · 속성 패널 ⌥⌘P / Ctrl+F10 · 사이드바 탭 ⌘⌥1…4 / Ctrl+Alt+1…4 ·
@@ -668,6 +684,7 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `sign.delete` | 서명 삭제 | Delete signature |
 | `sign.placeHint` | 페이지를 클릭하여 서명을 배치하세요 | Click the page to place your signature |
 | `sign.style.script` / `.hand` / `.formal` | 필기체 / 손글씨 / 정자체 | Script / Handwriting / Formal |
+| `sign.style.krBrush` / `.krMyungjo` / `.krPen` (a Hangul name; only styles whose fonts are installed) | 궁서체 / 명조 / 펜글씨 | Gungsuh / Myungjo / Pen |
 | `sign.libraryFull` | 보관함이 가득 찼습니다 (최대 {{max}}개) | The library is full (up to {{max}}) |
 | `stampPick.title` | 도장 선택 | Choose a Stamp |
 | `prop.resetDefault` | 기본값으로 재설정 | Reset to default |

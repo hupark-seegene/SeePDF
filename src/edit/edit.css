@@ -216,3 +216,37 @@
 .redact-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .btn.redact-apply { background: var(--danger); border-color: transparent; color: #fff; font-weight: 500; }
 .btn.redact-apply:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 선택 marquee (Stage 8): a drag on empty space selects the objects wholly inside */
+.edit-marquee {
+  position: absolute;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  background: var(--accent-subtle);
+  z-index: 2;
+}
+
+/* The editing box's frame (Stage 8): anchored at the text's top-left, turned with the page. */
+.edit-frame {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
+}
+
+/* Inspector X · Y · 너비 · 높이 (Stage 8) */
+.edit-geom {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+}
+
+.edit-geom-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.edit-geom-field > span { flex: none; min-width: 2.2em; }
+.edit-geom-field > input { flex: 1; min-width: 0; width: 100%; }

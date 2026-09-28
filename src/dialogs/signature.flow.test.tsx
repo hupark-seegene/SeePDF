@@ -4,13 +4,13 @@
  * typed signatures in `Settings.signatures` (max 10); a saved one is placed with one click and
  * deleted with ×. `renderTypedSignature` is mocked — jsdom has no 2D canvas.
  */
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import * as api from "../ipc/api";
 import type { SavedSignature } from "../ipc/types";
 import { useAppStore } from "../store/appStore";
 import { SignatureDialog } from "./SignatureDialog";
-import { renderTypedSignature } from "./typedSignature";
+import { fontProbe, renderTypedSignature } from "./typedSignature";
 
 vi.mock("./typedSignature", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./typedSignature")>()),
@@ -38,27 +38,69 @@ describe("서명 만들기 — 입력 / 보관함", () => {
     vi.mocked(renderTypedSignature).mockClear();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("types a name, picks a style, saves it and places it as an image", async () => {
     const write = vi.spyOn(api, "writeSignatureImage");
     const p = props();
     render(<SignatureDialog {...p} />);
 
     fireEvent.click(screen.getByRole("tab", { name: "입력" }));
-    fireEvent.change(screen.getByLabelText("이름을 입력하세요"), { target: { value: "  박현우 " } });
+    fireEvent.change(screen.getByLabelText("이름을 입력하세요"), { target: { value: "  Hyunwoo Park " } });
     fireEvent.click(screen.getByRole("radio", { name: /손글씨/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /이 서명 저장/ }));
     fireEvent.click(screen.getByRole("button", { name: "확인" }));
 
     await waitFor(() => expect(p.onImage).toHaveBeenCalledTimes(1));
-    expect(renderTypedSignature).toHaveBeenCalledWith("박현우", "hand");
+    expect(renderTypedSignature).toHaveBeenCalledWith("Hyunwoo Park", "hand");
     expect(write).toHaveBeenCalledTimes(1);
     const placed = p.onImage.mock.calls[0][0];
     expect(placed.aspect).toBe(4);
     expect(placed.path).toMatch(/\/signatures\/sig-[0-9a-f]+\.png$/);
     expect(p.onClose).toHaveBeenCalled();
     await waitFor(() => expect(signatures()).toHaveLength(1));
-    expect(signatures()[0]).toMatchObject({ kind: "typed", text: "박현우", style: "hand" });
+    expect(signatures()[0]).toMatchObject({ kind: "typed", text: "Hyunwoo Park", style: "hand" });
     write.mockRestore();
+  });
+
+  it("a Hangul name gets the Korean faces the OS has (macOS: 명조 · 펜글씨, no 궁서체), never the Latin scripts", async () => {
+    // a Mac: AppleMyungjo and Apple SD Gothic Neo exist, Gungsuh / Batang / Malgun Gothic do not
+    const installed = new Set(["AppleMyungjo", "Apple SD Gothic Neo"]);
+    vi.spyOn(fontProbe, "installed").mockImplementation((family) => installed.has(family));
+    const p = props();
+    render(<SignatureDialog {...p} />);
+    fireEvent.click(screen.getByRole("tab", { name: "입력" }));
+    fireEvent.change(screen.getByLabelText("이름을 입력하세요"), { target: { value: "  박현우 " } });
+
+    const names = screen.getAllByRole("radio").map((r) => r.textContent ?? "");
+    expect(names.some((n) => n.includes("명조"))).toBe(true);
+    expect(names.some((n) => n.includes("펜글씨"))).toBe(true);
+    expect(names.some((n) => n.includes("궁서체"))).toBe(false);
+    expect(names.some((n) => /필기체|손글씨/.test(n))).toBe(false);
+    // the Latin default is not on offer for Hangul: the first Korean style is the active one
+    expect(screen.getByRole("radio", { name: /명조/ })).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByRole("radio", { name: /펜글씨/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /이 서명 저장/ }));
+    fireEvent.click(screen.getByRole("button", { name: "확인" }));
+    await waitFor(() => expect(p.onImage).toHaveBeenCalledTimes(1));
+    expect(renderTypedSignature).toHaveBeenCalledWith("박현우", "kr-pen");
+    await waitFor(() => expect(signatures()).toHaveLength(1));
+    expect(signatures()[0]).toMatchObject({ kind: "typed", text: "박현우", style: "kr-pen" });
+  });
+
+  it("Windows with the Korean fonts offers 궁서체 first", () => {
+    const installed = new Set(["Gungsuh", "Batang", "Malgun Gothic"]);
+    vi.spyOn(fontProbe, "installed").mockImplementation((family) => installed.has(family));
+    render(<SignatureDialog {...props()} />);
+    fireEvent.click(screen.getByRole("tab", { name: "입력" }));
+    fireEvent.change(screen.getByLabelText("이름을 입력하세요"), { target: { value: "홍길동" } });
+    const radios = screen.getAllByRole("radio");
+    expect(radios).toHaveLength(3);
+    expect(radios[0]).toHaveTextContent("궁서체");
+    expect(radios[0]).toHaveAttribute("aria-checked", "true");
   });
 
   it("does not save unless 이 서명 저장 is ticked", async () => {
