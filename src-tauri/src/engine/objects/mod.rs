@@ -203,9 +203,7 @@ fn has_usable_unicode(text: &str) -> bool {
     for ch in text.chars() {
         total += 1;
         let cp = ch as u32;
-        if cp < 0x20 && !matches!(ch, '\n' | '\r' | '\t') {
-            junk += 1;
-        } else if cp == 0xFFFD {
+        if (cp < 0x20 && !matches!(ch, '\n' | '\r' | '\t')) || cp == 0xFFFD {
             junk += 1;
         }
     }

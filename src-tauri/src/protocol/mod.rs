@@ -450,6 +450,9 @@ fn bytes_range(
     range_response(slice, range.is_some(), start, end, len, content_type)
 }
 
+// The `Err` is the finished 416 response, built once and returned straight to the webview;
+// boxing it would only add an allocation to a path that runs once per bad request.
+#[allow(clippy::result_large_err)]
 fn parse_range(range: Option<&str>, len: u64) -> Result<(u64, u64), Response<Vec<u8>>> {
     let Some(spec) = range.and_then(|r| r.strip_prefix("bytes=")) else {
         return Ok((0, len.saturating_sub(1)));

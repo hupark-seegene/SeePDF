@@ -50,6 +50,7 @@ pub struct ExportedImage {
 ///
 /// `transparent` only affects PNG: JPEG has no alpha, so a transparent request falls back to
 /// white rather than producing a black page.
+#[allow(clippy::too_many_arguments)]
 pub fn export_page_image(
     st: &mut EngineState<'_>,
     doc_id: &str,

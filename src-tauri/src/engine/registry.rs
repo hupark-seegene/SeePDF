@@ -982,6 +982,8 @@ fn read_permissions(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>)
         return Permissions::default();
     }
     // SAFETY: as above.
+    // `unsigned long` is 64 bits on macOS and 32 on Windows; /P is a 32-bit field either way.
+    #[allow(clippy::unnecessary_cast)]
     let bits = unsafe { bindings.FPDF_GetDocPermissions(doc.raw_handle()) } as u32;
     let bit = |n: u32| bits & (1 << (n - 1)) != 0;
     let revision = match revision_raw {

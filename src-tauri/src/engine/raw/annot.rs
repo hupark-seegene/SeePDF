@@ -398,7 +398,7 @@ impl AnnotRef<'_> {
     /// real `/InkList` (the high-level ink annotation only appends path objects to the
     /// appearance stream, which Acrobat renders but cannot edit).
     pub fn add_ink_stroke(&mut self, points: &[f32]) -> Result<usize, EngineError> {
-        if points.len() < 4 || points.len() % 2 != 0 {
+        if points.len() < 4 || !points.len().is_multiple_of(2) {
             return Err(EngineError::invalid(
                 "ink stroke needs an even number of coordinates and at least two points",
             ));

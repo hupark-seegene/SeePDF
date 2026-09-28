@@ -1,7 +1,7 @@
 //! Export and print — `IPC_CONTRACT.md` §7.7. Owner: **Stage 1 (b)**.
 //!
 //! Flattening uses raw `FPDFPage_Flatten(page, FLAT_NORMALDISPLAY)` + `FPDFPage_GenerateContent`
-//! + a page reload on a scratch copy — never `PdfPage::flatten()`, which is `FLAT_PRINT` and
+//! plus a page reload on a scratch copy — never `PdfPage::flatten()`, which is `FLAT_PRINT` and
 //! silently deletes annotations without the Print flag.
 //!
 //! `export_images` and `export_flattened` are jobs: one `Lane::Background` command per page,

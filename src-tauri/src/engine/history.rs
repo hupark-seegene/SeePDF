@@ -57,6 +57,10 @@ impl Drop for Snapshot {
     }
 }
 
+/// What [`History::take_undo`] / [`History::take_redo`] hand back: the entry's label and the
+/// document bytes to restore.
+pub type Popped = (String, Arc<[u8]>);
+
 #[derive(Debug)]
 pub struct Entry {
     /// i18n key, e.g. `"undo.annotCreate"`.
@@ -175,7 +179,7 @@ impl History {
     pub fn take_undo(
         &mut self,
         current: Arc<[u8]>,
-    ) -> Result<Option<(String, Arc<[u8]>)>, EngineError> {
+    ) -> Result<Option<Popped>, EngineError> {
         let Some(entry) = self.undo.pop() else {
             return Ok(None);
         };
@@ -194,7 +198,7 @@ impl History {
     pub fn take_redo(
         &mut self,
         current: Arc<[u8]>,
-    ) -> Result<Option<(String, Arc<[u8]>)>, EngineError> {
+    ) -> Result<Option<Popped>, EngineError> {
         let Some(entry) = self.redo.pop() else {
             return Ok(None);
         };

@@ -15,9 +15,15 @@
 //! * stay on the engine thread — PDFium has no thread safety of its own;
 //! * keep `unsafe` to the single FFI line and return `Result<_, EngineError>`.
 
+// The wrappers take PDFium handles (`FPDF_FORMHANDLE`, `FPDF_ANNOTATION`, …) as plain values
+// and are safe by the rules above: every handle comes from `raw_handle()` on a live Rust value
+// on the engine thread. Marking each one `unsafe fn` would only move the same promise to
+// every call site.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod annot;
 pub mod consts;
 pub mod doc;
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod form;
 pub mod object;
 pub mod page;

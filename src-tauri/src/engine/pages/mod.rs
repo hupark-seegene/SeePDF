@@ -555,7 +555,7 @@ pub fn merge(st: &mut EngineState<'_>, inputs: &[MergeInput]) -> Result<MergeRes
             if source.bookmarks().root().is_some() {
                 warn(MergeWarning::OutlineDropped, &mut warnings);
             }
-            if source.metadata().len() > 0 {
+            if !source.metadata().is_empty() {
                 warn(MergeWarning::MetadataDropped, &mut warnings);
             }
             let spec = range_string(&selected);

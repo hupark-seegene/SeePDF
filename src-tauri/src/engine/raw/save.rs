@@ -7,7 +7,8 @@
 
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{FPDF_FILEWRITE, PdfDocument, PdfiumLibraryBindings};
-use std::os::raw::{c_int, c_void};
+// `c_ulong` is `u64` on macOS and `u32` on Windows; the flags are 32 bits either way.
+use std::os::raw::{c_int, c_ulong, c_void};
 
 /// Flags for [`save_as_copy`]. `FPDF_DWORD` is a bit field, but PDFium treats incremental /
 /// no-incremental / remove-security as mutually exclusive values, so this is an enum.
@@ -49,7 +50,7 @@ struct FileWriter {
 unsafe extern "C" fn write_block(
     this: *mut FPDF_FILEWRITE,
     data: *const c_void,
-    size: std::os::raw::c_ulong,
+    size: c_ulong,
 ) -> c_int {
     if this.is_null() || data.is_null() {
         return 0;
@@ -85,7 +86,7 @@ pub fn save_as_copy(
         bindings.FPDF_SaveAsCopy(
             doc.raw_handle(),
             &mut writer.fw as *mut FPDF_FILEWRITE,
-            flags.bits().into(),
+            flags.bits() as c_ulong,
         )
     };
     if !bindings.is_true(ok) {
@@ -124,7 +125,7 @@ pub fn save_with_version(
         bindings.FPDF_SaveWithVersion(
             doc.raw_handle(),
             &mut writer.fw as *mut FPDF_FILEWRITE,
-            flags.bits().into(),
+            flags.bits() as c_ulong,
             version as c_int,
         )
     };

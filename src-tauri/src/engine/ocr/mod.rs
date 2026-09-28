@@ -477,7 +477,7 @@ fn add_invisible_word<'a>(
     // Order matters: scale post-multiplies in page space, so it must happen before the
     // translate that positions the run (ocr spike gotcha 11).
     object.scale(sx, 1.0).ctx("fit OCR word to its box")?;
-    if page_rotation % 360 != 0 {
+    if !page_rotation.is_multiple_of(360) {
         object
             .rotate_counter_clockwise_degrees(page_rotation as f32)
             .ctx("rotate OCR word")?;

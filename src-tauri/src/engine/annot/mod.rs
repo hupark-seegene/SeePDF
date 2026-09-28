@@ -317,7 +317,7 @@ pub fn delete(
     if found.len() < ids.len() {
         let missing: Vec<&AnnotId> = ids
             .iter()
-            .filter(|id| !found.iter().any(|f| *f == id.as_str()))
+            .filter(|id| !found.contains(&id.as_str()))
             .collect();
         return Err(EngineError::not_found(format!(
             "annotation(s) {missing:?} are not on page {page_index}"
@@ -342,7 +342,7 @@ fn parent_is_target(annot: &raw::annot::AnnotRef<'_>, ids: &[AnnotId]) -> bool {
     annot
         .linked("Parent")
         .and_then(|parent| parent.string("NM"))
-        .map(|name| ids.iter().any(|id| *id == name))
+        .map(|name| ids.contains(&name))
         .unwrap_or(false)
 }
 
@@ -366,7 +366,7 @@ pub fn set_hidden(
         let Some(name) = annot.string("NM") else {
             continue;
         };
-        if !ids.iter().any(|id| *id == name) {
+        if !ids.contains(&name) {
             continue;
         }
         let flags = annot.flags();

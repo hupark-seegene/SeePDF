@@ -18,7 +18,7 @@ use crate::engine::jobs::Jobs;
 use crate::engine::render::encode::EncodePool;
 use crate::engine::types::{Cmd, CmdStatus, EngineShared, EngineState, Lane, Reply};
 use crate::ipc::{EngineError, ErrorCode};
-use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use pdfium_render::prelude::Pdfium;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
@@ -338,11 +338,8 @@ fn engine_main(
 }
 
 fn drain(rx: &Receiver<Cmd>, lanes: &mut [BinaryHeap<Cmd>; 5]) {
-    loop {
-        match rx.try_recv() {
-            Ok(cmd) => lanes[cmd.lane.index()].push(cmd),
-            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-        }
+    while let Ok(cmd) = rx.try_recv() {
+        lanes[cmd.lane.index()].push(cmd);
     }
 }
 

@@ -441,7 +441,7 @@ fn beside(items: &[Item], g: &Geometry, column: &Column) -> Vec<(usize, Rect)> {
         .filter(|it| !column.overlaps(&it.bounds))
         .filter(|it| {
             let r = &it.bounds;
-            !(r.r <= column.l && r.l >= column.l - hug) && !(r.l >= column.r && r.r <= column.r + hug)
+            !(r.r <= column.l && r.l >= column.l - hug || r.l >= column.r && r.r <= column.r + hug)
         })
         .map(|it| (it.index, it.bounds))
         .collect()

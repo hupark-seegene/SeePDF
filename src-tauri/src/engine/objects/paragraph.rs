@@ -211,7 +211,7 @@ fn classify(index: usize, object: &PdfPageObject<'_>, text_page: &PdfPageText<'_
             color,
         });
     }
-    if !(size > 0.0) {
+    if size.is_nan() || size <= 0.0 {
         return Classified::Skip;
     }
     let weight = text.chars().filter(|c| !c.is_whitespace()).count();
@@ -747,7 +747,7 @@ fn read_trial(page: &PdfPage<'_>, index: usize, sample: &str) -> Option<Vec<f32>
             continue;
         }
         let w = ch.loose_bounds().ok()?.width().value;
-        if !(w > 0.0) {
+        if w.is_nan() || w <= 0.0 {
             return None;
         }
         widths.push(w / TRIAL_SIZE);
