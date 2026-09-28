@@ -57,8 +57,8 @@ fn render_tile_matches_crop() {
     let full = render(key(&doc, RenderKind::Page, scale_key, 0, 0));
     let tile = render(key(&doc, RenderKind::Tile, scale_key, tx, ty));
 
-    let (ox, oy, tw, th) = geometry::tile_rect(full.width, full.height, tx, ty)
-        .expect("tile is inside the page");
+    let (ox, oy, tw, th) =
+        geometry::tile_rect(full.width, full.height, tx, ty).expect("tile is inside the page");
     assert_eq!((tile.width, tile.height), (tw, th));
 
     let mut differing_px = 0usize;
@@ -93,7 +93,10 @@ fn render_tile_matches_crop() {
 
     // The tile is not blank: this must be a real comparison.
     let non_white = tile.pixels.chunks_exact(4).filter(|px| px[0] < 200).count();
-    assert!(non_white > 1000, "tile ({tx},{ty}) has only {non_white} dark px");
+    assert!(
+        non_white > 1000,
+        "tile ({tx},{ty}) has only {non_white} dark px"
+    );
 }
 
 /// `rotation.pdf` page 1 has `/Rotate 90`, so pdfium already reports 792×612 pt and a 1×
@@ -233,11 +236,17 @@ fn render_night_is_transparent_not_inverted() {
     let night = render(night_key);
     let sepia = render(sepia_key);
     assert_eq!((day.width, day.height), (night.width, night.height));
-    assert_eq!(night.pixels, sepia.pixels, "dark and sepia share one bitmap");
+    assert_eq!(
+        night.pixels, sepia.pixels,
+        "dark and sepia share one bitmap"
+    );
 
     // The top-left corner is page margin: opaque white by day, fully transparent at night.
     assert_eq!(&day.pixels[0..4], &[255, 255, 255, 255]);
-    assert_eq!(night.pixels[3], 0, "night renders on a transparent clear colour");
+    assert_eq!(
+        night.pixels[3], 0,
+        "night renders on a transparent clear colour"
+    );
 
     let mut white = 0usize;
     let mut cleared = 0usize;

@@ -107,7 +107,10 @@ fn bind_pdfium() -> Result<&'static Pdfium, PdfiumError> {
     Ok(pdfium)
 }
 
-fn section_document_info(pdfium: &'static Pdfium, name: &str) -> Result<PdfDocument<'static>, PdfiumError> {
+fn section_document_info(
+    pdfium: &'static Pdfium,
+    name: &str,
+) -> Result<PdfDocument<'static>, PdfiumError> {
     banner(&format!("1. document info: {name}"));
     let bytes = read_fixture(name)?;
     let byte_len = bytes.len();
@@ -135,9 +138,15 @@ fn section_document_info(pdfium: &'static Pdfium, name: &str) -> Result<PdfDocum
     );
     println!(
         "metadata: title={:?} author={:?} producer={:?} form={:?} version={:?}",
-        doc.metadata().get(PdfDocumentMetadataTagType::Title).map(|t| t.value().to_string()),
-        doc.metadata().get(PdfDocumentMetadataTagType::Author).map(|t| t.value().to_string()),
-        doc.metadata().get(PdfDocumentMetadataTagType::Producer).map(|t| t.value().to_string()),
+        doc.metadata()
+            .get(PdfDocumentMetadataTagType::Title)
+            .map(|t| t.value().to_string()),
+        doc.metadata()
+            .get(PdfDocumentMetadataTagType::Author)
+            .map(|t| t.value().to_string()),
+        doc.metadata()
+            .get(PdfDocumentMetadataTagType::Producer)
+            .map(|t| t.value().to_string()),
         doc.form().map(|f| f.form_type()),
         doc.version(),
     );
@@ -231,7 +240,11 @@ struct RenderSample {
     raw_len: usize,
 }
 
-fn render_timed(page: &PdfPage<'_>, label: &str, cfg: &PdfRenderConfig) -> Result<(RenderSample, Vec<u8>), PdfiumError> {
+fn render_timed(
+    page: &PdfPage<'_>,
+    label: &str,
+    cfg: &PdfRenderConfig,
+) -> Result<(RenderSample, Vec<u8>), PdfiumError> {
     let t = Instant::now();
     // `PdfPage::render_with_config(&self, config: &PdfRenderConfig) -> Result<PdfBitmap<'_>, PdfiumError>`
     let bitmap = page.render_with_config(cfg)?;
@@ -279,28 +292,69 @@ fn section_full_render(doc_name: &str, doc: &PdfDocument<'static>) -> Result<Vec
     }
 
     // Variants at 2x.
-    let (s, _) = render_timed(&page, "2x +LCD text", &screen_config(2.0).use_lcd_text_rendering(true))?;
+    let (s, _) = render_timed(
+        &page,
+        "2x +LCD text",
+        &screen_config(2.0).use_lcd_text_rendering(true),
+    )?;
     rows.push(s);
-    let (s, _) = render_timed(&page, "2x no annots/forms", &screen_config(2.0).render_form_data(false).render_annotations(false))?;
+    let (s, _) = render_timed(
+        &page,
+        "2x no annots/forms",
+        &screen_config(2.0)
+            .render_form_data(false)
+            .render_annotations(false),
+    )?;
     rows.push(s);
-    let (s, _) = render_timed(&page, "2x reverse_byte_order", &screen_config(2.0).set_reverse_byte_order(true))?;
+    let (s, _) = render_timed(
+        &page,
+        "2x reverse_byte_order",
+        &screen_config(2.0).set_reverse_byte_order(true),
+    )?;
     rows.push(s);
-    let (s, _) = render_timed(&page, "2x BGR (24bpp)", &screen_config(2.0).set_format(PdfBitmapFormat::BGR))?;
+    let (s, _) = render_timed(
+        &page,
+        "2x BGR (24bpp)",
+        &screen_config(2.0).set_format(PdfBitmapFormat::BGR),
+    )?;
     rows.push(s);
-    let (s, _) = render_timed(&page, "2x print quality", &screen_config(2.0).use_print_quality(true))?;
+    let (s, _) = render_timed(
+        &page,
+        "2x print quality",
+        &screen_config(2.0).use_print_quality(true),
+    )?;
     rows.push(s);
-    let (s, _) = render_timed(&page, "1x rotate 90", &screen_config(1.0).rotate(PdfPageRenderRotation::Degrees90, true))?;
+    let (s, _) = render_timed(
+        &page,
+        "1x rotate 90",
+        &screen_config(1.0).rotate(PdfPageRenderRotation::Degrees90, true),
+    )?;
     rows.push(s);
-    let (s, _) = render_timed(&page, "thumbnail 200px", &PdfRenderConfig::new().thumbnail(200).set_clear_color(PdfColor::WHITE))?;
+    let (s, _) = render_timed(
+        &page,
+        "thumbnail 200px",
+        &PdfRenderConfig::new()
+            .thumbnail(200)
+            .set_clear_color(PdfColor::WHITE),
+    )?;
     rows.push(s);
-    let (s, _) = render_timed(&page, "set_target_width 1000", &PdfRenderConfig::new().set_target_width(1000).set_clear_color(PdfColor::WHITE))?;
+    let (s, _) = render_timed(
+        &page,
+        "set_target_width 1000",
+        &PdfRenderConfig::new()
+            .set_target_width(1000)
+            .set_clear_color(PdfColor::WHITE),
+    )?;
     rows.push(s);
 
     // Reusing a bitmap: `PdfBitmap::empty(width, height, PdfBitmapFormat) -> Result<PdfBitmap<'a>>` +
     // `PdfPage::render_into_bitmap_with_config(&self, &mut PdfBitmap, &PdfRenderConfig) -> Result<()>`.
     {
         let cfg = screen_config(2.0);
-        let (w, h) = ((page.width().value * 2.0).round() as i32, (page.height().value * 2.0).round() as i32);
+        let (w, h) = (
+            (page.width().value * 2.0).round() as i32,
+            (page.height().value * 2.0).round() as i32,
+        );
         let mut bmp = PdfBitmap::empty(w, h, PdfBitmapFormat::BGRA)?;
         let t = Instant::now();
         page.render_into_bitmap_with_config(&mut bmp, &cfg)?;
@@ -311,10 +365,21 @@ fn section_full_render(doc_name: &str, doc: &PdfDocument<'static>) -> Result<Vec
         let t = Instant::now();
         let _rgba = bmp.as_rgba_bytes();
         let rgba_copy = t.elapsed();
-        rows.push(RenderSample { label: "2x into reused bitmap".into(), width: w, height: h, render, rgba_copy, raw_copy, raw_len: raw.len() });
+        rows.push(RenderSample {
+            label: "2x into reused bitmap".into(),
+            width: w,
+            height: h,
+            render,
+            rgba_copy,
+            raw_copy,
+            raw_len: raw.len(),
+        });
     }
 
-    println!("{:<26} {:>11} {:>11} {:>11} {:>11} {:>8}", "config", "pixels", "render ms", "raw ms", "rgba ms", "raw B/px");
+    println!(
+        "{:<26} {:>11} {:>11} {:>11} {:>11} {:>8}",
+        "config", "pixels", "render ms", "raw ms", "rgba ms", "raw B/px"
+    );
     for r in &rows {
         println!(
             "{:<26} {:>5}x{:<5} {:>11.2} {:>11.2} {:>11.2} {:>8}",
@@ -330,7 +395,8 @@ fn section_full_render(doc_name: &str, doc: &PdfDocument<'static>) -> Result<Vec
 
     // Alpha check: transparent clear colour keeps alpha (useful for dark-mode compositing).
     {
-        let bmp = page.render_with_config(&screen_config(1.0).set_clear_color(PdfColor::new(0, 0, 0, 0)))?;
+        let bmp = page
+            .render_with_config(&screen_config(1.0).set_clear_color(PdfColor::new(0, 0, 0, 0)))?;
         let rgba = bmp.as_rgba_bytes();
         let transparent = rgba.chunks_exact(4).filter(|p| p[3] < 255).count();
         println!(
@@ -366,7 +432,15 @@ fn section_full_render(doc_name: &str, doc: &PdfDocument<'static>) -> Result<Vec
 // ---------------------------------------------------------------------------------------------
 
 /// Count differing pixels between a tile and the corresponding crop of a full render.
-fn compare_tile(full: &[u8], full_w: i32, tile: &[u8], tile_w: i32, tile_h: i32, tx: i32, ty: i32) -> (usize, u8) {
+fn compare_tile(
+    full: &[u8],
+    full_w: i32,
+    tile: &[u8],
+    tile_w: i32,
+    tile_h: i32,
+    tx: i32,
+    ty: i32,
+) -> (usize, u8) {
     let mut diff = 0usize;
     let mut max_delta = 0u8;
     for y in 0..tile_h {
@@ -396,9 +470,18 @@ fn tile_config_origin(scale: f32, tx: i32, ty: i32) -> PdfRenderConfig {
 /// Tile via the *matrix path*: `FPDF_RenderPageBitmapWithMatrix(bitmap, page, &matrix, &clip, flags)`.
 /// `translate()` is applied BEFORE the scale factor (row-vector convention: M = T * S), so the
 /// offsets are in points (device px / scale). Any transform or `clip()` disables form-data rendering.
-fn tile_config_matrix(scale: f32, tx: i32, ty: i32, tile_w: i32, tile_h: i32) -> Result<PdfRenderConfig, PdfiumError> {
+fn tile_config_matrix(
+    scale: f32,
+    tx: i32,
+    ty: i32,
+    tile_w: i32,
+    tile_h: i32,
+) -> Result<PdfRenderConfig, PdfiumError> {
     screen_config(scale)
-        .translate(PdfPoints::new(-(tx as f32) / scale), PdfPoints::new(-(ty as f32) / scale))?
+        .translate(
+            PdfPoints::new(-(tx as f32) / scale),
+            PdfPoints::new(-(ty as f32) / scale),
+        )?
         .clip(0, 0, tile_w, tile_h)
         .pipe_ok()
 }
@@ -410,7 +493,12 @@ trait PipeOk: Sized {
 }
 impl PipeOk for PdfRenderConfig {}
 
-fn render_tile(page: &PdfPage<'_>, cfg: &PdfRenderConfig, tile_w: i32, tile_h: i32) -> Result<(Vec<u8>, Duration), PdfiumError> {
+fn render_tile(
+    page: &PdfPage<'_>,
+    cfg: &PdfRenderConfig,
+    tile_w: i32,
+    tile_h: i32,
+) -> Result<(Vec<u8>, Duration), PdfiumError> {
     let mut bmp = PdfBitmap::empty(tile_w, tile_h, PdfBitmapFormat::BGRA)?;
     let t = Instant::now();
     page.render_into_bitmap_with_config(&mut bmp, cfg)?;
@@ -424,7 +512,10 @@ fn section_tiles(doc: &PdfDocument<'static>) -> Result<(), PdfiumError> {
     let scale = 8.0f32;
     let full_w = (page.width().value * scale).round() as i32;
     let full_h = (page.height().value * scale).round() as i32;
-    println!("8x full page = {full_w} x {full_h} px ({:.1} MiB RGBA)", mib((full_w * full_h * 4) as usize));
+    println!(
+        "8x full page = {full_w} x {full_h} px ({:.1} MiB RGBA)",
+        mib((full_w * full_h * 4) as usize)
+    );
 
     let quick = std::env::var_os("SPIKE_QUICK").is_some();
     let full = if quick {
@@ -444,14 +535,26 @@ fn section_tiles(doc: &PdfDocument<'static>) -> Result<(), PdfiumError> {
     // Variant A: set_origin (form-data path)
     let (tile_a, d_a) = render_tile(&page, &tile_config_origin(scale, tx, ty), tile_w, tile_h)?;
     // Variant B: matrix + clip
-    let (tile_b, d_b) = render_tile(&page, &tile_config_matrix(scale, tx, ty, tile_w, tile_h)?, tile_w, tile_h)?;
+    let (tile_b, d_b) = render_tile(
+        &page,
+        &tile_config_matrix(scale, tx, ty, tile_w, tile_h)?,
+        tile_w,
+        tile_h,
+    )?;
     // Variant B': matrix with the y sign flipped (to document which convention is right)
     let cfg_b2 = screen_config(scale)
-        .translate(PdfPoints::new(-(tx as f32) / scale), PdfPoints::new((ty as f32) / scale))?
+        .translate(
+            PdfPoints::new(-(tx as f32) / scale),
+            PdfPoints::new((ty as f32) / scale),
+        )?
         .clip(0, 0, tile_w, tile_h);
     let (tile_b2, _) = render_tile(&page, &cfg_b2, tile_w, tile_h)?;
 
-    let nonwhite = |t: &[u8]| t.chunks_exact(4).filter(|p| p[0] != 255 || p[1] != 255 || p[2] != 255).count();
+    let nonwhite = |t: &[u8]| {
+        t.chunks_exact(4)
+            .filter(|p| p[0] != 255 || p[1] != 255 || p[2] != 255)
+            .count()
+    };
     println!(
         "tile {tile_w}x{tile_h} @({tx},{ty}) 8x: set_origin {:.2} ms ({} non-white px); matrix+clip {:.2} ms ({} non-white px); matrix y-flipped ({} non-white px)",
         ms(d_a),
@@ -483,7 +586,10 @@ fn section_tiles(doc: &PdfDocument<'static>) -> Result<(), PdfiumError> {
     println!("set_origin vs matrix+clip tile-to-tile diff: {da} px");
 
     // Tile-size sweep at 8x (both paths). Same page region, different tile sizes.
-    println!("{:<10} {:>16} {:>16} {:>12}", "tile", "set_origin ms", "matrix+clip ms", "non-white %");
+    println!(
+        "{:<10} {:>16} {:>16} {:>12}",
+        "tile", "set_origin ms", "matrix+clip ms", "non-white %"
+    );
     for size in [256, 512, 1024, 2048] {
         let mut a = Duration::ZERO;
         let mut b = Duration::ZERO;
@@ -493,16 +599,34 @@ fn section_tiles(doc: &PdfDocument<'static>) -> Result<(), PdfiumError> {
             let (px, d) = render_tile(&page, &tile_config_origin(scale, tx, ty), size, size)?;
             a += d;
             density = nonwhite(&px) as f64 * 100.0 / (size * size) as f64;
-            b += render_tile(&page, &tile_config_matrix(scale, tx, ty, size, size)?, size, size)?.1;
+            b += render_tile(
+                &page,
+                &tile_config_matrix(scale, tx, ty, size, size)?,
+                size,
+                size,
+            )?
+            .1;
         }
-        println!("{:<10} {:>16.2} {:>16.2} {:>12.2}", format!("{size}px"), ms(a) / reps as f64, ms(b) / reps as f64, density);
+        println!(
+            "{:<10} {:>16.2} {:>16.2} {:>12.2}",
+            format!("{size}px"),
+            ms(a) / reps as f64,
+            ms(b) / reps as f64,
+            density
+        );
     }
     // Same sweep at a text-dense spot (first column body text: ~90pt from the left, ~330pt down).
     let (dx, dy) = ((90.0 * scale) as i32, (330.0 * scale) as i32);
     println!("dense region @({dx},{dy}):");
     for size in [256, 512, 1024] {
         let (px, d) = render_tile(&page, &tile_config_origin(scale, dx, dy), size, size)?;
-        println!("{:<10} {:>16.2} {:>16} {:>12.2}", format!("{size}px"), ms(d), "-", nonwhite(&px) as f64 * 100.0 / (size * size) as f64);
+        println!(
+            "{:<10} {:>16.2} {:>16} {:>12.2}",
+            format!("{size}px"),
+            ms(d),
+            "-",
+            nonwhite(&px) as f64 * 100.0 / (size * size) as f64
+        );
     }
 
     // Cost of covering a whole page with tiles vs one full render, at 2x and 4x.
@@ -538,7 +662,12 @@ fn section_tiles(doc: &PdfDocument<'static>) -> Result<(), PdfiumError> {
     }
 
     // Empty region tile (bottom-right margin) — cheap? (pdfium still walks the display list)
-    let (_, d) = render_tile(&page, &tile_config_origin(scale, full_w - 256, full_h - 256), 256, 256)?;
+    let (_, d) = render_tile(
+        &page,
+        &tile_config_origin(scale, full_w - 256, full_h - 256),
+        256,
+        256,
+    )?;
     println!("256px tile in blank margin: {:.2} ms", ms(d));
 
     Ok(())
@@ -548,7 +677,14 @@ fn section_tiles(doc: &PdfDocument<'static>) -> Result<(), PdfiumError> {
 // 4. Encoding benchmark
 // ---------------------------------------------------------------------------------------------
 
-fn encode_png(rgba: &[u8], w: u32, h: u32, color: png::ColorType, comp: png::Compression, filter: png::Filter) -> Vec<u8> {
+fn encode_png(
+    rgba: &[u8],
+    w: u32,
+    h: u32,
+    color: png::ColorType,
+    comp: png::Compression,
+    filter: png::Filter,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgba.len() / 4);
     {
         let mut enc = png::Encoder::new(&mut out, w, h);
@@ -573,15 +709,21 @@ fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
 fn encode_jpeg(rgb: &[u8], w: u32, h: u32, q: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 8);
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, q);
-    enc.encode(rgb, w, h, image::ExtendedColorType::Rgb8).expect("jpeg");
+    enc.encode(rgb, w, h, image::ExtendedColorType::Rgb8)
+        .expect("jpeg");
     out
 }
 
 fn section_encode(rgba: &[u8], w: i32, h: i32) {
-    banner(&format!("4. encode benchmark: tracemonkey page 0 @2x ({w}x{h} RGBA)"));
+    banner(&format!(
+        "4. encode benchmark: tracemonkey page 0 @2x ({w}x{h} RGBA)"
+    ));
     let (w, h) = (w as u32, h as u32);
     let raw = rgba.len();
-    println!("{:<34} {:>10} {:>11} {:>8}", "encoding", "bytes", "encode ms", "ratio");
+    println!(
+        "{:<34} {:>10} {:>11} {:>8}",
+        "encoding", "bytes", "encode ms", "ratio"
+    );
     println!("{:<34} {:>10} {:>11.2} {:>8.2}", "raw RGBA", raw, 0.0, 1.0);
 
     let bench = |label: &str, f: &mut dyn FnMut() -> Vec<u8>| {
@@ -593,23 +735,91 @@ fn section_encode(rgba: &[u8], w: i32, h: i32) {
             out = f();
         }
         let d = ms(t.elapsed()) / reps as f64;
-        println!("{:<34} {:>10} {:>11.2} {:>8.2}", label, out.len(), d, raw as f64 / out.len() as f64);
+        println!(
+            "{:<34} {:>10} {:>11.2} {:>8.2}",
+            label,
+            out.len(),
+            d,
+            raw as f64 / out.len() as f64
+        );
     };
 
-    bench("PNG RGBA Fast/NoFilter", &mut || encode_png(rgba, w, h, png::ColorType::Rgba, png::Compression::Fast, png::Filter::NoFilter));
-    bench("PNG RGBA Fastest/NoFilter", &mut || encode_png(rgba, w, h, png::ColorType::Rgba, png::Compression::Fastest, png::Filter::NoFilter));
-    bench("PNG RGBA Fast/Sub", &mut || encode_png(rgba, w, h, png::ColorType::Rgba, png::Compression::Fast, png::Filter::Sub));
-    bench("PNG RGBA Fast/Adaptive", &mut || encode_png(rgba, w, h, png::ColorType::Rgba, png::Compression::Fast, png::Filter::Adaptive));
-    bench("PNG RGBA Balanced/Adaptive", &mut || encode_png(rgba, w, h, png::ColorType::Rgba, png::Compression::Balanced, png::Filter::Adaptive));
+    bench("PNG RGBA Fast/NoFilter", &mut || {
+        encode_png(
+            rgba,
+            w,
+            h,
+            png::ColorType::Rgba,
+            png::Compression::Fast,
+            png::Filter::NoFilter,
+        )
+    });
+    bench("PNG RGBA Fastest/NoFilter", &mut || {
+        encode_png(
+            rgba,
+            w,
+            h,
+            png::ColorType::Rgba,
+            png::Compression::Fastest,
+            png::Filter::NoFilter,
+        )
+    });
+    bench("PNG RGBA Fast/Sub", &mut || {
+        encode_png(
+            rgba,
+            w,
+            h,
+            png::ColorType::Rgba,
+            png::Compression::Fast,
+            png::Filter::Sub,
+        )
+    });
+    bench("PNG RGBA Fast/Adaptive", &mut || {
+        encode_png(
+            rgba,
+            w,
+            h,
+            png::ColorType::Rgba,
+            png::Compression::Fast,
+            png::Filter::Adaptive,
+        )
+    });
+    bench("PNG RGBA Balanced/Adaptive", &mut || {
+        encode_png(
+            rgba,
+            w,
+            h,
+            png::ColorType::Rgba,
+            png::Compression::Balanced,
+            png::Filter::Adaptive,
+        )
+    });
 
     let t = Instant::now();
     let rgb = rgba_to_rgb(rgba);
     println!("(rgba->rgb strip: {:.2} ms)", ms(t.elapsed()));
-    bench("PNG RGB Fast/NoFilter (+strip)", &mut || encode_png(&rgba_to_rgb(rgba), w, h, png::ColorType::Rgb, png::Compression::Fast, png::Filter::NoFilter));
-    bench("JPEG q85 RGB (+strip)", &mut || encode_jpeg(&rgba_to_rgb(rgba), w, h, 85));
-    bench("JPEG q85 RGB (pre-stripped)", &mut || encode_jpeg(&rgb, w, h, 85));
-    bench("JPEG q75 RGB (pre-stripped)", &mut || encode_jpeg(&rgb, w, h, 75));
-    bench("JPEG q92 RGB (pre-stripped)", &mut || encode_jpeg(&rgb, w, h, 92));
+    bench("PNG RGB Fast/NoFilter (+strip)", &mut || {
+        encode_png(
+            &rgba_to_rgb(rgba),
+            w,
+            h,
+            png::ColorType::Rgb,
+            png::Compression::Fast,
+            png::Filter::NoFilter,
+        )
+    });
+    bench("JPEG q85 RGB (+strip)", &mut || {
+        encode_jpeg(&rgba_to_rgb(rgba), w, h, 85)
+    });
+    bench("JPEG q85 RGB (pre-stripped)", &mut || {
+        encode_jpeg(&rgb, w, h, 85)
+    });
+    bench("JPEG q75 RGB (pre-stripped)", &mut || {
+        encode_jpeg(&rgb, w, h, 75)
+    });
+    bench("JPEG q92 RGB (pre-stripped)", &mut || {
+        encode_jpeg(&rgb, w, h, 92)
+    });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -656,7 +866,12 @@ fn section_memory(pdfium: &'static Pdfium) -> Result<(), PdfiumError> {
         let b = p.render_with_config(&screen_config(4.0))?;
         let during = rss_mib();
         drop(b);
-        println!("one 4x render of page 0 ({}x{} BGRA, {:.1} MiB): RSS {before:.1} -> {during:.1} MiB", 2448, 3168, mib(2448 * 3168 * 4));
+        println!(
+            "one 4x render of page 0 ({}x{} BGRA, {:.1} MiB): RSS {before:.1} -> {during:.1} MiB",
+            2448,
+            3168,
+            mib(2448 * 3168 * 4)
+        );
     }
     println!(
         "RSS after rendering all {n} pages @2x, holding {n} open PdfPages + {:.1} MiB of RGBA: {:.1} MiB",
@@ -664,7 +879,10 @@ fn section_memory(pdfium: &'static Pdfium) -> Result<(), PdfiumError> {
         rss_mib()
     );
     drop(cache);
-    println!("RSS after dropping RGBA cache (pages still open): {:.1} MiB", rss_mib());
+    println!(
+        "RSS after dropping RGBA cache (pages still open): {:.1} MiB",
+        rss_mib()
+    );
     drop(pages);
     println!("RSS after closing pages: {:.1} MiB", rss_mib());
     drop(doc);
@@ -675,8 +893,18 @@ fn section_memory(pdfium: &'static Pdfium) -> Result<(), PdfiumError> {
 // ---------------------------------------------------------------------------------------------
 
 fn run() -> Result<(), PdfiumError> {
-    println!("spike_render — pdfium-render 0.9.4, libpdfium {}", pdfium_lib_path().display());
-    println!("profile: {}", if cfg!(debug_assertions) { "debug" } else { "release" });
+    println!(
+        "spike_render — pdfium-render 0.9.4, libpdfium {}",
+        pdfium_lib_path().display()
+    );
+    println!(
+        "profile: {}",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
     println!("RSS at start: {:.1} MiB", rss_mib());
     let pdfium = bind_pdfium()?;
     println!("RSS after bind: {:.1} MiB", rss_mib());

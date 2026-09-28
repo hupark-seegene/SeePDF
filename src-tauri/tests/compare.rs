@@ -44,7 +44,10 @@ fn wait_terminal(events: &Arc<Mutex<Vec<JobEvent>>>) {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let done = events.lock().unwrap().iter().any(|e| {
-            matches!(e, JobEvent::Done { .. } | JobEvent::Cancelled { .. } | JobEvent::Error { .. })
+            matches!(
+                e,
+                JobEvent::Done { .. } | JobEvent::Cancelled { .. } | JobEvent::Error { .. }
+            )
         });
         if done {
             return;
@@ -72,7 +75,12 @@ fn run(a: &str, b: &str, options: CompareOptions) -> Result<Vec<JobEvent>, Engin
 
 fn report(events: &[JobEvent]) -> CompareReport {
     match events.last() {
-        Some(JobEvent::Done { compare: Some(r), report: None, outputs: None, .. }) => r.clone(),
+        Some(JobEvent::Done {
+            compare: Some(r),
+            report: None,
+            outputs: None,
+            ..
+        }) => r.clone(),
         other => panic!("expected done with a compare report, got {other:?}"),
     }
 }
@@ -90,7 +98,10 @@ fn same_document_twice_has_no_changes() {
         assert!(!p.changed);
         assert_eq!(p.words_a, p.words_b);
         assert!(p.ops.iter().all(|op| op.kind == DiffKind::Equal));
-        assert!(p.ops.iter().all(|op| op.text_a.is_none() && op.rects_a.is_none()));
+        assert!(p
+            .ops
+            .iter()
+            .all(|op| op.text_a.is_none() && op.rects_a.is_none()));
     }
     assert!(r.pages[0].words_a > 500, "tracemonkey p1 has ~750 words");
     // alignPages (the default): started{total = |A| + |B| + max(|A|, |B|)}, one page-less
@@ -145,7 +156,11 @@ fn stamped_copy_reports_the_inserted_words() {
     for (i, expected) in [(0usize, "DRAFT-1"), (2, "DRAFT-3")] {
         let page = &r.pages[i];
         assert_eq!(page.words_b, page.words_a + 1);
-        let inserts: Vec<_> = page.ops.iter().filter(|op| op.kind != DiffKind::Equal).collect();
+        let inserts: Vec<_> = page
+            .ops
+            .iter()
+            .filter(|op| op.kind != DiffKind::Equal)
+            .collect();
         assert_eq!(inserts.len(), 1, "{:?}", page.ops);
         let op = inserts[0];
         assert_eq!(op.kind, DiffKind::Insert);
@@ -169,7 +184,11 @@ fn stamped_copy_reports_the_inserted_words() {
     // Reversed: the same words are deletions on A's side.
     let r = report(&run(&b.doc_id, &a.doc_id, CompareOptions::default()).unwrap());
     assert_eq!((r.changed_pages, r.inserted, r.deleted), (2, 0, 2));
-    let op = r.pages[2].ops.iter().find(|op| op.kind != DiffKind::Equal).unwrap();
+    let op = r.pages[2]
+        .ops
+        .iter()
+        .find(|op| op.kind != DiffKind::Equal)
+        .unwrap();
     assert_eq!(op.kind, DiffKind::Delete);
     assert_eq!(op.text_a.as_deref(), Some("DRAFT-3"));
     assert!(op.rects_a.as_ref().is_some_and(|r| !r.is_empty()) && op.rects_b.is_none());
@@ -192,10 +211,17 @@ fn replaced_words_collapse_and_ignore_case_folds() {
 
     let r = report(&run(&a.doc_id, &b.doc_id, options.clone()).unwrap());
     assert_eq!(r.pages.len(), 1);
-    let ops: Vec<_> = r.pages[0].ops.iter().filter(|op| op.kind != DiffKind::Equal).collect();
+    let ops: Vec<_> = r.pages[0]
+        .ops
+        .iter()
+        .filter(|op| op.kind != DiffKind::Equal)
+        .collect();
     assert_eq!(ops.len(), 1, "{:?}", r.pages[0].ops);
     assert_eq!(ops[0].kind, DiffKind::Replace);
-    assert_eq!((ops[0].text_a.as_deref(), ops[0].text_b.as_deref()), (Some("Beta"), Some("Delta")));
+    assert_eq!(
+        (ops[0].text_a.as_deref(), ops[0].text_b.as_deref()),
+        (Some("Beta"), Some("Delta"))
+    );
     assert!(ops[0].rects_a.as_ref().is_some_and(|r| r.len() == 1));
     assert!(ops[0].rects_b.as_ref().is_some_and(|r| r.len() == 1));
     assert_eq!((r.inserted, r.deleted), (1, 1));
@@ -205,7 +231,15 @@ fn replaced_words_collapse_and_ignore_case_folds() {
     assert_eq!(r.changed_pages, 1);
     assert_eq!((r.inserted, r.deleted), (3, 3));
     let r = report(
-        &run(&a.doc_id, &c.doc_id, CompareOptions { ignore_case: true, ..options }).unwrap(),
+        &run(
+            &a.doc_id,
+            &c.doc_id,
+            CompareOptions {
+                ignore_case: true,
+                ..options
+            },
+        )
+        .unwrap(),
     );
     assert_eq!((r.changed_pages, r.inserted, r.deleted), (0, 0, 0));
 }
@@ -284,8 +318,8 @@ fn cancel_mid_job() {
     let a = open("gen/500p.pdf");
     let b = open("gen/500p.pdf");
     let (da, db) = (a.doc_id.clone(), b.doc_id.clone());
-    let work = with_state(move |st| compare::begin(st, &da, &db, &CompareOptions::default()))
-        .unwrap();
+    let work =
+        with_state(move |st| compare::begin(st, &da, &db, &CompareOptions::default())).unwrap();
     // Hold the engine so the whole job is queued before any of it runs.
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     engine()
@@ -309,7 +343,13 @@ fn cancel_mid_job() {
         "{:?}",
         events.last()
     );
-    assert_eq!(events.iter().filter(|e| matches!(e, JobEvent::Cancelled { .. })).count(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, JobEvent::Cancelled { .. }))
+            .count(),
+        1
+    );
     assert!(!events.iter().any(|e| matches!(e, JobEvent::Done { .. })));
     assert!(!engine().jobs.cancel(token.id), "the job id is released");
 }
@@ -320,8 +360,7 @@ fn cancel_mid_job() {
 
 fn page_ops(doc_id: &str, ops: Vec<seepdf_lib::ipc::types::PageOp>) {
     let doc_id = doc_id.to_string();
-    with_state(move |st| seepdf_lib::engine::pages::apply_ops(st, &doc_id, ops))
-        .expect("page_ops");
+    with_state(move |st| seepdf_lib::engine::pages::apply_ops(st, &doc_id, ops)).expect("page_ops");
 }
 
 /// B = A with one page inserted (a blank page, then a duplicated page): aligned, every page of
@@ -335,7 +374,14 @@ fn aligned_pages_absorb_an_inserted_page() {
     let count = a.info.page_count;
 
     for (label, op, at) in [
-        ("blank", PageOp::InsertBlank { at: 3, size: BlankPageSize::Named(NamedPageSize::SameAs) }, 3u16),
+        (
+            "blank",
+            PageOp::InsertBlank {
+                at: 3,
+                size: BlankPageSize::Named(NamedPageSize::SameAs),
+            },
+            3u16,
+        ),
         ("duplicate", PageOp::Duplicate { pages: vec![5] }, 6u16),
     ] {
         let b = open("tracemonkey.pdf");
@@ -348,8 +394,15 @@ fn aligned_pages_absorb_an_inserted_page() {
             .filter(|p| p.page_a.is_none() || p.page_b.is_none())
             .collect();
         assert_eq!(one_sided.len(), 1, "{label}: {:?}", one_sided);
-        assert_eq!((one_sided[0].page_a, one_sided[0].page_b), (None, Some(at)), "{label}");
-        assert!(one_sided[0].changed, "{label}: an inserted page is a change");
+        assert_eq!(
+            (one_sided[0].page_a, one_sided[0].page_b),
+            (None, Some(at)),
+            "{label}"
+        );
+        assert!(
+            one_sided[0].changed,
+            "{label}: an inserted page is a change"
+        );
         let other_changed = r
             .pages
             .iter()
@@ -357,9 +410,17 @@ fn aligned_pages_absorb_an_inserted_page() {
             .count();
         assert_eq!(other_changed, 0, "{label}");
         assert_eq!(r.changed_pages, 1, "{label}");
-        for p in r.pages.iter().filter(|p| p.page_a.is_some() && p.page_b.is_some()) {
+        for p in r
+            .pages
+            .iter()
+            .filter(|p| p.page_a.is_some() && p.page_b.is_some())
+        {
             let (pa, pb) = (p.page_a.unwrap(), p.page_b.unwrap());
-            assert_eq!(pb, if pa < at { pa } else { pa + 1 }, "{label}: {pa} ↔ {pb}");
+            assert_eq!(
+                pb,
+                if pa < at { pa } else { pa + 1 },
+                "{label}: {pa} ↔ {pb}"
+            );
         }
 
         // The Stage 5 pairing shifts every pair after the insertion.
@@ -413,7 +474,9 @@ fn closing_a_document_mid_job_cancels() {
             "align {align}: {:?}",
             events.last()
         );
-        assert!(!events.iter().any(|e| matches!(e, JobEvent::Error { .. } | JobEvent::Done { .. })));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, JobEvent::Error { .. } | JobEvent::Done { .. })));
         assert!(!engine().jobs.cancel(token.id), "the job id is released");
         drop(b); // already closed: TestDoc's close is a no-op error
     }
@@ -425,10 +488,16 @@ fn alignment_unit_cases() {
     let s = |words: &[u32]| words.to_vec();
     // Identical: positional.
     let a = vec![s(&[1, 2]), s(&[3, 4]), s(&[5])];
-    assert_eq!(align(&a, &a), vec![(Some(0), Some(0)), (Some(1), Some(1)), (Some(2), Some(2))]);
+    assert_eq!(
+        align(&a, &a),
+        vec![(Some(0), Some(0)), (Some(1), Some(1)), (Some(2), Some(2))]
+    );
     // A page deleted from the middle, and every page slightly edited.
     let b = vec![s(&[1, 2, 9]), s(&[5, 9])];
-    assert_eq!(align(&a, &b), vec![(Some(0), Some(0)), (Some(1), None), (Some(2), Some(1))]);
+    assert_eq!(
+        align(&a, &b),
+        vec![(Some(0), Some(0)), (Some(1), None), (Some(2), Some(1))]
+    );
     // Completely different pages still pair by position rather than becoming 4 rows.
     let c = vec![s(&[7]), s(&[8])];
     let d = vec![s(&[10]), s(&[11])];

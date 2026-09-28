@@ -95,7 +95,10 @@ mod tests {
         let taken = dir.join("스캔-ocr.pdf");
         std::fs::write(&taken, b"%PDF-1.7").unwrap();
         assert!(exists(&taken.display().to_string()));
-        assert!(exists(&dir.display().to_string()), "a directory is taken too");
+        assert!(
+            exists(&dir.display().to_string()),
+            "a directory is taken too"
+        );
         assert!(!exists(&dir.join("스캔-ocr (2).pdf").display().to_string()));
         std::fs::remove_dir_all(&dir).unwrap();
     }

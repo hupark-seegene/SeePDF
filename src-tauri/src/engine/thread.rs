@@ -233,17 +233,7 @@ pub fn spawn(
     std::thread::Builder::new()
         .name("seepdf-engine".into())
         .stack_size(4 * 1024 * 1024)
-        .spawn(move || {
-            engine_main(
-                library,
-                rx,
-                queued,
-                thread_shared,
-                app,
-                spill_dir,
-                ready_tx,
-            )
-        })
+        .spawn(move || engine_main(library, rx, queued, thread_shared, app, spill_dir, ready_tx))
         .map_err(|e| EngineError::io(format!("spawn engine thread: {e}")))?;
 
     match ready_rx.recv() {
@@ -354,8 +344,8 @@ fn publish_depth(shared: &EngineShared, lanes: &[BinaryHeap<Cmd>; 5]) {
 /// Lane order, with the starvation guard: after [`STARVATION_GUARD`] consecutive
 /// Interactive/Prefetch pops, an Edit or Background command gets a turn.
 fn pop_next(lanes: &mut [BinaryHeap<Cmd>; 5], fast_streak: &mut u32) -> Option<Cmd> {
-    let fast_pending = !lanes[Lane::Interactive.index()].is_empty()
-        || !lanes[Lane::Prefetch.index()].is_empty();
+    let fast_pending =
+        !lanes[Lane::Interactive.index()].is_empty() || !lanes[Lane::Prefetch.index()].is_empty();
     if *fast_streak >= STARVATION_GUARD && fast_pending {
         for lane in [Lane::Edit, Lane::Background] {
             if let Some(cmd) = lanes[lane.index()].pop() {

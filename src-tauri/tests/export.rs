@@ -72,7 +72,11 @@ fn render_area(doc_id: &str, page: u16, rect: Option<Rect>) -> (u32, u32, Vec<u8
 
 /// Share of pixels that differ by more than 24 in any channel.
 fn difference(a: &(u32, u32, Vec<u8>), b: &(u32, u32, Vec<u8>)) -> f64 {
-    assert_eq!((a.0, a.1), (b.0, b.1), "the two renders must be the same size");
+    assert_eq!(
+        (a.0, a.1),
+        (b.0, b.1),
+        "the two renders must be the same size"
+    );
     let mut differing = 0usize;
     for (pa, pb) in a.2.chunks_exact(4).zip(b.2.chunks_exact(4)) {
         if pa
@@ -124,7 +128,12 @@ fn export_images_sizes() {
         .expect("export_images");
         assert_eq!((png.width, png.height), expected);
         assert_eq!(image_size(&png.path), expected, "the PNG header agrees");
-        assert!(png.path.file_name().unwrap().to_string_lossy().contains(&format!("{:03}", page + 1)));
+        assert!(png
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains(&format!("{:03}", page + 1)));
         total += png.bytes;
     }
     // Letter at 150 DPI: 612 x 792 pt -> 1275 x 1650 px.
@@ -157,11 +166,7 @@ fn export_images_sizes() {
     })
     .expect("export jpeg");
     assert_eq!(image_size(&jpeg.path), (1275, 1650));
-    assert!(
-        jpeg.path.extension().unwrap() == "jpg",
-        "{:?}",
-        jpeg.path
-    );
+    assert!(jpeg.path.extension().unwrap() == "jpg", "{:?}", jpeg.path);
 
     // The estimate samples real encodes, so it must be close to what three pages actually cost.
     let estimate = with_state({
@@ -228,8 +233,8 @@ fn export_text() {
 #[test]
 fn export_flatten_normaldisplay() {
     let doc = open("annotation-highlight.pdf");
-    let before_annots = with_doc(&doc.doc_id, |d| Ok(d.page(0)?.annotations().len()))
-        .expect("annotation count");
+    let before_annots =
+        with_doc(&doc.doc_id, |d| Ok(d.page(0)?.annotations().len())).expect("annotation count");
     assert!(before_annots > 0, "the fixture has annotations");
 
     // The fixture's producer set `/F 4`, so strip it: an annotation *without* the Print flag is
@@ -297,9 +302,7 @@ fn export_flatten_normaldisplay() {
 
     // The contrast, and the reason the crate's `flatten` feature stays off: the same page
     // through FLAT_PRINT loses the annotation entirely.
-    let printed = reopen(
-        with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).expect("bytes"),
-    );
+    let printed = reopen(with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).expect("bytes"));
     with_state({
         let doc_id = printed.doc_id.clone();
         move |st| {

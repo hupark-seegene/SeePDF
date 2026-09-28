@@ -31,7 +31,9 @@ use crate::ipc::types::{DocId, Locale};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use tauri::menu::{AboutMetadata, Menu, MenuEvent, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{
+    AboutMetadata, Menu, MenuEvent, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
 use tauri::{AppHandle, Emitter, Manager, Runtime, Wry};
 
 /// The id of the 편집 submenu, so the history items can be found again after `build`.
@@ -155,7 +157,11 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("tools.batchOcr", "여러 파일 OCR…", "Batch OCR…"),
     ("tools.security", "보안…", "Security…"),
     ("tools.redact", "영역 표시", "Redact"),
-    ("tools.stamp", "워터마크 / 머리글·바닥글…", "Watermark / Header & Footer…"),
+    (
+        "tools.stamp",
+        "워터마크 / 머리글·바닥글…",
+        "Watermark / Header & Footer…",
+    ),
     ("tools.compress", "압축…", "Compress…"),
     ("tools.compare", "문서 비교…", "Compare Documents…"),
     ("tools.merge", "파일 합치기…", "Merge Files…"),
@@ -207,7 +213,10 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&PredefinedMenuItem::services(app, Some(t("services")))?)
         .separator()
         .item(&PredefinedMenuItem::hide(app, Some(t("hide")))?)
-        .item(&PredefinedMenuItem::hide_others(app, Some(t("hideOthers")))?)
+        .item(&PredefinedMenuItem::hide_others(
+            app,
+            Some(t("hideOthers")),
+        )?)
         .item(&PredefinedMenuItem::show_all(app, Some(t("showAll")))?)
         .separator()
         .item(&PredefinedMenuItem::quit(app, Some(t("quit")))?)
@@ -522,9 +531,26 @@ mod tests {
     #[test]
     fn menu_labels_cover_every_item() {
         let extra = [
-            "file", "edit", "view", "go", "tools", "window", "help", "help.about", "quit",
-            "services", "hide", "hideOthers", "showAll", "edit.cut", "edit.copy", "edit.paste",
-            "view.fullScreen", "window.minimize", "window.zoom", "window.close",
+            "file",
+            "edit",
+            "view",
+            "go",
+            "tools",
+            "window",
+            "help",
+            "help.about",
+            "quit",
+            "services",
+            "hide",
+            "hideOthers",
+            "showAll",
+            "edit.cut",
+            "edit.copy",
+            "edit.paste",
+            "view.fullScreen",
+            "window.minimize",
+            "window.zoom",
+            "window.close",
         ];
         for key in MENU_IDS.iter().chain(extra.iter()) {
             let row = LABELS.iter().find(|(k, _, _)| k == key);

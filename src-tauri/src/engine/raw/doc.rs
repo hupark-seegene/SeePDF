@@ -57,7 +57,11 @@ pub fn decode_utf16le(bytes: &[u8]) -> Option<String> {
 /// Used instead of `PdfMetadata` because pdfium-render asks for the tag
 /// `"ModificationDate"`, which does not exist (`/Info` says `ModDate`), so the modification
 /// date always read back as missing.
-pub fn meta_text(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>, tag: &str) -> Option<String> {
+pub fn meta_text(
+    bindings: &dyn PdfiumLibraryBindings,
+    doc: &PdfDocument<'_>,
+    tag: &str,
+) -> Option<String> {
     let handle = doc.raw_handle();
     // SAFETY: `handle` is live for the borrow of `doc`; a null buffer asks for the length.
     let len = unsafe { bindings.FPDF_GetMetaText(handle, tag, std::ptr::null_mut(), 0) as usize };
@@ -67,8 +71,12 @@ pub fn meta_text(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>, ta
     let mut buffer = vec![0u8; len];
     // SAFETY: `buffer` is `len` bytes, exactly what the call above asked for.
     let written = unsafe {
-        bindings.FPDF_GetMetaText(handle, tag, buffer.as_mut_ptr() as *mut c_void, len as c_ulong)
-            as usize
+        bindings.FPDF_GetMetaText(
+            handle,
+            tag,
+            buffer.as_mut_ptr() as *mut c_void,
+            len as c_ulong,
+        ) as usize
     };
     decode_utf16le(&buffer[..written.min(len)])
 }

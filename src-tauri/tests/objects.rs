@@ -11,8 +11,8 @@ use common::*;
 use seepdf_lib::engine::objects;
 use seepdf_lib::engine::registry;
 use seepdf_lib::engine::save;
-use seepdf_lib::engine::text::search;
 use seepdf_lib::engine::text::layer;
+use seepdf_lib::engine::text::search;
 use seepdf_lib::ipc::types::{
     Editability, NotEditableReason, PageObject, PageObjectList, PageObjectType, Rect, TextAlign,
     TextEditStrategy, TextObjectPatch,
@@ -344,7 +344,10 @@ fn objects_add_text_korean() {
         .filter(|o| o.font_name.as_deref() == Some("SeePDF-Hangul"))
         .collect();
     assert_eq!(korean.len(), 2, "one object per line");
-    assert!(korean[0].ours, "objects drawn with the bundled font are ours");
+    assert!(
+        korean[0].ours,
+        "objects drawn with the bundled font are ours"
+    );
 
     let bytes = save_bytes(&doc.doc_id);
     let growth = bytes.len() as i64 - before as i64;
@@ -638,7 +641,10 @@ fn moved(r: &Rect, dx: f32, dy: f32) -> Rect {
 }
 
 fn near(a: &Rect, b: &Rect) -> bool {
-    (a.l - b.l).abs() < 1.0 && (a.b - b.b).abs() < 1.0 && (a.r - b.r).abs() < 1.0 && (a.t - b.t).abs() < 1.0
+    (a.l - b.l).abs() < 1.0
+        && (a.b - b.b).abs() < 1.0
+        && (a.r - b.r).abs() < 1.0
+        && (a.t - b.t).abs() < 1.0
 }
 
 /// Same page: a text object (original glyph codes, subset font) and an image, in one call —
@@ -652,7 +658,14 @@ fn duplicate_objects_on_the_same_page() {
     {
         let (doc_id, png) = (doc.doc_id.clone(), png_path.display().to_string());
         with_state(move |st| {
-            objects::add_image(st, &doc_id, 0, Rect::new(400.0, 600.0, 480.0, 640.0), &png, false)
+            objects::add_image(
+                st,
+                &doc_id,
+                0,
+                Rect::new(400.0, 600.0, 480.0, 640.0),
+                &png,
+                false,
+            )
         })
         .expect("add image");
     }
@@ -660,7 +673,10 @@ fn duplicate_objects_on_the_same_page() {
     let title = before
         .objects
         .iter()
-        .find(|o| o.object_type == PageObjectType::Text && o.text.as_deref().unwrap_or("").contains("Trace-based"))
+        .find(|o| {
+            o.object_type == PageObjectType::Text
+                && o.text.as_deref().unwrap_or("").contains("Trace-based")
+        })
         .expect("the title run")
         .clone();
     let image = before
@@ -673,12 +689,22 @@ fn duplicate_objects_on_the_same_page() {
     let words_before = page_text(&doc.doc_id, 0).matches("Trace-based").count();
 
     let (dx, dy) = (0.0, -250.0);
-    let r = duplicate(&doc.doc_id, 0, vec![image.object_id, title.object_id], [dx, dy], None)
-        .expect("duplicate");
+    let r = duplicate(
+        &doc.doc_id,
+        0,
+        vec![image.object_id, title.object_id],
+        [dx, dy],
+        None,
+    )
+    .expect("duplicate");
     assert_eq!(r.objects.len(), before.objects.len() + 2);
     assert_eq!(r.new_object_ids.len(), 2);
     // `newObjectIds` follow the (sorted) request order: the title run first, then the image.
-    let copies: Vec<&PageObject> = r.new_object_ids.iter().map(|&id| &r.objects[id as usize]).collect();
+    let copies: Vec<&PageObject> = r
+        .new_object_ids
+        .iter()
+        .map(|&id| &r.objects[id as usize])
+        .collect();
     let (text_copy, image_copy) = if copies[0].object_type == PageObjectType::Text {
         (copies[0], copies[1])
     } else {
@@ -686,11 +712,22 @@ fn duplicate_objects_on_the_same_page() {
     };
     assert_eq!(text_copy.object_type, PageObjectType::Text);
     assert_eq!(text_copy.text, title.text);
-    assert!(near(&text_copy.rect, &moved(&title.rect, dx, dy)), "{:?}", text_copy.rect);
+    assert!(
+        near(&text_copy.rect, &moved(&title.rect, dx, dy)),
+        "{:?}",
+        text_copy.rect
+    );
     assert_eq!(image_copy.object_type, PageObjectType::Image);
-    assert!(near(&image_copy.rect, &moved(&image.rect, dx, dy)), "{:?}", image_copy.rect);
+    assert!(
+        near(&image_copy.rect, &moved(&image.rect, dx, dy)),
+        "{:?}",
+        image_copy.rect
+    );
     // The originals are where they were.
-    assert!(r.objects.iter().any(|o| o.object_type == PageObjectType::Text && near(&o.rect, &title.rect)));
+    assert!(r
+        .objects
+        .iter()
+        .any(|o| o.object_type == PageObjectType::Text && near(&o.rect, &title.rect)));
     let info = with_doc(&doc.doc_id, |d| Ok(d.info())).unwrap();
     assert_eq!(info.undo_label.as_deref(), Some("undo.objectDuplicate"));
 
@@ -700,13 +737,19 @@ fn duplicate_objects_on_the_same_page() {
         page_text(&saved.doc_id, 0).matches("Trace-based").count(),
         words_before + 1
     );
-    assert_eq!(list(&saved.doc_id, 0).objects.len(), before.objects.len() + 2);
+    assert_eq!(
+        list(&saved.doc_id, 0).objects.len(),
+        before.objects.len() + 2
+    );
 
     // One undo step for the whole call.
     let d = doc.doc_id.clone();
     with_state(move |st| registry::undo(st, &d, false)).expect("undo");
     assert_eq!(list(&doc.doc_id, 0).objects.len(), before.objects.len());
-    assert_eq!(page_text(&doc.doc_id, 0).matches("Trace-based").count(), words_before);
+    assert_eq!(
+        page_text(&doc.doc_id, 0).matches("Trace-based").count(),
+        words_before
+    );
 }
 
 /// Another page: text, image and a Form XObject copy onto page 1 (its content streams are
@@ -729,7 +772,14 @@ fn duplicate_objects_across_pages() {
     {
         let (doc_id, png) = (doc.doc_id.clone(), png_path.display().to_string());
         with_state(move |st| {
-            objects::add_image(st, &doc_id, page, Rect::new(50.0, 50.0, 98.0, 98.0), &png, false)
+            objects::add_image(
+                st,
+                &doc_id,
+                page,
+                Rect::new(50.0, 50.0, 98.0, 98.0),
+                &png,
+                false,
+            )
         })
         .expect("add image");
     }
@@ -741,7 +791,11 @@ fn duplicate_objects_across_pages() {
         .find(|o| o.object_type == PageObjectType::Image)
         .unwrap()
         .clone();
-    let target = if page + 1 < doc.info.page_count { page + 1 } else { page - 1 };
+    let target = if page + 1 < doc.info.page_count {
+        page + 1
+    } else {
+        page - 1
+    };
     let target_before = list(&doc.doc_id, target);
     let (dx, dy) = (10.0, 20.0);
     let r = duplicate(
@@ -753,23 +807,43 @@ fn duplicate_objects_across_pages() {
     )
     .expect("cross-page duplicate");
     assert_eq!(r.objects.len(), target_before.objects.len() + 2);
-    let copies: Vec<&PageObject> = r.new_object_ids.iter().map(|&id| &r.objects[id as usize]).collect();
+    let copies: Vec<&PageObject> = r
+        .new_object_ids
+        .iter()
+        .map(|&id| &r.objects[id as usize])
+        .collect();
     assert_eq!(copies.len(), 2);
-    assert!(copies.iter().any(|c| c.object_type == PageObjectType::Form && near(&c.rect, &moved(&form.rect, dx, dy))));
-    assert!(copies.iter().any(|c| c.object_type == PageObjectType::Image && near(&c.rect, &moved(&image.rect, dx, dy))));
-    assert_eq!(list(&doc.doc_id, page).objects.len(), source.objects.len(), "the source page is untouched");
+    assert!(copies.iter().any(
+        |c| c.object_type == PageObjectType::Form && near(&c.rect, &moved(&form.rect, dx, dy))
+    ));
+    assert!(copies
+        .iter()
+        .any(|c| c.object_type == PageObjectType::Image
+            && near(&c.rect, &moved(&image.rect, dx, dy))));
+    assert_eq!(
+        list(&doc.doc_id, page).objects.len(),
+        source.objects.len(),
+        "the source page is untouched"
+    );
 
     // The copies survive a save; the form's text is now on the target page too.
     let form_text = form.text.clone().unwrap_or_default();
     let saved = reopen(save_bytes(&doc.doc_id));
-    assert_eq!(list(&saved.doc_id, target).objects.len(), target_before.objects.len() + 2);
+    assert_eq!(
+        list(&saved.doc_id, target).objects.len(),
+        target_before.objects.len() + 2
+    );
     if let Some(word) = form_text.split_whitespace().find(|w| w.len() > 4) {
-        assert!(page_text(&saved.doc_id, target).contains(word), "{word:?} copied");
+        assert!(
+            page_text(&saved.doc_id, target).contains(word),
+            "{word:?} copied"
+        );
     }
 
     // Refusals.
     let d = doc.doc_id.clone();
-    let err = with_state(move |st| objects::duplicate(st, &d, 0, &[0], 1, [0.0, 0.0], None)).unwrap_err();
+    let err =
+        with_state(move |st| objects::duplicate(st, &d, 0, &[0], 1, [0.0, 0.0], None)).unwrap_err();
     assert_eq!(err.code, ErrorCode::Stale);
     let err = duplicate(&doc.doc_id, page, vec![99_999], [0.0, 0.0], None).unwrap_err();
     assert_eq!(err.code, ErrorCode::NotFound);

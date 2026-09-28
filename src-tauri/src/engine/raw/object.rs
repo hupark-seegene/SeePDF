@@ -78,7 +78,10 @@ fn mark_handle(
     // SAFETY: `handle` belongs to a live page (or is a fresh, not-yet-inserted object).
     let created = unsafe { bindings.FPDFPageObj_AddMark(handle, mark.name) };
     if created.is_null() {
-        return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPageObj_AddMark failed"));
+        return Err(EngineError::new(
+            ErrorCode::Pdfium,
+            "FPDFPageObj_AddMark failed",
+        ));
     }
     for (key, value) in mark.params {
         // SAFETY: `document` owns `handle`'s page (or will); `created` lives with the object.
@@ -163,9 +166,7 @@ fn mark_name(
 ) -> Option<String> {
     let mut len: c_ulong = 0;
     // SAFETY: a null buffer asks for the length only.
-    let ok = unsafe {
-        bindings.FPDFPageObjMark_GetName(mark, std::ptr::null_mut(), 0, &mut len)
-    };
+    let ok = unsafe { bindings.FPDFPageObjMark_GetName(mark, std::ptr::null_mut(), 0, &mut len) };
     if !bindings.is_true(ok) || len < 2 {
         return None;
     }
@@ -251,7 +252,10 @@ impl<'a> XObject<'a> {
             // SAFETY: `object` is a fresh, unowned page object; `m` outlives the call.
             let ok = unsafe { b.FPDFPageObj_SetMatrix(object, &m) };
             if !b.is_true(ok) {
-                return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPageObj_SetMatrix failed"));
+                return Err(EngineError::new(
+                    ErrorCode::Pdfium,
+                    "FPDFPageObj_SetMatrix failed",
+                ));
             }
             if let Some(mark) = mark {
                 mark_handle(b, self.dest, object, mark)?;
@@ -267,7 +271,10 @@ impl<'a> XObject<'a> {
         // it itself on failure).
         let ok = unsafe { b.FPDFPage_InsertObject(page.raw_handle(), object) };
         if !b.is_true(ok) {
-            return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPage_InsertObject failed"));
+            return Err(EngineError::new(
+                ErrorCode::Pdfium,
+                "FPDFPage_InsertObject failed",
+            ));
         }
         Ok(())
     }
@@ -305,7 +312,10 @@ pub fn transplant(
         // SAFETY: `handle` belongs to `from`, which is live; ownership passes to us.
         let ok = unsafe { bindings.FPDFPage_RemoveObject(from.raw_handle(), handle) };
         if !bindings.is_true(ok) {
-            return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPage_RemoveObject failed"));
+            return Err(EngineError::new(
+                ErrorCode::Pdfium,
+                "FPDFPage_RemoveObject failed",
+            ));
         }
         let (dx, dy) = (dx as f64, dy as f64);
         // SAFETY: `handle` is an unowned, live page object.
@@ -316,7 +326,10 @@ pub fn transplant(
         // SAFETY: `to` is live and in the same document; the page takes ownership.
         let ok = unsafe { bindings.FPDFPage_InsertObject(to.raw_handle(), handle) };
         if !bindings.is_true(ok) {
-            return Err(EngineError::new(ErrorCode::Pdfium, "FPDFPage_InsertObject failed"));
+            return Err(EngineError::new(
+                ErrorCode::Pdfium,
+                "FPDFPage_InsertObject failed",
+            ));
         }
     }
     Ok(())

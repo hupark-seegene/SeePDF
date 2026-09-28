@@ -355,7 +355,11 @@ fn spike_text_layer(pdfium: &Pdfium) -> R<()> {
 
     let t0 = Instant::now();
     let text = page.text()?;
-    println!("FPDFText_LoadPage: {:?}, char count = {}", t0.elapsed(), text.len());
+    println!(
+        "FPDFText_LoadPage: {:?}, char count = {}",
+        t0.elapsed(),
+        text.len()
+    );
 
     let t0 = Instant::now();
     let chars = collect_chars(&text)?;
@@ -423,12 +427,19 @@ fn spike_text_layer(pdfium: &Pdfium) -> R<()> {
         .expect("word starting with 'Trace' on page 1");
     println!(
         "known word {:?} chars {}..={} pdf rect {}",
-        word.text, word.first, word.last, fmt_rect(&word.rect)
+        word.text,
+        word.first,
+        word.last,
+        fmt_rect(&word.rect)
     );
     let dev = pdf_rect_to_device(&word.rect, &page_box, scale);
     println!("  -> device @{scale}x: {:?}", dev);
     let m = page_to_device_matrix(&page_box, 0, scale);
-    println!("  -> via matrix {:?}: {:?}", m, rect_to_device_with_matrix(&m, &word.rect));
+    println!(
+        "  -> via matrix {:?}: {:?}",
+        m,
+        rect_to_device_with_matrix(&m, &word.rect)
+    );
     let cfg = PdfRenderConfig::new().scale_page_by_factor(scale);
     let (px_l, px_t) = page.points_to_pixels(word.rect.left(), word.rect.top(), &cfg)?;
     let (px_r, px_b) = page.points_to_pixels(word.rect.right(), word.rect.bottom(), &cfg)?;
@@ -452,9 +463,9 @@ fn spike_text_layer(pdfium: &Pdfium) -> R<()> {
     // char hit test at the word centre (pdf coords)
     let cx = PdfPoints::new((word.rect.left().value + word.rect.right().value) / 2.0);
     let cy = PdfPoints::new((word.rect.bottom().value + word.rect.top().value) / 2.0);
-    if let Some(c) = text
-        .chars()
-        .get_char_near_point(cx, PdfPoints::new(2.0), cy, PdfPoints::new(2.0))
+    if let Some(c) =
+        text.chars()
+            .get_char_near_point(cx, PdfPoints::new(2.0), cy, PdfPoints::new(2.0))
     {
         println!(
             "  get_char_near_point(centre) -> #{} {:?}",
@@ -559,7 +570,10 @@ fn spike_search(pdfium: &Pdfium) -> R<()> {
     let doc = pdfium.load_pdf_from_file(&repo_root().join("fixtures/tracemonkey.pdf"), None)?;
 
     for (label, opts) in [
-        ("default (case-insensitive, substring)", PdfSearchOptions::new()),
+        (
+            "default (case-insensitive, substring)",
+            PdfSearchOptions::new(),
+        ),
         ("match_case", PdfSearchOptions::new().match_case(true)),
         ("whole word", PdfSearchOptions::new().match_whole_word(true)),
     ] {
@@ -652,14 +666,16 @@ fn spike_search(pdfium: &Pdfium) -> R<()> {
         if let Ok(seg) = first.first() {
             let b = seg.bounds();
             match text.chars_inside_rect(b) {
-                Ok(cs) => println!(
+                Ok(cs) => {
+                    println!(
                     "  pdfium hit rect {} -> chars_inside_rect gives {:?}..{:?} ({} chars) = {:?}",
                     fmt_rect(&b),
                     cs.first_char_index(),
                     cs.last_char_index(),
                     cs.len(),
                     cs.iter().filter_map(|c| c.unicode_char()).collect::<String>()
-                ),
+                )
+                }
                 Err(e) => println!("  chars_inside_rect failed: {e}"),
             }
         }
@@ -858,7 +874,11 @@ fn map_chars_to_objects(text: &PdfPageText, objs: &[TextObjInfo]) -> R<Vec<Optio
         if let Ok(t) = c.text_object() {
             // NOTE: PdfPageTextObject::text() loads a fresh FPDF_TEXTPAGE on every call (~0.45 ms);
             // always go through the already-open PdfPageText with for_object() in loops.
-            let key = obj_key(&t.matrix()?, t.unscaled_font_size().value, &text.for_object(&t));
+            let key = obj_key(
+                &t.matrix()?,
+                t.unscaled_font_size().value,
+                &text.for_object(&t),
+            );
             match key_to_idx.get(&key) {
                 Some(&i) => map[c.index()] = Some(i),
                 None => misses += 1,
@@ -919,7 +939,10 @@ fn probe_glyphs(label: &str, font: &PdfFont, size: PdfPoints, sample: &str) {
     let mut parts = Vec::new();
     for ch in sample.chars() {
         // PdfFontGlyphIndex is u16: code points above U+FFFF cannot be probed through this API.
-        let s = match u16::try_from(ch as u32).map_err(|_| ()).and_then(|cp| glyphs.get(cp).map_err(|_| ())) {
+        let s = match u16::try_from(ch as u32)
+            .map_err(|_| ())
+            .and_then(|cp| glyphs.get(cp).map_err(|_| ()))
+        {
             Ok(g) => {
                 let w = g.width_at_font_size(size).value;
                 let segs = g.segments_at_font_size(size).map(|p| p.len()).ok();
@@ -1065,7 +1088,10 @@ fn spike_editing(pdfium: &Pdfium) -> R<()> {
                 )
             })
             .collect();
-        println!("  chars after set_text (loose widths): {}", widths.join(" "));
+        println!(
+            "  chars after set_text (loose widths): {}",
+            widths.join(" ")
+        );
     }
     // 4a' replace-object model: new object with a substitute built-in font at the old matrix
     {
@@ -1079,12 +1105,8 @@ fn spike_editing(pdfium: &Pdfium) -> R<()> {
                 old.bounds()?,
             )
         };
-        let mut new_t = PdfPageTextObject::new(
-            &doc,
-            "Languages (replaced, Times-Bold)",
-            times_bold,
-            size,
-        )?;
+        let mut new_t =
+            PdfPageTextObject::new(&doc, "Languages (replaced, Times-Bold)", times_bold, size)?;
         new_t.apply_matrix(old_m)?;
         new_t.set_fill_color(fill)?;
         let new_obj = page.objects_mut().add_text_object(new_t)?;
@@ -1281,9 +1303,16 @@ fn spike_editing(pdfium: &Pdfium) -> R<()> {
     let pb = page2.page_size();
     let bottom = pdf_rect_to_device(&PdfRect::new_from_values(10.0, 60.0, 60.0, 560.0), &pb, 2.0);
     crop_png(&img, &bottom, 0.0, "spike_text_edited_bottom.png")?;
-    let top = pdf_rect_to_device(&PdfRect::new_from_values(670.0, 60.0, 720.0, 560.0), &pb, 2.0);
+    let top = pdf_rect_to_device(
+        &PdfRect::new_from_values(670.0, 60.0, 720.0, 560.0),
+        &pb,
+        2.0,
+    );
     crop_png(&img, &top, 0.0, "spike_text_edited_top.png")?;
-    if let Some(o) = objs2.iter().find(|o| o.text.starts_with(fontsize_text.trim_end())) {
+    if let Some(o) = objs2
+        .iter()
+        .find(|o| o.text.starts_with(fontsize_text.trim_end()))
+    {
         let r = pdf_rect_to_device(&o.rect, &pb, 2.0);
         crop_png(&img, &r, 6.0, "spike_text_edited_fontsize.png")?;
     }
@@ -1296,7 +1325,11 @@ fn spike_editing(pdfium: &Pdfium) -> R<()> {
 fn spike_fonts(pdfium: &Pdfium) -> R<()> {
     section("4b. FONT LOADING MATRIX (new doc per font)");
     let candidates: [(&str, &str, bool); 5] = [
-        ("Arial.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf", false),
+        (
+            "Arial.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            false,
+        ),
         (
             "Arial Unicode.ttf",
             "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
@@ -1383,7 +1416,11 @@ fn spike_fonts(pdfium: &Pdfium) -> R<()> {
             bytes.len(),
             extracted,
         );
-        println!("{:<22} dark_px={dark} hangul_extracted={}", "", extracted.contains("한글 테스트"));
+        println!(
+            "{:<22} dark_px={dark} hangul_extracted={}",
+            "",
+            extracted.contains("한글 테스트")
+        );
     }
     Ok(())
 }
@@ -1447,7 +1484,10 @@ fn spike_xobject(pdfium: &Pdfium) -> R<()> {
         println!("no fixture with text inside a form xobject; skipping edit test");
         return Ok(());
     };
-    println!("editing {f} page {} form obj #{oi} inner text #{ii}", pi + 1);
+    println!(
+        "editing {f} page {} form obj #{oi} inner text #{ii}",
+        pi + 1
+    );
     let doc = pdfium.load_pdf_from_file(&repo_root().join("fixtures").join(&f), None)?;
     let mut page = doc.pages().get(pi)?;
     page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
@@ -1497,9 +1537,15 @@ fn spike_xobject(pdfium: &Pdfium) -> R<()> {
                 text2.for_object(t).contains("XOBJ EDITED")
             );
         }
-        None => println!("  after reopen: object #{oi} is no longer a form xobject ({:?})", obj.object_type()),
+        None => println!(
+            "  after reopen: object #{oi} is no longer a form xobject ({:?})",
+            obj.object_type()
+        ),
     }
-    println!("  page text contains 'XOBJ EDITED': {}", text2.all().contains("XOBJ EDITED"));
+    println!(
+        "  page text contains 'XOBJ EDITED': {}",
+        text2.all().contains("XOBJ EDITED")
+    );
     Ok(())
 }
 
@@ -1524,9 +1570,15 @@ fn spike_ocr_layer(pdfium: &Pdfium) -> R<()> {
 
     // OCR "word boxes" we want to cover exactly: (text, rect)
     let words: [(&str, PdfRect); 3] = [
-        ("Invisible", PdfRect::new_from_values(660.0, 60.0, 680.0, 160.0)),
+        (
+            "Invisible",
+            PdfRect::new_from_values(660.0, 60.0, 680.0, 160.0),
+        ),
         ("OCR", PdfRect::new_from_values(660.0, 170.0, 680.0, 220.0)),
-        ("layer42", PdfRect::new_from_values(620.0, 60.0, 640.0, 200.0)),
+        (
+            "layer42",
+            PdfRect::new_from_values(620.0, 60.0, 640.0, 200.0),
+        ),
     ];
     let mut visible_ref = None;
     for (i, (word, target)) in words.iter().enumerate() {
@@ -1592,11 +1644,7 @@ fn spike_ocr_layer(pdfium: &Pdfium) -> R<()> {
     let search = text2.search("ocr", &PdfSearchOptions::new())?;
     let hits: Vec<String> = search
         .iter(PdfSearchDirection::SearchForward)
-        .flat_map(|r| {
-            r.iter()
-                .map(|s| fmt_rect(&s.bounds()))
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|r| r.iter().map(|s| fmt_rect(&s.bounds())).collect::<Vec<_>>())
         .collect();
     println!("search 'ocr' (case-insensitive) hits: {:?}", hits);
     for c in text2.chars().iter().take(3) {

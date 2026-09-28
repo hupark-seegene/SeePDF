@@ -23,8 +23,8 @@ use crate::engine::raw::doc::decode_utf16le;
 use crate::ipc::types::{Rect, Rgb};
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
-    FPDF_ANNOTATION, FPDF_ANNOTATION_SUBTYPE, FPDF_DOCUMENT, FPDF_FORMHANDLE, FPDF_WCHAR, FS_POINTF,
-    FS_QUADPOINTSF, FS_RECTF, PdfPage, PdfiumLibraryBindings,
+    PdfPage, PdfiumLibraryBindings, FPDF_ANNOTATION, FPDF_ANNOTATION_SUBTYPE, FPDF_DOCUMENT,
+    FPDF_FORMHANDLE, FPDF_WCHAR, FS_POINTF, FS_QUADPOINTSF, FS_RECTF,
 };
 use std::marker::PhantomData;
 use std::os::raw::{c_int, c_ulong};
@@ -617,9 +617,10 @@ impl AnnotRef<'_> {
             if action.is_null() {
                 return None;
             }
-            let len =
-                self.bindings
-                    .FPDFAction_GetURIPath(document, action, std::ptr::null_mut(), 0) as usize;
+            let len = self
+                .bindings
+                .FPDFAction_GetURIPath(document, action, std::ptr::null_mut(), 0)
+                as usize;
             if len < 2 {
                 return None;
             }
@@ -663,10 +664,7 @@ impl AnnotRef<'_> {
     /// `FPDFAnnot_GetFormFieldType` — one of `consts::FPDF_FORMFIELD_*`, or `-1`.
     pub fn form_field_type(&self, form: FPDF_FORMHANDLE) -> c_int {
         // SAFETY: `self.handle` is live and `form` is the form environment of its document.
-        unsafe {
-            self.bindings
-                .FPDFAnnot_GetFormFieldType(form, self.handle)
-        }
+        unsafe { self.bindings.FPDFAnnot_GetFormFieldType(form, self.handle) }
     }
 
     /// `FPDFAnnot_GetFormFieldName` — the fully qualified field name.
@@ -721,10 +719,12 @@ impl AnnotRef<'_> {
                     self.bindings
                         .FPDFAnnot_GetFormFieldName(form, self.handle, ptr, len as c_ulong)
                 }
-                FormString::Value => {
-                    self.bindings
-                        .FPDFAnnot_GetFormFieldValue(form, self.handle, ptr, len as c_ulong)
-                }
+                FormString::Value => self.bindings.FPDFAnnot_GetFormFieldValue(
+                    form,
+                    self.handle,
+                    ptr,
+                    len as c_ulong,
+                ),
                 FormString::Export => self.bindings.FPDFAnnot_GetFormFieldExportValue(
                     form,
                     self.handle,
@@ -739,10 +739,7 @@ impl AnnotRef<'_> {
     /// `FPDFAnnot_GetFormFieldFlags` — the `/Ff` bit field (`consts::FPDF_FORMFLAG_*`).
     pub fn form_field_flags(&self, form: FPDF_FORMHANDLE) -> c_int {
         // SAFETY: `self.handle` and `form` are live.
-        unsafe {
-            self.bindings
-                .FPDFAnnot_GetFormFieldFlags(form, self.handle)
-        }
+        unsafe { self.bindings.FPDFAnnot_GetFormFieldFlags(form, self.handle) }
     }
 
     /// `FPDFAnnot_IsChecked` — the current state of a checkbox or radio widget.

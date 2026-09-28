@@ -185,7 +185,12 @@ fn submit(token: &JobToken, label: &'static str) -> Submit {
 /// Queues the job. Positional pairing: one diff command per row, then the report. Aligning:
 /// one scan command per candidate page, then the align command, which queues the row diffs
 /// and the report itself once it knows the rows.
-pub fn dispatch(engine: &EngineHandle, work: Arc<Work>, token: &JobToken, reporter: Arc<JobReporter>) {
+pub fn dispatch(
+    engine: &EngineHandle,
+    work: Arc<Work>,
+    token: &JobToken,
+    reporter: Arc<JobReporter>,
+) {
     let queued = if work.align {
         dispatch_scans(engine, &work, token, &reporter)
     } else {
@@ -229,7 +234,12 @@ fn dispatch_scans(
             })?;
         }
     }
-    let (w, r, e, t) = (work.clone(), reporter.clone(), engine.clone(), token.clone());
+    let (w, r, e, t) = (
+        work.clone(),
+        reporter.clone(),
+        engine.clone(),
+        token.clone(),
+    );
     engine.dispatch(submit(token, "compare_align"), move |st, status| {
         if !proceed(&r, st, &w, status) {
             return;
@@ -264,11 +274,22 @@ fn dispatch_rows(
             let page_b = ib.map(|i| work.pages_b[i]);
             let row = if work.align {
                 // Each position is in exactly one row, so its words can be moved out.
-                let a = ia.and_then(|i| work.words_a.lock()[i].take()).unwrap_or_default();
-                let b = ib.and_then(|i| work.words_b.lock()[i].take()).unwrap_or_default();
+                let a = ia
+                    .and_then(|i| work.words_a.lock()[i].take())
+                    .unwrap_or_default();
+                let b = ib
+                    .and_then(|i| work.words_b.lock()[i].take())
+                    .unwrap_or_default();
                 Ok(compare_words(page_a, page_b, &a, &b))
             } else {
-                compare_pair(st, &work.doc_a, &work.doc_b, page_a, page_b, work.ignore_case)
+                compare_pair(
+                    st,
+                    &work.doc_a,
+                    &work.doc_b,
+                    page_a,
+                    page_b,
+                    work.ignore_case,
+                )
             };
             match row {
                 Ok(page) => {
@@ -318,10 +339,7 @@ fn align_work(work: &Work) -> Vec<Row> {
     let words_a = work.words_a.lock();
     let words_b = work.words_b.lock();
     fn set<'k>(ids: &mut HashMap<&'k str, u32>, w: &'k Option<PageWords>) -> Vec<u32> {
-        let mut out: Vec<u32> = w
-            .as_ref()
-            .map(|w| intern(ids, &w.keys))
-            .unwrap_or_default();
+        let mut out: Vec<u32> = w.as_ref().map(|w| intern(ids, &w.keys)).unwrap_or_default();
         out.sort_unstable();
         out.dedup();
         out
@@ -794,7 +812,9 @@ mod tests {
     }
 
     fn kinds(h: &[Hunk]) -> Vec<(DiffKind, Range<usize>, Range<usize>)> {
-        h.iter().map(|h| (h.kind, h.a.clone(), h.b.clone())).collect()
+        h.iter()
+            .map(|h| (h.kind, h.a.clone(), h.b.clone()))
+            .collect()
     }
 
     /// The hunks must tile both sequences and equal hunks must really be equal.
@@ -812,7 +832,10 @@ mod tests {
         assert_eq!((x, y), (a.len(), b.len()));
         // No two adjacent change hunks, no two adjacent equal hunks.
         for w in h.windows(2) {
-            assert!((w[0].kind == DiffKind::Equal) != (w[1].kind == DiffKind::Equal), "{h:?}");
+            assert!(
+                (w[0].kind == DiffKind::Equal) != (w[1].kind == DiffKind::Equal),
+                "{h:?}"
+            );
         }
         h
     }
@@ -862,10 +885,7 @@ mod tests {
         );
         // Unequal replace sizes.
         let b = words("one 2 four");
-        assert_eq!(
-            kinds(&check(&a, &b))[1],
-            (DiffKind::Replace, 1..3, 1..2)
-        );
+        assert_eq!(kinds(&check(&a, &b))[1], (DiffKind::Replace, 1..3, 1..2));
     }
 
     #[test]
@@ -874,7 +894,11 @@ mod tests {
         let a: Vec<&str> = "A B C A B B A".split(' ').collect();
         let b: Vec<&str> = "C B A B A C".split(' ').collect();
         let h = check(&a, &b);
-        let equal: usize = h.iter().filter(|h| h.kind == DiffKind::Equal).map(|h| h.a.len()).sum();
+        let equal: usize = h
+            .iter()
+            .filter(|h| h.kind == DiffKind::Equal)
+            .map(|h| h.a.len())
+            .sum();
         assert_eq!(equal, 4, "{h:?}");
     }
 
@@ -892,8 +916,11 @@ mod tests {
             let a: Vec<u32> = (0..la).map(|_| next()).collect();
             let b: Vec<u32> = (0..lb).map(|_| next()).collect();
             let h = diff(&a, &b);
-            let equal: usize =
-                h.iter().filter(|h| h.kind == DiffKind::Equal).map(|h| h.a.len()).sum();
+            let equal: usize = h
+                .iter()
+                .filter(|h| h.kind == DiffKind::Equal)
+                .map(|h| h.a.len())
+                .sum();
             // DP LCS.
             let mut dp = vec![vec![0usize; lb + 1]; la + 1];
             for i in 1..=la {

@@ -25,8 +25,8 @@ use crate::engine::text;
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
-    ChangeReason, PageIndex, RedactBatchMark, RedactBatchResult, RedactImageObject,
-    RedactOptions, RedactPreview, RedactTextObject, Rect,
+    ChangeReason, PageIndex, Rect, RedactBatchMark, RedactBatchResult, RedactImageObject,
+    RedactOptions, RedactPreview, RedactTextObject,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
@@ -97,9 +97,7 @@ pub fn preview(
         // which PDFium gives us no way to rewrite — the apply refuses instead of lying.
         form_fields: annots
             .iter()
-            .filter(|a| {
-                a.subtype == "Widget" && rects.iter().any(|r| r.intersects(&a.rect))
-            })
+            .filter(|a| a.subtype == "Widget" && rects.iter().any(|r| r.intersects(&a.rect)))
             .map(|a| {
                 if a.contents.is_empty() {
                     a.id.clone()
@@ -400,11 +398,7 @@ fn marked_runs(
 ///
 /// Counting rather than "is it absent" is what makes this correct for a word that also occurs
 /// somewhere else on the page: redacting one "the" must not require every "the" to vanish.
-fn first_survivor<'a>(
-    marked: &'a [String],
-    before: &str,
-    after: &str,
-) -> Option<&'a str> {
+fn first_survivor<'a>(marked: &'a [String], before: &str, after: &str) -> Option<&'a str> {
     marked.iter().map(String::as_str).find(|needle| {
         let was = before.matches(needle).count();
         let now = after.matches(needle).count();
@@ -489,18 +483,8 @@ fn find_victims(
 /// `PdfQuadPoints` → the contract's rect, order-agnostic (`to_rect()` assumes one corner
 /// order and returns an empty rect for the other).
 fn quad_bounds(q: &pdfium_render::prelude::PdfQuadPoints) -> Rect {
-    let xs = [
-        q.x1().value,
-        q.x2().value,
-        q.x3().value,
-        q.x4().value,
-    ];
-    let ys = [
-        q.y1().value,
-        q.y2().value,
-        q.y3().value,
-        q.y4().value,
-    ];
+    let xs = [q.x1().value, q.x2().value, q.x3().value, q.x4().value];
+    let ys = [q.y1().value, q.y2().value, q.y3().value, q.y4().value];
     Rect::new(
         xs.iter().copied().fold(f32::MAX, f32::min),
         ys.iter().copied().fold(f32::MAX, f32::min),

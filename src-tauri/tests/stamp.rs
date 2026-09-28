@@ -84,7 +84,10 @@ fn last_object(doc_id: &str, page: u16) -> (PageObjectType, [f32; 4], [f32; 6], 
 
 fn page_text(doc_id: &str, page: u16) -> String {
     let doc_id = doc_id.to_string();
-    with_doc(&doc_id, move |d| Ok(layer::page_text(d, page)?.text.clone())).unwrap()
+    with_doc(&doc_id, move |d| {
+        Ok(layer::page_text(d, page)?.text.clone())
+    })
+    .unwrap()
 }
 
 fn save_bytes(doc_id: &str) -> Vec<u8> {
@@ -94,8 +97,7 @@ fn save_bytes(doc_id: &str) -> Vec<u8> {
 
 fn reopen(bytes: Vec<u8>, password: Option<&str>) -> TestDoc {
     let password = password.map(str::to_owned);
-    let info =
-        with_state(move |st| registry::open(st, None, bytes, password)).expect("reopen");
+    let info = with_state(move |st| registry::open(st, None, bytes, password)).expect("reopen");
     let doc_id = info.doc_id.clone();
     TestDoc { info, doc_id }
 }
@@ -154,7 +156,9 @@ fn test_png(name: &str, w: u32, h: u32) -> PathBuf {
 #[test]
 fn stamp_text_watermark_centred_and_rotated() {
     let doc = open("tracemonkey.pdf");
-    let before: Vec<usize> = (0..doc.info.page_count).map(|p| object_count(&doc.doc_id, p)).collect();
+    let before: Vec<usize> = (0..doc.info.page_count)
+        .map(|p| object_count(&doc.doc_id, p))
+        .collect();
     let mut spec = text_spec(StampRole::Watermark, "DRAFT 초안", StampAnchor::Mc);
     spec.source = PageStampSource::Text {
         text: "DRAFT 초안".into(),
@@ -169,14 +173,21 @@ fn stamp_text_watermark_centred_and_rotated() {
 
     let geom = &doc.info.pages[0];
     for p in 0..doc.info.page_count {
-        assert_eq!(object_count(&doc.doc_id, p), before[p as usize] + 1, "page {p}");
+        assert_eq!(
+            object_count(&doc.doc_id, p),
+            before[p as usize] + 1,
+            "page {p}"
+        );
     }
     let (kind, rect, m, alpha, marked) = last_object(&doc.doc_id, 0);
     assert_eq!(kind, PageObjectType::Text);
     assert!(marked, "the stamp carries the {STAMP_MARK} mark");
     assert_eq!(alpha, 77, "opacity 0.3 → fill alpha 77");
     let s = std::f32::consts::FRAC_1_SQRT_2;
-    assert!((m[0] - s).abs() < 1e-3 && (m[1] - s).abs() < 1e-3, "rotated 45° CCW: {m:?}");
+    assert!(
+        (m[0] - s).abs() < 1e-3 && (m[1] - s).abs() < 1e-3,
+        "rotated 45° CCW: {m:?}"
+    );
     let (cx, cy) = ((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
     // Glyph bounds are not the layout box (descenders, side bearings): allow a few points.
     assert!((cx - geom.width_pt / 2.0).abs() < 8.0, "centre x {cx}");
@@ -190,8 +201,15 @@ fn stamp_text_watermark_centred_and_rotated() {
     assert!(page_text(&reopened.doc_id, 3).contains("DRAFT 초안"));
     // 30 % of (200, 0, 0) over white is ≈ (241, 178, 178): translucent red, not opaque.
     let img = render(&reopened.doc_id, 0);
-    assert!(red_pixels(&img, 0.3, 0.7, 0.3, 0.7) > 200, "the watermark is visible");
-    let opaque = img.2.chunks_exact(4).filter(|p| p[0] > 150 && p[1] < 60).count();
+    assert!(
+        red_pixels(&img, 0.3, 0.7, 0.3, 0.7) > 200,
+        "the watermark is visible"
+    );
+    let opaque = img
+        .2
+        .chunks_exact(4)
+        .filter(|p| p[0] > 150 && p[1] < 60)
+        .count();
     assert_eq!(opaque, 0, "no opaque red pixels at opacity 0.3");
 }
 
@@ -210,7 +228,10 @@ fn stamp_header_tokens_on_every_page() {
     for p in [0u16, 5, total - 1] {
         let text = page_text(&doc.doc_id, p);
         let want = format!("tracemonkey — {} / {total} · {today} {{{{nope}}}}", p + 1);
-        assert!(text.contains(&want), "page {p}: {want:?} not in the page text");
+        assert!(
+            text.contains(&want),
+            "page {p}: {want:?} not in the page text"
+        );
         let (_, rect, _, alpha, marked) = last_object(&doc.doc_id, p);
         assert!(marked);
         assert_eq!(alpha, 255);
@@ -223,7 +244,11 @@ fn stamp_header_tokens_on_every_page() {
     let (_, rect, _, _, _) = last_object(&doc.doc_id, 1);
     let geom = &doc.info.pages[1];
     assert!(((rect[0] + rect[2]) / 2.0 - geom.width_pt / 2.0).abs() < 2.0);
-    assert!(rect[1] >= 24.0 - 1.0 && rect[1] < 40.0, "footer bottom {}", rect[1]);
+    assert!(
+        rect[1] >= 24.0 - 1.0 && rect[1] < 40.0,
+        "footer bottom {}",
+        rect[1]
+    );
 }
 
 #[test]
@@ -250,7 +275,10 @@ fn stamp_honours_page_rotation() {
     assert!(added(0.5, 1.0, 0.0, 1.0) < 5 && added(0.0, 0.5, 0.5, 1.0) < 5);
     // Upright as seen: the text runs along the user-space y axis on a /Rotate 90 page.
     let (_, _, m, _, _) = last_object(&doc.doc_id, 1);
-    assert!(m[0].abs() < 1e-3 && (m[1] - 1.0).abs() < 1e-3, "matrix {m:?}");
+    assert!(
+        m[0].abs() < 1e-3 && (m[1] - 1.0).abs() < 1e-3,
+        "matrix {m:?}"
+    );
     // Page 0 untouched.
     assert_eq!(result_pages(&doc.doc_id), 1);
 }
@@ -285,13 +313,24 @@ fn stamp_image_subset_shared_xobject_and_undo() {
     let result = add(&doc.doc_id, spec.clone()).expect("image stamp");
     assert_eq!(result.pages_stamped, 2);
     assert_eq!(object_count(&doc.doc_id, 0), before0 + 1);
-    assert_eq!(object_count(&doc.doc_id, 1), before1, "page 1 was not selected");
+    assert_eq!(
+        object_count(&doc.doc_id, 1),
+        before1,
+        "page 1 was not selected"
+    );
     let (kind, rect, _, _, marked) = last_object(&doc.doc_id, 2);
     assert_eq!(kind, PageObjectType::Form);
     assert!(marked);
     let geom = &doc.info.pages[2];
-    assert!((rect[2] - (geom.width_pt - 36.0)).abs() < 1.0, "right edge {}", rect[2]);
-    assert!((rect[1] - 36.0).abs() < 1.0 && (rect[3] - 96.0).abs() < 1.0, "{rect:?}");
+    assert!(
+        (rect[2] - (geom.width_pt - 36.0)).abs() < 1.0,
+        "right edge {}",
+        rect[2]
+    );
+    assert!(
+        (rect[1] - 36.0).abs() < 1.0 && (rect[3] - 96.0).abs() < 1.0,
+        "{rect:?}"
+    );
 
     // One undo step restores the object counts.
     undo(&doc.doc_id);
@@ -309,7 +348,10 @@ fn stamp_image_subset_shared_xobject_and_undo() {
     add(&doc.doc_id, all).unwrap();
     let bytes = save_bytes(&doc.doc_id);
     let grew_all = bytes.len() as i64 - base;
-    assert!(grew_one > 10_000, "the image is embedded ({grew_one} bytes)");
+    assert!(
+        grew_one > 10_000,
+        "the image is embedded ({grew_one} bytes)"
+    );
     assert!(
         grew_all < grew_one * 2,
         "14 pages grew {grew_all} bytes vs {grew_one} for one page"
@@ -352,8 +394,11 @@ fn stamp_rejects_bad_input() {
 #[test]
 fn stamp_encrypted_document_keeps_its_password() {
     let doc = try_open("gen/encrypted-rc4-40.pdf", Some("user")).expect("open");
-    add(&doc.doc_id, text_spec(StampRole::Footer, "Page {{page}}", StampAnchor::Br))
-        .expect("stamp on an encrypted document");
+    add(
+        &doc.doc_id,
+        text_spec(StampRole::Footer, "Page {{page}}", StampAnchor::Br),
+    )
+    .expect("stamp on an encrypted document");
     let bytes = save_bytes(&doc.doc_id);
     let reopened = reopen(bytes.clone(), Some("user"));
     assert!(page_text(&reopened.doc_id, 0).contains("Page 1"));
@@ -405,7 +450,13 @@ fn add_legacy_stamp(doc_id: &str, page: u16) {
                 let bindings = doc.bindings();
                 let mut scratch = ScratchPage::open(doc, page)?;
                 let last = raw::object::object_count(bindings, &scratch.page) - 1;
-                raw::object::add_mark(bindings, doc.pdf(), &scratch.page, last, Mark::plain(STAMP_MARK))?;
+                raw::object::add_mark(
+                    bindings,
+                    doc.pdf(),
+                    &scratch.page,
+                    last,
+                    Mark::plain(STAMP_MARK),
+                )?;
                 scratch.page.regenerate_content().unwrap();
                 Ok(())
             },
@@ -441,7 +492,10 @@ fn remove_stamps_by_role_and_all_with_undo() {
 
     // The role survives serialisation: a reopened copy filters by role too.
     let copy = reopen(save_bytes(&doc.doc_id), None);
-    assert_eq!(remove(&copy.doc_id, None, Some(StampRole::Header)).removed, 2);
+    assert_eq!(
+        remove(&copy.doc_id, None, Some(StampRole::Header)).removed,
+        2
+    );
 
     // One role.
     let r = remove(&doc.doc_id, None, Some(StampRole::Header));
@@ -450,7 +504,11 @@ fn remove_stamps_by_role_and_all_with_undo() {
     assert_eq!(object_count(&doc.doc_id, 0), stamped[0] - 1);
     assert_eq!(object_count(&doc.doc_id, 1), stamped[1]);
     // One role on a page subset.
-    let r = remove(&doc.doc_id, Some(PageSelection::List(vec![1])), Some(StampRole::Watermark));
+    let r = remove(
+        &doc.doc_id,
+        Some(PageSelection::List(vec![1])),
+        Some(StampRole::Watermark),
+    );
     assert_eq!(r.removed, 1);
     assert_eq!(object_count(&doc.doc_id, 1), stamped[1] - 1);
     // Nothing left of a role: not an error, no undo step, same generation.
@@ -465,7 +523,11 @@ fn remove_stamps_by_role_and_all_with_undo() {
     assert_eq!(object_count(&doc.doc_id, 1), stamped[1] - 1 - 2);
     let before_all = counts(&doc.doc_id, n);
     let r = remove(&doc.doc_id, None, None);
-    assert_eq!(r.removed, (n - 1) as u32 + 1, "the other watermarks and the legacy stamp");
+    assert_eq!(
+        r.removed,
+        (n - 1) as u32 + 1,
+        "the other watermarks and the legacy stamp"
+    );
     assert_eq!(counts(&doc.doc_id, n), base);
     assert!(!page_text(&doc.doc_id, 1).contains("LEGACY STAMP"));
     assert!(!page_text(&doc.doc_id, 0).contains("DRAFT"));

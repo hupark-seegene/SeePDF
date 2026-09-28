@@ -148,6 +148,8 @@ pub async fn undo(engine: State<'_, EngineHandle>, doc_id: String) -> Result<Doc
 #[tauri::command]
 pub async fn redo(engine: State<'_, EngineHandle>, doc_id: String) -> Result<DocInfo, EngineError> {
     engine
-        .call(Lane::Edit, "redo", move |st| registry::undo(st, &doc_id, true))
+        .call(Lane::Edit, "redo", move |st| {
+            registry::undo(st, &doc_id, true)
+        })
         .await
 }

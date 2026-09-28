@@ -133,14 +133,8 @@ pub async fn export_flattened(
             reporter_for_job.cancel();
             return;
         }
-        match export::export_flattened(
-            st,
-            &doc_id,
-            &out_path,
-            annotations,
-            forms,
-            pages.as_deref(),
-        ) {
+        match export::export_flattened(st, &doc_id, &out_path, annotations, forms, pages.as_deref())
+        {
             Ok(_) => {
                 reporter_for_job.step(None, Some(out_path.clone()));
                 reporter_for_job.finish_if_complete();

@@ -35,8 +35,8 @@ use crate::engine::{fonts, raw, stamp};
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
     ChangeReason, DocGeneration, FlowBlocked, NotEditableReason, ObjectId, PageIndex,
-    ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphFlow, ParagraphProbe, Point,
-    Rect, Rgb, StampRole, TextEditStrategy,
+    ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphFlow, ParagraphProbe, Point, Rect,
+    Rgb, StampRole, TextEditStrategy,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
@@ -356,7 +356,14 @@ fn extent(lines: &[Line], para: &[usize]) -> (f32, f32) {
 }
 
 /// The nearest line above (`up`) or below `from` that overlaps `[lo, hi]` horizontally.
-fn neighbour(lines: &[Line], para: &[usize], from: &Line, lo: f32, hi: f32, up: bool) -> Option<usize> {
+fn neighbour(
+    lines: &[Line],
+    para: &[usize],
+    from: &Line,
+    lo: f32,
+    hi: f32,
+    up: bool,
+) -> Option<usize> {
     let min_step = 0.3 * from.size;
     lines
         .iter()
@@ -382,7 +389,10 @@ fn neighbour(lines: &[Line], para: &[usize], from: &Line, lo: f32, hi: f32, up: 
 fn first_word_width(runs: &[Run], line: &Line) -> f32 {
     let text = line_text(runs, line);
     let total = text.chars().count().max(1);
-    let first = text.split_whitespace().next().map_or(0, |w| w.chars().count());
+    let first = text
+        .split_whitespace()
+        .next()
+        .map_or(0, |w| w.chars().count());
     (line.right - line.left) * first as f32 / total as f32
 }
 
@@ -413,8 +423,7 @@ fn grow(runs: &[Run], lines: &[Line], hit: usize) -> Vec<usize> {
     let tol = align_tol(size);
     let same_size = |l: &Line| (l.size - size).abs() <= SIZE_TOL * size;
     let leading_ok = |gap: f32, leading: Option<f32>| {
-        gap <= MAX_LEADING * size
-            && leading.is_none_or(|l| (gap - l).abs() <= LEADING_TOL * l)
+        gap <= MAX_LEADING * size && leading.is_none_or(|l| (gap - l).abs() <= LEADING_TOL * l)
     };
     // Two or more lines, all flush right, not all flush left.
     let ragged_left = |para: &[usize], lo: f32, hi: f32| {
@@ -626,7 +635,10 @@ fn analyze(runs: &[Run], lines: &[&Line]) -> Info {
     };
     let block_right = lines.iter().map(|l| l.right).fold(f32::MIN, f32::max);
     let left_flush = n >= 2 && lines[1..].iter().all(|l| (l.left - body_left).abs() <= tol);
-    let right_of_body = lines[..n - 1].iter().map(|l| l.right).fold(f32::MIN, f32::max);
+    let right_of_body = lines[..n - 1]
+        .iter()
+        .map(|l| l.right)
+        .fold(f32::MIN, f32::max);
     let flush_right = lines[..n - 1]
         .iter()
         .filter(|l| (l.right - right_of_body).abs() <= tol || stretched(runs, l))
@@ -766,7 +778,9 @@ fn measure_font<'p>(
     let Some(first) = glyphs.chars().next() else {
         return Ok(None);
     };
-    let has_space = text.split('\n').any(|seg| seg.split_whitespace().nth(1).is_some());
+    let has_space = text
+        .split('\n')
+        .any(|seg| seg.split_whitespace().nth(1).is_some());
     let collect = |widths: &[f32]| -> HashMap<char, f32> {
         glyphs.chars().zip(widths.iter().copied()).collect()
     };
@@ -849,7 +863,8 @@ pub fn probe(
         .map(|(i, _)| i);
 
     let Some(hit) = hit else {
-        let inside = |r: &Rect| px >= r.l - 1.0 && px <= r.r + 1.0 && py >= r.b - 1.0 && py <= r.t + 1.0;
+        let inside =
+            |r: &Rect| px >= r.l - 1.0 && px <= r.r + 1.0 && py >= r.b - 1.0 && py <= r.t + 1.0;
         return Ok(obstacles
             .iter()
             .find(|o| inside(&o.bounds))
@@ -876,13 +891,7 @@ pub fn probe(
         )
     } else {
         let token = font_token_of(&scratch.page, dominant.index)?;
-        let covered = measure_font(
-            &mut scratch.page,
-            doc.pdf(),
-            token,
-            &info.text,
-        )?
-        .is_some();
+        let covered = measure_font(&mut scratch.page, doc.pdf(), token, &info.text)?.is_some();
         if covered {
             (TextEditStrategy::InPlace, None, None)
         } else {
@@ -987,7 +996,11 @@ fn layout(text: &str, m: &Metrics, f: Frame) -> (Vec<Placed>, u32) {
         let mut used = 0.0f32;
         for word in segment.split_whitespace() {
             let ww = m.width(word) * size;
-            let needed = if current.is_empty() { ww } else { used + space + ww };
+            let needed = if current.is_empty() {
+                ww
+            } else {
+                used + space + ww
+            };
             if needed <= avail_for(rows.len()) + slack {
                 current.push((word.to_string(), ww));
                 used = needed;
@@ -1071,7 +1084,9 @@ fn runs_for(
     ids: &[ObjectId],
 ) -> Result<Vec<Run>, EngineError> {
     let text_page = page.text().ctx("load text page")?;
-    let stamps: HashSet<usize> = stamp::stamp_indices(bindings, page, None).into_iter().collect();
+    let stamps: HashSet<usize> = stamp::stamp_indices(bindings, page, None)
+        .into_iter()
+        .collect();
     let mut runs = Vec::with_capacity(ids.len());
     for &id in ids {
         if stamps.contains(&(id as usize)) {
@@ -1196,13 +1211,19 @@ pub fn edit(
     }
     let text = edit.text.replace("\r\n", "\n").replace('\r', "\n");
     // No text at all: the paragraph is deleted (and, with `push`, what follows takes its place).
-    let text = if text.trim().is_empty() { String::new() } else { text };
+    let text = if text.trim().is_empty() {
+        String::new()
+    } else {
+        text
+    };
     if let Some(size) = edit.font_size_pt {
         check_font_size(size)?;
     }
     if let Some(w) = edit.width {
         if !w.is_finite() || w < 1.0 {
-            return Err(EngineError::invalid(format!("width {w} pt is out of range")));
+            return Err(EngineError::invalid(format!(
+                "width {w} pt is out of range"
+            )));
         }
     }
     let mut ids = edit.object_ids.clone();
@@ -1317,8 +1338,8 @@ fn run<'p>(
             if apply {
                 doc.adopt_hangul_token(&scratch.page);
                 let (token, _) = doc.hangul_token_for(&flat)?;
-                let m = measure_font(&mut scratch.page, doc.pdf(), token, text)?
-                    .ok_or_else(cannot)?;
+                let m =
+                    measure_font(&mut scratch.page, doc.pdf(), token, text)?.ok_or_else(cannot)?;
                 (token, m)
             } else {
                 let mut sub = pdfium.create_new_pdf().ctx("create measuring document")?;
@@ -1337,7 +1358,11 @@ fn run<'p>(
 
     // Layout — for `fit`, the largest factor in [0.7, 1] whose grid fits the original height.
     let base_size = edit.font_size_pt.unwrap_or(info.size);
-    let scale = if info.size > 0.0 { base_size / info.size } else { 1.0 };
+    let scale = if info.size > 0.0 {
+        base_size / info.size
+    } else {
+        1.0
+    };
     let base_leading = info.line_height * scale;
     let box_r = match edit.width {
         Some(w) => info.rect.l + w,
@@ -1381,7 +1406,11 @@ fn run<'p>(
     };
     let size = base_size * factor;
     // An emptied paragraph's growth is known once the plan says what follows it (below).
-    let mut growth = if emptied { 0.0 } else { growth_of(rows, factor) };
+    let mut growth = if emptied {
+        0.0
+    } else {
+        growth_of(rows, factor)
+    };
     let color = edit.color.unwrap_or(dominant.color);
     let render_mode = dominant.render_mode;
 
@@ -1395,7 +1424,12 @@ fn run<'p>(
         .map(|(_, r)| *r)
         .reduce(|a, b| a.union(&b))
         // Deleted: a zero-height box at the paragraph's top (its column stays the column).
-        .unwrap_or(Rect::new(info.rect.l, info.rect.t, info.rect.r, info.rect.t));
+        .unwrap_or(Rect::new(
+            info.rect.l,
+            info.rect.t,
+            info.rect.r,
+            info.rect.t,
+        ));
 
     // What follows the paragraph, from the page as it is (indices still the listed ones).
     let own_ids: HashSet<usize> = job.ids.iter().map(|&i| i as usize).collect();
@@ -1419,7 +1453,11 @@ fn run<'p>(
     }
     // How far the new ink reaches below the old grid bottom: a descender deeper than the
     // nominal descent reaches further than the grid says.
-    let reach = if emptied { growth } else { growth.max(original_bottom - new_rect.b) };
+    let reach = if emptied {
+        growth
+    } else {
+        growth.max(original_bottom - new_rect.b)
+    };
     let mut decision = flow::decide(&plan, job.flow, growth, reach);
     let is_moving = |d: &flow::Decision, p: &flow::Plan| {
         d.shift.abs() >= flow::MIN_SHIFT && !p.movable.is_empty()
@@ -1626,7 +1664,12 @@ fn build_objects<'p>(
             .translate(PdfPoints::new(p.x), PdfPoints::new(p.baseline))
             .ctx("place text object")?;
         let b = object.bounds().ctx("measure text object")?.to_rect();
-        let r = Rect::new(b.left().value, b.bottom().value, b.right().value, b.top().value);
+        let r = Rect::new(
+            b.left().value,
+            b.bottom().value,
+            b.right().value,
+            b.top().value,
+        );
         out.push((object, r));
     }
     Ok(out)
@@ -1660,7 +1703,11 @@ mod tests {
     fn breaks_at_spaces_and_by_char_on_overflow() {
         // 5 px per char, 3 px space, 100 px box.
         let m = metrics(Some(0.3));
-        let (placed, lines) = layout("aaaa bbbb cccc dddd eeee ffff", &m, frame(ParagraphAlign::Left));
+        let (placed, lines) = layout(
+            "aaaa bbbb cccc dddd eeee ffff",
+            &m,
+            frame(ParagraphAlign::Left),
+        );
         // "aaaa bbbb cccc dddd" = 4*20 + 3*3 = 89 fits; + " eeee" = 112 does not.
         assert_eq!(lines, 2);
         assert_eq!(placed[0].text, "aaaa bbbb cccc dddd");
@@ -1685,8 +1732,11 @@ mod tests {
         let (placed, _) = layout("ab", &m, frame(ParagraphAlign::Center));
         assert_eq!(placed[0].x, 145.0);
 
-        let (placed, lines) =
-            layout("aaaa bbbb cccc dddd eeee", &m, frame(ParagraphAlign::Justify));
+        let (placed, lines) = layout(
+            "aaaa bbbb cccc dddd eeee",
+            &m,
+            frame(ParagraphAlign::Justify),
+        );
         assert_eq!(lines, 2);
         // First line: 4 words, one object each, last word flush right.
         let first: Vec<&Placed> = placed.iter().filter(|p| p.baseline == 700.0).collect();
@@ -1703,8 +1753,11 @@ mod tests {
         let m = metrics(Some(0.3));
         // "aa bb" (20 px) then an 18-char word (90 px) that does not fit: one 80 px gap
         // unless capped at 0.75 × 10.
-        let (placed, lines) =
-            layout("aa bb cccccccccccccccccc dd", &m, frame(ParagraphAlign::Justify));
+        let (placed, lines) = layout(
+            "aa bb cccccccccccccccccc dd",
+            &m,
+            frame(ParagraphAlign::Justify),
+        );
         assert_eq!(lines, 3);
         let first: Vec<&Placed> = placed.iter().filter(|p| p.baseline == 700.0).collect();
         assert_eq!(first.len(), 2);
@@ -1712,14 +1765,27 @@ mod tests {
         assert!((gap - 7.5).abs() < 1e-3, "{gap}");
         assert!(gap < SPLIT_GAP * 10.0);
         // An ordinary line is still flush right.
-        let (placed, _) = layout("aaaa bbbb cccc dddd eeee", &m, frame(ParagraphAlign::Justify));
-        let last_on_first = placed.iter().filter(|p| p.baseline == 700.0).last().unwrap();
+        let (placed, _) = layout(
+            "aaaa bbbb cccc dddd eeee",
+            &m,
+            frame(ParagraphAlign::Justify),
+        );
+        let last_on_first = placed
+            .iter()
+            .filter(|p| p.baseline == 700.0)
+            .last()
+            .unwrap();
         assert!((last_on_first.x + 20.0 - 200.0).abs() < 1e-3);
     }
 
     #[test]
     fn dehyphenates_lowercase_continuations_only() {
-        let lines = vec!["an exam-".to_string(), "ple of".into(), "Semi-".into(), "Final".into()];
+        let lines = vec![
+            "an exam-".to_string(),
+            "ple of".into(),
+            "Semi-".into(),
+            "Final".into(),
+        ];
         assert_eq!(join_lines(&lines), "an example of Semi- Final");
     }
 }

@@ -34,12 +34,10 @@ pub fn write_png(dir: &Path, bytes: &[u8]) -> Result<PathBuf, EngineError> {
     if !bytes.starts_with(PNG_MAGIC) {
         return Err(EngineError::invalid("signature image is not a PNG"));
     }
-    let (w, h) = image::ImageReader::with_format(
-        std::io::Cursor::new(bytes),
-        image::ImageFormat::Png,
-    )
-    .into_dimensions()
-    .map_err(|e| EngineError::invalid(format!("signature image does not decode: {e}")))?;
+    let (w, h) =
+        image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png)
+            .into_dimensions()
+            .map_err(|e| EngineError::invalid(format!("signature image does not decode: {e}")))?;
     if w == 0 || h == 0 || w > MAX_SIDE_PX || h > MAX_SIDE_PX {
         return Err(EngineError::invalid(format!(
             "signature image is {w}×{h} px (limit {MAX_SIDE_PX})"
@@ -150,7 +148,11 @@ mod tests {
         truncated.truncate(20);
         assert!(write_png(&dir, &truncated).is_err());
         assert!(write_png(&dir, &png(MAX_SIDE_PX + 1, 1, 1)).is_err());
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing written");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "nothing written"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

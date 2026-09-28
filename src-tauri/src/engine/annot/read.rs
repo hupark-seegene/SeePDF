@@ -52,12 +52,7 @@ pub fn list_page(doc: &mut OpenDoc<'_>, page_index: PageIndex) -> Result<Vec<Ann
 }
 
 /// One annotation, fully populated.
-pub fn read_one(
-    a: &AnnotRef<'_>,
-    id: String,
-    page: PageIndex,
-    document: FPDF_DOCUMENT,
-) -> Annot {
+pub fn read_one(a: &AnnotRef<'_>, id: String, page: PageIndex, document: FPDF_DOCUMENT) -> Annot {
     let subtype = a.subtype();
     let subj = a.string("Subj");
     let kind = annot::kind_of(subtype, subj.as_deref());
@@ -76,10 +71,7 @@ pub fn read_one(
     let fill_color = annot::read_color_key(a, annot::KEY_FILL)
         .or_else(|| a.color(ColorKind::Interior).map(|(c, _)| c));
     // `/CA` is authoritative when present; otherwise the alpha of `/C`.
-    let opacity = a
-        .opacity()
-        .unwrap_or(alpha as f32 / 255.0)
-        .clamp(0.0, 1.0);
+    let opacity = a.opacity().unwrap_or(alpha as f32 / 255.0).clamp(0.0, 1.0);
 
     let quads = match kind {
         AnnotKind::Highlight

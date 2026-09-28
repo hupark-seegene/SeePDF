@@ -45,7 +45,9 @@ pub fn set_metadata(
     let opts = MutateOpts::new("undo.metadataEdit", ChangeReason::Edit)
         .all_pages()
         .keeps_text();
-    registry::mutate_bytes(st, doc_id, opts, |bytes, _| save::write_info(bytes, meta, false))
+    registry::mutate_bytes(st, doc_id, opts, |bytes, _| {
+        save::write_info(bytes, meta, false)
+    })
 }
 
 /// `remove_metadata` (메타데이터 제거) — deletes `/Info` and the XMP packet as one undoable
@@ -168,6 +170,7 @@ pub fn encrypt_bytes(
         doc.version = "1.7".to_string();
     }
     let mut out = Vec::with_capacity(plain.len() + 1024);
-    doc.save_to(&mut out).map_err(|e| save::lopdf_error("write", e))?;
+    doc.save_to(&mut out)
+        .map_err(|e| save::lopdf_error("write", e))?;
     Ok(out)
 }

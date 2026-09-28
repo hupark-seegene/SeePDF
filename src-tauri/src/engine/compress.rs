@@ -240,7 +240,9 @@ fn work<'a, 'p>(
     match st.doc_mut(doc_id)?.compress_work.as_mut() {
         Some(work) if work.job_id == job_id => Ok(work),
         // A newer estimate replaced this one, or it was aborted.
-        _ => Err(EngineError::cancelled("the compress estimate was superseded")),
+        _ => Err(EngineError::cancelled(
+            "the compress estimate was superseded",
+        )),
     }
 }
 
@@ -475,9 +477,7 @@ pub fn process_page(
     }
     if replaced > 0 {
         let mut handle = handle;
-        handle
-            .regenerate_content()
-            .ctx("regenerate page content")?;
+        handle.regenerate_content().ctx("regenerate page content")?;
     }
     work.images_downsampled += replaced;
     Ok(replaced)
@@ -668,7 +668,11 @@ fn splice_nested(bytes: &[u8], replacements: &[NestedReplacement]) -> (Vec<u8>, 
         if !is_image
             || stream.dict.has(b"SMask")
             || stream.dict.has(b"Mask")
-            || stream.dict.get(b"ImageMask").and_then(|m| m.as_bool()).unwrap_or(false)
+            || stream
+                .dict
+                .get(b"ImageMask")
+                .and_then(|m| m.as_bool())
+                .unwrap_or(false)
         {
             continue;
         }
@@ -688,10 +692,15 @@ fn splice_nested(bytes: &[u8], replacements: &[NestedReplacement]) -> (Vec<u8>, 
         next.dict.set("BitsPerComponent", 8);
         next.dict.set(
             "ColorSpace",
-            lopdf::Object::Name(if r.gray { b"DeviceGray".to_vec() } else { b"DeviceRGB".to_vec() }),
+            lopdf::Object::Name(if r.gray {
+                b"DeviceGray".to_vec()
+            } else {
+                b"DeviceRGB".to_vec()
+            }),
         );
         let filter: &[u8] = if r.jpeg { b"DCTDecode" } else { b"FlateDecode" };
-        next.dict.set("Filter", lopdf::Object::Name(filter.to_vec()));
+        next.dict
+            .set("Filter", lopdf::Object::Name(filter.to_vec()));
         next.set_content(r.data.clone());
         *stream = next;
         done.insert(r.hash);
@@ -831,9 +840,8 @@ pub fn dispatch(
     reporter: Arc<JobReporter>,
 ) {
     let job_id = token.id;
-    let submit = |label: &'static str| {
-        Submit::new(Lane::Background, label).cancel(token.cancel.clone())
-    };
+    let submit =
+        |label: &'static str| Submit::new(Lane::Background, label).cancel(token.cancel.clone());
     let mut queued: Result<(), EngineError> = Ok(());
     for &page in &pages {
         let (doc_id, reporter) = (doc_id.to_string(), reporter.clone());

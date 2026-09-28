@@ -92,8 +92,8 @@ fn metric_matches_the_accuracy_script() {
 mod mac {
     use super::*;
     use seepdf_lib::engine::ocr::vision;
-    use seepdf_lib::engine::text::search;
     use seepdf_lib::engine::registry;
+    use seepdf_lib::engine::text::search;
     use seepdf_lib::ipc::types::OcrPage;
     use std::time::Instant;
 
@@ -128,7 +128,10 @@ mod mac {
     #[test]
     fn vision_is_advertised_on_this_mac() {
         // The build machine is macOS 26: Vision reads Korean here, so it must be listed.
-        assert!(ocr::vision_available(), "Vision should read ko-KR on macOS 13+");
+        assert!(
+            ocr::vision_available(),
+            "Vision should read ko-KR on macOS 13+"
+        );
         let caps = ocr::capabilities();
         assert!(caps
             .engines
@@ -152,7 +155,11 @@ mod mac {
             let t = Instant::now();
             let again = ocr::recognize_gray(&image, &langs()).expect("Vision (warm)");
             warm.push(t.elapsed().as_secs_f64() * 1000.0);
-            assert_eq!(page_text(&again), page_text(&page), "Vision is deterministic");
+            assert_eq!(
+                page_text(&again),
+                page_text(&page),
+                "Vision is deterministic"
+            );
         }
         let warm_ms = warm.iter().sum::<f64>() / warm.len() as f64;
 
@@ -184,13 +191,19 @@ mod mac {
                 let [x0, y0, x1, y1] = w.bbox;
                 assert!(x0 < x1 && y0 < y1, "{w:?}");
                 assert!(x0 >= -2.0 && y0 >= -2.0, "{w:?}");
-                assert!(x1 <= image.width as f32 + 2.0 && y1 <= image.height as f32 + 2.0, "{w:?}");
+                assert!(
+                    x1 <= image.width as f32 + 2.0 && y1 <= image.height as f32 + 2.0,
+                    "{w:?}"
+                );
                 assert!((30.0..=100.0).contains(&w.confidence), "{w:?}");
             }
             // Words are not the whole line each (per-word boxes or the split fallback).
             if line.words.len() > 1 {
                 let lw = line.bbox[2] - line.bbox[0];
-                assert!(line.words.iter().all(|w| w.bbox[2] - w.bbox[0] < lw * 0.9), "{line:?}");
+                assert!(
+                    line.words.iter().all(|w| w.bbox[2] - w.bbox[0] < lw * 0.9),
+                    "{line:?}"
+                );
             }
         }
         for line in &page.lines {
@@ -201,8 +214,16 @@ mod mac {
                 .collect();
             println!("[vision] {}", boxes.join(" "));
         }
-        let words: Vec<&str> = page.lines[0].words.iter().map(|w| w.text.as_str()).collect();
-        assert_eq!(words, ["검색", "가능한", "한글", "문서"], "Hangul spacing survives");
+        let words: Vec<&str> = page.lines[0]
+            .words
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect();
+        assert_eq!(
+            words,
+            ["검색", "가능한", "한글", "문서"],
+            "Hangul spacing survives"
+        );
     }
 
     #[test]
@@ -222,8 +243,10 @@ mod mac {
             with_doc(&doc.doc_id, move |d| search::search_page(d, 0, &query)).expect("search");
         let rect = hits[0].rects[0];
         let (w, h) = (image.width, image.height);
-        let truth = with_doc(&doc.doc_id, move |d| ocr::points_to_image_px(d, 0, w, h, rect))
-            .expect("points to px");
+        let truth = with_doc(&doc.doc_id, move |d| {
+            ocr::points_to_image_px(d, 0, w, h, rect)
+        })
+        .expect("points to px");
 
         let line_h = truth[3] - truth[1];
         for (i, (got, want)) in title.bbox.iter().zip(truth.iter()).enumerate() {
@@ -260,11 +283,19 @@ mod mac {
             "the invisible Vision layer is searchable"
         );
         for (phrase, before) in phrases.iter().zip(&phrases_before) {
-            assert_eq!(count_hits(&doc_id, phrase), before + 1, "{phrase:?} across a word gap");
+            assert_eq!(
+                count_hits(&doc_id, phrase),
+                before + 1,
+                "{phrase:?} across a word gap"
+            );
         }
         let id = doc_id.clone();
         with_state(move |st| registry::undo(st, &id, false).map(|_| ())).expect("undo");
-        assert_eq!(count_hits(&doc_id, "정확도"), hits_before, "undone in one step");
+        assert_eq!(
+            count_hits(&doc_id, "정확도"),
+            hits_before,
+            "undone in one step"
+        );
     }
 
     fn count_hits(doc_id: &str, needle: &str) -> usize {
@@ -309,7 +340,11 @@ mod mac {
             cer * 100.0,
             hangul * 100.0
         );
-        assert!(hangul <= HANGUL_CER_BUDGET, "Hangul CER {:.2} %:\n{text}", hangul * 100.0);
+        assert!(
+            hangul <= HANGUL_CER_BUDGET,
+            "Hangul CER {:.2} %:\n{text}",
+            hangul * 100.0
+        );
     }
 
     #[test]

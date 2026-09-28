@@ -18,10 +18,9 @@ use seepdf_lib::engine::stamp;
 use seepdf_lib::engine::text::layer;
 use seepdf_lib::ipc::types::{
     AllPages, Annot, AnnotKind, AnnotSpec, ChangeReason, FlowBlocked, InkSpec, MarkupSpec,
-    NotEditableReason, PageObject, PageObjectType, ShapeSpec, StampImage, StampSpec,
-    PageSelection, PageStampSource, PageStampSpec, ParagraphAlign, ParagraphEdit,
-    ParagraphEditResult, ParagraphFlow, ParagraphProbe, Rect, StampAnchor, StampRole,
-    TextEditStrategy,
+    NotEditableReason, PageObject, PageObjectType, PageSelection, PageStampSource, PageStampSpec,
+    ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphFlow, ParagraphProbe, Rect,
+    ShapeSpec, StampAnchor, StampImage, StampRole, StampSpec, TextEditStrategy,
 };
 use seepdf_lib::ipc::{EngineError, ErrorCode};
 
@@ -93,7 +92,8 @@ fn pdf_rotated(content: &str, widgets: &[&str], rotate: u16) -> Vec<u8> {
     } else {
         format!(" /Annots [{refs}]")
     };
-    let mut objects = vec![
+    let mut objects =
+        vec![
         catalog,
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
         format!(
@@ -115,7 +115,9 @@ fn pdf_rotated(content: &str, widgets: &[&str], rotate: u16) -> Vec<u8> {
         out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
     }
     let xref = out.len();
-    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
     for off in offsets {
         out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
     }
@@ -174,7 +176,12 @@ fn annots_of(doc_id: &str) -> Vec<Annot> {
     with_doc(&doc_id, |d| annot::list(d, 0)).unwrap()
 }
 
-fn edit_of(p: &ParagraphProbe, text: &str, flow: Option<ParagraphFlow>, dry_run: bool) -> ParagraphEdit {
+fn edit_of(
+    p: &ParagraphProbe,
+    text: &str,
+    flow: Option<ParagraphFlow>,
+    dry_run: bool,
+) -> ParagraphEdit {
     ParagraphEdit {
         object_ids: p.object_ids.clone(),
         text: text.to_string(),
@@ -242,12 +249,20 @@ fn survivors<'a>(
         .iter()
         .filter(|o| !removed.contains(&o.object_id))
         .collect();
-    assert!(after.len() >= kept.len(), "{} < {}", after.len(), kept.len());
+    assert!(
+        after.len() >= kept.len(),
+        "{} < {}",
+        after.len(),
+        kept.len()
+    );
     kept.into_iter().zip(after.iter()).collect()
 }
 
 fn same_bits(a: &PageObject, b: &PageObject) -> bool {
-    a.matrix.iter().zip(&b.matrix).all(|(x, y)| x.to_bits() == y.to_bits())
+    a.matrix
+        .iter()
+        .zip(&b.matrix)
+        .all(|(x, y)| x.to_bits() == y.to_bits())
         && [a.rect.l, a.rect.b, a.rect.r, a.rect.t]
             .iter()
             .zip([b.rect.l, b.rect.b, b.rect.r, b.rect.t])
@@ -280,26 +295,49 @@ fn flow_push_moves_what_follows_by_the_growth_and_pulls_it_back_up() {
     let long = format!("{PARA_A_TEXT} {EXTRA}");
 
     // The dry run reports the plan and changes nothing.
-    let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, None, true), false)
-        .expect("dry run");
+    let dry = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, true),
+        false,
+    )
+    .expect("dry run");
     assert_eq!(generation(&doc.doc_id), a.doc_generation);
     assert!(dry.lines >= 6, "{}", dry.lines);
     let growth = (dry.lines - 4) as f32 * LEADING;
-    assert!((dry.shifted_pt - growth).abs() < 0.02, "{} vs {growth}", dry.shifted_pt);
+    assert!(
+        (dry.shifted_pt - growth).abs() < 0.02,
+        "{} vs {growth}",
+        dry.shifted_pt
+    );
     assert_eq!(dry.moved_objects, 4, "C's three objects and D's one");
     assert_eq!(dry.blocked, None);
     assert_eq!(dry.overflow_pt, 0.0);
-    assert!(dry.objects.objects.is_empty(), "a dry run does not list the page again");
+    assert!(
+        dry.objects.objects.is_empty(),
+        "a dry run does not list the page again"
+    );
     assert_eq!(dry.objects.doc_generation, a.doc_generation);
     assert_eq!(dry.past_bottom_pt, 0.0);
     let band = dry.moved_band.expect("content moves: the band is reported");
-    assert!(band.t > a.rect.b && band.t < a.rect.b + 4.0 && band.l <= 72.5, "{band:?}");
+    assert!(
+        band.t > a.rect.b && band.t < a.rect.b + 4.0 && band.l <= 72.5,
+        "{band:?}"
+    );
     assert!(before.len() > 4);
 
     // The real edit does exactly what the dry run said.
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, Some(ParagraphFlow::Push), false), false)
-        .expect("push");
-    assert_eq!((res.lines, res.shifted_pt, res.moved_objects), (dry.lines, dry.shifted_pt, dry.moved_objects));
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, Some(ParagraphFlow::Push), false),
+        false,
+    )
+    .expect("push");
+    assert_eq!(
+        (res.lines, res.shifted_pt, res.moved_objects),
+        (dry.lines, dry.shifted_pt, dry.moved_objects)
+    );
     assert_eq!(res.rect, dry.rect);
     assert_eq!(res.room_pt, dry.room_pt);
     let after = res.objects.objects.clone();
@@ -308,11 +346,22 @@ fn flow_push_moves_what_follows_by_the_growth_and_pulls_it_back_up() {
         assert_eq!(b.object_type, n.object_type);
         assert_eq!(text_of(b), text_of(n));
         if is_c_or_d(&text_of(b)) {
-            assert!(moved_by(b, n, -res.shifted_pt), "{:?} → {:?}", b.rect, n.rect);
+            assert!(
+                moved_by(b, n, -res.shifted_pt),
+                "{:?} → {:?}",
+                b.rect,
+                n.rect
+            );
             moved += 1;
         } else {
             // Heading, rotated margin text and the page number (the running footer).
-            assert!(same_bits(b, n), "{:?} moved: {:?} → {:?}", text_of(b), b.rect, n.rect);
+            assert!(
+                same_bits(b, n),
+                "{:?} moved: {:?} → {:?}",
+                text_of(b),
+                b.rect,
+                n.rect
+            );
         }
     }
     assert_eq!(moved, 4);
@@ -322,7 +371,11 @@ fn flow_push_moves_what_follows_by_the_growth_and_pulls_it_back_up() {
         .filter(|o| is_c_or_d(&text_of(o)))
         .map(|o| o.rect.t)
         .fold(f32::MIN, f32::max);
-    assert!(res.rect.b > c_top, "new text {:?} vs C top {c_top}", res.rect);
+    assert!(
+        res.rect.b > c_top,
+        "new text {:?} vs C top {c_top}",
+        res.rect
+    );
     let text = page_text(&doc.doc_id);
     assert!(text.contains("quiet at last. Then the stars"), "{text}");
     assert!(text.contains("Second paragraph starts here"), "{text}");
@@ -331,11 +384,20 @@ fn flow_push_moves_what_follows_by_the_growth_and_pulls_it_back_up() {
     let a2 = probe(&doc.doc_id, 80.0, 705.0);
     assert_eq!(a2.lines, res.lines);
     let before2 = objects_of(&doc.doc_id);
-    let short = run(&doc.doc_id, a2.doc_generation, edit_of(&a2, "Short text now.", None, false), false)
-        .expect("shorter");
+    let short = run(
+        &doc.doc_id,
+        a2.doc_generation,
+        edit_of(&a2, "Short text now.", None, false),
+        false,
+    )
+    .expect("shorter");
     assert_eq!(short.lines, 1);
     let pulled = (a2.lines - 1) as f32 * LEADING;
-    assert!((short.shifted_pt + pulled).abs() < 0.02, "{} vs -{pulled}", short.shifted_pt);
+    assert!(
+        (short.shifted_pt + pulled).abs() < 0.02,
+        "{} vs -{pulled}",
+        short.shifted_pt
+    );
     assert_eq!(short.moved_objects, 4);
     for (b, n) in survivors(&before2, &a2.object_ids, &short.objects.objects) {
         if is_c_or_d(&text_of(b)) {
@@ -352,7 +414,11 @@ fn flow_push_moves_what_follows_by_the_growth_and_pulls_it_back_up() {
         .iter()
         .find(|o| text_of(o).contains("Second"))
         .unwrap();
-    assert!((c_first.matrix[5] - (700.0 - 36.8)).abs() < 0.05, "{}", c_first.matrix[5]);
+    assert!(
+        (c_first.matrix[5] - (700.0 - 36.8)).abs() < 0.05,
+        "{}",
+        c_first.matrix[5]
+    );
 }
 
 /// (3) A page number far below the body is the running footer: it is never moved and it is
@@ -364,35 +430,72 @@ fn flow_running_footer_is_never_moved_and_stops_the_push() {
     c.push_str("BT /F1 10 Tf 280 40 Td (Page 1 of 1) Tj ET\n");
     let doc = open_bytes(pdf(&c, &[]));
     let before = objects_of(&doc.doc_id);
-    let closing = before.iter().find(|o| text_of(o).contains("Closing")).unwrap().clone();
-    let footer = before.iter().find(|o| text_of(o).contains("Page 1")).unwrap().clone();
+    let closing = before
+        .iter()
+        .find(|o| text_of(o).contains("Closing"))
+        .unwrap()
+        .clone();
+    let footer = before
+        .iter()
+        .find(|o| text_of(o).contains("Page 1"))
+        .unwrap()
+        .clone();
     let a = probe(&doc.doc_id, 150.0, 190.0);
     assert_eq!(a.lines, 4);
 
     // Two more lines fit between the closing line and the footer.
     let two = format!("{PARA_A_TEXT} {EXTRA}");
-    let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &two, None, true), false).unwrap();
+    let dry = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &two, None, true),
+        false,
+    )
+    .unwrap();
     let room = closing.rect.b - footer.rect.t;
-    assert!((dry.room_pt - room).abs() < 0.02, "{} vs {room}", dry.room_pt);
+    assert!(
+        (dry.room_pt - room).abs() < 0.02,
+        "{} vs {room}",
+        dry.room_pt
+    );
     assert_eq!(dry.blocked, None);
 
     // Much more text does not: blocked by the footer, pushed as far as it goes; the paragraph
     // spacing above the closing line (beyond a line's clearance, from A's line grid) absorbs
     // part of the rest.
     let long = format!("{PARA_A_TEXT} {EXTRA} {EXTRA} {EXTRA}");
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, None, false), false).unwrap();
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, false),
+        false,
+    )
+    .unwrap();
     let growth = (res.lines - 4) as f32 * LEADING;
     let gap = grid(200.0 - 3.0 * LEADING) - closing.rect.t - CLEAR;
     assert!(growth > room + gap, "{growth} vs {room} + {gap}");
     assert_eq!(res.blocked, Some(FlowBlocked::Obstacle));
     assert!((res.room_pt - room).abs() < 0.02);
-    assert!((res.shifted_pt - room).abs() < 0.02, "pushed as far as the room goes");
+    assert!(
+        (res.shifted_pt - room).abs() < 0.02,
+        "pushed as far as the room goes"
+    );
     let expect = growth - room - gap;
-    assert!((res.overflow_pt - expect).abs() < 0.05, "{} vs {expect}", res.overflow_pt);
+    assert!(
+        (res.overflow_pt - expect).abs() < 0.05,
+        "{} vs {expect}",
+        res.overflow_pt
+    );
     let after = res.objects.objects.clone();
-    let footer_after = after.iter().find(|o| text_of(o).contains("Page 1")).unwrap();
+    let footer_after = after
+        .iter()
+        .find(|o| text_of(o).contains("Page 1"))
+        .unwrap();
     assert!(same_bits(&footer, footer_after), "the footer never moves");
-    let closing_after = after.iter().find(|o| text_of(o).contains("Closing")).unwrap();
+    let closing_after = after
+        .iter()
+        .find(|o| text_of(o).contains("Closing"))
+        .unwrap();
     assert!(moved_by(&closing, closing_after, -room));
 }
 
@@ -414,7 +517,12 @@ fn flow_rotated_page_pushes_along_the_text_direction() {
     assert_eq!(res.moved_objects, 4);
     for (b, n) in survivors(&before, &a.object_ids, &res.objects.objects) {
         if is_c_or_d(&text_of(b)) {
-            assert!(moved_by(b, n, -res.shifted_pt), "{:?} → {:?}", b.rect, n.rect);
+            assert!(
+                moved_by(b, n, -res.shifted_pt),
+                "{:?} → {:?}",
+                b.rect,
+                n.rect
+            );
         } else {
             assert!(same_bits(b, n), "{:?} moved", text_of(b));
         }
@@ -436,8 +544,13 @@ fn flow_tracemonkey_right_column_moves_only_the_right_column() {
         "{} This sentence is appended so that the paragraph grows by a line or two.",
         p.text
     );
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &text, None, false), false)
-        .expect("push in the right column");
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &text, None, false),
+        false,
+    )
+    .expect("push in the right column");
     assert!(res.shifted_pt > 5.0, "{res:?}");
     assert_eq!(res.blocked, None);
     assert_eq!(res.overflow_pt, 0.0);
@@ -448,11 +561,23 @@ fn flow_tracemonkey_right_column_moves_only_the_right_column() {
         assert_eq!(text_of(b), text_of(n));
         let right_below = b.rect.l > 305.0 && b.rect.t <= p.rect.b + tol;
         if right_below {
-            assert!(moved_by(b, n, -res.shifted_pt), "{:?}: {:?} → {:?}", text_of(b), b.rect, n.rect);
+            assert!(
+                moved_by(b, n, -res.shifted_pt),
+                "{:?}: {:?} → {:?}",
+                text_of(b),
+                b.rect,
+                n.rect
+            );
             moved += 1;
         } else {
             // Left column (and everything above) byte-for-byte unchanged.
-            assert!(same_bits(b, n), "{:?}: {:?} → {:?}", text_of(b), b.rect, n.rect);
+            assert!(
+                same_bits(b, n),
+                "{:?}: {:?} → {:?}",
+                text_of(b),
+                b.rect,
+                n.rect
+            );
             if b.rect.r < 300.0 {
                 left += 1;
             }
@@ -460,7 +585,10 @@ fn flow_tracemonkey_right_column_moves_only_the_right_column() {
     }
     assert!(left > 40, "{left} left-column objects checked");
     assert_eq!(moved, res.moved_objects);
-    assert!(moved >= 20, "the three right-column paragraphs below: {moved}");
+    assert!(
+        moved >= 20,
+        "the three right-column paragraphs below: {moved}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -472,7 +600,11 @@ fn flow_tracemonkey_right_column_moves_only_the_right_column() {
 fn obstacle_content() -> String {
     let mut c = String::from("BT /F2 18 Tf 72 740 Td (A Heading Line) Tj ET\n");
     c.push_str(&para(72.0, 700.0, &PARA_A));
-    c.push_str(&para(72.0, 620.0, &["Second paragraph starts here with words.", "and ends here."]));
+    c.push_str(&para(
+        72.0,
+        620.0,
+        &["Second paragraph starts here with words.", "and ends here."],
+    ));
     c.push_str("0.5 g 72 445 468 150 re f 0 g\n");
     c.push_str(&para(72.0, 400.0, &["Text below the figure never moves."]));
     c
@@ -500,17 +632,34 @@ fn flow_full_width_obstacle_stops_the_push() {
     // One more line fits: C moves by the room and the paragraph spacing above C takes the
     // rest — nothing overlaps, so the push is not blocked (the verifier's report).
     let one = format!("{PARA_A_TEXT} {ONE_MORE}");
-    let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &one, None, true), false).unwrap();
+    let dry = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &one, None, true),
+        false,
+    )
+    .unwrap();
     assert_eq!(dry.lines, 5, "{dry:?}");
     assert_eq!((dry.blocked, dry.overflow_pt), (None, 0.0), "{dry:?}");
     assert!((dry.shifted_pt - room).abs() < 0.02);
-    let overlap = run(&doc.doc_id, a.doc_generation, edit_of(&a, &one, Some(ParagraphFlow::Overlap), true), false)
-        .unwrap();
+    let overlap = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &one, Some(ParagraphFlow::Overlap), true),
+        false,
+    )
+    .unwrap();
     assert_eq!(overlap.overflow_pt, 0.0, "the gap alone holds one line");
 
     // Three more lines do not.
     let longer = format!("{PARA_A_TEXT} {ONE_MORE} {EXTRA}");
-    let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &longer, None, true), false).unwrap();
+    let dry = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &longer, None, true),
+        false,
+    )
+    .unwrap();
     assert!(dry.lines >= 7, "{}", dry.lines);
     let growth = (dry.lines - 4) as f32 * LEADING;
     let c_top = before
@@ -521,12 +670,27 @@ fn flow_full_width_obstacle_stops_the_push() {
     // The gap is measured from the paragraph's line grid to C's top, less a line's clearance.
     let gap = grid(700.0 - 3.0 * LEADING) - c_top - CLEAR;
     assert_eq!(dry.blocked, Some(FlowBlocked::Obstacle));
-    assert!((dry.room_pt - room).abs() < 0.02, "{} vs {room}", dry.room_pt);
-    assert!((dry.overflow_pt - (growth - room - gap)).abs() < 0.02, "{} vs {}", dry.overflow_pt, growth - room - gap);
+    assert!(
+        (dry.room_pt - room).abs() < 0.02,
+        "{} vs {room}",
+        dry.room_pt
+    );
+    assert!(
+        (dry.overflow_pt - (growth - room - gap)).abs() < 0.02,
+        "{} vs {}",
+        dry.overflow_pt,
+        growth - room - gap
+    );
     assert!((dry.shifted_pt - room).abs() < 0.02);
 
     // Committing the blocked push moves C by the room; the figure and the text below it stay.
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &longer, None, false), false).unwrap();
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &longer, None, false),
+        false,
+    )
+    .unwrap();
     assert_eq!(res.blocked, Some(FlowBlocked::Obstacle));
     // …and the new text's ink ends `overflowPt` (± the descent, less the clearance it counts)
     // below C's moved top.
@@ -538,12 +702,21 @@ fn flow_full_width_obstacle_stops_the_push() {
         .map(|o| o.rect.t)
         .fold(f32::MIN, f32::max);
     let ink_overlap = c_top_after - res.rect.b;
-    assert!((ink_overlap + CLEAR - res.overflow_pt).abs() < 3.5, "{ink_overlap} vs {}", res.overflow_pt);
+    assert!(
+        (ink_overlap + CLEAR - res.overflow_pt).abs() < 3.5,
+        "{ink_overlap} vs {}",
+        res.overflow_pt
+    );
     for (b, n) in survivors(&before, &a.object_ids, &res.objects.objects) {
         if text_of(b).contains("Second") || text_of(b).contains("and ends") {
             assert!(moved_by(b, n, -room), "{:?} → {:?}", b.rect, n.rect);
         } else {
-            assert!(same_bits(b, n), "{:?} {:?} moved", b.object_type, text_of(b));
+            assert!(
+                same_bits(b, n),
+                "{:?} {:?} moved",
+                b.object_type,
+                text_of(b)
+            );
         }
     }
 }
@@ -556,18 +729,42 @@ fn flow_page_bottom_blocks() {
     let a = probe(&doc.doc_id, 150.0, 90.0);
     assert_eq!(a.lines, 4);
     let long = format!("{PARA_A_TEXT} {EXTRA} {EXTRA}");
-    let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, None, true), false).unwrap();
+    let dry = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, true),
+        false,
+    )
+    .unwrap();
     // Nothing below: the paragraph's line grid may grow down to 18 pt above the crop box edge.
     let room = grid(100.0 - 3.0 * LEADING) - 18.0;
-    assert!((dry.room_pt - room).abs() < 0.02, "{} vs {room}", dry.room_pt);
+    assert!(
+        (dry.room_pt - room).abs() < 0.02,
+        "{} vs {room}",
+        dry.room_pt
+    );
     assert_eq!(dry.blocked, Some(FlowBlocked::PageBottom));
     let growth = (dry.lines - 4) as f32 * LEADING;
     // Nothing is overlapped: the text runs past the page's bottom margin instead.
     assert_eq!(dry.overflow_pt, 0.0);
-    assert!((dry.past_bottom_pt - (growth - room)).abs() < 0.05, "{} vs {}", dry.past_bottom_pt, growth - room);
-    assert_eq!((dry.shifted_pt, dry.moved_objects, dry.moved_band), (0.0, 0, None), "nothing to move");
-    let over = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, Some(ParagraphFlow::Overlap), true), false)
-        .unwrap();
+    assert!(
+        (dry.past_bottom_pt - (growth - room)).abs() < 0.05,
+        "{} vs {}",
+        dry.past_bottom_pt,
+        growth - room
+    );
+    assert_eq!(
+        (dry.shifted_pt, dry.moved_objects, dry.moved_band),
+        (0.0, 0, None),
+        "nothing to move"
+    );
+    let over = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, Some(ParagraphFlow::Overlap), true),
+        false,
+    )
+    .unwrap();
     assert_eq!(over.overflow_pt, 0.0);
     assert!(over.past_bottom_pt > 0.0);
 }
@@ -578,25 +775,51 @@ fn flow_fit_shrinks_to_the_original_height() {
     let before = objects_of(&doc.doc_id);
     let a = probe(&doc.doc_id, 200.0, 690.0);
     let longer = format!("{PARA_A_TEXT} {ONE_MORE}");
-    let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &longer, Some(ParagraphFlow::Fit), true), false)
-        .unwrap();
+    let dry = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &longer, Some(ParagraphFlow::Fit), true),
+        false,
+    )
+    .unwrap();
     let scale = dry.fit_scale.expect("fit reports its scale");
     assert!((0.7..1.0).contains(&scale), "{scale}");
     assert_eq!(dry.overflow_pt, 0.0);
-    assert_eq!((dry.shifted_pt, dry.moved_objects, dry.blocked), (0.0, 0, None));
+    assert_eq!(
+        (dry.shifted_pt, dry.moved_objects, dry.blocked),
+        (0.0, 0, None)
+    );
     assert_eq!(dry.lines, 4);
 
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &longer, Some(ParagraphFlow::Fit), false), false)
-        .unwrap();
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &longer, Some(ParagraphFlow::Fit), false),
+        false,
+    )
+    .unwrap();
     assert_eq!(res.fit_scale, Some(scale));
-    assert!(res.rect.b >= a.rect.b - 1.0, "fits the original height: {:?} vs {:?}", res.rect, a.rect);
+    assert!(
+        res.rect.b >= a.rect.b - 1.0,
+        "fits the original height: {:?} vs {:?}",
+        res.rect,
+        a.rect
+    );
     // Nothing else moved.
     for (b, n) in survivors(&before, &a.object_ids, &res.objects.objects) {
         assert!(same_bits(b, n), "{:?} moved", text_of(b));
     }
     let again = probe(&doc.doc_id, 80.0, 700.0);
-    assert!((again.font_size_pt - 12.0 * scale).abs() < 0.05, "{}", again.font_size_pt);
-    assert!((again.line_height_pt - LEADING * scale).abs() < 0.05, "{}", again.line_height_pt);
+    assert!(
+        (again.font_size_pt - 12.0 * scale).abs() < 0.05,
+        "{}",
+        again.font_size_pt
+    );
+    assert!(
+        (again.line_height_pt - LEADING * scale).abs() < 0.05,
+        "{}",
+        again.line_height_pt
+    );
     assert!(page_text(&doc.doc_id).contains(&format!("quiet at last. {ONE_MORE}")));
 
     // The same edit with `overlap` reports how far the text runs over C and moves nothing.
@@ -604,11 +827,19 @@ fn flow_fit_shrinks_to_the_original_height() {
     let over = run(
         &doc.doc_id,
         b.doc_generation,
-        edit_of(&b, &format!("{PARA_A_TEXT} {EXTRA} {EXTRA}"), Some(ParagraphFlow::Overlap), true),
+        edit_of(
+            &b,
+            &format!("{PARA_A_TEXT} {EXTRA} {EXTRA}"),
+            Some(ParagraphFlow::Overlap),
+            true,
+        ),
         false,
     )
     .unwrap();
-    assert!(over.overflow_pt > 0.0 && over.shifted_pt == 0.0 && over.blocked.is_none(), "{over:?}");
+    assert!(
+        over.overflow_pt > 0.0 && over.shifted_pt == 0.0 && over.blocked.is_none(),
+        "{over:?}"
+    );
     // overflow = growth of the line grid − the free gap down to C's top.
     let c_top = before
         .iter()
@@ -622,7 +853,12 @@ fn flow_fit_shrinks_to_the_original_height() {
         - grid_bottom(700.0, over.lines, b.line_height_pt, b.font_size_pt);
     let clear = b.line_height_pt - b.font_size_pt;
     let free = grid_bottom(700.0, b.lines, b.line_height_pt, b.font_size_pt) - c_top - clear;
-    assert!((over.overflow_pt - (growth - free)).abs() < 0.05, "{} vs {}", over.overflow_pt, growth - free);
+    assert!(
+        (over.overflow_pt - (growth - free)).abs() < 0.05,
+        "{} vs {}",
+        over.overflow_pt,
+        growth - free
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -637,27 +873,59 @@ fn flow_dry_run_leaves_the_document_byte_identical() {
     let depth0 = with_doc(&doc.doc_id, |d| Ok(d.history.undo_depth())).unwrap();
     let a = probe(&doc.doc_id, 200.0, 690.0);
     let long = format!("{PARA_A_TEXT} {EXTRA}");
-    let korean = "안녕하세요 반갑습니다. 한글 문단 편집을 시험합니다. 줄바꿈은 띄어쓰기에서 일어나야 \
+    let korean =
+        "안녕하세요 반갑습니다. 한글 문단 편집을 시험합니다. 줄바꿈은 띄어쓰기에서 일어나야 \
                   합니다. 조금 더 길게 써서 아래 내용이 밀리는지 확인합니다.";
 
-    let push = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, None, true), false).unwrap();
-    let fit = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, Some(ParagraphFlow::Fit), true), false)
-        .unwrap();
+    let push = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, true),
+        false,
+    )
+    .unwrap();
+    let fit = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, Some(ParagraphFlow::Fit), true),
+        false,
+    )
+    .unwrap();
     // A substitute font is measured in a throwaway document: nothing is embedded here.
-    let refused = run(&doc.doc_id, a.doc_generation, edit_of(&a, korean, None, true), false)
-        .expect_err("consent is still required for a dry run");
+    let refused = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, korean, None, true),
+        false,
+    )
+    .expect_err("consent is still required for a dry run");
     assert_eq!(refused.code, ErrorCode::FontCoverage);
-    let ko = run(&doc.doc_id, a.doc_generation, edit_of(&a, korean, None, true), true).unwrap();
+    let ko = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, korean, None, true),
+        true,
+    )
+    .unwrap();
     assert!(ko.lines >= 2);
 
     assert_eq!(generation(&doc.doc_id), g0);
-    assert_eq!(with_doc(&doc.doc_id, |d| Ok(d.history.undo_depth())).unwrap(), depth0);
+    assert_eq!(
+        with_doc(&doc.doc_id, |d| Ok(d.history.undo_depth())).unwrap(),
+        depth0
+    );
     assert!(!with_doc(&doc.doc_id, |d| Ok(d.dirty())).unwrap());
-    assert!(bytes_of(&doc.doc_id) == bytes0, "a dry run must not change the serialised bytes");
+    assert!(
+        bytes_of(&doc.doc_id) == bytes0,
+        "a dry run must not change the serialised bytes"
+    );
 
     // …and the real edits report what their dry runs predicted.
     let real = run(&doc.doc_id, g0, edit_of(&a, korean, None, false), true).unwrap();
-    assert_eq!((real.lines, real.shifted_pt, real.moved_objects), (ko.lines, ko.shifted_pt, ko.moved_objects));
+    assert_eq!(
+        (real.lines, real.shifted_pt, real.moved_objects),
+        (ko.lines, ko.shifted_pt, ko.moved_objects)
+    );
     assert_eq!(real.rect, ko.rect);
     assert!(push.shifted_pt > 0.0 && fit.fit_scale.is_some());
 }
@@ -789,18 +1057,41 @@ fn flow_moves_annotations_with_the_text_but_not_widgets_or_stamps() {
     let highlight = marks.highlight.clone();
     // Render once so every annotation has its appearance stream — the case where a move
     // could misplace a drawing.
-    let square_before = annots_of(&doc.doc_id).into_iter().find(|a| a.id == marks.square).unwrap();
+    let square_before = annots_of(&doc.doc_id)
+        .into_iter()
+        .find(|a| a.id == marks.square)
+        .unwrap();
     assert!(count_pixels(&doc.doc_id, square_before.rect, is_red) > 100);
     let before = objects_of(&doc.doc_id);
     let annots_before = annots_of(&doc.doc_id);
-    let hl = annots_before.iter().find(|a| a.id == highlight).unwrap().clone();
-    let ink = annots_before.iter().find(|a| a.id == marks.ink).unwrap().clone();
-    let stamp_before = annots_before.iter().find(|a| a.id == marks.stamp).unwrap().clone();
+    let hl = annots_before
+        .iter()
+        .find(|a| a.id == highlight)
+        .unwrap()
+        .clone();
+    let ink = annots_before
+        .iter()
+        .find(|a| a.id == marks.ink)
+        .unwrap()
+        .clone();
+    let stamp_before = annots_before
+        .iter()
+        .find(|a| a.id == marks.stamp)
+        .unwrap()
+        .clone();
     let green_before = count_pixels(&doc.doc_id, stamp_before.rect, is_green);
     assert!(green_before > 100, "{green_before} stamp pixels before");
     assert!(count_pixels(&doc.doc_id, ink.rect, is_blue) > 20);
-    let widget = annots_before.iter().find(|a| a.kind == AnnotKind::Widget).unwrap().clone();
-    let mark = before.iter().find(|o| text_of(o).contains("CONFIDENTIAL")).unwrap().clone();
+    let widget = annots_before
+        .iter()
+        .find(|a| a.kind == AnnotKind::Widget)
+        .unwrap()
+        .clone();
+    let mark = before
+        .iter()
+        .find(|o| text_of(o).contains("CONFIDENTIAL"))
+        .unwrap()
+        .clone();
     let d_bottom = before
         .iter()
         .find(|o| text_of(o).contains("Third"))
@@ -809,39 +1100,80 @@ fn flow_moves_annotations_with_the_text_but_not_widgets_or_stamps() {
         .b;
     // The watermark spans the column and sits below D: were it content, it would be an
     // obstacle (room ≈ D − its top). It is a stamp, so the widget is the first obstacle.
-    assert!(mark.rect.t < d_bottom && mark.rect.l < 100.0 && mark.rect.r > 500.0, "{:?}", mark.rect);
+    assert!(
+        mark.rect.t < d_bottom && mark.rect.l < 100.0 && mark.rect.r > 500.0,
+        "{:?}",
+        mark.rect
+    );
 
     let a = probe(&doc.doc_id, 200.0, 690.0);
     let long = format!("{PARA_A_TEXT} {EXTRA}");
-    let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, None, true), false).unwrap();
-    assert!((dry.room_pt - (d_bottom - widget.rect.t)).abs() < 0.05, "{} vs {}", dry.room_pt, d_bottom - widget.rect.t);
+    let dry = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, true),
+        false,
+    )
+    .unwrap();
+    assert!(
+        (dry.room_pt - (d_bottom - widget.rect.t)).abs() < 0.05,
+        "{} vs {}",
+        dry.room_pt,
+        d_bottom - widget.rect.t
+    );
     assert_eq!(dry.blocked, None);
     assert_eq!(dry.moved_annotations, 4, "highlight, square, ink, stamp");
 
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, None, false), false).unwrap();
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, false),
+        false,
+    )
+    .unwrap();
     assert_eq!((res.moved_objects, res.moved_annotations), (4, 4));
     let dy = -res.shifted_pt;
     let annots_after = annots_of(&doc.doc_id);
     let hl_after = annots_after.iter().find(|a| a.id == highlight).unwrap();
-    assert!((hl_after.rect.t - (hl.rect.t + dy)).abs() < 0.05, "{:?} → {:?}", hl.rect, hl_after.rect);
+    assert!(
+        (hl_after.rect.t - (hl.rect.t + dy)).abs() < 0.05,
+        "{:?} → {:?}",
+        hl.rect,
+        hl_after.rect
+    );
     assert!((hl_after.rect.b - (hl.rect.b + dy)).abs() < 0.05);
     let q0 = hl.quads.as_ref().unwrap()[0];
     let q1 = hl_after.quads.as_ref().unwrap()[0];
-    assert!((q1.t - (q0.t + dy)).abs() < 0.05 && (q1.l - q0.l).abs() < 0.05, "{q0:?} → {q1:?}");
+    assert!(
+        (q1.t - (q0.t + dy)).abs() < 0.05 && (q1.l - q0.l).abs() < 0.05,
+        "{q0:?} → {q1:?}"
+    );
     // …and it is drawn there: the cleared appearance is regenerated at the moved quads.
     let at_new = count_pixels(&doc.doc_id, q1, is_yellow);
-    assert!(at_new > 100, "{at_new} highlight pixels at the moved quad {q1:?}");
-    assert!(count_pixels(&doc.doc_id, q0, is_yellow) < at_new / 10, "old place not highlighted");
+    assert!(
+        at_new > 100,
+        "{at_new} highlight pixels at the moved quad {q1:?}"
+    );
+    assert!(
+        count_pixels(&doc.doc_id, q0, is_yellow) < at_new / 10,
+        "old place not highlighted"
+    );
     // The square keeps its appearance, which follows the moved /Rect.
     let square_after = annots_after.iter().find(|a| a.id == marks.square).unwrap();
     assert!((square_after.rect.t - (square_before.rect.t + dy)).abs() < 0.05);
     let top_edge = |r: &Rect| Rect::new(r.l, r.t - 3.0, r.r, r.t);
     let red_new = count_pixels(&doc.doc_id, top_edge(&square_after.rect), is_red);
-    assert!(red_new > 200, "{red_new} red pixels on the moved square's top edge");
+    assert!(
+        red_new > 200,
+        "{red_new} red pixels on the moved square's top edge"
+    );
     assert!(count_pixels(&doc.doc_id, top_edge(&square_before.rect), is_red) < red_new / 10);
     // The ink stroke's points moved with it.
     let ink_after = annots_after.iter().find(|a| a.id == marks.ink).unwrap();
-    let (p0, p1) = (&ink.ink_paths.as_ref().unwrap()[0], &ink_after.ink_paths.as_ref().unwrap()[0]);
+    let (p0, p1) = (
+        &ink.ink_paths.as_ref().unwrap()[0],
+        &ink_after.ink_paths.as_ref().unwrap()[0],
+    );
     assert_eq!(p0.len(), p1.len());
     for (k, (x, y)) in p0.iter().zip(p1).enumerate() {
         let expect = if k % 2 == 1 { x + dy } else { *x };
@@ -864,8 +1196,14 @@ fn flow_moves_annotations_with_the_text_but_not_widgets_or_stamps() {
     let old = stamp_before.rect;
     let vacated = Rect::new(old.l, old.b.max(stamp_after.rect.t) + 1.0, old.r, old.t);
     let green_old = count_pixels(&doc.doc_id, vacated, is_green);
-    assert!(green_old < green_before / 10, "{green_old} stamp pixels left at the old place");
-    let widget_after = annots_after.iter().find(|a| a.kind == AnnotKind::Widget).unwrap();
+    assert!(
+        green_old < green_before / 10,
+        "{green_old} stamp pixels left at the old place"
+    );
+    let widget_after = annots_after
+        .iter()
+        .find(|a| a.kind == AnnotKind::Widget)
+        .unwrap();
     assert_eq!(widget_after.rect, widget.rect, "widgets never move");
     let mark_after = res
         .objects
@@ -892,9 +1230,17 @@ fn flow_moves_annotations_with_the_text_but_not_widgets_or_stamps() {
             r.rect
         );
     }
-    let hl_back = annots_of(&doc.doc_id).into_iter().find(|a| a.id == highlight).unwrap();
+    let hl_back = annots_of(&doc.doc_id)
+        .into_iter()
+        .find(|a| a.id == highlight)
+        .unwrap();
     let close = |x: &Rect, y: &Rect| (x.t - y.t).abs() < 0.05 && (x.b - y.b).abs() < 0.05;
-    assert!(close(&hl_back.rect, &hl.rect), "{:?} vs {:?}", hl_back.rect, hl.rect);
+    assert!(
+        close(&hl_back.rect, &hl.rect),
+        "{:?} vs {:?}",
+        hl_back.rect,
+        hl.rect
+    );
     assert_eq!(probe(&doc.doc_id, 200.0, 690.0).text, PARA_A_TEXT);
 }
 
@@ -903,8 +1249,13 @@ fn flow_stale_generation_is_refused() {
     let doc = open_bytes(pdf(&flow_content(), &[]));
     let a = probe(&doc.doc_id, 200.0, 690.0);
     for dry_run in [true, false] {
-        let err = run(&doc.doc_id, a.doc_generation + 1, edit_of(&a, "x y z", None, dry_run), false)
-            .expect_err("wrong generation");
+        let err = run(
+            &doc.doc_id,
+            a.doc_generation + 1,
+            edit_of(&a, "x y z", None, dry_run),
+            false,
+        )
+        .expect_err("wrong generation");
         assert_eq!(err.code, ErrorCode::Stale, "dryRun {dry_run}");
     }
     assert_eq!(generation(&doc.doc_id), a.doc_generation);
@@ -945,7 +1296,9 @@ fn pdf_streams(streams: &[&str], resources: &str, extra: &[String]) -> Vec<u8> {
         out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
     }
     let xref = out.len();
-    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
     for off in offsets {
         out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
     }
@@ -1009,7 +1362,11 @@ fn flow_seepdf_footer_stamp_stops_the_push() {
     };
     with_state(move |st| stamp::add_stamp(st, &id, &footer)).expect("footer stamp");
     let before = objects_of(&doc.doc_id);
-    let stamp_obj = before.iter().find(|o| text_of(o).contains("Page 1")).unwrap().clone();
+    let stamp_obj = before
+        .iter()
+        .find(|o| text_of(o).contains("Page 1"))
+        .unwrap()
+        .clone();
     let lowest = before
         .iter()
         .filter(|o| text_of(o).starts_with("Body line"))
@@ -1017,15 +1374,42 @@ fn flow_seepdf_footer_stamp_stops_the_push() {
         .fold(f32::MAX, f32::min);
     let a = probe(&doc.doc_id, 200.0, 690.0);
     let long = format!("{PARA_A_TEXT} {EXTRA} {EXTRA}");
-    let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, None, true), false).unwrap();
+    let dry = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, true),
+        false,
+    )
+    .unwrap();
     assert_eq!(dry.blocked, Some(FlowBlocked::Obstacle), "{dry:?}");
-    assert!((dry.room_pt - (lowest - stamp_obj.rect.t)).abs() < 0.05, "{} vs {}", dry.room_pt, lowest - stamp_obj.rect.t);
+    assert!(
+        (dry.room_pt - (lowest - stamp_obj.rect.t)).abs() < 0.05,
+        "{} vs {}",
+        dry.room_pt,
+        lowest - stamp_obj.rect.t
+    );
     assert!(dry.overflow_pt > 0.0);
 
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &long, None, false), false).unwrap();
-    let stamp_after = res.objects.objects.iter().find(|o| text_of(o).contains("Page 1")).unwrap();
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, false),
+        false,
+    )
+    .unwrap();
+    let stamp_after = res
+        .objects
+        .objects
+        .iter()
+        .find(|o| text_of(o).contains("Page 1"))
+        .unwrap();
     assert!(same_bits(&stamp_obj, stamp_after), "the stamp never moves");
-    for o in res.objects.objects.iter().filter(|o| text_of(o).starts_with("Body line")) {
+    for o in res
+        .objects
+        .objects
+        .iter()
+        .filter(|o| text_of(o).starts_with("Body line"))
+    {
         assert!(
             ink_overlap(&o.rect, &stamp_after.rect) == 0.0,
             "{:?} {:?} was pushed over the footer stamp {:?}",
@@ -1044,13 +1428,22 @@ fn flow_substituted_justified_paragraph_probes_back_whole() {
     let doc = open("tracemonkey.pdf");
     let p = probe(&doc.doc_id, 420.0, 400.0);
     assert_eq!(p.align, ParagraphAlign::Justify);
-    let first = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{} 한글 문장.", p.text), None, false), true)
-        .expect("substituted edit");
+    let first = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &format!("{} 한글 문장.", p.text), None, false),
+        true,
+    )
+    .expect("substituted edit");
     let p2 = probe(&doc.doc_id, 420.0, 400.0);
     assert_eq!(p2.lines, first.lines, "{p2:?}");
     assert_eq!(p2.align, ParagraphAlign::Justify);
     assert!(p2.text.ends_with("한글 문장."), "{}", p2.text);
-    assert_eq!(probe(&doc.doc_id, 420.0, 340.0).object_ids, p2.object_ids, "one paragraph, every line");
+    assert_eq!(
+        probe(&doc.doc_id, 420.0, 340.0).object_ids,
+        p2.object_ids,
+        "one paragraph, every line"
+    );
     let hangul = |objects: &[PageObject], ids: &[u32]| {
         objects
             .iter()
@@ -1058,19 +1451,32 @@ fn flow_substituted_justified_paragraph_probes_back_whole() {
             .filter(|o| !ids.contains(&o.object_id))
             .count()
     };
-    assert_eq!(hangul(&first.objects.objects, &p2.object_ids), 0, "no orphaned words");
+    assert_eq!(
+        hangul(&first.objects.objects, &p2.object_ids),
+        0,
+        "no orphaned words"
+    );
 
     let second = run(
         &doc.doc_id,
         p2.doc_generation,
-        edit_of(&p2, &format!("{} 두 번째 편집입니다.", p2.text), None, false),
+        edit_of(
+            &p2,
+            &format!("{} 두 번째 편집입니다.", p2.text),
+            None,
+            false,
+        ),
         true,
     )
     .expect("second edit");
     let p3 = probe(&doc.doc_id, 420.0, 400.0);
     assert_eq!(p3.lines, second.lines);
     assert!(p3.text.ends_with("두 번째 편집입니다."), "{}", p3.text);
-    assert_eq!(hangul(&second.objects.objects, &p3.object_ids), 0, "no orphaned words");
+    assert_eq!(
+        hangul(&second.objects.objects, &p3.object_ids),
+        0,
+        "no orphaned words"
+    );
 }
 
 /// PDFium cannot write an inline image or a shading back: an edit whose rewrite would drop one
@@ -1084,7 +1490,10 @@ fn flow_refuses_to_drop_inline_images_and_shadings() {
                    << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>"
         .to_string();
     let same_stream = [
-        ("inline image", pdf_streams(&[&format!("{inline}{paragraph}")], "", &[])),
+        (
+            "inline image",
+            pdf_streams(&[&format!("{inline}{paragraph}")], "", &[]),
+        ),
         (
             "shading",
             pdf_streams(
@@ -1099,33 +1508,81 @@ fn flow_refuses_to_drop_inline_images_and_shadings() {
         let doc = open_bytes(bytes);
         let before = objects_of(&doc.doc_id);
         assert!(
-            before.iter().any(|o| matches!(o.object_type, PageObjectType::Image | PageObjectType::Shading)),
+            before.iter().any(|o| matches!(
+                o.object_type,
+                PageObjectType::Image | PageObjectType::Shading
+            )),
             "{name}: {before:?}"
         );
         let p = probe(&doc.doc_id, 200.0, 690.0);
-        assert_eq!((p.strategy, p.reason), (TextEditStrategy::Refused, Some(NotEditableReason::UnwritableContent)), "{name}");
+        assert_eq!(
+            (p.strategy, p.reason),
+            (
+                TextEditStrategy::Refused,
+                Some(NotEditableReason::UnwritableContent)
+            ),
+            "{name}"
+        );
         for dry_run in [true, false] {
-            let e = run(&doc.doc_id, p.doc_generation, edit_of(&p, &longer, None, dry_run), false)
-                .expect_err("refused");
+            let e = run(
+                &doc.doc_id,
+                p.doc_generation,
+                edit_of(&p, &longer, None, dry_run),
+                false,
+            )
+            .expect_err("refused");
             assert_eq!(e.code, ErrorCode::Unsupported, "{name}");
-            assert!(e.detail.as_deref().unwrap_or("").starts_with("unwritableContent"), "{name}: {e:?}");
+            assert!(
+                e.detail
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("unwritableContent"),
+                "{name}: {e:?}"
+            );
         }
-        assert_eq!(generation(&doc.doc_id), p.doc_generation, "{name}: nothing written");
-        assert_eq!(objects_of(&doc.doc_id).len(), before.len(), "{name}: nothing lost");
+        assert_eq!(
+            generation(&doc.doc_id),
+            p.doc_generation,
+            "{name}: nothing written"
+        );
+        assert_eq!(
+            objects_of(&doc.doc_id).len(),
+            before.len(),
+            "{name}: nothing lost"
+        );
     }
 
     // The inline image in a stream of its own: the edit rewrites only the paragraph's stream.
     let doc = open_bytes(pdf_streams(&[inline, &paragraph], "", &[]));
     let p = probe(&doc.doc_id, 200.0, 690.0);
     assert_eq!(p.strategy, TextEditStrategy::InPlace, "{p:?}");
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &longer, None, false), false).expect("allowed");
-    let images = |objects: &[PageObject]| objects.iter().filter(|o| o.object_type == PageObjectType::Image).count();
-    assert_eq!(images(&res.objects.objects), 1, "the inline image is still there");
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &longer, None, false),
+        false,
+    )
+    .expect("allowed");
+    let images = |objects: &[PageObject]| {
+        objects
+            .iter()
+            .filter(|o| o.object_type == PageObjectType::Image)
+            .count()
+    };
+    assert_eq!(
+        images(&res.objects.objects),
+        1,
+        "the inline image is still there"
+    );
 
     // TAMReview's header logo and rule are inline images in the body's stream.
     let doc = open("TAMReview.pdf");
     let p = probe(&doc.doc_id, 200.0, 520.0);
-    assert_eq!(p.reason, Some(NotEditableReason::UnwritableContent), "{p:?}");
+    assert_eq!(
+        p.reason,
+        Some(NotEditableReason::UnwritableContent),
+        "{p:?}"
+    );
 }
 
 /// On a two-column page the running footer is found per column: editing tracemonkey's left
@@ -1143,8 +1600,17 @@ fn flow_two_column_footer_is_found_per_column() {
         .unwrap()
         .rect
         .t;
-    let text = format!("{} This sentence is appended so that the paragraph grows by a line or two.", p.text);
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &text, None, false), false).unwrap();
+    let text = format!(
+        "{} This sentence is appended so that the paragraph grows by a line or two.",
+        p.text
+    );
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &text, None, false),
+        false,
+    )
+    .unwrap();
     assert_eq!(res.moved_objects, 0, "{res:?}");
     // Nothing moves: the room is the paragraph's own, from its line grid down to the block.
     let last = before
@@ -1153,9 +1619,19 @@ fn flow_two_column_footer_is_found_per_column() {
         .map(|o| o.matrix[5])
         .fold(f32::MAX, f32::min);
     let room = last - 0.25 * p.font_size_pt - block_top;
-    assert!((res.room_pt - room).abs() < 0.05, "{} vs {room}", res.room_pt);
+    assert!(
+        (res.room_pt - room).abs() < 0.05,
+        "{} vs {room}",
+        res.room_pt
+    );
     for (b, n) in survivors(&before, &p.object_ids, &res.objects.objects) {
-        assert!(same_bits(b, n), "{:?}: {:?} → {:?}", text_of(b), b.rect, n.rect);
+        assert!(
+            same_bits(b, n),
+            "{:?}: {:?} → {:?}",
+            text_of(b),
+            b.rect,
+            n.rect
+        );
     }
 }
 
@@ -1163,7 +1639,9 @@ fn flow_two_column_footer_is_found_per_column() {
 /// 2 × the leading) is the running footer too: it never moves.
 #[test]
 fn flow_latex_page_number_is_the_footer() {
-    let lines = [PARA_A[0], PARA_A[1], PARA_A[2], PARA_A[0], PARA_A[1], "at last."];
+    let lines = [
+        PARA_A[0], PARA_A[1], PARA_A[2], PARA_A[0], PARA_A[1], "at last.",
+    ];
     let mut c = String::new();
     let mut y = 700.0;
     for _ in 0..7 {
@@ -1176,17 +1654,37 @@ fn flow_latex_page_number_is_the_footer() {
     let before = objects_of(&doc.doc_id);
     let number = before.iter().find(|o| text_of(o) == "7").unwrap().clone();
     let p = probe(&doc.doc_id, 200.0, 700.0 - 78.0);
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{} {ONE_MORE}", p.text), None, false), false)
-        .unwrap();
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &format!("{} {ONE_MORE}", p.text), None, false),
+        false,
+    )
+    .unwrap();
     assert!(res.shifted_pt > 0.0, "{res:?}");
-    let after = res.objects.objects.iter().find(|o| text_of(o) == "7").unwrap();
-    assert!(same_bits(&number, after), "the page number moved: {:?} → {:?}", number.rect, after.rect);
+    let after = res
+        .objects
+        .objects
+        .iter()
+        .find(|o| text_of(o) == "7")
+        .unwrap();
+    assert!(
+        same_bits(&number, after),
+        "the page number moved: {:?} → {:?}",
+        number.rect,
+        after.rect
+    );
     let lowest = before
         .iter()
         .filter(|o| text_of(o) != "7")
         .map(|o| o.rect.b)
         .fold(f32::MAX, f32::min);
-    assert!((res.room_pt - (lowest - number.rect.t)).abs() < 0.05, "{} vs {}", res.room_pt, lowest - number.rect.t);
+    assert!(
+        (res.room_pt - (lowest - number.rect.t)).abs() < 0.05,
+        "{} vs {}",
+        res.room_pt,
+        lowest - number.rect.t
+    );
 }
 
 /// Editing a large heading does not move the page number: the footer gap is measured against
@@ -1210,12 +1708,27 @@ fn flow_heading_edit_keeps_the_page_number() {
     let res = run(
         &doc.doc_id,
         h.doc_generation,
-        edit_of(&h, "A Large Heading That Wraps Onto Two Lines And Then Some More Words", None, false),
+        edit_of(
+            &h,
+            "A Large Heading That Wraps Onto Two Lines And Then Some More Words",
+            None,
+            false,
+        ),
         false,
     )
     .unwrap();
-    let after = res.objects.objects.iter().find(|o| text_of(o) == "3").unwrap();
-    assert!(same_bits(&number, after), "the page number moved: {:?} → {:?}", number.rect, after.rect);
+    let after = res
+        .objects
+        .objects
+        .iter()
+        .find(|o| text_of(o) == "3")
+        .unwrap();
+    assert!(
+        same_bits(&number, after),
+        "the page number moved: {:?} → {:?}",
+        number.rect,
+        after.rect
+    );
 }
 
 /// A box drawn around the paragraph keeps its content inside: what follows the paragraph in
@@ -1223,21 +1736,45 @@ fn flow_heading_edit_keeps_the_page_number() {
 #[test]
 fn flow_box_around_the_paragraph_is_an_obstacle() {
     let mut c = para(80.0, 700.0, &PARA_A[..3]);
-    c.push_str(&para(80.0, 647.2, &["Second paragraph inside the box, first line.", "and its last line."]));
+    c.push_str(&para(
+        80.0,
+        647.2,
+        &[
+            "Second paragraph inside the box, first line.",
+            "and its last line.",
+        ],
+    ));
     let box_b = 632.8 - 12.0;
-    c.push_str(&format!("0 0 1 RG 1.5 w 70 {box_b} 470 {} re S 0 G\n", 716.0 - box_b));
-    c.push_str(&para(72.0, box_b - 30.0, &["Text below the box never moves."]));
+    c.push_str(&format!(
+        "0 0 1 RG 1.5 w 70 {box_b} 470 {} re S 0 G\n",
+        716.0 - box_b
+    ));
+    c.push_str(&para(
+        72.0,
+        box_b - 30.0,
+        &["Text below the box never moves."],
+    ));
     let doc = open_bytes(pdf(&c, &[]));
     let before = objects_of(&doc.doc_id);
     let a = probe(&doc.doc_id, 150.0, 690.0);
     assert_eq!(a.lines, 3);
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &format!("{} {EXTRA}", a.text), None, false), false)
-        .unwrap();
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &format!("{} {EXTRA}", a.text), None, false),
+        false,
+    )
+    .unwrap();
     assert_eq!(res.blocked, Some(FlowBlocked::Obstacle), "{res:?}");
     let inner_edge = box_b + 0.75;
     for (b, n) in survivors(&before, &a.object_ids, &res.objects.objects) {
         if b.object_type == PageObjectType::Text && b.rect.b > box_b {
-            assert!(n.rect.b >= inner_edge - 0.01, "{:?} crosses the box: {:?}", text_of(b), n.rect);
+            assert!(
+                n.rect.b >= inner_edge - 0.01,
+                "{:?} crosses the box: {:?}",
+                text_of(b),
+                n.rect
+            );
         } else {
             assert!(same_bits(b, n), "{:?} moved", text_of(b));
         }
@@ -1251,20 +1788,45 @@ fn flow_line_beside_a_figure_stops_the_push() {
     let mut c = para(
         72.0,
         700.0,
-        &["Left column paragraph that the user", "is going to edit and make longer", "than it was before by typing.", "End of it."],
+        &[
+            "Left column paragraph that the user",
+            "is going to edit and make longer",
+            "than it was before by typing.",
+            "End of it.",
+        ],
     );
     c.push_str("BT /F1 12 Tf 72 650 Td (Following line in column.) Tj ET\n");
     c.push_str("0.6 g 200 560 220 70 re f 0 g\n");
     c.push_str("BT /F1 12 Tf 72 628 Td (Beside the fig) Tj ET\n");
     let doc = open_bytes(pdf(&c, &[]));
     let a = probe(&doc.doc_id, 120.0, 690.0);
-    let text = format!("{} Plus one more line of text that is long enough to wrap.", a.text);
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &text, None, false), false).unwrap();
+    let text = format!(
+        "{} Plus one more line of text that is long enough to wrap.",
+        a.text
+    );
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &text, None, false),
+        false,
+    )
+    .unwrap();
     assert_eq!(res.blocked, Some(FlowBlocked::Obstacle), "{res:?}");
     let after = &res.objects.objects;
-    let following = after.iter().find(|o| text_of(o).contains("Following")).unwrap().rect;
-    let beside = after.iter().find(|o| text_of(o).contains("Beside")).unwrap().rect;
-    assert!(following.b >= beside.t - 0.01, "the moved line {following:?} covers {beside:?}");
+    let following = after
+        .iter()
+        .find(|o| text_of(o).contains("Following"))
+        .unwrap()
+        .rect;
+    let beside = after
+        .iter()
+        .find(|o| text_of(o).contains("Beside"))
+        .unwrap()
+        .rect;
+    assert!(
+        following.b >= beside.t - 0.01,
+        "the moved line {following:?} covers {beside:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1273,8 +1835,10 @@ fn flow_line_beside_a_figure_stops_the_push() {
 // streams cut mid-object, header stamps, justified paragraphs with long words
 // ---------------------------------------------------------------------------------------
 
-const BODY_LINE: &str = "Body text that runs the full width of the text block from margin to margin.";
-const MORE: &str = "This sentence is appended so that the paragraph grows by one more line or two of text here.";
+const BODY_LINE: &str =
+    "Body text that runs the full width of the text block from margin to margin.";
+const MORE: &str =
+    "This sentence is appended so that the paragraph grows by one more line or two of text here.";
 
 /// The new text objects of an edit (appended after the survivors) must not overlap any
 /// survivor's ink.
@@ -1305,14 +1869,24 @@ fn flow_body_text_wider_than_a_short_paragraph_follows_it() {
     let cases = [
         (
             "one short line",
-            format!("BT /F1 12 Tf 72 700 Td (Thank you for your letter of 5 May.) Tj ET\n{}", body(671.2)),
+            format!(
+                "BT /F1 12 Tf 72 700 Td (Thank you for your letter of 5 May.) Tj ET\n{}",
+                body(671.2)
+            ),
             (100.0, 703.0),
         ),
         (
             "ragged paragraph",
             format!(
                 "{}{}",
-                para(72.0, 700.0, &["A short ragged paragraph whose lines", "stop well before the right margin."]),
+                para(
+                    72.0,
+                    700.0,
+                    &[
+                        "A short ragged paragraph whose lines",
+                        "stop well before the right margin."
+                    ]
+                ),
                 body(656.8)
             ),
             (100.0, 703.0),
@@ -1321,7 +1895,14 @@ fn flow_body_text_wider_than_a_short_paragraph_follows_it() {
             "block quote",
             format!(
                 "{}{}",
-                para(108.0, 700.0, &["An indented block quote with two lines of text that", "stays inside the indented margins on both sides."]),
+                para(
+                    108.0,
+                    700.0,
+                    &[
+                        "An indented block quote with two lines of text that",
+                        "stays inside the indented margins on both sides."
+                    ]
+                ),
                 body(656.8)
             ),
             (200.0, 703.0),
@@ -1331,12 +1912,30 @@ fn flow_body_text_wider_than_a_short_paragraph_follows_it() {
         let doc = open_bytes(pdf(&content, &[]));
         let before = objects_of(&doc.doc_id);
         let p = probe(&doc.doc_id, at.0, at.1);
-        let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{} {MORE}", p.text), None, false), false)
-            .expect(label);
-        assert_eq!((res.blocked, res.overflow_pt), (None, 0.0), "{label}: {res:?}");
-        assert!(res.shifted_pt > 10.0 && res.moved_objects == 4, "{label}: {res:?}");
+        let res = run(
+            &doc.doc_id,
+            p.doc_generation,
+            edit_of(&p, &format!("{} {MORE}", p.text), None, false),
+            false,
+        )
+        .expect(label);
+        assert_eq!(
+            (res.blocked, res.overflow_pt),
+            (None, 0.0),
+            "{label}: {res:?}"
+        );
+        assert!(
+            res.shifted_pt > 10.0 && res.moved_objects == 4,
+            "{label}: {res:?}"
+        );
         for (b, n) in survivors(&before, &p.object_ids, &res.objects.objects) {
-            assert!(moved_by(b, n, -res.shifted_pt), "{label}: {:?} {:?} → {:?}", text_of(b), b.rect, n.rect);
+            assert!(
+                moved_by(b, n, -res.shifted_pt),
+                "{label}: {:?} {:?} → {:?}",
+                text_of(b),
+                b.rect,
+                n.rect
+            );
         }
         assert_no_overlap(label, &before, &p.object_ids, &res.objects.objects);
     }
@@ -1348,25 +1947,66 @@ fn flow_body_text_wider_than_a_short_paragraph_follows_it() {
 #[test]
 fn flow_list_markers_move_with_their_items() {
     let item = |y: f32, lines: &[&str]| {
-        format!("BT /F1 11 Tf 90 {y} Td (\\225) Tj ET\n{}", para_sized(108.0, y, 11.0, 13.4, lines))
+        format!(
+            "BT /F1 11 Tf 90 {y} Td (\\225) Tj ET\n{}",
+            para_sized(108.0, y, 11.0, 13.4, lines)
+        )
     };
-    let mut c = para_sized(72.0, 720.0, 11.0, 13.4, &["The list below has three items, each with a marker in the hanging indent."]);
-    c.push_str(&item(680.0, &["First item of the list with enough words to wrap onto a second line of", "text inside its own indented column."]));
-    c.push_str(&item(645.0, &["Second item of the list, also long enough to wrap onto a second line of", "text inside the same indented column."]));
+    let mut c = para_sized(
+        72.0,
+        720.0,
+        11.0,
+        13.4,
+        &["The list below has three items, each with a marker in the hanging indent."],
+    );
+    c.push_str(&item(
+        680.0,
+        &[
+            "First item of the list with enough words to wrap onto a second line of",
+            "text inside its own indented column.",
+        ],
+    ));
+    c.push_str(&item(
+        645.0,
+        &[
+            "Second item of the list, also long enough to wrap onto a second line of",
+            "text inside the same indented column.",
+        ],
+    ));
     c.push_str(&item(610.0, &["Third item, a single line."]));
-    c.push_str(&para_sized(72.0, 580.0, 11.0, 13.4, &["A closing paragraph after the list, at the body's own left margin, with", "a second line."]));
+    c.push_str(&para_sized(
+        72.0,
+        580.0,
+        11.0,
+        13.4,
+        &[
+            "A closing paragraph after the list, at the body's own left margin, with",
+            "a second line.",
+        ],
+    ));
     let doc = open_bytes(pdf(&c, &[]));
     let before = objects_of(&doc.doc_id);
     let p = probe(&doc.doc_id, 200.0, 682.0);
     assert_eq!(p.lines, 2, "{p:?}");
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{} {MORE}", p.text), None, false), false)
-        .unwrap();
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &format!("{} {MORE}", p.text), None, false),
+        false,
+    )
+    .unwrap();
     assert!(res.shifted_pt > 10.0 && res.blocked.is_none(), "{res:?}");
     let mut moved = 0;
     for (b, n) in survivors(&before, &p.object_ids, &res.objects.objects) {
         if b.rect.t < p.rect.b {
             // markers, items and the closing paragraph alike
-            assert!(moved_by(b, n, -res.shifted_pt), "{:?} {:?} → {:?}", text_of(b), b.rect, n.rect);
+            assert!(
+                moved_by(b, n, -res.shifted_pt),
+                "{:?} {:?} → {:?}",
+                text_of(b),
+                b.rect,
+                n.rect
+            );
             moved += 1;
         } else {
             assert!(same_bits(b, n), "{:?} moved", text_of(b));
@@ -1379,22 +2019,48 @@ fn flow_list_markers_move_with_their_items() {
 /// signature) is not a running footer — it follows the letter, and the space stays.
 #[test]
 fn flow_letter_signature_block_moves_with_the_letter() {
-    let body: Vec<String> = (0..20).map(|k| format!("Letter body line {k} explaining the details of the renewal terms.")).collect();
+    let body: Vec<String> = (0..20)
+        .map(|k| format!("Letter body line {k} explaining the details of the renewal terms."))
+        .collect();
     let refs: Vec<&str> = body.iter().map(String::as_str).collect();
-    let mut c = para(72.0, 700.0, &["Thank you for your letter about the contract renewal. We have read the", "proposal carefully and we agree with the terms described in section two."]);
+    let mut c = para(
+        72.0,
+        700.0,
+        &[
+            "Thank you for your letter about the contract renewal. We have read the",
+            "proposal carefully and we agree with the terms described in section two.",
+        ],
+    );
     c.push_str(&para(72.0, 656.8, &refs));
     c.push_str("BT /F1 12 Tf 72 240 Td (Sincerely,) Tj ET\n");
-    c.push_str(&para(72.0, 148.0, &["John Doe", "Director of Operations", "Example Company"]));
+    c.push_str(&para(
+        72.0,
+        148.0,
+        &["John Doe", "Director of Operations", "Example Company"],
+    ));
     let doc = open_bytes(pdf(&c, &[]));
     let before = objects_of(&doc.doc_id);
-    let find = |objs: &[PageObject], k: &str| objs.iter().find(|o| text_of(o).starts_with(k)).unwrap().clone();
+    let find = |objs: &[PageObject], k: &str| {
+        objs.iter()
+            .find(|o| text_of(o).starts_with(k))
+            .unwrap()
+            .clone()
+    };
     let p = probe(&doc.doc_id, 200.0, 697.0);
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{} {MORE} {MORE}", p.text), None, false), false)
-        .unwrap();
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &format!("{} {MORE} {MORE}", p.text), None, false),
+        false,
+    )
+    .unwrap();
     assert!(res.shifted_pt > 20.0 && res.blocked.is_none(), "{res:?}");
     let after = &res.objects.objects;
     for k in ["Sincerely", "John Doe", "Director", "Example Company"] {
-        assert!(moved_by(&find(&before, k), &find(after, k), -res.shifted_pt), "{k} did not follow the letter");
+        assert!(
+            moved_by(&find(&before, k), &find(after, k), -res.shifted_pt),
+            "{k} did not follow the letter"
+        );
     }
 }
 
@@ -1409,8 +2075,15 @@ fn flow_descenders_never_overlap_what_the_gap_absorbed() {
     let doc_with = |figure_top: f32| {
         let mut c = String::from("BT /F2 18 Tf 72 740 Td (A Heading Line) Tj ET\n");
         c.push_str(&para(72.0, 700.0, &PARA_A));
-        c.push_str(&para(72.0, 620.0, &["Second paragraph starts here with words.", "and ends here."]));
-        c.push_str(&format!("0.5 g 60 {} 492 120 re f 0 g\n", figure_top - 120.0));
+        c.push_str(&para(
+            72.0,
+            620.0,
+            &["Second paragraph starts here with words.", "and ends here."],
+        ));
+        c.push_str(&format!(
+            "0.5 g 60 {} 492 120 re f 0 g\n",
+            figure_top - 120.0
+        ));
         open_bytes(pdf(&c, &[]))
     };
     let c_of = |objs: &[PageObject]| -> Vec<Rect> {
@@ -1422,7 +2095,13 @@ fn flow_descenders_never_overlap_what_the_gap_absorbed() {
     // Where the old rule said "room + ink gap = growth + 1 pt: fits".
     let far = doc_with(300.0);
     let a = probe(&far.doc_id, 200.0, 690.0);
-    let dry = run(&far.doc_id, a.doc_generation, edit_of(&a, &text, None, true), false).unwrap();
+    let dry = run(
+        &far.doc_id,
+        a.doc_generation,
+        edit_of(&a, &text, None, true),
+        false,
+    )
+    .unwrap();
     let growth = (dry.lines - a.lines) as f32 * LEADING;
     let c0 = c_of(&objects_of(&far.doc_id));
     let (c_top, c_bottom) = (
@@ -1433,8 +2112,17 @@ fn flow_descenders_never_overlap_what_the_gap_absorbed() {
     assert!(room > 0.0, "{room}");
     let doc = doc_with(c_bottom - room);
     let a = probe(&doc.doc_id, 200.0, 690.0);
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, &text, None, false), false).unwrap();
-    let c_top_after = c_of(&res.objects.objects).iter().map(|r| r.t).fold(f32::MIN, f32::max);
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &text, None, false),
+        false,
+    )
+    .unwrap();
+    let c_top_after = c_of(&res.objects.objects)
+        .iter()
+        .map(|r| r.t)
+        .fold(f32::MIN, f32::max);
     let overlap = c_top_after - res.rect.b;
     assert!(
         res.blocked.is_some() && res.overflow_pt >= overlap,
@@ -1456,7 +2144,13 @@ fn flow_page_background_is_not_content_below() {
     let a = probe(&doc.doc_id, 150.0, 90.0);
     let text = format!("{PARA_A_TEXT} {EXTRA} {EXTRA}");
     for flow in [ParagraphFlow::Push, ParagraphFlow::Overlap] {
-        let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, &text, Some(flow), true), false).unwrap();
+        let dry = run(
+            &doc.doc_id,
+            a.doc_generation,
+            edit_of(&a, &text, Some(flow), true),
+            false,
+        )
+        .unwrap();
         assert_eq!(dry.overflow_pt, 0.0, "{flow:?}: {dry:?}");
         assert!(dry.past_bottom_pt > 0.0, "{flow:?}: {dry:?}");
     }
@@ -1470,28 +2164,69 @@ fn flow_content_below_in_an_unwritable_stream_stays() {
     let a = para(72.0, 700.0, &PARA_A);
     let below = format!(
         "{}q 200 0 0 20 72 560 cm BI /W 2 /H 1 /CS /G /BPC 8 /F /AHx ID 00FF> EI Q\n",
-        para(72.0, 620.0, &["Second paragraph starts here with words.", "and ends here."])
+        para(
+            72.0,
+            620.0,
+            &["Second paragraph starts here with words.", "and ends here."]
+        )
     );
     let doc = open_bytes(pdf_streams(&[&a, &below], "", &[]));
     let before = objects_of(&doc.doc_id);
     let p = probe(&doc.doc_id, 200.0, 690.0);
     assert_eq!(p.strategy, TextEditStrategy::InPlace, "{p:?}");
     let longer = format!("{PARA_A_TEXT} {EXTRA} {EXTRA}");
-    let dry = run(&doc.doc_id, p.doc_generation, edit_of(&p, &longer, None, true), false).expect("push dry run");
-    assert_eq!((dry.blocked, dry.moved_objects, dry.shifted_pt), (Some(FlowBlocked::Obstacle), 0, 0.0), "{dry:?}");
+    let dry = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &longer, None, true),
+        false,
+    )
+    .expect("push dry run");
+    assert_eq!(
+        (dry.blocked, dry.moved_objects, dry.shifted_pt),
+        (Some(FlowBlocked::Obstacle), 0, 0.0),
+        "{dry:?}"
+    );
     assert!(dry.overflow_pt > 0.0, "{dry:?}");
-    let fit = run(&doc.doc_id, p.doc_generation, edit_of(&p, &longer, Some(ParagraphFlow::Fit), true), false);
+    let fit = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &longer, Some(ParagraphFlow::Fit), true),
+        false,
+    );
     assert!(fit.is_ok(), "{fit:?}");
     // A shorter paragraph cannot pull it up either; the edit itself goes through.
-    let short = run(&doc.doc_id, p.doc_generation, edit_of(&p, "Short now.", None, true), false).unwrap();
+    let short = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, "Short now.", None, true),
+        false,
+    )
+    .unwrap();
     assert_eq!(short.shifted_pt, 0.0);
     // The blocked push, committed (the prompt's "overlap the rest"), writes and loses nothing.
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &longer, None, false), false).expect("write");
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &longer, None, false),
+        false,
+    )
+    .expect("write");
     assert_eq!(res.shifted_pt, 0.0);
     for (b, n) in survivors(&before, &p.object_ids, &res.objects.objects) {
-        assert!(same_bits(b, n), "{:?} {:?} moved", b.object_type, text_of(b));
+        assert!(
+            same_bits(b, n),
+            "{:?} {:?} moved",
+            b.object_type,
+            text_of(b)
+        );
     }
-    let images = res.objects.objects.iter().filter(|o| o.object_type == PageObjectType::Image).count();
+    let images = res
+        .objects
+        .objects
+        .iter()
+        .filter(|o| o.object_type == PageObjectType::Image)
+        .count();
     assert_eq!(images, 1, "the inline image is still there");
 }
 
@@ -1510,30 +2245,71 @@ fn flow_split_content_streams_keep_the_rest_of_the_page() {
     // text state of a line that piece 2 shows.
     let s0 = "q 0 690 612 102 re W n\nBT /F2 18 Tf 72 740 Td (A Heading Line) Tj ET\n".to_string();
     let s1 = format!("Q\n{}BT /F1 12 Tf 300 500 Td\n", para(72.0, 670.0, &PARA_A));
-    let s2 = "(Split words) Tj ET\nBT /F1 12 Tf 72 400 Td (Below in the last stream) Tj ET\n".to_string();
+    let s2 = "(Split words) Tj ET\nBT /F1 12 Tf 72 400 Td (Below in the last stream) Tj ET\n"
+        .to_string();
     let doc = open_bytes(pdf_streams(&[&s0, &s1, &s2], "", &[]));
     let before = objects_of(&doc.doc_id);
-    let split = before.iter().find(|o| text_of(o).contains("Split")).unwrap().clone();
-    assert!((split.matrix[4] - 300.0).abs() < 0.01 && (split.matrix[5] - 500.0).abs() < 0.01, "{split:?}");
+    let split = before
+        .iter()
+        .find(|o| text_of(o).contains("Split"))
+        .unwrap()
+        .clone();
+    assert!(
+        (split.matrix[4] - 300.0).abs() < 0.01 && (split.matrix[5] - 500.0).abs() < 0.01,
+        "{split:?}"
+    );
     let below = Rect::new(70.0, 395.0, 260.0, 412.0);
     let split_box = Rect::new(298.0, 496.0, 380.0, 512.0);
-    let (dark_below, dark_split) = (count_pixels(&doc.doc_id, below, is_dark), count_pixels(&doc.doc_id, split_box, is_dark));
+    let (dark_below, dark_split) = (
+        count_pixels(&doc.doc_id, below, is_dark),
+        count_pixels(&doc.doc_id, split_box, is_dark),
+    );
     assert!(dark_below > 50 && dark_split > 50);
     let p = probe(&doc.doc_id, 200.0, 660.0);
     for flow in [ParagraphFlow::Overlap, ParagraphFlow::Push] {
-        let dry = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{PARA_A_TEXT} {ONE_MORE}"), Some(flow), true), false);
+        let dry = run(
+            &doc.doc_id,
+            p.doc_generation,
+            edit_of(&p, &format!("{PARA_A_TEXT} {ONE_MORE}"), Some(flow), true),
+            false,
+        );
         assert!(dry.is_ok(), "{flow:?}: {dry:?}");
     }
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{PARA_A_TEXT} {ONE_MORE}"), Some(ParagraphFlow::Overlap), false), false)
-        .unwrap();
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(
+            &p,
+            &format!("{PARA_A_TEXT} {ONE_MORE}"),
+            Some(ParagraphFlow::Overlap),
+            false,
+        ),
+        false,
+    )
+    .unwrap();
     for (b, n) in survivors(&before, &p.object_ids, &res.objects.objects) {
-        assert!(same_bits(b, n), "{:?}: {:?} → {:?}", text_of(b), b.matrix, n.matrix);
+        assert!(
+            same_bits(b, n),
+            "{:?}: {:?} → {:?}",
+            text_of(b),
+            b.matrix,
+            n.matrix
+        );
     }
     // Everything still renders: nothing is left under the heading band's clip.
-    assert!(count_pixels(&doc.doc_id, below, is_dark) * 10 >= dark_below * 9, "the last piece went blank");
-    assert!(count_pixels(&doc.doc_id, split_box, is_dark) * 10 >= dark_split * 9, "the split line moved");
+    assert!(
+        count_pixels(&doc.doc_id, below, is_dark) * 10 >= dark_below * 9,
+        "the last piece went blank"
+    );
+    assert!(
+        count_pixels(&doc.doc_id, split_box, is_dark) * 10 >= dark_split * 9,
+        "the split line moved"
+    );
     let new_text = Rect::new(res.rect.l, res.rect.b, res.rect.r, 650.0);
-    assert!(count_pixels(&doc.doc_id, new_text, is_dark) > 200, "the new text is clipped away");
+    assert!(
+        count_pixels(&doc.doc_id, new_text, is_dark) > 200,
+        "the new text is clipped away"
+    );
 }
 
 /// The same on the real file: any paragraph edit on 160F's first page keeps every other
@@ -1546,8 +2322,18 @@ fn flow_160f_edit_keeps_the_superscript_and_the_right_column() {
     let dark = count_pixels(&doc.doc_id, region, is_dark);
     let p = probe(&doc.doc_id, 380.0, 325.0);
     assert_eq!(p.strategy, TextEditStrategy::InPlace, "{p:?}");
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{} {MORE}", p.text), Some(ParagraphFlow::Overlap), false), true)
-        .unwrap();
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(
+            &p,
+            &format!("{} {MORE}", p.text),
+            Some(ParagraphFlow::Overlap),
+            false,
+        ),
+        true,
+    )
+    .unwrap();
     for (b, n) in survivors(&before, &p.object_ids, &res.objects.objects) {
         assert!(
             b.object_type == n.object_type
@@ -1560,16 +2346,28 @@ fn flow_160f_edit_keeps_the_superscript_and_the_right_column() {
         );
     }
     let now = count_pixels(&doc.doc_id, region, is_dark);
-    assert!(now * 10 >= dark * 9 && dark > 200, "the right column went blank: {dark} → {now} dark pixels");
+    assert!(
+        now * 10 >= dark * 9 && dark > 200,
+        "the right column went blank: {dark} → {now} dark pixels"
+    );
 }
 
 /// A SeePDF header stamp 4 pt above a paragraph's first line is not part of the paragraph:
 /// the probe leaves it out and the edit neither deletes it nor weaves its text in.
 #[test]
 fn flow_header_stamp_never_joins_the_paragraph() {
-    let body: Vec<String> = (0..30).map(|k| format!("Body line {k} of the text that follows the edited paragraph.")).collect();
+    let body: Vec<String> = (0..30)
+        .map(|k| format!("Body line {k} of the text that follows the edited paragraph."))
+        .collect();
     let refs: Vec<&str> = body.iter().map(String::as_str).collect();
-    let mut c = para(72.0, 740.0, &["The edited paragraph near the top of the page, which gets longer when", "the user types more words into it."]);
+    let mut c = para(
+        72.0,
+        740.0,
+        &[
+            "The edited paragraph near the top of the page, which gets longer when",
+            "the user types more words into it.",
+        ],
+    );
     c.push_str(&para(72.0, 700.0, &refs));
     let doc = open_bytes(pdf(&c, &[]));
     let id = doc.doc_id.clone();
@@ -1588,16 +2386,34 @@ fn flow_header_stamp_never_joins_the_paragraph() {
     };
     with_state(move |st| stamp::add_stamp(st, &id, &header)).expect("header stamp");
     let before = objects_of(&doc.doc_id);
-    let stamp_obj = before.iter().find(|o| text_of(o).contains("Page 1")).unwrap().clone();
+    let stamp_obj = before
+        .iter()
+        .find(|o| text_of(o).contains("Page 1"))
+        .unwrap()
+        .clone();
     let p = probe(&doc.doc_id, 200.0, 735.0);
     assert!(!p.object_ids.contains(&stamp_obj.object_id), "{p:?}");
     assert!(!p.text.contains("Page 1"), "{}", p.text);
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{} {MORE}", p.text), None, false), false)
-        .unwrap();
-    let kept = res.objects.objects.iter().find(|o| text_of(o).contains("Page 1")).expect("the stamp is still there");
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &format!("{} {MORE}", p.text), None, false),
+        false,
+    )
+    .unwrap();
+    let kept = res
+        .objects
+        .objects
+        .iter()
+        .find(|o| text_of(o).contains("Page 1"))
+        .expect("the stamp is still there");
     assert!(same_bits(&stamp_obj, kept), "the stamp never moves");
     let again = probe(&doc.doc_id, 200.0, 735.0);
-    assert!(!again.text.contains("Page 1") && again.text.ends_with(MORE), "{}", again.text);
+    assert!(
+        !again.text.contains("Page 1") && again.text.ends_with(MORE),
+        "{}",
+        again.text
+    );
     // An edit naming the stamp's object is refused.
     let mut e = edit_of(&p, "x", None, true);
     e.object_ids = vec![kept.object_id];
@@ -1616,8 +2432,13 @@ fn flow_justified_paragraph_with_long_words_stays_justified() {
     assert_eq!(p.align, ParagraphAlign::Justify, "{p:?}");
     let add = "Counterintuitively, the internationalization infrastructure responsibilities include \
                characterization, compartmentalization and telecommunications interoperability considerations.";
-    let res = run(&doc.doc_id, p.doc_generation, edit_of(&p, &format!("{} {add}", p.text), None, false), false)
-        .unwrap();
+    let res = run(
+        &doc.doc_id,
+        p.doc_generation,
+        edit_of(&p, &format!("{} {add}", p.text), None, false),
+        false,
+    )
+    .unwrap();
     let again = probe(&doc.doc_id, 420.0, 400.0);
     assert_eq!(again.lines, res.lines);
     assert_eq!(again.align, ParagraphAlign::Justify, "{again:?}");
@@ -1631,29 +2452,81 @@ fn flow_emptied_paragraph_pulls_what_follows_into_its_place() {
     let doc = open_bytes(pdf(&flow_content(), &[]));
     let before = objects_of(&doc.doc_id);
     let a = probe(&doc.doc_id, 200.0, 690.0);
-    let c_top = before.iter().filter(|o| is_c_or_d(&text_of(o))).map(|o| o.rect.t).fold(f32::MIN, f32::max);
+    let c_top = before
+        .iter()
+        .filter(|o| is_c_or_d(&text_of(o)))
+        .map(|o| o.rect.t)
+        .fold(f32::MIN, f32::max);
     let pull = a.rect.t - c_top;
     for text in ["", "   ", "\n"] {
-        let dry = run(&doc.doc_id, a.doc_generation, edit_of(&a, text, None, true), false).expect("dry run");
-        assert_eq!((dry.lines, dry.moved_objects, dry.blocked), (0, 4, None), "{text:?}: {dry:?}");
-        assert!((dry.shifted_pt + pull).abs() < 0.02, "{text:?}: {} vs -{pull}", dry.shifted_pt);
+        let dry = run(
+            &doc.doc_id,
+            a.doc_generation,
+            edit_of(&a, text, None, true),
+            false,
+        )
+        .expect("dry run");
+        assert_eq!(
+            (dry.lines, dry.moved_objects, dry.blocked),
+            (0, 4, None),
+            "{text:?}: {dry:?}"
+        );
+        assert!(
+            (dry.shifted_pt + pull).abs() < 0.02,
+            "{text:?}: {} vs -{pull}",
+            dry.shifted_pt
+        );
     }
-    let over = run(&doc.doc_id, a.doc_generation, edit_of(&a, "", Some(ParagraphFlow::Overlap), true), false).unwrap();
+    let over = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, "", Some(ParagraphFlow::Overlap), true),
+        false,
+    )
+    .unwrap();
     assert_eq!((over.shifted_pt, over.moved_objects), (0.0, 0));
-    assert_eq!(generation(&doc.doc_id), a.doc_generation, "dry runs change nothing");
+    assert_eq!(
+        generation(&doc.doc_id),
+        a.doc_generation,
+        "dry runs change nothing"
+    );
 
-    let res = run(&doc.doc_id, a.doc_generation, edit_of(&a, "", None, false), false).expect("emptied");
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, "", None, false),
+        false,
+    )
+    .expect("emptied");
     let after = &res.objects.objects;
-    assert_eq!(after.len(), before.len() - a.object_ids.len(), "only the paragraph's objects are gone");
+    assert_eq!(
+        after.len(),
+        before.len() - a.object_ids.len(),
+        "only the paragraph's objects are gone"
+    );
     for (b, n) in survivors(&before, &a.object_ids, after) {
         if is_c_or_d(&text_of(b)) {
-            assert!(moved_by(b, n, pull), "{:?} {:?} → {:?}", text_of(b), b.rect, n.rect);
+            assert!(
+                moved_by(b, n, pull),
+                "{:?} {:?} → {:?}",
+                text_of(b),
+                b.rect,
+                n.rect
+            );
         } else {
             assert!(same_bits(b, n), "{:?} moved", text_of(b));
         }
     }
-    let c_top_after = after.iter().filter(|o| is_c_or_d(&text_of(o))).map(|o| o.rect.t).fold(f32::MIN, f32::max);
-    assert!((c_top_after - a.rect.t).abs() < 0.02, "C took A's place: {c_top_after} vs {}", a.rect.t);
+    let c_top_after = after
+        .iter()
+        .filter(|o| is_c_or_d(&text_of(o)))
+        .map(|o| o.rect.t)
+        .fold(f32::MIN, f32::max);
+    assert!(
+        (c_top_after - a.rect.t).abs() < 0.02,
+        "C took A's place: {c_top_after} vs {}",
+        a.rect.t
+    );
     // One undo step brings the paragraph and the layout back.
     let id = doc.doc_id.clone();
     with_state(move |st| registry::undo(st, &id, false)).expect("undo");

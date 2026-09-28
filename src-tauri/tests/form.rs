@@ -57,10 +57,9 @@ fn reopen(bytes: Vec<u8>) -> TestDoc {
 
 fn render_rect(doc_id: &str, page: u16, rect: Rect) -> (u32, u32, Vec<u8>) {
     let doc_id = doc_id.to_string();
-    let buffer = with_state(move |st| {
-        tiles::render_raw_buffer(st, &doc_id, page, RENDER_SCALE, Some(rect))
-    })
-    .expect("render rect");
+    let buffer =
+        with_state(move |st| tiles::render_raw_buffer(st, &doc_id, page, RENDER_SCALE, Some(rect)))
+            .expect("render rect");
     let width = u32::from_le_bytes(buffer[8..12].try_into().unwrap());
     let height = u32::from_le_bytes(buffer[12..16].try_into().unwrap());
     (width, height, buffer[32..].to_vec())
@@ -363,9 +362,13 @@ fn form_probe_replace_selection() {
         raw::form::force_to_kill_focus(bindings, form);
         let after_replace = a.form_field_value(form);
         // Now the verified path, for comparison.
-        let (down, up) = raw::form::click(bindings, form, &scratch.page, 
+        let (down, up) = raw::form::click(
+            bindings,
+            form,
+            &scratch.page,
             (target.rect.l + target.rect.r) / 2.0,
-            (target.rect.b + target.rect.t) / 2.0);
+            (target.rect.b + target.rect.t) / 2.0,
+        );
         let selected2 = raw::form::select_all_text(bindings, form, &scratch.page);
         raw::form::type_text(bindings, form, &scratch.page, "CHAR");
         raw::form::force_to_kill_focus(bindings, form);

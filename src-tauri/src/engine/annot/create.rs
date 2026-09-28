@@ -30,9 +30,9 @@ use crate::ipc::types::{
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
-    PdfColor, PdfFontToken, PdfPage, PdfPageAnnotationCommon, PdfPageImageObject, PdfPageObjectCommon,
-    PdfPageObjectsCommon, PdfPagePathObject, PdfPageTextObject, PdfPoints, PdfRect,
-    PdfiumLibraryBindings,
+    PdfColor, PdfFontToken, PdfPage, PdfPageAnnotationCommon, PdfPageImageObject,
+    PdfPageObjectCommon, PdfPageObjectsCommon, PdfPagePathObject, PdfPageTextObject, PdfPoints,
+    PdfRect, PdfiumLibraryBindings,
 };
 use std::os::raw::c_int;
 
@@ -76,15 +76,27 @@ pub fn create(
 
     let mut scratch = ScratchPage::open(doc, page_index)?;
     match spec {
-        AnnotSpec::Highlight(m) => {
-            markup(bindings, &scratch.page, consts::FPDF_ANNOT_HIGHLIGHT, m, &id)?
-        }
-        AnnotSpec::Underline(m) => {
-            markup(bindings, &scratch.page, consts::FPDF_ANNOT_UNDERLINE, m, &id)?
-        }
-        AnnotSpec::Strikeout(m) => {
-            markup(bindings, &scratch.page, consts::FPDF_ANNOT_STRIKEOUT, m, &id)?
-        }
+        AnnotSpec::Highlight(m) => markup(
+            bindings,
+            &scratch.page,
+            consts::FPDF_ANNOT_HIGHLIGHT,
+            m,
+            &id,
+        )?,
+        AnnotSpec::Underline(m) => markup(
+            bindings,
+            &scratch.page,
+            consts::FPDF_ANNOT_UNDERLINE,
+            m,
+            &id,
+        )?,
+        AnnotSpec::Strikeout(m) => markup(
+            bindings,
+            &scratch.page,
+            consts::FPDF_ANNOT_STRIKEOUT,
+            m,
+            &id,
+        )?,
         AnnotSpec::Squiggly(m) => {
             markup(bindings, &scratch.page, consts::FPDF_ANNOT_SQUIGGLY, m, &id)?
         }
@@ -279,11 +291,9 @@ fn line(
     id: &str,
     arrow: bool,
 ) -> Result<(), EngineError> {
-    let heads = spec.heads.unwrap_or(if arrow {
-        [false, true]
-    } else {
-        [false, false]
-    });
+    let heads = spec
+        .heads
+        .unwrap_or(if arrow { [false, true] } else { [false, false] });
     let mut paths: Vec<Vec<f32>> = vec![vec![spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]];
     if heads[1] {
         paths.extend(arrow_head(spec.p2, spec.p1, spec.width));
@@ -372,14 +382,9 @@ fn textbox(
         // Before any object: the appearance BBox is the `/Rect` at append time.
         a.set_bounds(pdf_rect).ctx("set stamp bounds")?;
         if let Some(fill) = spec.fill_color {
-            let bg = PdfPagePathObject::new_rect(
-                doc.pdf(),
-                pdf_rect,
-                None,
-                None,
-                Some(rgb(fill, 255)),
-            )
-            .ctx("text box background")?;
+            let bg =
+                PdfPagePathObject::new_rect(doc.pdf(), pdf_rect, None, None, Some(rgb(fill, 255)))
+                    .ctx("text box background")?;
             a.objects_mut()
                 .add_path_object(bg)
                 .ctx("append text box background")?;
@@ -399,9 +404,7 @@ fn textbox(
                     .unwrap_or(0.0);
                 let x = match spec.align {
                     TextAlign::Left => spec.rect.l + TEXTBOX_PADDING,
-                    TextAlign::Center => {
-                        spec.rect.l + (spec.rect.width() - width) / 2.0
-                    }
+                    TextAlign::Center => spec.rect.l + (spec.rect.width() - width) / 2.0,
                     TextAlign::Right => spec.rect.r - TEXTBOX_PADDING - width,
                 };
                 // Transform before appending: pdfium-render never calls
@@ -476,9 +479,8 @@ fn stamp(
                     .ctx("append stamp image")?;
             }
             StampImage::Builtin { builtin } => {
-                let token = label_font.ok_or_else(|| {
-                    EngineError::invalid("a built-in stamp needs a label font")
-                })?;
+                let token = label_font
+                    .ok_or_else(|| EngineError::invalid("a built-in stamp needs a label font"))?;
                 let colour = builtin_color(builtin);
                 // A Korean seal (결재 / 승인 / 기밀) gets a heavier border, like 인주 on paper.
                 let border_width = if fonts::is_latin1(builtin) { 2.0 } else { 2.5 };
@@ -511,7 +513,14 @@ fn stamp(
                 // baseline than Latin capitals, and `size` alone would put 결재 low.
                 let (left, bottom, right, top) = t
                     .bounds()
-                    .map(|b| (b.left().value, b.bottom().value, b.right().value, b.top().value))
+                    .map(|b| {
+                        (
+                            b.left().value,
+                            b.bottom().value,
+                            b.right().value,
+                            b.top().value,
+                        )
+                    })
                     .unwrap_or((0.0, 0.0, 0.0, size));
                 t.translate(
                     points(spec.rect.l + (spec.rect.width() - (right - left)) / 2.0 - left),
@@ -572,12 +581,7 @@ fn rgb(c: Rgb, alpha: u8) -> PdfColor {
 /// `Rect { l, b, r, t }` → `PdfRect::new_from_values(bottom, left, top, right)` — note the
 /// argument order (`STAGE0_NOTES.md` §5.8).
 fn to_pdf_rect(r: Rect) -> PdfRect {
-    PdfRect::new_from_values(
-        r.b.min(r.t),
-        r.l.min(r.r),
-        r.b.max(r.t),
-        r.l.max(r.r),
-    )
+    PdfRect::new_from_values(r.b.min(r.t), r.l.min(r.r), r.b.max(r.t), r.l.max(r.r))
 }
 
 #[cfg(test)]
@@ -592,7 +596,11 @@ mod tests {
             assert_eq!(stroke.len(), 4);
             assert_eq!((stroke[0], stroke[1]), (100.0, 100.0));
             // The barbs point back towards `from`, i.e. to the left of the tip.
-            assert!(stroke[2] < 100.0, "barb x {} should be left of the tip", stroke[2]);
+            assert!(
+                stroke[2] < 100.0,
+                "barb x {} should be left of the tip",
+                stroke[2]
+            );
         }
         // Symmetric about the line's axis.
         assert!((heads[0][3] - 100.0).abs() > 0.5);

@@ -338,11 +338,17 @@ fn outline_dest(d: &PdfDestination<'_>) -> Option<crate::ipc::types::OutlineDest
             zoom: zoom.filter(|z| *z > 0.0),
         },
         View::FitPageHorizontallyToWindow(y) | View::FitBoundsHorizontallyToWindow(y) => {
-            OutlineDest { x: None, y: y.map(|p| p.value), zoom: None }
+            OutlineDest {
+                x: None,
+                y: y.map(|p| p.value),
+                zoom: None,
+            }
         }
-        View::FitPageVerticallyToWindow(x) | View::FitBoundsVerticallyToWindow(x) => {
-            OutlineDest { x: x.map(|p| p.value), y: None, zoom: None }
-        }
+        View::FitPageVerticallyToWindow(x) | View::FitBoundsVerticallyToWindow(x) => OutlineDest {
+            x: x.map(|p| p.value),
+            y: None,
+            zoom: None,
+        },
         View::FitPageToRectangle(rect) => OutlineDest {
             x: Some(rect.left().value),
             y: Some(rect.top().value),
@@ -404,7 +410,12 @@ pub fn open_named<'p>(
     }
     let xfa = doc
         .form()
-        .map(|f| matches!(f.form_type(), PdfFormType::XfaFull | PdfFormType::XfaForeground))
+        .map(|f| {
+            matches!(
+                f.form_type(),
+                PdfFormType::XfaFull | PdfFormType::XfaForeground
+            )
+        })
         .unwrap_or(false);
     let encrypted = security_revision(bindings, &doc) != -1 || password.is_some();
 
@@ -463,7 +474,9 @@ pub fn open_named<'p>(
 /// Closes a document: pages → form → document, in that order.
 pub fn close(st: &mut EngineState<'_>, doc_id: &str) -> Result<(), EngineError> {
     let Some(mut doc) = st.docs.remove(doc_id) else {
-        return Err(EngineError::not_found(format!("unknown document '{doc_id}'")));
+        return Err(EngineError::not_found(format!(
+            "unknown document '{doc_id}'"
+        )));
     };
     if let Some(form) = doc.form {
         raw::form::force_to_kill_focus(doc.bindings, form);
@@ -650,7 +663,14 @@ pub fn mutate<'p, T>(
             }
         }
     }
-    announce(st, doc_id, opts.pages, opts.structural, opts.reason, TileDrop::Older(generation))?;
+    announce(
+        st,
+        doc_id,
+        opts.pages,
+        opts.structural,
+        opts.reason,
+        TileDrop::Older(generation),
+    )?;
     Ok(out)
 }
 
@@ -758,7 +778,14 @@ pub fn mutate_bytes(
     let doc = st.doc_mut(doc_id)?;
     doc.generation += 1;
     let generation = doc.generation;
-    announce(st, doc_id, opts.pages, opts.structural, opts.reason, TileDrop::Older(generation))?;
+    announce(
+        st,
+        doc_id,
+        opts.pages,
+        opts.structural,
+        opts.reason,
+        TileDrop::Older(generation),
+    )?;
     Ok(st.doc(doc_id)?.info())
 }
 

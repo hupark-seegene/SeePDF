@@ -14,8 +14,8 @@ use crate::engine::raw;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::EngineError;
 use pdfium_render::prelude::{
-    FPDF_FORMHANDLE, PdfDocument, PdfPage, PdfPageContentRegenerationStrategy, PdfPageIndex,
-    PdfiumLibraryBindings,
+    PdfDocument, PdfPage, PdfPageContentRegenerationStrategy, PdfPageIndex, PdfiumLibraryBindings,
+    FPDF_FORMHANDLE,
 };
 use std::collections::{HashMap, VecDeque};
 

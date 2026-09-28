@@ -20,7 +20,9 @@ use std::path::PathBuf;
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
-        eprintln!("usage: cargo run --release --example inspect_pdf -- <file.pdf> [--text] [--page N]");
+        eprintln!(
+            "usage: cargo run --release --example inspect_pdf -- <file.pdf> [--text] [--page N]"
+        );
         std::process::exit(2);
     };
     let rest: Vec<String> = args.collect();

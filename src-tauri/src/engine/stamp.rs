@@ -141,7 +141,14 @@ pub fn add_stamp(
                 .ok_or_else(|| EngineError::new(ErrorCode::Pdfium, "read page geometry"))?;
             let space = VisualSpace::new(geom.rotation, geom.crop);
             match (&spec.source, &xobject) {
-                (PageStampSource::Text { font_size_pt, color, .. }, _) => {
+                (
+                    PageStampSource::Text {
+                        font_size_pt,
+                        color,
+                        ..
+                    },
+                    _,
+                ) => {
                     place_text(
                         bindings,
                         document,
@@ -191,7 +198,9 @@ fn validate(spec: &PageStampSpec) -> Result<(), EngineError> {
         return Err(EngineError::invalid("opacity must be within 0..1"));
     }
     match &spec.source {
-        PageStampSource::Text { text, font_size_pt, .. } => {
+        PageStampSource::Text {
+            text, font_size_pt, ..
+        } => {
             if text.trim().is_empty() {
                 return Err(EngineError::invalid("the stamp text is empty"));
             }
@@ -308,7 +317,13 @@ pub fn visual_to_user(rotation: u16, crop: Rect) -> Matrix {
 }
 
 /// Bottom-left of a `w × h` box placed by `anchor` + `margin` on the visual page.
-pub fn anchor_origin(anchor: StampAnchor, margin: f32, space: &VisualSpace, w: f32, h: f32) -> (f32, f32) {
+pub fn anchor_origin(
+    anchor: StampAnchor,
+    margin: f32,
+    space: &VisualSpace,
+    w: f32,
+    h: f32,
+) -> (f32, f32) {
     use StampAnchor::*;
     let x = match anchor {
         Tl | Ml | Bl => margin,
@@ -515,15 +530,15 @@ pub fn stamp_indices(
     role: Option<StampRole>,
 ) -> Vec<usize> {
     (0..raw::object::object_count(bindings, page))
-        .filter(|&i| {
-            match raw::object::mark_param(bindings, page, i, STAMP_MARK, ROLE_PARAM) {
+        .filter(
+            |&i| match raw::object::mark_param(bindings, page, i, STAMP_MARK, ROLE_PARAM) {
                 None => false,
                 Some(found) => match role {
                     None => true,
                     Some(role) => found.as_deref().and_then(StampRole::from_name) == Some(role),
                 },
-            }
-        })
+            },
+        )
         .collect()
 }
 
@@ -575,7 +590,9 @@ fn image_page<'p>(
         ))
         .ctx("create scratch page")?;
     let mut object = PdfPageImageObject::new(&doc, &image).ctx("create image object")?;
-    object.scale(width_pt, height_pt).ctx("scale image object")?;
+    object
+        .scale(width_pt, height_pt)
+        .ctx("scale image object")?;
     page.objects_mut()
         .add_image_object(object)
         .ctx("add image object")?;
@@ -616,10 +633,19 @@ mod tests {
     #[test]
     fn tokens_are_replaced_and_unknown_ones_stay() {
         assert_eq!(
-            substitute("{{page}} / {{total}} {{filename}} {{x}}", 3, 9, "2026-09-28", "a"),
+            substitute(
+                "{{page}} / {{total}} {{filename}} {{x}}",
+                3,
+                9,
+                "2026-09-28",
+                "a"
+            ),
             "3 / 9 a {{x}}"
         );
-        assert_eq!(substitute("{{date}}", 1, 1, "2026-09-28", "a"), "2026-09-28");
+        assert_eq!(
+            substitute("{{date}}", 1, 1, "2026-09-28", "a"),
+            "2026-09-28"
+        );
     }
 
     #[test]
@@ -654,7 +680,10 @@ mod tests {
                 for (u, v) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
                     let (x, y) = apply(m, u, v);
                     assert!(
-                        x >= 20.0 - 1e-2 && x <= 580.0 + 1e-2 && y >= 20.0 - 1e-2 && y <= 780.0 + 1e-2,
+                        x >= 20.0 - 1e-2
+                            && x <= 580.0 + 1e-2
+                            && y >= 20.0 - 1e-2
+                            && y <= 780.0 + 1e-2,
                         "{anchor:?} {deg}°: corner ({x}, {y}) outside the margin"
                     );
                 }

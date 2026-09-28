@@ -41,8 +41,9 @@ impl Snapshot {
         match self {
             Snapshot::Ram(b) => Ok(b.clone()),
             Snapshot::Disk { path, .. } => {
-                let bytes = std::fs::read(path)
-                    .map_err(|e| EngineError::io(format!("read snapshot {}: {e}", path.display())))?;
+                let bytes = std::fs::read(path).map_err(|e| {
+                    EngineError::io(format!("read snapshot {}: {e}", path.display()))
+                })?;
                 Ok(Arc::from(bytes.into_boxed_slice()))
             }
         }
@@ -176,10 +177,7 @@ impl History {
     }
 
     /// Pops the newest undo entry; the caller pushes `current` onto the redo stack.
-    pub fn take_undo(
-        &mut self,
-        current: Arc<[u8]>,
-    ) -> Result<Option<Popped>, EngineError> {
+    pub fn take_undo(&mut self, current: Arc<[u8]>) -> Result<Option<Popped>, EngineError> {
         let Some(entry) = self.undo.pop() else {
             return Ok(None);
         };
@@ -195,10 +193,7 @@ impl History {
     }
 
     /// Pops the newest redo entry; the caller pushes `current` onto the undo stack.
-    pub fn take_redo(
-        &mut self,
-        current: Arc<[u8]>,
-    ) -> Result<Option<Popped>, EngineError> {
+    pub fn take_redo(&mut self, current: Arc<[u8]>) -> Result<Option<Popped>, EngineError> {
         let Some(entry) = self.redo.pop() else {
             return Ok(None);
         };
@@ -244,7 +239,8 @@ impl History {
 
     fn spill_path(&mut self) -> PathBuf {
         self.next_spill += 1;
-        self.spill_dir.join(format!("snap-{:06}.pdf", self.next_spill))
+        self.spill_dir
+            .join(format!("snap-{:06}.pdf", self.next_spill))
     }
 
     /// Test/introspection helper: whether the newest undo entry lives on disk.

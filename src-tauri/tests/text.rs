@@ -14,25 +14,24 @@ use seepdf_lib::engine::Lane;
 #[test]
 fn text_layer_tracemonkey() {
     let doc = open("tracemonkey.pdf");
-    let (chars, words, lines, generated, first_line, has_ids) =
-        with_doc(&doc.doc_id, |d| {
-            let l = layer::layer(d, 0)?;
-            let first = l.lines[0];
-            let text: String = l.chars
-                [first.first_char as usize..(first.first_char + first.char_count) as usize]
-                .iter()
-                .map(|c| char::from_u32(c.codepoint).unwrap_or('?'))
-                .collect();
-            Ok((
-                l.chars.len(),
-                l.words.len(),
-                l.lines.len(),
-                l.chars.iter().filter(|c| c.is_generated()).count(),
-                text,
-                l.has_object_ids,
-            ))
-        })
-        .expect("build the text layer");
+    let (chars, words, lines, generated, first_line, has_ids) = with_doc(&doc.doc_id, |d| {
+        let l = layer::layer(d, 0)?;
+        let first = l.lines[0];
+        let text: String = l.chars
+            [first.first_char as usize..(first.first_char + first.char_count) as usize]
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('?'))
+            .collect();
+        Ok((
+            l.chars.len(),
+            l.words.len(),
+            l.lines.len(),
+            l.chars.iter().filter(|c| c.is_generated()).count(),
+            text,
+            l.has_object_ids,
+        ))
+    })
+    .expect("build the text layer");
 
     assert_eq!(chars, 5087, "char count");
     assert_eq!(words, 754, "word count");
@@ -75,7 +74,12 @@ fn text_matrix_vs_pdfium() {
                 let d = st.doc_mut(&doc_id)?;
                 let text_layer = layer::layer(d, page_index)?;
                 let page = d.page(page_index)?;
-                for char_entry in text_layer.chars.iter().filter(|c| !c.is_generated()).take(40) {
+                for char_entry in text_layer
+                    .chars
+                    .iter()
+                    .filter(|c| !c.is_generated())
+                    .take(40)
+                {
                     let (x, y) = (char_entry.loose.l, char_entry.baseline_y);
                     let mine = (
                         matrix[0] * x + matrix[2] * y + matrix[4],
@@ -83,9 +87,7 @@ fn text_matrix_vs_pdfium() {
                     );
                     let theirs = page
                         .points_to_pixels(PdfPoints::new(x), PdfPoints::new(y), &config)
-                        .map_err(|e| {
-                            seepdf_lib::ipc::EngineError::pdfium("points_to_pixels", e)
-                        })?;
+                        .map_err(|e| seepdf_lib::ipc::EngineError::pdfium("points_to_pixels", e))?;
                     worst = worst
                         .max((mine.0 - theirs.0 as f32).abs())
                         .max((mine.1 - theirs.1 as f32).abs());
@@ -127,14 +129,25 @@ fn text_binary_layer_roundtrip() {
     assert_eq!(words_at, 64 + 5087 * 32);
     assert_eq!(lines_at, words_at + 754 * 12);
     assert!(buffer.len() >= text_at + 4 + expected_text.len());
-    assert_eq!(serialize::parse_text(&buffer).as_deref(), Some(expected_text.as_str()));
+    assert_eq!(
+        serialize::parse_text(&buffer).as_deref(),
+        Some(expected_text.as_str())
+    );
 
     // First char: 'T' of "Trace-based", loose box from the spike.
     let f32_at = |o: usize| f32::from_le_bytes(buffer[o..o + 4].try_into().unwrap());
     let codepoint = u32::from_le_bytes(buffer[64..68].try_into().unwrap());
     assert_eq!(char::from_u32(codepoint), Some('T'));
-    assert!((f32_at(68) - 80.52).abs() < 0.1, "loose.l was {}", f32_at(68));
-    assert!((f32_at(80) - 713.04).abs() < 0.1, "loose.t was {}", f32_at(80));
+    assert!(
+        (f32_at(68) - 80.52).abs() < 0.1,
+        "loose.l was {}",
+        f32_at(68)
+    );
+    assert!(
+        (f32_at(80) - 713.04).abs() < 0.1,
+        "loose.t was {}",
+        f32_at(80)
+    );
 }
 
 /// Our Rust search must return exactly the hit counts PDFium's own `FPDFText_FindStart`
@@ -152,8 +165,8 @@ fn search_counts_match_pdfium() {
         let doc_id = doc_id.clone();
         let (ours, theirs) = engine()
             .call_blocking(Lane::Background, "test/search", move |st| {
-                let query = search::Query::new("monkey", match_case, whole_word)
-                    .expect("non-empty query");
+                let query =
+                    search::Query::new("monkey", match_case, whole_word).expect("non-empty query");
                 let mut ours = 0usize;
                 let mut theirs = 0usize;
                 for page in 0..page_count {

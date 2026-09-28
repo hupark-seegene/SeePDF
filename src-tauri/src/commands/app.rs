@@ -77,7 +77,8 @@ pub async fn write_recent_thumbnail(
 /// Returns the absolute path. File I/O only — no pdfium, so it never touches the engine thread.
 #[tauri::command]
 pub async fn write_signature_image(app: AppHandle, bytes: Vec<u8>) -> Result<String, EngineError> {
-    let dir = store::signatures_dir(&app).ok_or_else(|| EngineError::io("no app data directory"))?;
+    let dir =
+        store::signatures_dir(&app).ok_or_else(|| EngineError::io("no app data directory"))?;
     tauri::async_runtime::spawn_blocking(move || crate::app::signatures::write_png(&dir, &bytes))
         .await
         .map_err(|e| EngineError::io(format!("write signature image: {e}")))?

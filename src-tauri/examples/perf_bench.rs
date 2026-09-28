@@ -136,7 +136,10 @@ fn run() -> Result<String, EngineError> {
     let pages: Vec<u16> = (0..SAMPLES.min(trace.pages)).collect();
     let mut page_2x = Vec::new();
     for &p in &pages {
-        page_2x.push(render_ms(&engine, key(&trace, p, RenderKind::Page, 200, 0, 0))?);
+        page_2x.push(render_ms(
+            &engine,
+            key(&trace, p, RenderKind::Page, 200, 0, 0),
+        )?);
     }
     let (p50, p95) = percentiles(page_2x);
     push("render.page.2x.p50.ms", format!("{p50:.2}"));
@@ -181,7 +184,10 @@ fn run() -> Result<String, EngineError> {
     // --- thumbnails -------------------------------------------------------------------
     let mut thumbs = Vec::new();
     for &p in &pages {
-        thumbs.push(render_ms(&engine, key(&trace, p, RenderKind::Thumb, 240, 0, 0))?);
+        thumbs.push(render_ms(
+            &engine,
+            key(&trace, p, RenderKind::Thumb, 240, 0, 0),
+        )?);
     }
     let (p50, p95) = percentiles(thumbs);
     push("render.thumb.p50.ms", format!("{p50:.2}"));

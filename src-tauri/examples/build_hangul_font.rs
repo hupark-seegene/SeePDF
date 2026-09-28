@@ -385,8 +385,7 @@ fn build_name(face: &ttf_parser::Face<'_>) -> Vec<u8> {
     let licence = source_name(13).unwrap_or_else(|| {
         "This font is licensed under the SIL Open Font License, Version 1.1.".into()
     });
-    let licence_url =
-        source_name(14).unwrap_or_else(|| "https://scripts.sil.org/OFL".to_string());
+    let licence_url = source_name(14).unwrap_or_else(|| "https://scripts.sil.org/OFL".to_string());
     // The **family** name, not name ID 4: for a variable font ID 4 is the default instance's
     // full name, which for Noto Sans KR is "Noto Sans KR Thin" — and this subset is instanced at
     // wght 400, so saying "Thin" would be wrong.
@@ -415,7 +414,10 @@ fn build_name(face: &ttf_parser::Face<'_>) -> Vec<u8> {
             0,
             0,
             *id,
-            value.chars().map(|c| if c.is_ascii() { c as u8 } else { b'?' }).collect(),
+            value
+                .chars()
+                .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
+                .collect(),
         ));
     }
     for (id, value) in &entries {
@@ -623,7 +625,9 @@ fn verify(font: &[u8], wanted: &[u32], known_missing: &[u32]) -> Result<(), Stri
         .glyph_hor_advance(space)
         .ok_or_else(|| "the space glyph has no advance width".to_string())?;
     if advance == 0 {
-        return Err("the space glyph has advance width 0 — text would render as SeePDFedited".into());
+        return Err(
+            "the space glyph has advance width 0 — text would render as SeePDFedited".into(),
+        );
     }
     println!(
         "  space = glyph {} with advance {} ({} code points verified, no glyph shared)",

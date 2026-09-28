@@ -6,7 +6,7 @@
 //! (**value 4** on build 8057; the deprecated 3 is a no-op — pages spike §8).
 
 use crate::ipc::{EngineError, ErrorCode};
-use pdfium_render::prelude::{FPDF_FILEWRITE, PdfDocument, PdfiumLibraryBindings};
+use pdfium_render::prelude::{PdfDocument, PdfiumLibraryBindings, FPDF_FILEWRITE};
 // `c_ulong` is `u64` on macOS and `u32` on Windows; the flags are 32 bits either way.
 use std::os::raw::{c_int, c_ulong, c_void};
 

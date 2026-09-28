@@ -71,10 +71,9 @@ fn reopen(bytes: Vec<u8>) -> TestDoc {
 /// RGBA pixels of `rect` (PDF points) at [`RENDER_SCALE`], through the one render config.
 fn render_rect(doc_id: &str, page: u16, rect: Rect) -> (u32, u32, Vec<u8>) {
     let doc_id = doc_id.to_string();
-    let buffer = with_state(move |st| {
-        tiles::render_raw_buffer(st, &doc_id, page, RENDER_SCALE, Some(rect))
-    })
-    .expect("render rect");
+    let buffer =
+        with_state(move |st| tiles::render_raw_buffer(st, &doc_id, page, RENDER_SCALE, Some(rect)))
+            .expect("render rect");
     let width = u32::from_le_bytes(buffer[8..12].try_into().unwrap());
     let height = u32::from_le_bytes(buffer[12..16].try_into().unwrap());
     (width, height, buffer[32..].to_vec())
@@ -91,9 +90,7 @@ fn changed_pixels(before: &(u32, u32, Vec<u8>), after: &(u32, u32, Vec<u8>)) -> 
         .2
         .chunks_exact(4)
         .zip(after.2.chunks_exact(4))
-        .filter(|(a, b)| {
-            (0..3).any(|i| (a[i] as i32 - b[i] as i32).abs() > PIXEL_TOLERANCE)
-        })
+        .filter(|(a, b)| (0..3).any(|i| (a[i] as i32 - b[i] as i32).abs() > PIXEL_TOLERANCE))
         .count()
 }
 
@@ -104,10 +101,7 @@ fn write_artifacts(name: &str, bytes: &[u8], doc_id: &str, page: u16) {
     std::fs::write(dir.join(format!("{name}.pdf")), bytes).expect("write pdf");
     let doc_id = doc_id.to_string();
     let png = with_state(move |st| {
-        let raw = tiles::render(
-            st,
-            &tiles::RenderRequest::new(page_key(st, &doc_id, page)),
-        )?;
+        let raw = tiles::render(st, &tiles::RenderRequest::new(page_key(st, &doc_id, page)))?;
         seepdf_lib::engine::render::encode::encode_png(&raw)
     });
     if let Ok(png) = png {
@@ -242,7 +236,11 @@ fn annot_raw_wrappers_smoke() {
         "flatten must not fail"
     );
     assert!(bytes.starts_with(b"%PDF"), "save_as_copy writes a PDF");
-    assert!(bytes.len() > 500, "save_as_copy wrote {} bytes", bytes.len());
+    assert!(
+        bytes.len() > 500,
+        "save_as_copy wrote {} bytes",
+        bytes.len()
+    );
 
     let reopened = reopen(bytes);
     assert_eq!(reopened.info.page_count, 7);
@@ -689,7 +687,10 @@ fn annot_stamp_korean_builtin() {
         Rect::new(460.0, 600.0, 532.0, 672.0),
         Rect::new(380.0, 520.0, 530.0, 570.0),
     ];
-    let before: Vec<_> = rects.iter().map(|r| render_rect(&doc.doc_id, 0, *r)).collect();
+    let before: Vec<_> = rects
+        .iter()
+        .map(|r| render_rect(&doc.doc_id, 0, *r))
+        .collect();
 
     let ids: Vec<String> = names
         .iter()
@@ -724,11 +725,18 @@ fn annot_stamp_korean_builtin() {
         let stamp = find(&annots, id);
         assert_eq!(stamp.kind, AnnotKind::Stamp, "{name}");
         assert_eq!(stamp.subtype, "Stamp", "{name}");
-        assert_eq!(stamp.stamp_kind.as_deref(), Some(*name), "/Subj is the builtin name");
+        assert_eq!(
+            stamp.stamp_kind.as_deref(),
+            Some(*name),
+            "/Subj is the builtin name"
+        );
 
         let after = render_rect(&saved.doc_id, 0, *rect);
         let changed = changed_pixels(before, &after);
-        assert!(changed > 300, "{name}: the stamp renders ({changed} pixels changed)");
+        assert!(
+            changed > 300,
+            "{name}: the stamp renders ({changed} pixels changed)"
+        );
 
         // The label: red pixels in the middle 60 % of the box, where the border never is.
         let (w, h, px) = &after;
@@ -818,7 +826,10 @@ fn annot_stamp_png_keeps_transparency() {
         .chunks_exact(4)
         .filter(|p| p[0] < 128 && p[1] < 128 && p[2] < 128)
         .count();
-    assert!(dark_before > 50, "the test rect must sit over text ({dark_before} dark px)");
+    assert!(
+        dark_before > 50,
+        "the test rect must sit over text ({dark_before} dark px)"
+    );
     let (top_changed, top_total) = band(&after, 0, rh / 4);
     let (mid_changed, mid_total) = band(&after, rh * 4 / 10, rh * 6 / 10);
     assert!(
@@ -1107,7 +1118,10 @@ fn annot_hidden_is_transient() {
         }),
     );
     let visible = render_rect(&doc.doc_id, 0, rect);
-    assert!(changed_pixels(&before, &visible) > 1000, "the square is drawn");
+    assert!(
+        changed_pixels(&before, &visible) > 1000,
+        "the square is drawn"
+    );
 
     let generation = {
         let doc_id = doc.doc_id.clone();
@@ -1292,7 +1306,9 @@ fn annot_drag_hide_unhides_before_the_undo_snapshot() {
             registry::mutate(
                 st,
                 &doc_id,
-                MutateOpts::new("undo.annotEdit", ChangeReason::Edit).page(0).keeps_text(),
+                MutateOpts::new("undo.annotEdit", ChangeReason::Edit)
+                    .page(0)
+                    .keeps_text(),
                 |d| annot::update::update(d, 0, &id, &patch),
             )
         })
@@ -1312,8 +1328,14 @@ fn annot_drag_hide_unhides_before_the_undo_snapshot() {
     assert!((find(&moved, &id).rect.l - (rect.l + 40.0)).abs() < 0.5);
     undo();
     let back = list(&doc.doc_id, 0);
-    assert!(!find(&back, &id).hidden, "undo brings the annotation back visible");
-    assert!((find(&back, &id).rect.l - rect.l).abs() < 0.5, "at its old place");
+    assert!(
+        !find(&back, &id).hidden,
+        "undo brings the annotation back visible"
+    );
+    assert!(
+        (find(&back, &id).rect.l - rect.l).abs() < 0.5,
+        "at its old place"
+    );
 
     // The wrong order: the update snapshots the HIDDEN bit, and undo restores it hidden.
     set_hidden(true);
@@ -1393,13 +1415,19 @@ fn annot_stamp_signature_reads_back_as_signature() {
     let annots = list(&saved.doc_id, 0);
     let s = find(&annots, &signature);
     assert_eq!(s.kind, AnnotKind::Signature);
-    assert!((s.rect.b - moved.b).abs() < 0.5 && (s.rect.l - moved.l).abs() < 0.5, "{:?}", s.rect);
+    assert!(
+        (s.rect.b - moved.b).abs() < 0.5 && (s.rect.l - moved.l).abs() < 0.5,
+        "{:?}",
+        s.rect
+    );
     assert_eq!(find(&annots, &plain).kind, AnnotKind::Stamp);
 
     // The wire shape: `signature` only when true.
     let spec = serde_json::to_value(AnnotSpec::Stamp(StampSpec {
         rect,
-        image: StampImage::Builtin { builtin: "approved".into() },
+        image: StampImage::Builtin {
+            builtin: "approved".into(),
+        },
         rotate: None,
         signature: false,
     }))
@@ -1410,5 +1438,11 @@ fn annot_stamp_signature_reads_back_as_signature() {
         "image": { "path": "/x.png" }, "signature": true
     }))
     .unwrap();
-    assert!(matches!(parsed, AnnotSpec::Stamp(StampSpec { signature: true, .. })));
+    assert!(matches!(
+        parsed,
+        AnnotSpec::Stamp(StampSpec {
+            signature: true,
+            ..
+        })
+    ));
 }

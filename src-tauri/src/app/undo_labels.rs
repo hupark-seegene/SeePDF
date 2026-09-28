@@ -87,35 +87,73 @@ mod tests {
     fn every_engine_undo_label_has_a_step_name_in_both_languages() {
         // Every label a `MutateOpts::new(..)` in the engine uses.
         let keys = [
-            "undo.annotCreate", "undo.annotDelete", "undo.annotEdit", "undo.formFill",
-            "undo.formReset", "undo.metadataEdit", "undo.metadataRemove", "undo.objectAdd",
-            "undo.objectDelete", "undo.objectEdit", "undo.paragraphEdit", "undo.objectTransform",
-            "undo.objectDuplicate", "undo.ocrApply", "undo.redact", "undo.watermark",
-            "undo.headerFooter", "undo.removeStamps", "undo.compress", "undo.pageOps", "undo.pageMove",
-            "undo.pageDelete", "undo.pageRotate", "undo.pageInsert", "undo.pageDuplicate",
-            "undo.pageInsertFrom", "undo.pageReverse",
+            "undo.annotCreate",
+            "undo.annotDelete",
+            "undo.annotEdit",
+            "undo.formFill",
+            "undo.formReset",
+            "undo.metadataEdit",
+            "undo.metadataRemove",
+            "undo.objectAdd",
+            "undo.objectDelete",
+            "undo.objectEdit",
+            "undo.paragraphEdit",
+            "undo.objectTransform",
+            "undo.objectDuplicate",
+            "undo.ocrApply",
+            "undo.redact",
+            "undo.watermark",
+            "undo.headerFooter",
+            "undo.removeStamps",
+            "undo.compress",
+            "undo.pageOps",
+            "undo.pageMove",
+            "undo.pageDelete",
+            "undo.pageRotate",
+            "undo.pageInsert",
+            "undo.pageDuplicate",
+            "undo.pageInsertFrom",
+            "undo.pageReverse",
         ];
         for key in keys {
             for locale in [Locale::Ko, Locale::En] {
-                assert!(step_name(key, locale).is_some(), "{key} missing in {locale:?}");
+                assert!(
+                    step_name(key, locale).is_some(),
+                    "{key} missing in {locale:?}"
+                );
             }
         }
     }
 
     #[test]
     fn menu_label_mapping() {
-        assert_eq!(item_label(HistoryItem::Undo, Some("undo.watermark"), Locale::En), "Undo Watermark");
-        assert_eq!(item_label(HistoryItem::Redo, Some("undo.watermark"), Locale::En), "Redo Watermark");
+        assert_eq!(
+            item_label(HistoryItem::Undo, Some("undo.watermark"), Locale::En),
+            "Undo Watermark"
+        );
+        assert_eq!(
+            item_label(HistoryItem::Redo, Some("undo.watermark"), Locale::En),
+            "Redo Watermark"
+        );
         // Korean follows the frontend's own template (`menu.edit.undoAction`), whatever its
         // punctuation: "실행 취소: 워터마크" today.
         let ko = item_label(HistoryItem::Undo, Some("undo.watermark"), Locale::Ko);
-        assert!(ko.starts_with("실행 취소") && ko.ends_with("워터마크"), "{ko}");
+        assert!(
+            ko.starts_with("실행 취소") && ko.ends_with("워터마크"),
+            "{ko}"
+        );
         let template = text("menu.edit.undoAction", Locale::Ko).expect("the frontend template");
         assert_eq!(ko, template.replace("{{action}}", "워터마크"));
         let ko = item_label(HistoryItem::Undo, Some("undo.removeStamps"), Locale::Ko);
-        assert!(ko.starts_with("실행 취소") && ko.ends_with("워터마크 제거"), "{ko}");
+        assert!(
+            ko.starts_with("실행 취소") && ko.ends_with("워터마크 제거"),
+            "{ko}"
+        );
         let ko = item_label(HistoryItem::Redo, Some("undo.redact"), Locale::Ko);
-        assert!(ko.starts_with("다시 실행") && ko.ends_with("영역 삭제"), "{ko}");
+        assert!(
+            ko.starts_with("다시 실행") && ko.ends_with("영역 삭제"),
+            "{ko}"
+        );
         assert_eq!(
             item_label(HistoryItem::Redo, Some("undo.objectDuplicate"), Locale::En),
             "Redo Duplicate Object"
@@ -123,7 +161,13 @@ mod tests {
         // Nothing to undo, an unknown key, a key outside `undo.*`: the plain item text.
         assert_eq!(item_label(HistoryItem::Undo, None, Locale::Ko), "실행 취소");
         assert_eq!(item_label(HistoryItem::Redo, None, Locale::En), "Redo");
-        assert_eq!(item_label(HistoryItem::Undo, Some("undo.nope"), Locale::En), "Undo");
-        assert_eq!(item_label(HistoryItem::Undo, Some("menu.file"), Locale::Ko), "실행 취소");
+        assert_eq!(
+            item_label(HistoryItem::Undo, Some("undo.nope"), Locale::En),
+            "Undo"
+        );
+        assert_eq!(
+            item_label(HistoryItem::Undo, Some("menu.file"), Locale::Ko),
+            "실행 취소"
+        );
     }
 }

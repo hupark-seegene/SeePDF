@@ -225,8 +225,14 @@ fn protocol_forms_parameter_is_its_own_cache_entry() {
     assert_eq!(with_widgets.status(), StatusCode::OK);
     assert_eq!(without.status(), StatusCode::OK);
 
-    assert_eq!(etag(&with_widgets), format!("\"{id}:{generation}:0:page:100:0:0:0:0:0:1\""));
-    assert_eq!(etag(&without), format!("\"{id}:{generation}:0:page:100:0:0:0:0:0:0\""));
+    assert_eq!(
+        etag(&with_widgets),
+        format!("\"{id}:{generation}:0:page:100:0:0:0:0:0:1\"")
+    );
+    assert_eq!(
+        etag(&without),
+        format!("\"{id}:{generation}:0:page:100:0:0:0:0:0:0\"")
+    );
     assert_ne!(
         with_widgets.body(),
         without.body(),

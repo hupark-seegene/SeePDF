@@ -28,8 +28,15 @@ fn rotate(doc_id: &str, page: u16, degrees: PdfPageRenderRotation) {
 
 fn rotations(doc_id: &str) -> Vec<u16> {
     let doc_id = doc_id.to_string();
-    with_state(move |st| Ok(st.doc(&doc_id)?.pages_meta.iter().map(|p| p.rotation).collect()))
-        .expect("rotations")
+    with_state(move |st| {
+        Ok(st
+            .doc(&doc_id)?
+            .pages_meta
+            .iter()
+            .map(|p| p.rotation)
+            .collect())
+    })
+    .expect("rotations")
 }
 
 /// 20 edits, then 20 undos, must return the document to its opening state; redo replays them.
@@ -66,7 +73,11 @@ fn history_roundtrip() {
         }
     })
     .expect("state");
-    assert_eq!(generation, (21, 20, true), "one mutate = one generation = one undo step");
+    assert_eq!(
+        generation,
+        (21, 20, true),
+        "one mutate = one generation = one undo step"
+    );
 
     for i in 0..20 {
         let doc_id = doc_id.clone();
@@ -74,7 +85,11 @@ fn history_roundtrip() {
             panic!("undo {i}: {e}");
         });
     }
-    assert_eq!(rotations(&doc_id), before, "20 undos restore the opening state");
+    assert_eq!(
+        rotations(&doc_id),
+        before,
+        "20 undos restore the opening state"
+    );
 
     let exhausted = with_state({
         let doc_id = doc_id.clone();
@@ -122,7 +137,10 @@ fn history_spills_to_disk() {
         .expect("an entry");
     assert_eq!(label, "undo.big");
     assert_eq!(bytes.len(), big.len());
-    assert!(bytes.iter().all(|&b| b == 7), "the spilled bytes round-trip");
+    assert!(
+        bytes.iter().all(|&b| b == 7),
+        "the spilled bytes round-trip"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -139,7 +157,13 @@ fn history_coalesces_a_gesture() {
             .expect("push");
     }
     assert_eq!(history.undo_depth(), 1);
-    history.push("undo.annotCreate", bytes, false).expect("push");
-    assert_eq!(history.undo_depth(), 2, "a different action is its own step");
+    history
+        .push("undo.annotCreate", bytes, false)
+        .expect("push");
+    assert_eq!(
+        history.undo_depth(),
+        2,
+        "a different action is its own step"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

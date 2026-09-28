@@ -193,7 +193,10 @@ fn registry_raw_handles_are_live() {
 
             let page = d.page(0)?;
             assert!(!page.raw_handle().is_null(), "FPDF_PAGE");
-            assert!(!page.raw_document_handle().is_null(), "page -> FPDF_DOCUMENT");
+            assert!(
+                !page.raw_document_handle().is_null(),
+                "page -> FPDF_DOCUMENT"
+            );
             // Drive one raw call through the patched bindings and cross-check it against the
             // high-level count: the two must be looking at the same page.
             // SAFETY: the page handle is live for this borrow and we are on the engine thread.
@@ -209,8 +212,14 @@ fn registry_raw_handles_are_live() {
         }
     })
     .expect("raw handles");
-    assert_eq!(counts.0, counts.1, "raw and high-level see the same annotations");
-    assert_eq!(counts.0, 76, "160F-2019.pdf page 0 has 76 widget annotations");
+    assert_eq!(
+        counts.0, counts.1,
+        "raw and high-level see the same annotations"
+    );
+    assert_eq!(
+        counts.0, 76,
+        "160F-2019.pdf page 0 has 76 widget annotations"
+    );
 }
 
 /// STAGE1A §5.2 — a closure that mutates and **then** fails leaves nothing behind.
@@ -283,7 +292,10 @@ fn registry_mutate_rolls_back_a_half_failed_closure() {
                 |d| {
                     create::create(d, 0, &spec, None)?;
                     create::create(d, 0, &spec, None)?;
-                    Err::<(), _>(EngineError::new(ErrorCode::VerifyFailed, "deliberate failure"))
+                    Err::<(), _>(EngineError::new(
+                        ErrorCode::VerifyFailed,
+                        "deliberate failure",
+                    ))
                 },
             )
         }
@@ -313,7 +325,10 @@ fn registry_mutate_rolls_back_a_half_failed_closure() {
         "the two annotations the failed closure created must be gone"
     );
     assert_eq!(generation_after, generation_before, "no generation bump");
-    assert_eq!(undo_after, undo_before, "no undo entry for an edit that failed");
+    assert_eq!(
+        undo_after, undo_before,
+        "no undo entry for an edit that failed"
+    );
     assert_eq!(
         redo_after, redo_before,
         "and no redo entry either — there is nothing to redo"
@@ -328,7 +343,11 @@ fn registry_mutate_rolls_back_a_half_failed_closure() {
             .collect::<Vec<_>>())
     })
     .expect("list after rollback");
-    assert_eq!(ids, vec![kept], "the annotation from before the failure survives");
+    assert_eq!(
+        ids,
+        vec![kept],
+        "the annotation from before the failure survives"
+    );
 }
 
 /// STAGE1A §5.1 — an annotation edit keeps the page's cached text layer.
@@ -410,7 +429,10 @@ fn registry_annotation_edit_keeps_the_text_layer() {
     })
     .expect("content edit");
     let dropped = with_doc(&doc_id, |d| Ok(d.text.layer(0).is_some())).expect("read the cache");
-    assert!(!dropped, "an edit without keeps_text() still invalidates the layer");
+    assert!(
+        !dropped,
+        "an edit without keeps_text() still invalidates the layer"
+    );
 }
 
 /// Stage 8 `open_document { displayName }`: a recovered copy (`<uuid>.pdf`) reports the
@@ -436,7 +458,11 @@ fn display_name_replaces_the_file_name() {
 
     let doc = open(Some("분기 보고서.pdf"));
     assert_eq!(doc.info.name, "분기 보고서.pdf");
-    assert_eq!(doc.info.path.as_deref(), Some(recovered.to_str().unwrap()), "the path is the real file");
+    assert_eq!(
+        doc.info.path.as_deref(),
+        Some(recovered.to_str().unwrap()),
+        "the path is the real file"
+    );
     let spec = PageStampSpec {
         role: StampRole::Footer,
         source: PageStampSource::Text {
@@ -454,13 +480,23 @@ fn display_name_replaces_the_file_name() {
     let stamped = with_state(move |st| stamp::add_stamp(st, &d, &spec)).expect("stamp");
     assert_eq!(stamped.info.name, "분기 보고서.pdf");
     let d = doc.doc_id.clone();
-    let text = with_state(move |st| Ok(layer::page_text(st.doc_mut(&d)?, 0)?.text.clone())).unwrap();
-    assert!(text.contains("분기 보고서"), "{{{{filename}}}} is the display name's stem");
+    let text =
+        with_state(move |st| Ok(layer::page_text(st.doc_mut(&d)?, 0)?.text.clone())).unwrap();
+    assert!(
+        text.contains("분기 보고서"),
+        "{{{{filename}}}} is the display name's stem"
+    );
     assert!(!text.contains("0f8fad5b"));
     let d = doc.doc_id.clone();
     let undone = with_state(move |st| registry::undo(st, &d, false)).expect("undo");
     assert_eq!(undone.name, "분기 보고서.pdf");
 
-    assert_eq!(open(None).info.name, "0f8fad5b-d9cb-469f-a165-70867728950e.pdf");
-    assert_eq!(open(Some("  ")).info.name, "0f8fad5b-d9cb-469f-a165-70867728950e.pdf");
+    assert_eq!(
+        open(None).info.name,
+        "0f8fad5b-d9cb-469f-a165-70867728950e.pdf"
+    );
+    assert_eq!(
+        open(Some("  ")).info.name,
+        "0f8fad5b-d9cb-469f-a165-70867728950e.pdf"
+    );
 }

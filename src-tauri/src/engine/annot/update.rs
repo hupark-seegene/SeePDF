@@ -157,7 +157,10 @@ fn in_place(
     }
     if let Some(paths) = &patch.paths {
         a.remove_ink_list();
-        let width = patch.border_width.or_else(|| a.border_width()).unwrap_or(1.0);
+        let width = patch
+            .border_width
+            .or_else(|| a.border_width())
+            .unwrap_or(1.0);
         for path in paths {
             if path.len() >= 4 {
                 a.add_ink_stroke(path)?;
@@ -178,11 +181,17 @@ fn in_place(
         });
         let p2 = patch.p2.unwrap_or_else(|| {
             [
-                first.get(first.len().wrapping_sub(2)).copied().unwrap_or(0.0),
+                first
+                    .get(first.len().wrapping_sub(2))
+                    .copied()
+                    .unwrap_or(0.0),
                 first.last().copied().unwrap_or(0.0),
             ]
         });
-        let width = patch.border_width.or_else(|| a.border_width()).unwrap_or(1.0);
+        let width = patch
+            .border_width
+            .or_else(|| a.border_width())
+            .unwrap_or(1.0);
         let arrow = kind == AnnotKind::Arrow;
         let paths = crate::engine::annot::update::line_paths(p1, p2, width, arrow, current.len());
         a.remove_ink_list();
@@ -262,7 +271,10 @@ fn respec(previous: &Annot, patch: &AnnotPatch) -> Result<AnnotSpec, EngineError
     };
     let rect = patch.rect.unwrap_or(previous.rect);
     match previous.kind {
-        AnnotKind::Highlight | AnnotKind::Underline | AnnotKind::Strikeout | AnnotKind::Squiggly => {
+        AnnotKind::Highlight
+        | AnnotKind::Underline
+        | AnnotKind::Strikeout
+        | AnnotKind::Squiggly => {
             let rects = patch
                 .rects
                 .clone()
@@ -288,10 +300,7 @@ fn respec(previous: &Annot, patch: &AnnotPatch) -> Result<AnnotSpec, EngineError
                 .clone()
                 .or_else(|| previous.text.clone())
                 .unwrap_or_else(|| previous.contents.clone()),
-            font_size: patch
-                .font_size
-                .or(previous.font_size)
-                .unwrap_or(12.0),
+            font_size: patch.font_size.or(previous.font_size).unwrap_or(12.0),
             color,
             align: TextAlign::Left,
             fill_color,

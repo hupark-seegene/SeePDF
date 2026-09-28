@@ -36,7 +36,11 @@ fn noisy_rgb(w: u32, h: u32) -> image::RgbImage {
     for (x, y, px) in img.enumerate_pixels_mut() {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let n = (seed >> 27) as u8;
-        *px = image::Rgb([(x % 256) as u8 ^ n, (y % 256) as u8, ((x + y) % 256) as u8 ^ n]);
+        *px = image::Rgb([
+            (x % 256) as u8 ^ n,
+            (y % 256) as u8,
+            ((x + y) % 256) as u8 ^ n,
+        ]);
     }
     img
 }
@@ -48,7 +52,14 @@ fn add_png(doc_id: &str) {
     noisy_rgb(1200, 900).save(&path).unwrap();
     let (doc_id, path) = (doc_id.to_string(), path.display().to_string());
     with_state(move |st| {
-        objects::add_image(st, &doc_id, 0, Rect::new(72.0, 72.0, 216.0, 180.0), &path, true)
+        objects::add_image(
+            st,
+            &doc_id,
+            0,
+            Rect::new(72.0, 72.0, 216.0, 180.0),
+            &path,
+            true,
+        )
     })
     .expect("add png");
 }
@@ -70,13 +81,13 @@ fn add_jpeg(doc_id: &str) {
                 doc.invalidate_page_handle(page_index);
                 let document = doc.pdf();
                 let mut page = document.pages().get(page_index as PdfPageIndex).unwrap();
-                let mut object = PdfPageImageObject::new_from_jpeg_reader(
-                    document,
-                    std::io::Cursor::new(jpeg),
-                )
-                .unwrap();
+                let mut object =
+                    PdfPageImageObject::new_from_jpeg_reader(document, std::io::Cursor::new(jpeg))
+                        .unwrap();
                 object.scale(192.0, 144.0).unwrap();
-                object.translate(PdfPoints::new(72.0), PdfPoints::new(72.0)).unwrap();
+                object
+                    .translate(PdfPoints::new(72.0), PdfPoints::new(72.0))
+                    .unwrap();
                 page.objects_mut().add_image_object(object).unwrap();
                 page.regenerate_content().unwrap();
                 Ok(())
@@ -120,7 +131,8 @@ fn estimate(doc_id: &str, options: CompressOptions) -> Result<Vec<JobEvent>, Eng
     };
     let sink_events = events.clone();
     let sink: JobSink = Arc::new(move |e| sink_events.lock().unwrap().push(e));
-    let reporter = JobReporter::start_with(sink, engine().jobs.clone(), token.id, pages.len() as u32);
+    let reporter =
+        JobReporter::start_with(sink, engine().jobs.clone(), token.id, pages.len() as u32);
     compress::dispatch(engine(), doc_id, pages, &token, reporter);
     wait_terminal(&events);
     let out = events.lock().unwrap().clone();
@@ -131,7 +143,10 @@ fn wait_terminal(events: &Arc<Mutex<Vec<JobEvent>>>) {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let done = events.lock().unwrap().iter().any(|e| {
-            matches!(e, JobEvent::Done { .. } | JobEvent::Cancelled { .. } | JobEvent::Error { .. })
+            matches!(
+                e,
+                JobEvent::Done { .. } | JobEvent::Cancelled { .. } | JobEvent::Error { .. }
+            )
         });
         if done {
             return;
@@ -143,7 +158,9 @@ fn wait_terminal(events: &Arc<Mutex<Vec<JobEvent>>>) {
 
 fn report_of(events: &[JobEvent]) -> CompressReport {
     match events.last() {
-        Some(JobEvent::Done { report: Some(r), .. }) => r.clone(),
+        Some(JobEvent::Done {
+            report: Some(r), ..
+        }) => r.clone(),
         other => panic!("expected done with a report, got {other:?}"),
     }
 }
@@ -166,13 +183,23 @@ fn compress_estimate_downsamples_and_apply_is_undoable() {
     add_png(&doc.doc_id);
     add_jpeg(&doc.doc_id);
     assert_eq!(images(&doc.doc_id, 0)[0].0, 1200);
-    assert_eq!(images(&doc.doc_id, 1)[0], (1600, vec!["DCTDecode".to_string()]));
+    assert_eq!(
+        images(&doc.doc_id, 1)[0],
+        (1600, vec!["DCTDecode".to_string()])
+    );
     let generation = with_doc(&doc.doc_id, |d| Ok(d.generation)).unwrap();
 
     let events = estimate(&doc.doc_id, opts(96)).expect("estimate");
     // started{total = pages}, one progress per page, done{report}.
-    assert!(matches!(events[0], JobEvent::Started { total: 14, .. }), "{:?}", events[0]);
-    let progress = events.iter().filter(|e| matches!(e, JobEvent::Progress { .. })).count();
+    assert!(
+        matches!(events[0], JobEvent::Started { total: 14, .. }),
+        "{:?}",
+        events[0]
+    );
+    let progress = events
+        .iter()
+        .filter(|e| matches!(e, JobEvent::Progress { .. }))
+        .count();
     assert_eq!(progress, 14);
     let report = report_of(&events);
     // 2 placed + tracemonkey's 90 inside Form XObjects (Stage 8 counts them; none is above
@@ -187,7 +214,10 @@ fn compress_estimate_downsamples_and_apply_is_undoable() {
         report.after_bytes
     );
     // The estimate did not touch the open document.
-    assert_eq!(with_doc(&doc.doc_id, |d| Ok(d.generation)).unwrap(), generation);
+    assert_eq!(
+        with_doc(&doc.doc_id, |d| Ok(d.generation)).unwrap(),
+        generation
+    );
     assert_eq!(images(&doc.doc_id, 0)[0].0, 1200);
 
     let info = apply(&doc.doc_id, report.token).expect("apply");
@@ -205,7 +235,10 @@ fn compress_estimate_downsamples_and_apply_is_undoable() {
     std::fs::write(out_dir().join("compress-96dpi.pdf"), bytes).unwrap();
 
     // The token is spent; one undo brings the originals back.
-    assert_eq!(apply(&doc.doc_id, report.token).unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(
+        apply(&doc.doc_id, report.token).unwrap_err().code,
+        ErrorCode::NotFound
+    );
     let d = doc.doc_id.clone();
     with_state(move |st| registry::undo(st, &d, false)).expect("undo");
     assert_eq!(images(&doc.doc_id, 0)[0].0, 1200);
@@ -230,17 +263,29 @@ fn compress_presets_and_page_subset() {
     assert!(matches!(events[0], JobEvent::Started { total: 2, .. }));
     let report2 = report_of(&events);
     assert_eq!(report2.images_downsampled, 0);
-    assert!(report2.images_total < TRACEMONKEY_FORM_IMAGES, "only pages 2 and 3 were scanned");
+    assert!(
+        report2.images_total < TRACEMONKEY_FORM_IMAGES,
+        "only pages 2 and 3 were scanned"
+    );
     // A newer estimate replaced the older pending entry.
-    assert_eq!(apply(&doc.doc_id, report.token).unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(
+        apply(&doc.doc_id, report.token).unwrap_err().code,
+        ErrorCode::NotFound
+    );
 
     // Bad options are refused before the job starts.
-    assert_eq!(estimate(&doc.doc_id, opts(200)).unwrap_err().code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        estimate(&doc.doc_id, opts(200)).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
     let bad_page = CompressOptions {
         target_dpi: 96,
         pages: Some(vec![99]),
     };
-    assert_eq!(estimate(&doc.doc_id, bad_page).unwrap_err().code, ErrorCode::InvalidArgument);
+    assert_eq!(
+        estimate(&doc.doc_id, bad_page).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
 }
 
 #[test]
@@ -251,7 +296,11 @@ fn compress_leaves_shared_images_alone() {
     // Stage 8: one image inside a Form XObject is above 96 DPI too, and is replaced in place.
     let doc = open("TAMReview.pdf");
     let report = report_of(&estimate(&doc.doc_id, opts(96)).unwrap());
-    assert!(report.images_total >= 46 + 8, "{} images", report.images_total);
+    assert!(
+        report.images_total >= 46 + 8,
+        "{} images",
+        report.images_total
+    );
     assert_eq!(report.images_downsampled, 2);
     assert!(report.after_bytes < report.before_bytes);
 
@@ -280,7 +329,11 @@ fn render_page(doc_id: &str, page: u16) -> Vec<u8> {
 
 fn mean_abs_diff(a: &[u8], b: &[u8]) -> f64 {
     assert_eq!(a.len(), b.len());
-    let total: u64 = a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as u64).sum();
+    let total: u64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as u64)
+        .sum();
     total as f64 / a.len().max(1) as f64
 }
 
@@ -294,7 +347,10 @@ fn compress_discard_and_stale_apply() {
     with_state(move |st| compress::discard(st, &d, token)).expect("discard");
     let pending = with_doc(&doc.doc_id, |d| Ok(d.compress_pending.is_some())).unwrap();
     assert!(!pending, "discard drops the pending bytes");
-    assert_eq!(apply(&doc.doc_id, token).unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(
+        apply(&doc.doc_id, token).unwrap_err().code,
+        ErrorCode::NotFound
+    );
 
     // An edit after the estimate makes the result stale.
     let report = report_of(&estimate(&doc.doc_id, opts(150)).unwrap());
@@ -312,14 +368,22 @@ fn compress_discard_and_stale_apply() {
         )
     })
     .unwrap();
-    assert_eq!(apply(&doc.doc_id, report.token).unwrap_err().code, ErrorCode::Stale);
+    assert_eq!(
+        apply(&doc.doc_id, report.token).unwrap_err().code,
+        ErrorCode::Stale
+    );
 }
 
 /// `(generation, dirty, undo label, bytes)` of the open document.
 fn state_of(doc_id: &str) -> (DocGeneration, bool, Option<String>, Vec<u8>) {
     with_doc(doc_id, |d| {
         let info = d.info();
-        Ok((info.doc_generation, info.dirty, info.undo_label, d.bytes.to_vec()))
+        Ok((
+            info.doc_generation,
+            info.dirty,
+            info.undo_label,
+            d.bytes.to_vec(),
+        ))
     })
     .unwrap()
 }
@@ -344,9 +408,16 @@ fn compress_apply_of_a_result_that_saves_nothing_is_a_no_op() {
         (before.0, before.1, before.2.clone()),
         "the DocInfo comes back unchanged"
     );
-    assert_eq!(state_of(&doc.doc_id), before, "the document was not replaced");
+    assert_eq!(
+        state_of(&doc.doc_id),
+        before,
+        "the document was not replaced"
+    );
     assert!(!has_pending(&doc.doc_id), "the pending entry is dropped");
-    assert_eq!(apply(&doc.doc_id, report.token).unwrap_err().code, ErrorCode::NotFound);
+    assert_eq!(
+        apply(&doc.doc_id, report.token).unwrap_err().code,
+        ErrorCode::NotFound
+    );
 
     // An image was downsampled but the file did not get smaller (PDFium's Flate can come out
     // larger). A fixture that grows is hard to come by, so the pending entry's `beforeBytes` is
@@ -364,8 +435,16 @@ fn compress_apply_of_a_result_that_saves_nothing_is_a_no_op() {
     let info = apply(&doc.doc_id, report.token).expect("apply");
     assert_eq!(info.doc_generation, before.0);
     assert_eq!(info.undo_label, before.2, "no `undo.compress` step");
-    assert_eq!(state_of(&doc.doc_id), before, "the document was not replaced");
-    assert_eq!(images(&doc.doc_id, 0)[0].0, 1200, "the original image stays");
+    assert_eq!(
+        state_of(&doc.doc_id),
+        before,
+        "the document was not replaced"
+    );
+    assert_eq!(
+        images(&doc.doc_id, 0)[0].0,
+        1200,
+        "the original image stays"
+    );
     assert!(!has_pending(&doc.doc_id));
 
     // The control: the same estimate, untouched, applies.
@@ -392,9 +471,8 @@ fn compress_cancel_mid_job_frees_the_scratch_copy() {
     // `begin` must run before the job is queued; it waits behind the blocker, so run it on
     // a helper thread and release the blocker once it is queued.
     let (d, id) = (doc.doc_id.clone(), token.id);
-    let begin = std::thread::spawn(move || {
-        with_state(move |st| compress::begin(st, &d, &opts(96), id))
-    });
+    let begin =
+        std::thread::spawn(move || with_state(move |st| compress::begin(st, &d, &opts(96), id)));
     std::thread::sleep(Duration::from_millis(20));
     release_tx.send(()).unwrap();
     let pages = begin.join().unwrap().expect("begin");
@@ -409,7 +487,8 @@ fn compress_cancel_mid_job_frees_the_scratch_copy() {
         .unwrap();
     let sink_events = events.clone();
     let sink: JobSink = Arc::new(move |e| sink_events.lock().unwrap().push(e));
-    let reporter = JobReporter::start_with(sink, engine().jobs.clone(), token.id, pages.len() as u32);
+    let reporter =
+        JobReporter::start_with(sink, engine().jobs.clone(), token.id, pages.len() as u32);
     compress::dispatch(engine(), &doc.doc_id, pages, &token, reporter);
     assert!(engine().jobs.cancel(token.id));
     release_tx.send(()).unwrap();
@@ -421,7 +500,13 @@ fn compress_cancel_mid_job_frees_the_scratch_copy() {
         "{:?}",
         events.last()
     );
-    assert_eq!(events.iter().filter(|e| matches!(e, JobEvent::Cancelled { .. })).count(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, JobEvent::Cancelled { .. }))
+            .count(),
+        1
+    );
     // Wait for the remaining (dropped) commands to drain, then check the scratch is gone.
     let (work, pending) = with_doc(&doc.doc_id, |d| {
         Ok((d.compress_work.is_some(), d.compress_pending.is_some()))
@@ -430,7 +515,6 @@ fn compress_cancel_mid_job_frees_the_scratch_copy() {
     assert!(!work && !pending);
     assert!(!engine().jobs.cancel(token.id), "the job id is released");
 }
-
 
 // ---------------------------------------------------------------------------------------
 // Stage 8 — images inside Form XObjects; encrypted documents
@@ -451,10 +535,14 @@ fn add_form_jpeg(doc_id: &str, pages: Vec<u16>) {
         {
             let mut page = scratch
                 .pages_mut()
-                .create_page_at_end(PdfPagePaperSize::Custom(PdfPoints::new(192.0), PdfPoints::new(144.0)))
+                .create_page_at_end(PdfPagePaperSize::Custom(
+                    PdfPoints::new(192.0),
+                    PdfPoints::new(144.0),
+                ))
                 .unwrap();
             let mut object =
-                PdfPageImageObject::new_from_jpeg_reader(&scratch, std::io::Cursor::new(jpeg)).unwrap();
+                PdfPageImageObject::new_from_jpeg_reader(&scratch, std::io::Cursor::new(jpeg))
+                    .unwrap();
             object.scale(192.0, 144.0).unwrap();
             page.objects_mut().add_image_object(object).unwrap();
             page.regenerate_content().unwrap();
@@ -472,7 +560,9 @@ fn add_form_jpeg(doc_id: &str, pages: Vec<u16>) {
                 let xobject = XObject::from_page(bindings, document, &scratch, 0)?;
                 for &p in &pages {
                     let mut page = document.pages().get(p as PdfPageIndex).unwrap();
-                    page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+                    page.set_content_regeneration_strategy(
+                        PdfPageContentRegenerationStrategy::Manual,
+                    );
                     xobject.place(&page, [1.0, 0.0, 0.0, 1.0, 300.0, 72.0], None)?;
                     page.regenerate_content().unwrap();
                 }
@@ -511,7 +601,12 @@ fn form_images(doc_id: &str, page: u16) -> Vec<(i32, Vec<String>)> {
 fn compress_reaches_images_inside_form_xobjects() {
     let doc = open("tracemonkey.pdf");
     add_form_jpeg(&doc.doc_id, vec![0, 1]);
-    let big = |p| form_images(&doc.doc_id, p).into_iter().filter(|(w, _)| *w == 1600).count();
+    let big = |p| {
+        form_images(&doc.doc_id, p)
+            .into_iter()
+            .filter(|(w, _)| *w == 1600)
+            .count()
+    };
     assert_eq!((big(0), big(1)), (1, 1));
 
     let report = report_of(&estimate(&doc.doc_id, opts(96)).unwrap());
@@ -529,7 +624,10 @@ fn compress_reaches_images_inside_form_xobjects() {
     for p in [0u16, 1] {
         let images = form_images(&doc.doc_id, p);
         // 1600 px over 2⅔ in → 256 px at 96 DPI; still a JPEG.
-        assert!(!images.iter().any(|(w, _)| *w == 1600), "page {p}: {images:?}");
+        assert!(
+            !images.iter().any(|(w, _)| *w == 1600),
+            "page {p}: {images:?}"
+        );
         assert!(
             images
                 .iter()
@@ -542,8 +640,13 @@ fn compress_reaches_images_inside_form_xobjects() {
     // The replaced stream survives a save → reopen.
     let bytes = with_doc(&doc.doc_id, |d| Ok(d.bytes.to_vec())).unwrap();
     let reopened = with_state(move |st| registry::open(st, None, bytes, None)).expect("reopen");
-    let copy = TestDoc { doc_id: reopened.doc_id.clone(), info: reopened };
-    assert!(form_images(&copy.doc_id, 1).iter().any(|(w, _)| (*w - 256).abs() <= 1));
+    let copy = TestDoc {
+        doc_id: reopened.doc_id.clone(),
+        info: reopened,
+    };
+    assert!(form_images(&copy.doc_id, 1)
+        .iter()
+        .any(|(w, _)| (*w - 256).abs() <= 1));
 }
 
 /// A password-protected document compresses and stays protected by the same password — RC4
@@ -574,7 +677,10 @@ fn compress_encrypted_document_keeps_its_password() {
         let bytes = std::fs::read(&path).unwrap();
         let info = with_state(move |st| registry::open(st, Some(path), bytes, Some("user".into())))
             .expect("open with the user password");
-        let doc = TestDoc { doc_id: info.doc_id.clone(), info };
+        let doc = TestDoc {
+            doc_id: info.doc_id.clone(),
+            info,
+        };
         assert!(doc.info.encrypted, "{label}");
         add_png(&doc.doc_id);
         if doc.info.page_count > 1 {
@@ -584,7 +690,10 @@ fn compress_encrypted_document_keeps_its_password() {
         assert_eq!(report.images_downsampled, 1, "{label}: the placed PNG only");
         let info = apply(&doc.doc_id, report.token).expect("apply");
         assert!(info.encrypted, "{label}");
-        assert!((images(&doc.doc_id, 0).last().unwrap().0 - 192).abs() <= 1, "{label}");
+        assert!(
+            (images(&doc.doc_id, 0).last().unwrap().0 - 192).abs() <= 1,
+            "{label}"
+        );
 
         let saved = with_state({
             let d = doc.doc_id.clone();
@@ -594,11 +703,21 @@ fn compress_encrypted_document_keeps_its_password() {
         let without = saved.clone();
         let err = with_state(move |st| registry::open(st, None, without, None).map(|i| i.doc_id))
             .unwrap_err();
-        assert_eq!(err.code, ErrorCode::PasswordRequired, "{label}: still protected");
+        assert_eq!(
+            err.code,
+            ErrorCode::PasswordRequired,
+            "{label}: still protected"
+        );
         let reopened = with_state(move |st| registry::open(st, None, saved, Some("user".into())))
             .expect("reopen with the same password");
-        let copy = TestDoc { doc_id: reopened.doc_id.clone(), info: reopened };
+        let copy = TestDoc {
+            doc_id: reopened.doc_id.clone(),
+            info: reopened,
+        };
         assert!(copy.info.encrypted, "{label}");
-        assert!((images(&copy.doc_id, 0).last().unwrap().0 - 192).abs() <= 1, "{label}");
+        assert!(
+            (images(&copy.doc_id, 0).last().unwrap().0 - 192).abs() <= 1,
+            "{label}"
+        );
     }
 }

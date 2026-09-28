@@ -285,12 +285,31 @@ unsafe fn placements(bindings: &dyn PdfiumLibraryBindings, page: FPDF_PAGE) -> V
         .map(|i| {
             let object = bindings.FPDFPage_GetObject(page, i as c_int);
             if object.is_null() {
-                return Placement { kind: -1, matrix: [0.0; 6], font_size: 0.0, clip: (0, 0, [0.0; 4]) };
+                return Placement {
+                    kind: -1,
+                    matrix: [0.0; 6],
+                    font_size: 0.0,
+                    clip: (0, 0, [0.0; 4]),
+                };
             }
             let kind = bindings.FPDFPageObj_GetType(object);
-            let mut m = FS_MATRIX { a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0, f: 0.0 };
+            let mut m = FS_MATRIX {
+                a: 0.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                e: 0.0,
+                f: 0.0,
+            };
             if !bindings.is_true(bindings.FPDFPageObj_GetMatrix(object, &mut m)) {
-                m = FS_MATRIX { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+                m = FS_MATRIX {
+                    a: 1.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 1.0,
+                    e: 0.0,
+                    f: 0.0,
+                };
             }
             let mut font_size: f32 = 0.0;
             if kind == FPDF_PAGEOBJ_TEXT
@@ -309,10 +328,12 @@ unsafe fn placements(bindings: &dyn PdfiumLibraryBindings, page: FPDF_PAGE) -> V
                         let segment = bindings.FPDFClipPath_GetPathSegment(handle, path, k);
                         let (mut x, mut y) = (0.0f32, 0.0f32);
                         if !segment.is_null()
-                            && bindings.is_true(bindings.FPDFPathSegment_GetPoint(segment, &mut x, &mut y))
+                            && bindings
+                                .is_true(bindings.FPDFPathSegment_GetPoint(segment, &mut x, &mut y))
                         {
                             let b = &mut clip.2;
-                            (b[0], b[1], b[2], b[3]) = (b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y));
+                            (b[0], b[1], b[2], b[3]) =
+                                (b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y));
                         }
                     }
                 }
@@ -320,7 +341,12 @@ unsafe fn placements(bindings: &dyn PdfiumLibraryBindings, page: FPDF_PAGE) -> V
             if clip.1 == 0 {
                 clip.2 = [0.0; 4];
             }
-            Placement { kind, matrix: [m.a, m.b, m.c, m.d, m.e, m.f], font_size, clip }
+            Placement {
+                kind,
+                matrix: [m.a, m.b, m.c, m.d, m.e, m.f],
+                font_size,
+                clip,
+            }
         })
         .collect()
 }
@@ -381,7 +407,10 @@ pub fn rehearse_rewrite(
     // SAFETY: no arguments; the handle is closed by the guard.
     let handle = unsafe { bindings.FPDF_CreateNewDocument() };
     if handle.is_null() {
-        return Err(EngineError::new(ErrorCode::Pdfium, "create a scratch document"));
+        return Err(EngineError::new(
+            ErrorCode::Pdfium,
+            "create a scratch document",
+        ));
     }
     let scratch = ScratchDoc { bindings, handle };
     let list = [page_index as c_int];
@@ -412,7 +441,10 @@ pub fn rehearse_rewrite(
                 }
             }
             if !bindings.is_true(bindings.FPDFPage_GenerateContent(page.handle)) {
-                return Err(EngineError::new(ErrorCode::Pdfium, "rehearse the page rewrite"));
+                return Err(EngineError::new(
+                    ErrorCode::Pdfium,
+                    "rehearse the page rewrite",
+                ));
             }
             before
         }
@@ -434,7 +466,8 @@ pub fn rehearse_rewrite(
             }
             i += 1;
             j += 1;
-        } else if j >= after.len() || (i + 1 < before.len() && before[i + 1].same_place(&after[j])) {
+        } else if j >= after.len() || (i + 1 < before.len() && before[i + 1].same_place(&after[j]))
+        {
             out.dropped.push(i);
             if matches!(before[i].kind, FPDF_PAGEOBJ_IMAGE | FPDF_PAGEOBJ_SHADING) {
                 out.lost.push(i);

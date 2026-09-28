@@ -128,7 +128,10 @@ pub fn parse_image_key(path: &str, q: &HashMap<String, String>) -> Result<TileKe
     let page: u16 = num(q, "page")?;
     let rotation = q
         .get("rot")
-        .map(|s| s.parse::<u16>().map_err(|_| EngineError::invalid("rot must be an integer")))
+        .map(|s| {
+            s.parse::<u16>()
+                .map_err(|_| EngineError::invalid("rot must be an integer"))
+        })
         .transpose()?
         .unwrap_or(0);
     if !matches!(rotation % 360, 0 | 90 | 180 | 270) {
@@ -137,10 +140,18 @@ pub fn parse_image_key(path: &str, q: &HashMap<String, String>) -> Result<TileKe
     let night = Night::parse(q.get("night").map(String::as_str));
     let hl = matches!(q.get("hl").map(String::as_str), Some("1") | Some("true"));
     // `forms` defaults to 1: only the 양식 overlay asks for 0, and only while it is mounted.
-    let forms = !matches!(q.get("forms").map(String::as_str), Some("0") | Some("false"));
+    let forms = !matches!(
+        q.get("forms").map(String::as_str),
+        Some("0") | Some("false")
+    );
 
     let (kind, scale_key, tx, ty) = match path {
-        "/tile" => ("tile", num::<u32>(q, "sk")?, num::<u32>(q, "tx")?, num::<u32>(q, "ty")?),
+        "/tile" => (
+            "tile",
+            num::<u32>(q, "sk")?,
+            num::<u32>(q, "tx")?,
+            num::<u32>(q, "ty")?,
+        ),
         "/page" => ("page", num::<u32>(q, "sk")?, 0, 0),
         "/thumb" => ("thumb", num::<u32>(q, "w")?, 0, 0),
         _ => (
@@ -566,7 +577,11 @@ mod tests {
         assert!(!no_forms.forms);
         assert_ne!(
             no_forms.etag(),
-            TileKey { forms: true, ..no_forms.clone() }.etag(),
+            TileKey {
+                forms: true,
+                ..no_forms.clone()
+            }
+            .etag(),
             "forms is part of the cache key and the ETag"
         );
 
@@ -588,15 +603,24 @@ mod tests {
     #[test]
     fn rejects_bad_parameters() {
         assert_eq!(
-            parse_image_key("/page", &query(&[("gen", "1"), ("page", "0"), ("sk", "100")]))
-                .unwrap_err()
-                .code,
+            parse_image_key(
+                "/page",
+                &query(&[("gen", "1"), ("page", "0"), ("sk", "100")])
+            )
+            .unwrap_err()
+            .code,
             ErrorCode::InvalidArgument
         );
         assert_eq!(
             parse_image_key(
                 "/page",
-                &query(&[("doc", "d1"), ("gen", "1"), ("page", "0"), ("sk", "100"), ("rot", "45")])
+                &query(&[
+                    ("doc", "d1"),
+                    ("gen", "1"),
+                    ("page", "0"),
+                    ("sk", "100"),
+                    ("rot", "45")
+                ])
             )
             .unwrap_err()
             .code,

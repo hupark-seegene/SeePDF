@@ -13,8 +13,8 @@
 use crate::engine::redact;
 use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
-    BytesWritten, DocInfo, DocMeta, PageIndex, PermissionsRequest, RedactBatchMark,
-    RedactBatchResult, RedactOptions, RedactPreview, RedactResult, Rect,
+    BytesWritten, DocInfo, DocMeta, PageIndex, PermissionsRequest, Rect, RedactBatchMark,
+    RedactBatchResult, RedactOptions, RedactPreview, RedactResult,
 };
 use crate::ipc::EngineError;
 use tauri::State;

@@ -45,11 +45,11 @@ pub mod vision;
 use crate::engine::annot::ScratchPage;
 use crate::engine::fonts;
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
+use crate::engine::render::cache::{Night, RenderKind, TileKey};
+use crate::engine::render::tiles::{self, RenderRequest};
 use crate::engine::text::layer;
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
-use crate::engine::render::cache::{Night, RenderKind, TileKey};
-use crate::engine::render::tiles::{self, RenderRequest};
 use crate::ipc::types::{
     ChangeReason, DocInfo, OcrCapabilities, OcrEngine, OcrLine, OcrPage, OcrPageStatus, PageIndex,
     Rotation,
@@ -136,13 +136,15 @@ pub fn render_page_gray(
     dpi: u32,
 ) -> Result<GrayPage, EngineError> {
     if !(72..=1200).contains(&dpi) {
-        return Err(EngineError::invalid(format!("dpi {dpi} is outside 72..1200")));
+        return Err(EngineError::invalid(format!(
+            "dpi {dpi} is outside 72..1200"
+        )));
     }
     let doc = st.doc(doc_id)?;
     let count = doc.page_count();
     if page >= count {
         return Err(
-            EngineError::invalid(format!("page {page} is outside 0..{count}")).with_page(page)
+            EngineError::invalid(format!("page {page} is outside 0..{count}")).with_page(page),
         );
     }
     let generation = doc.generation;
@@ -163,7 +165,12 @@ pub fn render_page_gray(
     let raw = tiles::render(st, &RenderRequest::new(key))?;
     let expected = raw.width as usize * raw.height as usize;
     // pdfium rendered with `use_grayscale_rendering`, so R == G == B: one byte a pixel.
-    let pixels: Vec<u8> = raw.pixels.chunks_exact(4).take(expected).map(|px| px[0]).collect();
+    let pixels: Vec<u8> = raw
+        .pixels
+        .chunks_exact(4)
+        .take(expected)
+        .map(|px| px[0])
+        .collect();
     if pixels.len() != expected {
         return Err(EngineError::new(
             ErrorCode::Pdfium,
@@ -228,7 +235,7 @@ pub fn page_status(
     for page in wanted {
         if page >= count {
             return Err(
-                EngineError::invalid(format!("page {page} is outside 0..{count}")).with_page(page)
+                EngineError::invalid(format!("page {page} is outside 0..{count}")).with_page(page),
             );
         }
         let text = layer::page_text(doc, page)?;
@@ -383,23 +390,22 @@ fn apply_page(
             }
 
             let latin = fonts::is_latin1(&word.text);
-            let font = if latin {
-                helvetica
-            } else {
-                match hangul {
-                    Some(token) => token,
-                    // A Hangul word with no bundled font: skipping it silently would produce a
-                    // layer that looks complete and is not.
-                    None => {
-                        return Err(EngineError::new(
+            let font =
+                if latin {
+                    helvetica
+                } else {
+                    match hangul {
+                        Some(token) => token,
+                        // A Hangul word with no bundled font: skipping it silently would produce a
+                        // layer that looks complete and is not.
+                        None => return Err(EngineError::new(
                             ErrorCode::FontCoverage,
                             "the OCR result contains non-Latin text but the bundled Hangul font \
                              is not available",
                         )
-                        .with_page(ocr.page))
+                        .with_page(ocr.page)),
                     }
-                }
-            };
+                };
             placed.push(PlacedWord {
                 // The box is the ink: stray whitespace around a token would shift the fit.
                 text: word.text.trim(),
@@ -463,7 +469,12 @@ fn add_invisible_word<'a>(
     object
         .set_render_mode(PdfPageTextRenderMode::Invisible)
         .ctx("set render mode 3")?;
-    let natural_w = object.bounds().ctx("measure OCR word")?.to_rect().width().value;
+    let natural_w = object
+        .bounds()
+        .ctx("measure OCR word")?
+        .to_rect()
+        .width()
+        .value;
     let sx = if natural_w > 0.0 {
         (word.box_w / natural_w).clamp(MIN_SX, MAX_SX)
     } else {
@@ -624,7 +635,10 @@ mod tests {
     fn capabilities_are_offline_tesseract_plus_vision_where_it_reads_korean() {
         let caps = capabilities();
         assert_eq!(caps.engines[0], OcrEngine::Tesseract);
-        assert_eq!(caps.engines.contains(&OcrEngine::Vision), vision_available());
+        assert_eq!(
+            caps.engines.contains(&OcrEngine::Vision),
+            vision_available()
+        );
         assert!(!caps.engines.contains(&OcrEngine::Windows));
         #[cfg(not(target_os = "macos"))]
         assert!(!vision_available());

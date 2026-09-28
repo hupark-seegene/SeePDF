@@ -6,7 +6,7 @@
 //! not drawn by `FPDF_FFLDraw` and field edits are not committed (annotations spike §3.4).
 //! The registry calls these on every page open and eviction.
 
-use pdfium_render::prelude::{FPDF_FORMHANDLE, PdfPage, PdfiumLibraryBindings};
+use pdfium_render::prelude::{PdfPage, PdfiumLibraryBindings, FPDF_FORMHANDLE};
 
 /// Must be called after `FPDF_LoadPage` on a document that has a form.
 pub fn on_after_load_page(
@@ -95,11 +95,7 @@ pub fn replace_selection(
     utf16.push(0);
     // SAFETY: `utf16` is NUL-terminated and outlives the call; the page is live.
     unsafe {
-        bindings.FORM_ReplaceSelection(
-            form,
-            page.raw_handle(),
-            utf16.as_ptr() as FPDF_WIDESTRING,
-        )
+        bindings.FORM_ReplaceSelection(form, page.raw_handle(), utf16.as_ptr() as FPDF_WIDESTRING)
     }
 }
 

@@ -123,7 +123,10 @@ mod tests {
         let g = geom(612.0, 792.0, 0, Rect::new(0.0, 0.0, 612.0, 792.0));
         let m = page_to_device(&g, 0, 2.0);
         // Bottom-left of the crop box is the bottom-left of the device image.
-        let (dx, dy) = (m[0] * 0.0 + m[2] * 0.0 + m[4], m[1] * 0.0 + m[3] * 0.0 + m[5]);
+        let (dx, dy) = (
+            m[0] * 0.0 + m[2] * 0.0 + m[4],
+            m[1] * 0.0 + m[3] * 0.0 + m[5],
+        );
         assert_eq!((dx, dy), (0.0, 1584.0));
         // Top-right maps to (width, 0).
         let (dx, dy) = (

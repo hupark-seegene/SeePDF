@@ -344,7 +344,10 @@ fn ocr_layer_batch_file_roundtrip() {
         move |st| registry::close(st, &doc_id)
     })
     .expect("close_document");
-    assert!(with_doc(&doc_id, |_| Ok(())).is_err(), "the batch document is closed");
+    assert!(
+        with_doc(&doc_id, |_| Ok(())).is_err(),
+        "the batch document is closed"
+    );
 
     assert_eq!(
         std::fs::read(&source).expect("reread the source"),
@@ -395,7 +398,12 @@ fn to_vision(b: [f32; 4], width_px: u32, height_px: u32) -> VisionRect {
 fn observation(words: &[(&str, [f32; 4])], width_px: u32, height_px: u32) -> VisionObservation {
     let mut line = words[0].1;
     for (_, b) in words {
-        line = [line[0].min(b[0]), line[1].min(b[1]), line[2].max(b[2]), line[3].max(b[3])];
+        line = [
+            line[0].min(b[0]),
+            line[1].min(b[1]),
+            line[2].max(b[2]),
+            line[3].max(b[3]),
+        ];
     }
     VisionObservation {
         text: words.iter().map(|(t, _)| *t).collect::<Vec<_>>().join(" "),
@@ -443,7 +451,9 @@ fn ocr_layer_vision_words_extract_with_spaces() {
         ("페이지입니다.", [1080.3, 680.87, 1431.37, 745.17]),
     ];
     let fox = laid_out(
-        &["The", "quick", "brown", "fox", "jumps", "over", "the", "lazy", "dog"],
+        &[
+            "The", "quick", "brown", "fox", "jumps", "over", "the", "lazy", "dog",
+        ],
         264.8,
         938.0,
         1004.47,
@@ -466,7 +476,11 @@ fn ocr_layer_vision_words_extract_with_spaces() {
         },
     );
     assert_eq!(ocr_page.lines.len(), 3);
-    assert_eq!(ocr_page.lines[0].words.len(), 4, "Vision's per-word boxes survive");
+    assert_eq!(
+        ocr_page.lines[0].words.len(),
+        4,
+        "Vision's per-word boxes survive"
+    );
 
     apply(&doc.doc_id, vec![ocr_page.clone()], false);
     let bytes = save_bytes(&doc.doc_id);
@@ -475,7 +489,11 @@ fn ocr_layer_vision_words_extract_with_spaces() {
 
     // Single spaces between words, a line break between lines.
     let text = page_text(&saved.doc_id, 0);
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     assert_eq!(
         lines,
         [
@@ -489,7 +507,11 @@ fn ocr_layer_vision_words_extract_with_spaces() {
 
     // Searchable across a Latin gap, a Hangul gap and the Latin → Hangul font change.
     for needle in ["quick brown", "가능한 한글", "OCR 정확도", "lazy dog"] {
-        assert_eq!(hits(&saved.doc_id, needle).len(), 1, "search({needle:?}) in {text:?}");
+        assert_eq!(
+            hits(&saved.doc_id, needle).len(),
+            1,
+            "search({needle:?}) in {text:?}"
+        );
     }
 
     // The space is a real glyph, not PDFium's guess, and each word still sits on its own box.
@@ -510,19 +532,33 @@ fn ocr_layer_vision_words_extract_with_spaces() {
     for (word, bbox) in [fox[1], fox[2], mixed[2], title[1]] {
         let run = run_rect(&layer, word);
         let (left, width) = (bbox[0] * s, (bbox[2] - bbox[0]) * s);
-        assert!((run.l - left).abs() < 1.0, "{word}: left {} vs {left} ({run:?})", run.l);
+        assert!(
+            (run.l - left).abs() < 1.0,
+            "{word}: left {} vs {left} ({run:?})",
+            run.l
+        );
         let fill = run.width() / width;
-        assert!((0.9..=1.1).contains(&fill), "{word}: {:.1} pt of {width:.1} pt", run.width());
+        assert!(
+            (0.9..=1.1).contains(&fill),
+            "{word}: {:.1} pt of {width:.1} pt",
+            run.width()
+        );
         // The selection rect sits on the scanned line: the baseline is the box bottom.
         let bottom = (height_px as f32 - bbox[3]) * s;
-        assert!(run.b <= bottom + 1.0 && run.t >= bottom, "{word}: {run:?} vs bottom {bottom}");
+        assert!(
+            run.b <= bottom + 1.0 && run.t >= bottom,
+            "{word}: {run:?} vs bottom {bottom}"
+        );
     }
     // A phrase selection is one rect from the first word's box to the last one's.
     let phrase = hits(&saved.doc_id, "quick brown");
     assert_eq!(phrase[0].rects.len(), 1, "{:?}", phrase[0].rects);
     let rect = phrase[0].rects[0];
     assert!((rect.l - fox[1].1[0] * s).abs() < 1.0, "{rect:?}");
-    assert!((rect.r - fox[2].1[2] * s).abs() < 0.1 * (fox[2].1[2] - fox[2].1[0]) * s, "{rect:?}");
+    assert!(
+        (rect.r - fox[2].1[2] * s).abs() < 0.1 * (fox[2].1[2] - fox[2].1[0]) * s,
+        "{rect:?}"
+    );
 
     // `replaceExisting` takes the spaces away with their words.
     apply(&saved.doc_id, vec![ocr_page], true);
@@ -550,7 +586,10 @@ fn ocr_layer_rotation_roundtrip() {
     );
 
     let (width_px, height_px) = image_size(&doc.doc_id, rotated);
-    assert!(width_px > height_px, "so is the image: {width_px}x{height_px}");
+    assert!(
+        width_px > height_px,
+        "so is the image: {width_px}x{height_px}"
+    );
 
     // A word box a third of the way down the image, running left to right on screen.
     let bbox = [400.0f32, 600.0, 1600.0, 680.0];
@@ -578,9 +617,11 @@ fn ocr_layer_rotation_roundtrip() {
         "the rotated page's OCR text extracts: {text:?}"
     );
     let query = search::Query::new("회전된 페이지", false, false).expect("query");
-    let hits = with_doc(&saved.doc_id, move |d| search::search_page(d, rotated, &query))
-        .expect("search")
-        .len();
+    let hits = with_doc(&saved.doc_id, move |d| {
+        search::search_page(d, rotated, &query)
+    })
+    .expect("search")
+    .len();
     assert!(hits >= 1, "and is searchable");
 
     // The round trip: map the extracted characters' user-space rectangle back into image
@@ -592,13 +633,7 @@ fn ocr_layer_rotation_roundtrip() {
         let rect = run;
         move |st| {
             let doc = st.doc_mut(&doc_id)?;
-            seepdf_lib::engine::ocr::points_to_image_px(
-                doc,
-                rotated,
-                width_px,
-                height_px,
-                rect,
-            )
+            seepdf_lib::engine::ocr::points_to_image_px(doc, rotated, width_px, height_px, rect)
         }
     })
     .expect("points_to_image_px");

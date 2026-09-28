@@ -136,10 +136,7 @@ pub fn resolve(doc: &mut PdfDocument<'_>, text: &str) -> Result<FontChoice, Engi
 
 fn load(doc: &mut PdfDocument<'_>, path: &Path) -> Result<PdfFontToken, EngineError> {
     let bytes = std::fs::read(path).map_err(|e| {
-        EngineError::new(
-            ErrorCode::Io,
-            format!("read font {}: {e}", path.display()),
-        )
+        EngineError::new(ErrorCode::Io, format!("read font {}: {e}", path.display()))
     })?;
     // `is_cid_font = true`: Hangul needs the 16-bit glyph space.
     doc.fonts_mut()

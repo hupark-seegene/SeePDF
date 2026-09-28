@@ -18,7 +18,7 @@
 //! `FPDF_REVERSE_BYTE_ORDER` flag is part of `flags`, exactly as in the pdfium-render path).
 
 use crate::ipc::{EngineError, ErrorCode};
-use pdfium_render::prelude::{FPDF_BITMAP, FPDF_DWORD, PdfPage, PdfiumLibraryBindings};
+use pdfium_render::prelude::{PdfPage, PdfiumLibraryBindings, FPDF_BITMAP, FPDF_DWORD};
 use std::os::raw::{c_int, c_void};
 
 /// `FPDFBitmap_BGRA` — 4 bytes per pixel. The only format SeePDF renders into.

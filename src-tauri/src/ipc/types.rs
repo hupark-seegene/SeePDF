@@ -318,7 +318,11 @@ pub struct SearchHit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SearchEvent {
     Page {
         page: PageIndex,
@@ -577,7 +581,11 @@ pub struct AnnotPatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AnnotScanEvent {
     Page { page: PageIndex, annots: Vec<Annot> },
     Done { total: u32 },
@@ -683,7 +691,11 @@ pub enum NamedPageSize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PageOp {
     /// `FPDF_MovePages` ordered-list semantics.
     Move {
@@ -1273,7 +1285,11 @@ impl StampRole {
 /// Contract `StampSource`. `{{page}}`, `{{total}}`, `{{date}}` and `{{filename}}` are
 /// replaced per page in `text`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PageStampSource {
     Text {
         text: String,
@@ -1452,7 +1468,11 @@ pub struct RecoveryEntry {
 // ---------------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum JobEvent {
     Started {
         job_id: JobId,
@@ -1944,7 +1964,9 @@ mod tests {
         }))
         .expect("text StampSpec");
         assert!(matches!(spec.pages, PageSelection::All(AllPages::All)));
-        assert!(matches!(spec.source, PageStampSource::Text { font_size_pt, .. } if font_size_pt == 48.0));
+        assert!(
+            matches!(spec.source, PageStampSource::Text { font_size_pt, .. } if font_size_pt == 48.0)
+        );
         assert_eq!(
             serde_json::to_value(&spec).unwrap(),
             json!({
@@ -1965,8 +1987,14 @@ mod tests {
         assert_eq!(spec.role, StampRole::Footer);
         assert_eq!(spec.anchor, StampAnchor::Br);
         assert!(matches!(&spec.pages, PageSelection::List(p) if p == &vec![0, 2]));
-        assert!(matches!(spec.source, PageStampSource::Image { width_pt, .. } if width_pt == 120.0));
-        for (anchor, wire) in [(StampAnchor::Tl, "tl"), (StampAnchor::Mr, "mr"), (StampAnchor::Bc, "bc")] {
+        assert!(
+            matches!(spec.source, PageStampSource::Image { width_pt, .. } if width_pt == 120.0)
+        );
+        for (anchor, wire) in [
+            (StampAnchor::Tl, "tl"),
+            (StampAnchor::Mr, "mr"),
+            (StampAnchor::Bc, "bc"),
+        ] {
             assert_eq!(serde_json::to_value(anchor).unwrap(), json!(wire));
         }
 
@@ -2013,8 +2041,14 @@ mod tests {
         .unwrap();
         assert!(done.get("report").is_none());
 
-        assert_eq!(serde_json::to_value(SecurityRevision::R5).unwrap(), json!("r5"));
-        assert_eq!(serde_json::to_value(SecurityRevision::R6).unwrap(), json!("r6"));
+        assert_eq!(
+            serde_json::to_value(SecurityRevision::R5).unwrap(),
+            json!("r5")
+        );
+        assert_eq!(
+            serde_json::to_value(SecurityRevision::R6).unwrap(),
+            json!("r6")
+        );
     }
 
     #[test]
@@ -2038,7 +2072,10 @@ mod tests {
         };
         let v = serde_json::to_value(&probe).unwrap();
         assert_eq!(v["objectIds"], json!([3, 4]));
-        assert_eq!(v["rect"], json!({ "l": 72.0, "b": 640.0, "r": 540.0, "t": 712.0 }));
+        assert_eq!(
+            v["rect"],
+            json!({ "l": 72.0, "b": 640.0, "r": 540.0, "t": 712.0 })
+        );
         assert_eq!(v["fontName"], json!("Helvetica"));
         assert_eq!(v["fontSizePt"], json!(12.0));
         assert_eq!(v["mixedStyles"], json!(false));
@@ -2132,7 +2169,10 @@ mod tests {
             serde_json::to_value(NotEditableReason::UnwritableContent).unwrap(),
             json!("unwritableContent")
         );
-        assert_eq!(serde_json::to_value(FlowBlocked::Obstacle).unwrap(), json!("obstacle"));
+        assert_eq!(
+            serde_json::to_value(FlowBlocked::Obstacle).unwrap(),
+            json!("obstacle")
+        );
         // A Stage 7 result (no Stage 9 fields) still parses.
         let old: ParagraphEditResult = serde_json::from_value(json!({
             "objects": { "docGeneration": 8, "objects": [] },
@@ -2248,7 +2288,10 @@ mod tests {
             "recoveryPath": "/r/0f8fad5b-d9cb-469f-a165-70867728950e.pdf"
         });
         assert_eq!(serde_json::to_value(&entry).unwrap(), wire);
-        assert_eq!(serde_json::from_value::<RecoveryEntry>(wire).unwrap(), entry);
+        assert_eq!(
+            serde_json::from_value::<RecoveryEntry>(wire).unwrap(),
+            entry
+        );
 
         // Settings written before Stage 5 have no autosaveSec: it defaults to 60.
         let mut old = serde_json::to_value(Settings::default()).unwrap();
@@ -2286,7 +2329,10 @@ mod tests {
         // A value from the future is `off`, the rest survives.
         old["night"] = json!("amber");
         let back: Settings = serde_json::from_value(old).unwrap();
-        assert_eq!((back.night, back.author.as_str()), (NightMode::Off, "박현우"));
+        assert_eq!(
+            (back.night, back.author.as_str()),
+            (NightMode::Off, "박현우")
+        );
 
         // Stage 8 shapes the frontend mocks: remove_stamps / duplicate / redact batch results.
         let dup = DuplicateObjectsResult {
@@ -2308,15 +2354,20 @@ mod tests {
             serde_json::to_value(&batch).unwrap(),
             json!({ "removedObjects": 4, "verified": true, "docGeneration": 9, "pages": [0, 2] })
         );
-        let mark: RedactBatchMark =
-            serde_json::from_value(json!({ "page": 1, "rects": [{ "l": 0.0, "b": 0.0, "r": 1.0, "t": 1.0 }] }))
-                .unwrap();
+        let mark: RedactBatchMark = serde_json::from_value(
+            json!({ "page": 1, "rects": [{ "l": 0.0, "b": 0.0, "r": 1.0, "t": 1.0 }] }),
+        )
+        .unwrap();
         assert_eq!((mark.page, mark.rects.len()), (1, 1));
         let options: CompareOptions = serde_json::from_value(json!({})).unwrap();
         assert!(options.align());
-        let options: CompareOptions = serde_json::from_value(json!({ "alignPages": false })).unwrap();
+        let options: CompareOptions =
+            serde_json::from_value(json!({ "alignPages": false })).unwrap();
         assert!(!options.align());
-        assert_eq!(StampRole::from_name(StampRole::Header.as_str()), Some(StampRole::Header));
+        assert_eq!(
+            StampRole::from_name(StampRole::Header.as_str()),
+            Some(StampRole::Header)
+        );
     }
 
     /// Stage 6b (P1-9): the 서명 보관함 wire shape, the default for settings written before it,
@@ -2400,7 +2451,8 @@ mod tests {
         assert_eq!(pages.iter().map(|p| p.page).collect::<Vec<_>>(), [0, 1]);
         assert_eq!(pages[1].lines[0].words[0].text, "가");
 
-        let bad: OcrApplyPage = serde_json::from_value(json!({ "page": 2, "ocr": ocr(1) })).unwrap();
+        let bad: OcrApplyPage =
+            serde_json::from_value(json!({ "page": 2, "ocr": ocr(1) })).unwrap();
         let err = bad.into_page().unwrap_err();
         assert_eq!(err.code, crate::ipc::ErrorCode::InvalidArgument);
         assert_eq!(err.page, Some(2));

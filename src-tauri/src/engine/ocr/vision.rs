@@ -118,12 +118,21 @@ pub fn rect_to_pixels(r: VisionRect, width_px: u32, height_px: u32) -> OcrBox {
     let x1 = (r.x + r.width) * w;
     let y0 = (1.0 - (r.y + r.height)) * h;
     let y1 = (1.0 - r.y) * h;
-    [px(x0.min(x1)), px(y0.min(y1)), px(x0.max(x1)), px(y0.max(y1))]
+    [
+        px(x0.min(x1)),
+        px(y0.min(y1)),
+        px(x0.max(x1)),
+        px(y0.max(y1)),
+    ]
 }
 
 /// Vision's 0..1 → the contract's 0..100, one decimal (Tesseract's scale).
 fn percent(confidence: f32) -> f32 {
-    let c = if confidence.is_finite() { confidence.clamp(0.0, 1.0) } else { 0.0 };
+    let c = if confidence.is_finite() {
+        confidence.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     ((c as f64 * 1000.0).round() / 10.0) as f32
 }
 
@@ -281,9 +290,7 @@ pub fn word_ranges(text: &str) -> Vec<(String, usize, usize)> {
 /// `true` when Vision gave every word of a multi-word line (nearly) the whole line box — it
 /// could not place them, and the character-count split is the better guess.
 pub fn words_are_degenerate(line: VisionRect, words: &[VisionWord]) -> bool {
-    words.len() > 1
-        && line.width > 0.0
-        && words.iter().all(|w| w.bbox.width >= line.width * 0.9)
+    words.len() > 1 && line.width > 0.0 && words.iter().all(|w| w.bbox.width >= line.width * 0.9)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -295,7 +302,7 @@ pub mod mac {
     //! The only `unsafe` Objective-C in the project. Every call happens inside an autorelease
     //! pool: this runs on a tokio blocking thread, which has none of its own.
 
-    use super::{words_are_degenerate, word_ranges, VisionObservation, VisionRect, VisionWord};
+    use super::{word_ranges, words_are_degenerate, VisionObservation, VisionRect, VisionWord};
     use crate::ipc::{EngineError, ErrorCode};
     use objc2::rc::{autoreleasepool, Retained};
     use objc2::runtime::AnyObject;
@@ -309,8 +316,8 @@ pub mod mac {
         NSArray, NSDictionary, NSOperatingSystemVersion, NSProcessInfo, NSRange, NSString,
     };
     use objc2_vision::{
-        VNImageOption, VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText,
-        VNRequest, VNRequestTextRecognitionLevel,
+        VNImageOption, VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText, VNRequest,
+        VNRequestTextRecognitionLevel,
     };
     use std::sync::OnceLock;
 
@@ -332,8 +339,8 @@ pub mod mac {
                     let request = VNRecognizeTextRequest::new();
                     request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
                     // SAFETY: an instance method available from macOS 12; gated on 13 above.
-                    let langs = unsafe { request.supportedRecognitionLanguagesAndReturnError() }
-                        .ok()?;
+                    let langs =
+                        unsafe { request.supportedRecognitionLanguagesAndReturnError() }.ok()?;
                     let langs: Vec<String> = langs.iter().map(|s| s.to_string()).collect();
                     langs.iter().any(|l| l == "ko-KR").then_some(langs)
                 })
@@ -522,10 +529,20 @@ mod tests {
     }
 
     fn r(x: f64, y: f64, w: f64, h: f64) -> VisionRect {
-        VisionRect { x, y, width: w, height: h }
+        VisionRect {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
     }
 
-    fn obs(text: &str, confidence: f32, bbox: VisionRect, words: Vec<VisionWord>) -> VisionObservation {
+    fn obs(
+        text: &str,
+        confidence: f32,
+        bbox: VisionRect,
+        words: Vec<VisionWord>,
+    ) -> VisionObservation {
         VisionObservation {
             text: text.into(),
             confidence,
@@ -566,7 +583,13 @@ mod tests {
             &ctx(),
         );
         assert_eq!(
-            (page.page, page.dpi, page.width_px, page.height_px, page.rotation),
+            (
+                page.page,
+                page.dpi,
+                page.width_px,
+                page.height_px,
+                page.rotation
+            ),
             (2, 300, 1000, 2000, 0)
         );
         assert_eq!(page.lines.len(), 1);
@@ -584,9 +607,15 @@ mod tests {
 
     #[test]
     fn splits_a_line_without_word_boxes_like_normalize_vision() {
-        let page = normalize(&[obs("one two", 0.9, r(0.0, 0.5, 1.0, 0.05), vec![])], &ctx());
+        let page = normalize(
+            &[obs("one two", 0.9, r(0.0, 0.5, 1.0, 0.05), vec![])],
+            &ctx(),
+        );
         let words = &page.lines[0].words;
-        assert_eq!(words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["one", "two"]);
+        assert_eq!(
+            words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(),
+            ["one", "two"]
+        );
         assert_eq!(words[0].bbox[0], 0.0);
         assert!((words[1].bbox[2] - 1000.0).abs() < 0.01);
         assert_eq!(words[0].confidence, 90.0);
@@ -646,7 +675,11 @@ mod tests {
         let words = word_ranges("가 😀x  end");
         assert_eq!(
             words,
-            vec![("가".to_string(), 0, 1), ("😀x".to_string(), 2, 3), ("end".to_string(), 7, 3)]
+            vec![
+                ("가".to_string(), 0, 1),
+                ("😀x".to_string(), 2, 3),
+                ("end".to_string(), 7, 3)
+            ]
         );
     }
 
@@ -664,9 +697,8 @@ mod tests {
 
     #[test]
     fn languages_map_to_vision_codes() {
-        let v = |xs: &[&str]| {
-            vision_languages(&xs.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-        };
+        let v =
+            |xs: &[&str]| vision_languages(&xs.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(v(&["kor", "eng"]), ["ko-KR", "en-US"]);
         assert_eq!(v(&["kor+eng"]), ["ko-KR", "en-US"]);
         assert_eq!(v(&["ko-KR"]), ["ko-KR", "en-US"], "Korean never goes alone");

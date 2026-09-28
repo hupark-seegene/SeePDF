@@ -41,7 +41,10 @@ fn open_path(path: &Path, password: Option<&str>) -> TestDoc {
     TestDoc { info, doc_id }
 }
 
-fn save_to(doc_id: &str, target: Option<&str>) -> Result<seepdf_lib::ipc::types::SaveResult, seepdf_lib::ipc::EngineError> {
+fn save_to(
+    doc_id: &str,
+    target: Option<&str>,
+) -> Result<seepdf_lib::ipc::types::SaveResult, seepdf_lib::ipc::EngineError> {
     let doc_id = doc_id.to_string();
     let target = target.map(str::to_owned);
     with_state(move |st| save::save(st, &doc_id, target.as_deref(), false))
@@ -94,7 +97,10 @@ fn save_document_roundtrip() {
     assert_eq!(info.page_count, 13);
 
     let reopened = open_path(&path, None);
-    assert_eq!(reopened.info.page_count, 13, "the file on disk has 13 pages");
+    assert_eq!(
+        reopened.info.page_count, 13,
+        "the file on disk has 13 pages"
+    );
 }
 
 /// Save As writes elsewhere and re-points the document at the new file.
@@ -109,7 +115,10 @@ fn save_document_as_repoints_the_document() {
     assert!(target.is_file());
 
     let info = with_doc(&doc.doc_id, |d| Ok(d.info())).expect("info");
-    assert_eq!(info.path.as_deref(), Some(target.display().to_string().as_str()));
+    assert_eq!(
+        info.path.as_deref(),
+        Some(target.display().to_string().as_str())
+    );
     assert!(!info.dirty);
 }
 
@@ -170,7 +179,10 @@ fn save_atomic_abort() {
     let doc = open("tracemonkey.pdf");
     let failed = save_to(&doc.doc_id, Some(&blocked.display().to_string()));
     let err = failed.expect_err("renaming onto a non-empty directory must fail");
-    assert!(matches!(err.code, ErrorCode::Io | ErrorCode::ReadOnly), "got {err:?}");
+    assert!(
+        matches!(err.code, ErrorCode::Io | ErrorCode::ReadOnly),
+        "got {err:?}"
+    );
     assert!(
         temp_files(&dir).is_empty(),
         "the temp file is removed when the rename fails: {:?}",

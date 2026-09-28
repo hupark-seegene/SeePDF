@@ -73,7 +73,9 @@ fn generated_pdf() -> Vec<u8> {
         pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
     }
     let xref = pdf.len();
-    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    pdf.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
     for off in offsets {
         pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
     }
@@ -170,10 +172,17 @@ fn paragraph_detects_generated_paragraphs() {
     let a = probe(&doc.doc_id, 0, 200.0, 690.0).expect("text there");
     assert_eq!(a.lines, 4, "{a:?}");
     assert_eq!(a.object_ids.len(), 4, "one object per line");
-    assert_eq!(a.text, PARA_A_TEXT, "soft wraps joined, com-/pletely de-hyphenated");
+    assert_eq!(
+        a.text, PARA_A_TEXT,
+        "soft wraps joined, com-/pletely de-hyphenated"
+    );
     assert_eq!(a.font_name, "Helvetica");
     assert!((a.font_size_pt - 12.0).abs() < 0.01);
-    assert!((a.line_height_pt - 14.4).abs() < 0.05, "{}", a.line_height_pt);
+    assert!(
+        (a.line_height_pt - 14.4).abs() < 0.05,
+        "{}",
+        a.line_height_pt
+    );
     assert_eq!(a.align, ParagraphAlign::Left);
     assert!(a.first_line_indent_pt.abs() < 0.01);
     assert_eq!(a.color, [0, 0, 0]);
@@ -232,9 +241,18 @@ fn paragraph_detects_tracemonkey_body_text() {
     let text = p.text.clone();
     let result = edit_with(&doc.doc_id, 0, generation, edit_of(&p, &text), false)
         .expect("in-place reflow of the original text");
-    assert!(result.lines.abs_diff(p.lines) <= 1, "{} vs {}", result.lines, p.lines);
+    assert!(
+        result.lines.abs_diff(p.lines) <= 1,
+        "{} vs {}",
+        result.lines,
+        p.lines
+    );
     let after = saved_text(&doc.doc_id, 0);
-    let first_words: String = text.split_whitespace().take(6).collect::<Vec<_>>().join(" ");
+    let first_words: String = text
+        .split_whitespace()
+        .take(6)
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(after.contains(&first_words), "{first_words:?} in {after:?}");
     assert!(before.len().abs_diff(after.len()) < 40);
 }
@@ -268,7 +286,10 @@ fn paragraph_edit_shorter_and_longer() {
     assert!(text.contains("A Heading Line") && text.contains("Second paragraph"));
     let c_after = probe(&doc.doc_id, 0, 100.0, 623.0).unwrap();
     assert_eq!(c_after.text, c_before.text);
-    assert_eq!(c_after.rect, c_before.rect, "nothing else on the page moves");
+    assert_eq!(
+        c_after.rect, c_before.rect,
+        "nothing else on the page moves"
+    );
 
     // Longer: more lines, overflow below the original rect, text extractable in order.
     let a2 = probe(&doc.doc_id, 0, 80.0, 705.0).unwrap();
@@ -279,12 +300,27 @@ fn paragraph_edit_shorter_and_longer() {
     let mut e = overlap(edit_of(&a2, &long));
     e.width = Some(460.0);
     let result = edit_with(&doc.doc_id, 0, a2.doc_generation, e, false).expect("edit longer");
-    assert!(result.lines >= 4 && result.lines > a2.lines, "{}", result.lines);
-    assert!(result.rect.b > 630.0, "clear of paragraph C: {:?}", result.rect);
+    assert!(
+        result.lines >= 4 && result.lines > a2.lines,
+        "{}",
+        result.lines
+    );
+    assert!(
+        result.rect.b > 630.0,
+        "clear of paragraph C: {:?}",
+        result.rect
+    );
     // Stage 9 meaning: how far the new text runs over what is below — nothing here.
     assert_eq!(result.overflow_pt, 0.0);
-    assert_eq!((result.shifted_pt, result.moved_objects), (0.0, 0), "overlap moves nothing");
-    assert_eq!(probe(&doc.doc_id, 0, 100.0, 623.0).unwrap().rect, c_before.rect);
+    assert_eq!(
+        (result.shifted_pt, result.moved_objects),
+        (0.0, 0),
+        "overlap moves nothing"
+    );
+    assert_eq!(
+        probe(&doc.doc_id, 0, 100.0, 623.0).unwrap().rect,
+        c_before.rect
+    );
     let text = saved_text(&doc.doc_id, 0);
     assert!(text.contains(&norm(&long)), "in order: {text}");
     let again = probe(&doc.doc_id, 0, 80.0, 705.0).unwrap();
@@ -302,7 +338,11 @@ fn paragraph_edit_korean_needs_consent() {
     let refused = edit_with(&doc.doc_id, 0, a.doc_generation, edit_of(&a, korean), false)
         .expect_err("Helvetica cannot draw Hangul");
     assert_eq!(refused.code, ErrorCode::FontCoverage);
-    assert_eq!(generation(&doc.doc_id), a.doc_generation, "a refused edit changes nothing");
+    assert_eq!(
+        generation(&doc.doc_id),
+        a.doc_generation,
+        "a refused edit changes nothing"
+    );
 
     let done = edit_with(&doc.doc_id, 0, a.doc_generation, edit_of(&a, korean), true)
         .expect("with consent");
@@ -327,7 +367,11 @@ fn paragraph_edit_korean_needs_consent() {
     let moved = (4.0 - done.lines as f32) * 14.4;
     let c = probe(&doc.doc_id, 0, 100.0, 623.0 + moved).unwrap();
     assert_eq!(c.text, PARA_C_TEXT);
-    assert!((done.shifted_pt + moved).abs() < 0.05, "{} vs {moved}", done.shifted_pt);
+    assert!(
+        (done.shifted_pt + moved).abs() < 0.05,
+        "{} vs {moved}",
+        done.shifted_pt
+    );
     assert_eq!(c.strategy, TextEditStrategy::InPlace);
 }
 
@@ -335,7 +379,11 @@ fn paragraph_edit_korean_needs_consent() {
 fn paragraph_edit_alignments() {
     let doc = open_generated();
     let text = format!("{PARA_A_TEXT} And a little more text so there are enough lines.");
-    for align in [ParagraphAlign::Justify, ParagraphAlign::Center, ParagraphAlign::Right] {
+    for align in [
+        ParagraphAlign::Justify,
+        ParagraphAlign::Center,
+        ParagraphAlign::Right,
+    ] {
         let p = probe(&doc.doc_id, 0, 80.0, 705.0).unwrap();
         let mut e = edit_of(&p, &text);
         e.align = Some(align);
@@ -343,7 +391,11 @@ fn paragraph_edit_alignments() {
         let result = edit_with(&doc.doc_id, 0, p.doc_generation, e, false)
             .unwrap_or_else(|err| panic!("{align:?}: {err}"));
         assert!(result.lines >= 3, "{align:?}: {}", result.lines);
-        assert!(result.rect.r <= p.rect.l + 300.0 + 2.0, "{align:?}: {:?}", result.rect);
+        assert!(
+            result.rect.r <= p.rect.l + 300.0 + 2.0,
+            "{align:?}: {:?}",
+            result.rect
+        );
         if align == ParagraphAlign::Right {
             // Every new line ends at the box's right edge (ink within 2 pt of the advance).
             let box_r = p.rect.l + 300.0;
@@ -373,8 +425,14 @@ fn paragraph_edit_undo_and_stale() {
     let doc = open_generated();
     let a = probe(&doc.doc_id, 0, 200.0, 690.0).unwrap();
 
-    let stale = edit_with(&doc.doc_id, 0, a.doc_generation + 1, edit_of(&a, "x"), false)
-        .expect_err("wrong generation");
+    let stale = edit_with(
+        &doc.doc_id,
+        0,
+        a.doc_generation + 1,
+        edit_of(&a, "x"),
+        false,
+    )
+    .expect_err("wrong generation");
     assert_eq!(stale.code, ErrorCode::Stale);
 
     let mut e = edit_of(&a, "Replaced paragraph text.");
@@ -391,6 +449,9 @@ fn paragraph_edit_undo_and_stale() {
     let id = doc.doc_id.clone();
     with_state(move |st| registry::undo(st, &id, false)).expect("undo");
     let back = probe(&doc.doc_id, 0, 200.0, 690.0).unwrap();
-    assert_eq!(back.text, PARA_A_TEXT, "one undo step restores the paragraph");
+    assert_eq!(
+        back.text, PARA_A_TEXT,
+        "one undo step restores the paragraph"
+    );
     assert_eq!(back.object_ids, a.object_ids);
 }

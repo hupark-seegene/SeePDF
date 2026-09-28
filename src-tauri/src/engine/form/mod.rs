@@ -182,7 +182,10 @@ pub fn set_value(
     if a.form_field_flags(form) & consts::FPDF_FORMFLAG_READONLY != 0 {
         return Err(EngineError::new(
             ErrorCode::PermissionDenied,
-            format!("field '{}' is read-only", a.form_field_name(form).unwrap_or_default()),
+            format!(
+                "field '{}' is read-only",
+                a.form_field_name(form).unwrap_or_default()
+            ),
         ));
     }
     let previous = a.form_field_value(form);

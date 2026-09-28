@@ -153,10 +153,7 @@ fn five_hundred_pages() -> Vec<u8> {
             kids.join(" ")
         ),
     );
-    pdf.set(
-        catalog,
-        format!("<< /Type /Catalog /Pages {pages} 0 R >>"),
-    );
+    pdf.set(catalog, format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     pdf.finish(&format!("/Root {catalog} 0 R"))
 }
 
@@ -432,10 +429,7 @@ fn md5(input: &[u8]) -> [u8; 16] {
                 2 => (b ^ c ^ d, (3 * i + 5) % 16),
                 _ => (c ^ (b | !d), (7 * i) % 16),
             };
-            let f = f
-                .wrapping_add(a)
-                .wrapping_add(k[i])
-                .wrapping_add(m[g]);
+            let f = f.wrapping_add(a).wrapping_add(k[i]).wrapping_add(m[g]);
             a = d;
             d = c;
             c = b;

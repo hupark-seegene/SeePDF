@@ -80,16 +80,12 @@ pub fn save(
     let started = Instant::now();
     let path: PathBuf = match target {
         Some(p) => PathBuf::from(p),
-        None => st
-            .doc(doc_id)?
-            .path
-            .clone()
-            .ok_or_else(|| {
-                EngineError::new(
-                    ErrorCode::ReadOnly,
-                    "this document has never been saved; use Save As",
-                )
-            })?,
+        None => st.doc(doc_id)?.path.clone().ok_or_else(|| {
+            EngineError::new(
+                ErrorCode::ReadOnly,
+                "this document has never been saved; use Save As",
+            )
+        })?,
     };
     check_writable(&path)?;
 
@@ -115,10 +111,7 @@ pub fn save(
     doc.touched.clear();
     let generation = doc.generation;
     let summary = doc.summary();
-    st.shared
-        .docs
-        .write()
-        .insert(doc_id.to_string(), summary);
+    st.shared.docs.write().insert(doc_id.to_string(), summary);
     if let Some(app) = &st.app {
         let _ = app.emit(
             "doc-saved",
@@ -307,7 +300,11 @@ pub fn write_info(bytes: &[u8], meta: &DocMeta, clear: bool) -> Result<Vec<u8>, 
         }
     }
 
-    let info_ref = doc.trailer.get(b"Info").ok().and_then(|o| o.as_reference().ok());
+    let info_ref = doc
+        .trailer
+        .get(b"Info")
+        .ok()
+        .and_then(|o| o.as_reference().ok());
     if clear {
         doc.trailer.remove(b"Info");
         if let Some(id) = info_ref {
@@ -339,7 +336,9 @@ pub fn write_info(bytes: &[u8], meta: &DocMeta, clear: bool) -> Result<Vec<u8>, 
             ("CreationDate", &meta.created),
             ("ModDate", &modified),
         ];
-        let info = doc.get_dictionary_mut(id).map_err(|e| lopdf_error("/Info", e))?;
+        let info = doc
+            .get_dictionary_mut(id)
+            .map_err(|e| lopdf_error("/Info", e))?;
         for (key, value) in fields {
             match value.as_deref().map(str::trim) {
                 None => {}

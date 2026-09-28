@@ -19,9 +19,7 @@ use crate::engine::save;
 use crate::engine::text::layer;
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
-use crate::ipc::types::{
-    ExportEstimate, ExportTextResult, ImageFormat, PageIndex, Rect,
-};
+use crate::ipc::types::{ExportEstimate, ExportTextResult, ImageFormat, PageIndex, Rect};
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
 use std::path::{Path, PathBuf};
@@ -62,7 +60,13 @@ pub fn export_page_image(
     base_name: &str,
     transparent: bool,
 ) -> Result<ExportedImage, EngineError> {
-    let image = render_page(st, doc_id, page, dpi, transparent && format == ImageFormat::Png)?;
+    let image = render_page(
+        st,
+        doc_id,
+        page,
+        dpi,
+        transparent && format == ImageFormat::Png,
+    )?;
     std::fs::create_dir_all(out_dir).map_err(EngineError::from)?;
     let name = format!(
         "{}-{:03}.{}",
@@ -117,8 +121,8 @@ fn render_page(
         });
     let doc = st.doc_mut(doc_id)?;
     let pdf_page = doc.page(page)?;
-    let mut bitmap = PdfBitmap::empty(w as Pixels, h as Pixels, PdfBitmapFormat::BGRA)
-        .ctx("allocate bitmap")?;
+    let mut bitmap =
+        PdfBitmap::empty(w as Pixels, h as Pixels, PdfBitmapFormat::BGRA).ctx("allocate bitmap")?;
     pdf_page
         .render_into_bitmap_with_config(&mut bitmap, &config)
         .ctx("render page")?;
@@ -196,7 +200,12 @@ pub fn estimate(
 ) -> Result<ExportEstimate, EngineError> {
     let pages = check_pages(st, doc_id, pages)?;
     let step = (pages.len() / SAMPLE_PAGES).max(1);
-    let sample: Vec<PageIndex> = pages.iter().copied().step_by(step).take(SAMPLE_PAGES).collect();
+    let sample: Vec<PageIndex> = pages
+        .iter()
+        .copied()
+        .step_by(step)
+        .take(SAMPLE_PAGES)
+        .collect();
     let mut total = 0u64;
     for &page in &sample {
         let image = render_page(st, doc_id, page, dpi, false)?;
@@ -306,7 +315,9 @@ pub fn print_prepare(
     pages: Option<&[PageIndex]>,
 ) -> Result<PathBuf, EngineError> {
     let subset = match pages {
-        Some(list) if !list.is_empty() => Some(crate::engine::pages::subset_bytes(st, doc_id, list)?),
+        Some(list) if !list.is_empty() => {
+            Some(crate::engine::pages::subset_bytes(st, doc_id, list)?)
+        }
         _ => None,
     };
     let bytes = match subset {
@@ -373,7 +384,7 @@ pub fn check_pages(
     for &p in pages {
         if p >= count {
             return Err(
-                EngineError::invalid(format!("page {p} is outside 0..{count}")).with_page(p)
+                EngineError::invalid(format!("page {p} is outside 0..{count}")).with_page(p),
             );
         }
         seen.insert(p);
@@ -389,7 +400,11 @@ pub fn pixel_size(
     dpi: u32,
 ) -> Result<(u32, u32), EngineError> {
     let geom = st.doc(doc_id)?.geom(page)?.clone();
-    Ok(geometry::page_pixels(&geom, 0, check_dpi(dpi)? as f32 / 72.0))
+    Ok(geometry::page_pixels(
+        &geom,
+        0,
+        check_dpi(dpi)? as f32 / 72.0,
+    ))
 }
 
 /// The unrotated crop box, for callers that need the source rectangle in points.

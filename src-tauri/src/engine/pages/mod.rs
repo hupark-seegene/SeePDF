@@ -543,10 +543,7 @@ pub fn merge(st: &mut EngineState<'_>, inputs: &[MergeInput]) -> Result<MergeRes
             let source = load_source(pdfium, Path::new(&input.path), input.password.as_deref())?;
             let source_count = source.pages().len() as u16;
             if source_count == 0 {
-                return Err(EngineError::invalid(format!(
-                    "{} has no pages",
-                    input.path
-                )));
+                return Err(EngineError::invalid(format!("{} has no pages", input.path)));
             }
             let selected = parse_range(input.range.as_deref().unwrap_or(""), source_count)?;
             if source.form().is_some() {

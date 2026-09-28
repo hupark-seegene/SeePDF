@@ -66,8 +66,7 @@ fn pdfium_lib_path() -> PathBuf {
 struct FileWriter {
     // These first two fields must mirror FPDF_FILEWRITE_ exactly.
     version: c_int,
-    write_block:
-        Option<unsafe extern "C" fn(*mut FileWriter, *const c_void, c_ulong) -> c_int>,
+    write_block: Option<unsafe extern "C" fn(*mut FileWriter, *const c_void, c_ulong) -> c_int>,
     buf: Vec<u8>,
 }
 
@@ -269,10 +268,12 @@ fn section_1_page_ops(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
 
         {
             // insert a blank custom-size page at the end
-            let page = doc.pages_mut().create_page_at_end(PdfPagePaperSize::from_points(
-                PdfPoints::new(200.0),
-                PdfPoints::new(400.0),
-            ))?;
+            let page = doc
+                .pages_mut()
+                .create_page_at_end(PdfPagePaperSize::from_points(
+                    PdfPoints::new(200.0),
+                    PdfPoints::new(400.0),
+                ))?;
             println!(
                 "  create_page_at_end(200x400 pt) -> {:.1} x {:.1} pt",
                 page.width().value,
@@ -363,12 +364,8 @@ fn section_1_page_ops(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
             // Move pages [3, 2] so they land starting at index 1 -> [0, 3, 2, 1, 4, ...]
             let indices: [c_int; 2] = [3, 2];
             let t = Instant::now();
-            let ok = raw.is_true(raw.FPDF_MovePages(
-                d,
-                indices.as_ptr(),
-                indices.len() as c_ulong,
-                1,
-            ));
+            let ok =
+                raw.is_true(raw.FPDF_MovePages(d, indices.as_ptr(), indices.len() as c_ulong, 1));
             println!("  FPDF_MovePages([3,2] -> 1) = {} in {:.2} ms", ok, ms(t));
 
             // failure cases documented in the header
@@ -386,7 +383,12 @@ fn section_1_page_ops(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
             println!(
                 "  FPDF_MovePages([0,3,1] -> {}) (dest too close to the end) = {}",
                 raw.FPDF_GetPageCount(d) - 1,
-                raw.is_true(raw.FPDF_MovePages(d, bad_dest.as_ptr(), 3, raw.FPDF_GetPageCount(d) - 1))
+                raw.is_true(raw.FPDF_MovePages(
+                    d,
+                    bad_dest.as_ptr(),
+                    3,
+                    raw.FPDF_GetPageCount(d) - 1
+                ))
             );
 
             let mut w = FileWriter::new();
@@ -403,7 +405,10 @@ fn section_1_page_ops(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
             .take(6)
             .map(|s| baseline.iter().position(|b| b == s))
             .collect();
-        println!("  new order (old index of each of the first 6 pages) = {:?}", mapping);
+        println!(
+            "  new order (old index of each of the first 6 pages) = {:?}",
+            mapping
+        );
     }
 
     Ok(())
@@ -426,7 +431,10 @@ fn widget_count(doc: &PdfDocument) -> usize {
 }
 
 fn annotation_count(doc: &PdfDocument) -> usize {
-    doc.pages().iter().map(|p| p.annotations().len() as usize).sum()
+    doc.pages()
+        .iter()
+        .map(|p| p.annotations().len() as usize)
+        .sum()
 }
 
 fn section_2_merge_split(pdfium: &Pdfium) -> R<()> {
@@ -445,7 +453,9 @@ fn section_2_merge_split(pdfium: &Pdfium) -> R<()> {
         let mut merged = pdfium.create_new_pdf()?;
         let t = Instant::now();
         // NOTE: the STRING form is 1-BASED and inclusive: "1-3,5" == pages 1,2,3,5.
-        merged.pages_mut().copy_pages_from_document(&a, "1-3,5", 0)?;
+        merged
+            .pages_mut()
+            .copy_pages_from_document(&a, "1-3,5", 0)?;
         println!(
             "  copy_pages_from_document(A, \"1-3,5\", 0): {:.2} ms -> {} pages",
             ms(t),
@@ -504,7 +514,11 @@ fn section_2_merge_split(pdfium: &Pdfium) -> R<()> {
             let values = form.field_values(src.pages());
             let mut names: Vec<&String> = values.keys().collect();
             names.sort();
-            println!("    {} named fields, first 6: {:?}", names.len(), &names[..names.len().min(6)]);
+            println!(
+                "    {} named fields, first 6: {:?}",
+                names.len(),
+                &names[..names.len().min(6)]
+            );
         }
 
         // a plain load -> save -> reload round trip of the SAME document
@@ -556,7 +570,8 @@ fn section_2_merge_split(pdfium: &Pdfium) -> R<()> {
         let mut part = pdfium.create_new_pdf()?;
         let t = Instant::now();
         // NOTE: the RANGE form is 0-BASED and inclusive.
-        part.pages_mut().copy_page_range_from_document(&src, 2..=5, 0)?;
+        part.pages_mut()
+            .copy_page_range_from_document(&src, 2..=5, 0)?;
         println!(
             "  copy_page_range_from_document(2..=5) : {:.2} ms -> {} pages",
             ms(t),
@@ -838,7 +853,10 @@ fn section_3_images(pdfium: &Pdfium) -> R<()> {
             page.regenerate_content()?;
         }
         doc.save_to_file(&out("image_placed.pdf"))?;
-        println!("  image_placed.pdf = {} bytes", file_len(&out("image_placed.pdf")));
+        println!(
+            "  image_placed.pdf = {} bytes",
+            file_len(&out("image_placed.pdf"))
+        );
     }
 
     // --- replace an existing image ------------------------------------------
@@ -964,7 +982,10 @@ fn section_4_export(pdfium: &Pdfium) -> R<()> {
 
     // thumbnails, as a page organiser grid would need them
     for (label, thumb_config) in [
-        ("PdfRenderConfig::thumbnail(180)", PdfRenderConfig::new().thumbnail(180)),
+        (
+            "PdfRenderConfig::thumbnail(180)",
+            PdfRenderConfig::new().thumbnail(180),
+        ),
         (
             "set_maximum_width/height(180) only",
             PdfRenderConfig::new()
@@ -982,7 +1003,10 @@ fn section_4_export(pdfium: &Pdfium) -> R<()> {
         let mut bytes = 0u64;
         let mut dims = (0u32, 0u32);
         for (i, page) in doc.pages().iter().enumerate() {
-            let image = page.render_with_config(&thumb_config)?.as_image()?.into_rgb8();
+            let image = page
+                .render_with_config(&thumb_config)?
+                .as_image()?
+                .into_rgb8();
             dims = (image.width(), image.height());
             let path = dir.join(format!(
                 "thumb{}-{:02}.png",
@@ -1014,7 +1038,9 @@ fn section_4_export(pdfium: &Pdfium) -> R<()> {
         for (i, page) in rot.pages().iter().enumerate() {
             let image = page.render_with_config(&config)?.as_image()?;
             let path = dir.join(format!("rotation-{:02}.png", i + 1));
-            image.into_rgb8().save_with_format(&path, ImageFormat::Png)?;
+            image
+                .into_rgb8()
+                .save_with_format(&path, ImageFormat::Png)?;
             println!(
                 "  rotation.pdf page {} ({:?}, {:.0}x{:.0} pt) rendered to {}x{} px -> /Rotate IS applied by the renderer",
                 i,
@@ -1083,14 +1109,38 @@ fn dump_metadata(label: &str, doc: &PdfDocument) {
 fn dump_permissions(label: &str, doc: &PdfDocument) {
     let p = doc.permissions();
     println!("  {}:", label);
-    println!("    security_handler_revision  {:?}", p.security_handler_revision());
-    println!("    can_print_high_quality     {:?}", p.can_print_high_quality());
-    println!("    can_print_only_low_quality {:?}", p.can_print_only_low_quality());
-    println!("    can_modify_document_content{:?}", p.can_modify_document_content());
-    println!("    can_extract_text_and_graphics {:?}", p.can_extract_text_and_graphics());
-    println!("    can_add_or_modify_text_annotations {:?}", p.can_add_or_modify_text_annotations());
-    println!("    can_fill_existing_interactive_form_fields {:?}", p.can_fill_existing_interactive_form_fields());
-    println!("    can_assemble_document      {:?}", p.can_assemble_document());
+    println!(
+        "    security_handler_revision  {:?}",
+        p.security_handler_revision()
+    );
+    println!(
+        "    can_print_high_quality     {:?}",
+        p.can_print_high_quality()
+    );
+    println!(
+        "    can_print_only_low_quality {:?}",
+        p.can_print_only_low_quality()
+    );
+    println!(
+        "    can_modify_document_content{:?}",
+        p.can_modify_document_content()
+    );
+    println!(
+        "    can_extract_text_and_graphics {:?}",
+        p.can_extract_text_and_graphics()
+    );
+    println!(
+        "    can_add_or_modify_text_annotations {:?}",
+        p.can_add_or_modify_text_annotations()
+    );
+    println!(
+        "    can_fill_existing_interactive_form_fields {:?}",
+        p.can_fill_existing_interactive_form_fields()
+    );
+    println!(
+        "    can_assemble_document      {:?}",
+        p.can_assemble_document()
+    );
 }
 
 fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()> {
@@ -1100,7 +1150,10 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
         let doc = pdfium.load_pdf_from_file(&fx("tracemonkey.pdf"), None)?;
         dump_metadata("tracemonkey.pdf", &doc);
         println!("    catalog().is_tagged() = {}", doc.catalog().is_tagged());
-        println!("    catalog().get_language() = {:?}", doc.catalog().get_language());
+        println!(
+            "    catalog().get_language() = {:?}",
+            doc.catalog().get_language()
+        );
     }
     {
         let doc = pdfium.load_pdf_from_file(&fx("TAMReview.pdf"), None)?;
@@ -1114,7 +1167,8 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
     {
         let src = pdfium.load_pdf_from_file(&fx("tracemonkey.pdf"), None)?;
         let mut copy = pdfium.create_new_pdf()?;
-        copy.pages_mut().copy_page_range_from_document(&src, 0..=1, 0)?;
+        copy.pages_mut()
+            .copy_page_range_from_document(&src, 0..=1, 0)?;
         copy.set_version(PdfDocumentVersion::Pdf1_7);
         copy.save_to_file(&out("metadata_probe.pdf"))?;
         let re = pdfium.load_pdf_from_file(&out("metadata_probe.pdf"), None)?;
@@ -1125,7 +1179,12 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
 
     // page labels
     println!("\n-- page labels --");
-    for name in ["tracemonkey.pdf", "160F-2019.pdf", "TAMReview.pdf", "rotation.pdf"] {
+    for name in [
+        "tracemonkey.pdf",
+        "160F-2019.pdf",
+        "TAMReview.pdf",
+        "rotation.pdf",
+    ] {
         let doc = pdfium.load_pdf_from_file(&fx(name), None)?;
         let labels: Vec<Option<String>> = doc
             .pages()
@@ -1133,7 +1192,10 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
             .take(5)
             .map(|p| p.label().map(|s| s.to_string()))
             .collect();
-        println!("  {:<20} first labels via PdfPage::label() = {:?}", name, labels);
+        println!(
+            "  {:<20} first labels via PdfPage::label() = {:?}",
+            name, labels
+        );
     }
     if out("outline-labels.pdf").exists() {
         // a /PageLabels number tree with three styles: roman, decimal-with-start, alpha-with-prefix
@@ -1143,7 +1205,10 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
             .iter()
             .map(|p| p.label().map(|s| s.to_string()))
             .collect();
-        println!("  {:<20} /PageLabels tree -> {:?}", "outline-labels.pdf", labels);
+        println!(
+            "  {:<20} /PageLabels tree -> {:?}",
+            "outline-labels.pdf", labels
+        );
     }
     {
         // raw check, to prove PdfPage::label() is just FPDF_GetPageLabel
@@ -1151,7 +1216,10 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
         unsafe {
             let d = raw.FPDF_LoadDocument(path.to_str().unwrap(), None);
             let len = raw.FPDF_GetPageLabel(d, 0, std::ptr::null_mut(), 0);
-            println!("  raw FPDF_GetPageLabel(160F, page 0) buffer length = {}", len);
+            println!(
+                "  raw FPDF_GetPageLabel(160F, page 0) buffer length = {}",
+                len
+            );
             raw.FPDF_CloseDocument(d);
         }
     }
@@ -1167,7 +1235,10 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
     println!("\n-- encrypted document (fixtures/out/encrypted-rc4-40.pdf, RC4 40-bit, R=2) --");
     let enc_path = out("encrypted-rc4-40.pdf");
     if !enc_path.exists() {
-        println!("  !! {} is missing; regenerate it before running", enc_path.display());
+        println!(
+            "  !! {} is missing; regenerate it before running",
+            enc_path.display()
+        );
         return Ok(());
     }
     println!(
@@ -1176,17 +1247,28 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
     );
     println!(
         "  load with wrong password-> {:?}",
-        pdfium.load_pdf_from_file(&enc_path, Some("definitely-not")).err()
+        pdfium
+            .load_pdf_from_file(&enc_path, Some("definitely-not"))
+            .err()
     );
     {
         let doc = pdfium.load_pdf_from_file(&enc_path, Some("user"))?;
-        println!("  load with user password -> ok, {} pages", doc.pages().len());
+        println!(
+            "  load with user password -> ok, {} pages",
+            doc.pages().len()
+        );
         dump_permissions("opened with the USER password", &doc);
-        dump_metadata("encrypted document metadata (decrypted transparently)", &doc);
+        dump_metadata(
+            "encrypted document metadata (decrypted transparently)",
+            &doc,
+        );
     }
     {
         let doc = pdfium.load_pdf_from_file(&enc_path, Some("owner"))?;
-        println!("  load with owner password-> ok, {} pages", doc.pages().len());
+        println!(
+            "  load with owner password-> ok, {} pages",
+            doc.pages().len()
+        );
         dump_permissions("opened with the OWNER password", &doc);
     }
 
@@ -1199,7 +1281,10 @@ fn section_5_metadata(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()>
         println!(
             "  PdfDocument::save_to_file() on the decrypted doc, reopened with NO password -> {}",
             match reopened {
-                Ok(d) => format!("ok, {} pages (encryption was DROPPED on save)", d.pages().len()),
+                Ok(d) => format!(
+                    "ok, {} pages (encryption was DROPPED on save)",
+                    d.pages().len()
+                ),
                 Err(e) => format!("{:?}", e),
             }
         );
@@ -1375,9 +1460,7 @@ fn raw_save(
 
 fn section_8_save_flags(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<()> {
     println!("\n================ 8. SAVE FLAGS / OPTIMISE ================");
-    println!(
-        "  NOTE: PdfDocument::save_to_writer() hard-codes flags = 0. Everything below uses"
-    );
+    println!("  NOTE: PdfDocument::save_to_writer() hard-codes flags = 0. Everything below uses");
     println!("  raw FPDF_SaveAsCopy / FPDF_SaveWithVersion through PdfiumLibraryBindings.\n");
 
     let source = fx("tracemonkey.pdf");
@@ -1522,7 +1605,9 @@ fn section_8_save_flags(pdfium: &Pdfium, raw: &dyn PdfiumLibraryBindings) -> R<(
             file_len(&out("optimised.pdf")),
             (file_len(&out("optimised.pdf")) as f64 - before as f64) / before as f64 * 100.0
         );
-        println!("    (pdfium re-encodes replaced images as raw/flate bitmaps, it does NOT keep JPEG)");
+        println!(
+            "    (pdfium re-encodes replaced images as raw/flate bitmaps, it does NOT keep JPEG)"
+        );
     }
 
     Ok(())

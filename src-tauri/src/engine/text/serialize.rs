@@ -101,9 +101,8 @@ pub fn parse_header(buffer: &[u8]) -> Option<Header> {
         return None;
     }
     let u16_at = |o: usize| u16::from_le_bytes([buffer[o], buffer[o + 1]]);
-    let u32_at = |o: usize| {
-        u32::from_le_bytes([buffer[o], buffer[o + 1], buffer[o + 2], buffer[o + 3]])
-    };
+    let u32_at =
+        |o: usize| u32::from_le_bytes([buffer[o], buffer[o + 1], buffer[o + 2], buffer[o + 3]]);
     Some(Header {
         version: u16_at(4),
         flags: u16_at(6),

@@ -64,7 +64,10 @@ fn engine_lanes() {
 
     let mut order = Vec::new();
     for _ in 0..8 {
-        order.push(rx.recv_timeout(Duration::from_secs(10)).expect("command ran"));
+        order.push(
+            rx.recv_timeout(Duration::from_secs(10))
+                .expect("command ran"),
+        );
     }
     assert_eq!(
         order,
@@ -88,11 +91,7 @@ fn engine_lanes() {
 #[test]
 fn engine_stale_drop() {
     let engine = engine();
-    let dropped_before = engine
-        .shared
-        .stats
-        .dropped_stale
-        .load(Ordering::Relaxed);
+    let dropped_before = engine.shared.stats.dropped_stale.load(Ordering::Relaxed);
 
     engine.set_viewport(Viewport {
         doc_id: "d-stale".into(),
@@ -146,7 +145,11 @@ fn engine_stale_drop() {
         let (tag, status) = rx.recv_timeout(Duration::from_secs(10)).expect("answered");
         seen.insert(tag, status);
     }
-    assert_eq!(seen["far"], CmdStatus::Stale, "page 0 is far outside the viewport");
+    assert_eq!(
+        seen["far"],
+        CmdStatus::Stale,
+        "page 0 is far outside the viewport"
+    );
     assert_eq!(
         seen["visible"],
         CmdStatus::Run,
@@ -166,7 +169,10 @@ fn engine_cancel_between_chunks() {
     let ran = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<CmdStatus>();
 
-    assert!(engine.jobs.cancel(token.id), "cancel returns true for a live job");
+    assert!(
+        engine.jobs.cancel(token.id),
+        "cancel returns true for a live job"
+    );
     assert!(!engine.jobs.cancel(999_999), "unknown job ids return false");
 
     let ran_in_cmd = ran.clone();
@@ -209,5 +215,8 @@ fn engine_password_error_mapping() {
     );
     let doc = try_open(name, Some("user")).expect("opens with the user password");
     assert_eq!(doc.info.page_count, 1);
-    assert!(doc.info.encrypted, "the document reports itself as encrypted");
+    assert!(
+        doc.info.encrypted,
+        "the document reports itself as encrypted"
+    );
 }

@@ -88,7 +88,10 @@ fn open_file(path: PathBuf) -> TestDoc {
 fn pages_move_order() {
     let doc = open("gen/500p.pdf");
     let before: Vec<String> = (0..5).map(|p| page_number(&doc.doc_id, p)).collect();
-    assert_eq!(before[0], "Page 1", "the fixture stamps each page with its number");
+    assert_eq!(
+        before[0], "Page 1",
+        "the fixture stamps each page with its number"
+    );
 
     let info = ops(
         &doc.doc_id,
@@ -174,8 +177,16 @@ fn pages_duplicate() {
     let info = ops(&doc.doc_id, vec![PageOp::Duplicate { pages: vec![0] }]);
     assert_eq!(info.page_count, 15, "14 -> 15 pages");
     assert_eq!(page_tag(&doc.doc_id, 0), first);
-    assert_eq!(page_tag(&doc.doc_id, 1), first, "the copy sits after its source");
-    assert_eq!(page_tag(&doc.doc_id, 2), second, "everything else shifted by one");
+    assert_eq!(
+        page_tag(&doc.doc_id, 1),
+        first,
+        "the copy sits after its source"
+    );
+    assert_eq!(
+        page_tag(&doc.doc_id, 2),
+        second,
+        "everything else shifted by one"
+    );
 }
 
 /// `insertFrom`'s range string is **1-based** (`copy_pages_from_document`), while every index
@@ -198,7 +209,11 @@ fn pages_insert_from_range_1based() {
     assert_eq!(page_number(&doc.doc_id, 0), "Page 1");
     assert_eq!(page_number(&doc.doc_id, 1), "Page 2");
     assert_eq!(page_number(&doc.doc_id, 2), "Page 3");
-    assert_eq!(page_number(&doc.doc_id, 3), "Page 5", "page 4 was not selected");
+    assert_eq!(
+        page_number(&doc.doc_id, 3),
+        "Page 5",
+        "page 4 was not selected"
+    );
 
     // The same range read as 0-based indices would have been 2,3,4,6.
     assert_ne!(page_number(&doc.doc_id, 0), "Page 2");
@@ -268,7 +283,11 @@ fn pages_split_writes_every_part() {
         let doc_id = doc.doc_id.clone();
         move |st| {
             let d = st.doc(&doc_id)?;
-            pages::split_plan(&SplitMode::EveryN { every_n: 5 }, d.page_count(), &pages::output_stem(d))
+            pages::split_plan(
+                &SplitMode::EveryN { every_n: 5 },
+                d.page_count(),
+                &pages::output_stem(d),
+            )
         }
     })
     .expect("split plan");
@@ -381,15 +400,7 @@ fn pages_rejects_impossible_requests() {
 
     let out_of_range = with_state({
         let doc_id = doc.doc_id.clone();
-        move |st| {
-            pages::apply_ops(
-                st,
-                &doc_id,
-                vec![PageOp::Delete {
-                    pages: vec![0, 99],
-                }],
-            )
-        }
+        move |st| pages::apply_ops(st, &doc_id, vec![PageOp::Delete { pages: vec![0, 99] }])
     });
     assert!(out_of_range.is_err());
 
@@ -435,5 +446,8 @@ fn pages_insert_blank_sizes() {
     assert_eq!(info.page_count, 16);
     assert!((info.pages[0].width_pt - 200.0).abs() < 0.5);
     assert!((info.pages[0].height_pt - 400.0).abs() < 0.5);
-    assert!((info.pages[1].width_pt - 612.0).abs() < 0.5, "sameAs -> letter");
+    assert!(
+        (info.pages[1].width_pt - 612.0).abs() < 0.5,
+        "sameAs -> letter"
+    );
 }

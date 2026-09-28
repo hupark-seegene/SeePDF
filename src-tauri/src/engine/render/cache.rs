@@ -209,12 +209,7 @@ impl TileCache {
 
     fn retain(&self, keep: impl Fn(&TileKey) -> bool) {
         let mut inner = self.inner.lock();
-        let doomed: Vec<TileKey> = inner
-            .map
-            .keys()
-            .filter(|k| !keep(k))
-            .cloned()
-            .collect();
+        let doomed: Vec<TileKey> = inner.map.keys().filter(|k| !keep(k)).cloned().collect();
         for key in doomed {
             if let Some(old) = inner.map.remove(&key) {
                 inner.bytes = inner.bytes.saturating_sub(old.bytes());

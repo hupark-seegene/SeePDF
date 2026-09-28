@@ -402,7 +402,13 @@ fn running_footer(items: &[Item], g: &Geometry, column: &Column) -> Option<(f32,
         v.sort_by(f32::total_cmp);
         (!v.is_empty()).then(|| v[v.len() / 2])
     };
-    let body_size = median(sorted[split..].iter().filter_map(|it| it.line).map(|l| l.size).collect());
+    let body_size = median(
+        sorted[split..]
+            .iter()
+            .filter_map(|it| it.line)
+            .map(|l| l.size)
+            .collect(),
+    );
     let footer_size = cluster
         .iter()
         .filter_map(|it| it.line)
@@ -450,7 +456,9 @@ fn beside(items: &[Item], g: &Geometry, column: &Column) -> Vec<(usize, Rect)> {
 /// `r` reaches across into content beside the column that sits between the paragraph's top and
 /// `r`'s bottom: a line spanning two columns, not a line of this one.
 fn reaches_across(r: &Rect, beside: &[(usize, Rect)]) -> bool {
-    beside.iter().any(|(_, y)| y.l < r.r && y.r > r.l && y.t > r.b)
+    beside
+        .iter()
+        .any(|(_, y)| y.l < r.r && y.r > r.l && y.t > r.b)
 }
 
 /// The paragraph's column widened to its text block: body text below that overlaps the column
@@ -558,7 +566,10 @@ pub fn plan(items: &[Item], annots: &[AnnotItem], g: &Geometry) -> Plan {
         .filter(|it| it.line.is_some())
         .collect();
     rest.sort_by(|a, b| {
-        let (a, b) = (a.line.map_or(0.0, |l| l.baseline), b.line.map_or(0.0, |l| l.baseline));
+        let (a, b) = (
+            a.line.map_or(0.0, |l| l.baseline),
+            b.line.map_or(0.0, |l| l.baseline),
+        );
         b.total_cmp(&a)
     });
     let mut joined: HashSet<usize> = HashSet::new();
@@ -588,8 +599,16 @@ pub fn plan(items: &[Item], annots: &[AnnotItem], g: &Geometry) -> Plan {
     }
     // List markers: a narrow object just left of a movable line's text, on its baseline band,
     // that belongs to no other column — it goes with its item.
-    let lines: Vec<&Item> = candidates.iter().copied().filter(|c| c.line.is_some()).collect();
-    let largest = lines.iter().filter_map(|c| c.line).map(|l| l.size).fold(g.size, f32::max);
+    let lines: Vec<&Item> = candidates
+        .iter()
+        .copied()
+        .filter(|c| c.line.is_some())
+        .collect();
+    let largest = lines
+        .iter()
+        .filter_map(|c| c.line)
+        .map(|l| l.size)
+        .fold(g.size, f32::max);
     // A movable line starts at most 15 % of the column width left of it (see `Column::contains`).
     let leftmost = column.l - IN_COLUMN_OVERHANG * column.width() - MARKER_GAP * largest;
     for it in &outside {
@@ -610,7 +629,11 @@ pub fn plan(items: &[Item], annots: &[AnnotItem], g: &Geometry) -> Plan {
                 && c.bounds.l - m.r <= MARKER_GAP * size
                 && m.width() <= MARKER_WIDTH * size
         });
-        if marks && !others.iter().any(|(i, y)| *i != it.index && y.l < m.r && y.r > m.l) {
+        if marks
+            && !others
+                .iter()
+                .any(|(i, y)| *i != it.index && y.l < m.r && y.r > m.l)
+        {
             candidates.push(it);
             joined.insert(it.index);
         }
@@ -620,7 +643,8 @@ pub fn plan(items: &[Item], annots: &[AnnotItem], g: &Geometry) -> Plan {
             raise(&mut obstacle, it.bounds.t);
         }
     }
-    anything_below |= !candidates.is_empty() || overlapping.iter().any(|it| !joined.contains(&it.index));
+    anything_below |=
+        !candidates.is_empty() || overlapping.iter().any(|it| !joined.contains(&it.index));
     for a in annots {
         if a.subtype == consts::FPDF_ANNOT_WIDGET
             && valid(&a.rect)
@@ -659,15 +683,23 @@ pub fn plan(items: &[Item], annots: &[AnnotItem], g: &Geometry) -> Plan {
     let floor = floor(items, &footer_set, g);
     let room_floor = stack_bottom - floor;
     let (room, limit) = match obstacle {
-        Some(top) if stack_bottom - top <= room_floor => (stack_bottom - top, FlowBlocked::Obstacle),
+        Some(top) if stack_bottom - top <= room_floor => {
+            (stack_bottom - top, FlowBlocked::Obstacle)
+        }
         _ => (room_floor, FlowBlocked::PageBottom),
     };
 
     // Distances from the paragraph's line grid, keeping a line's clearance above content.
     let clear = (g.leading - g.size).max(0.0);
-    let content_top = candidates.iter().map(|it| it.bounds.t).chain(obstacle).reduce(f32::max);
+    let content_top = candidates
+        .iter()
+        .map(|it| it.bounds.t)
+        .chain(obstacle)
+        .reduce(f32::max);
     let to_floor = (g.grid_bottom - floor).max(0.0);
-    let free = content_top.map_or(to_floor, |t| (g.grid_bottom - t - clear).clamp(0.0, to_floor));
+    let free = content_top.map_or(to_floor, |t| {
+        (g.grid_bottom - t - clear).clamp(0.0, to_floor)
+    });
     let stack_top = movable.iter().map(|it| it.bounds.t).reduce(f32::max);
     let gap = stack_top.map_or(0.0, |top| (g.grid_bottom - top - clear).max(0.0));
 
@@ -804,7 +836,10 @@ pub fn decide(plan: &Plan, flow: ParagraphFlow, growth: f32, reach: f32) -> Deci
 }
 
 /// Every annotation of the page, for [`plan`].
-pub fn read_annots(bindings: &'static dyn PdfiumLibraryBindings, page: &PdfPage<'_>) -> Vec<AnnotItem> {
+pub fn read_annots(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+) -> Vec<AnnotItem> {
     (0..raw::annot::count(bindings, page))
         .filter_map(|index| {
             let a = raw::annot::get(bindings, page, index).ok()?;
@@ -953,7 +988,11 @@ mod tests {
             item(3, 330.0, 400.0, 400.0, 500.0), // right column image, narrower
             item(4, 72.0, 700.0, 540.0, 720.0), // full-width title above
         ];
-        let p = plan(&items, &[], &geometry(para, Rect::new(320.0, 576.0, 540.0, 650.0)));
+        let p = plan(
+            &items,
+            &[],
+            &geometry(para, Rect::new(320.0, 576.0, 540.0, 650.0)),
+        );
         assert_eq!(p.movable, vec![2, 3]);
         assert_eq!(p.limit, FlowBlocked::PageBottom);
         // floor = min(lowest body bottom 400, 18) = 18
@@ -987,7 +1026,10 @@ mod tests {
         assert!((p.gap - 8.0).abs() < 1e-3);
         // room 20 + the 8 pt of paragraph spacing beyond a line's clearance: 28 fits, 40
         // overlaps by 12.
-        assert_eq!(decide(&p, ParagraphFlow::Push, 28.0), decision(20.0, None, 0.0));
+        assert_eq!(
+            decide(&p, ParagraphFlow::Push, 28.0),
+            decision(20.0, None, 0.0)
+        );
         let d = decide(&p, ParagraphFlow::Push, 40.0);
         assert_eq!(d.shift, 20.0);
         assert_eq!(d.blocked, Some(FlowBlocked::Obstacle));
@@ -1004,13 +1046,22 @@ mod tests {
             item(2, 60.0, 368.0, 540.0, 568.0), // figure 1 pt under B
         ];
         let p = plan(&items, &[], &geometry(para, para));
-        assert!((p.room - 1.0).abs() < 1e-3 && (p.gap - 20.0).abs() < 1e-3, "{p:?}");
-        assert_eq!(decide(&p, ParagraphFlow::Push, 14.4), decision(1.0, None, 0.0));
+        assert!(
+            (p.room - 1.0).abs() < 1e-3 && (p.gap - 20.0).abs() < 1e-3,
+            "{p:?}"
+        );
+        assert_eq!(
+            decide(&p, ParagraphFlow::Push, 14.4),
+            decision(1.0, None, 0.0)
+        );
         let d = decide(&p, ParagraphFlow::Push, 30.0);
         assert_eq!(d.blocked, Some(FlowBlocked::Obstacle));
         assert!((d.overflow - 9.0).abs() < 1e-3, "{d:?}");
         // The overlap flow agrees: nothing moves, 20 pt are free.
-        assert_eq!(decide(&p, ParagraphFlow::Overlap, 14.4), decision(0.0, None, 0.0));
+        assert_eq!(
+            decide(&p, ParagraphFlow::Overlap, 14.4),
+            decision(0.0, None, 0.0)
+        );
         assert!((decide(&p, ParagraphFlow::Overlap, 30.0).overflow - 10.0).abs() < 1e-3);
     }
 
@@ -1053,7 +1104,7 @@ mod tests {
         }];
         items.extend(column_lines(1, 54.0, 293.0, 700.0, 212.0)); // left column above
         items.extend(column_lines(100, 318.0, 558.0, 700.0, 60.0)); // right column to 60
-        // copyright block: 118 … 90, 34 pt below the paragraph
+                                                                    // copyright block: 118 … 90, 34 pt below the paragraph
         items.push(text(200, 54.0, 293.0, 118.0, 8.0));
         items.push(text(201, 54.0, 293.0, 108.0, 8.0));
         items.push(text(202, 54.0, 250.0, 98.0, 8.0));
@@ -1071,7 +1122,10 @@ mod tests {
         let heading = Rect::new(72.0, 700.0, 400.0, 740.0);
         let mut items = vec![Item {
             kind: ItemKind::Paragraph,
-            line: Some(TextLine { baseline: 720.0, size: 24.0 }),
+            line: Some(TextLine {
+                baseline: 720.0,
+                size: 24.0,
+            }),
             ..item(0, 72.0, 700.0, 400.0, 740.0)
         }];
         items.extend(column_lines(1, 72.0, 540.0, 680.0, 92.0));
@@ -1128,7 +1182,14 @@ mod tests {
         // The same line high on the page, with that gap, is body text.
         let mut items = column_lines(1, 72.0, 420.0, 690.0, 400.0);
         items.push(text(99, 300.0, 305.0, 382.0, 10.0));
-        let p = plan(&items, &[], &geometry(Rect::new(72.0, 700.0, 420.0, 720.0), Rect::new(72.0, 700.0, 420.0, 720.0)));
+        let p = plan(
+            &items,
+            &[],
+            &geometry(
+                Rect::new(72.0, 700.0, 420.0, 720.0),
+                Rect::new(72.0, 700.0, 420.0, 720.0),
+            ),
+        );
         assert!(p.footer.is_empty() && p.movable.contains(&99), "{p:?}");
     }
 
@@ -1198,7 +1259,10 @@ mod tests {
     fn a_line_beside_a_figure_is_in_the_way() {
         let para = Rect::new(72.0, 656.6, 290.0, 710.0);
         let line = |index, l, b, r, t, baseline| Item {
-            line: Some(TextLine { baseline, size: 12.0 }),
+            line: Some(TextLine {
+                baseline,
+                size: 12.0,
+            }),
             ..item(index, l, b, r, t)
         };
         let items = vec![
@@ -1231,7 +1295,10 @@ mod tests {
         assert_eq!(d.blocked, Some(FlowBlocked::PageBottom));
         assert_eq!(d.overflow, 0.0);
         assert!((d.past_bottom - 8.0).abs() < 1e-3);
-        assert_eq!(decide(&p, ParagraphFlow::Push, 30.0), decision(0.0, None, 0.0));
+        assert_eq!(
+            decide(&p, ParagraphFlow::Push, 30.0),
+            decision(0.0, None, 0.0)
+        );
         let d = decide(&p, ParagraphFlow::Overlap, 50.0);
         assert_eq!((d.overflow, d.blocked), (0.0, None));
         assert!((d.past_bottom - 8.0).abs() < 1e-3);
@@ -1249,7 +1316,11 @@ mod tests {
         let mut items = column_lines(0, 72.0, 540.0, 700.0, 600.0);
         items.push(text(50, 200.0, 210.0, 703.5, 7.0)); // a superscript
         assert!((line_pitch(&items, &CROP, &column, 99.0) - 12.0).abs() < 1e-3);
-        assert_eq!(line_pitch(&items[..2], &CROP, &column, 99.0), 99.0, "too few lines");
+        assert_eq!(
+            line_pitch(&items[..2], &CROP, &column, 99.0),
+            99.0,
+            "too few lines"
+        );
     }
 
     /// The gap is measured from the paragraph's line grid, like the growth, and keeps a line's
@@ -1260,8 +1331,8 @@ mod tests {
         // The old last line had no descenders: its ink bottom (600) is 2.5 pt above the grid.
         let para = Rect::new(72.0, 600.0, 300.0, 650.0);
         let items = vec![
-            item(1, 72.0, 569.0, 290.0, 578.0),  // B, 22 pt below the ink, 19.5 below the grid
-            item(2, 60.0, 368.0, 540.0, 568.0),  // figure 1 pt under B
+            item(1, 72.0, 569.0, 290.0, 578.0), // B, 22 pt below the ink, 19.5 below the grid
+            item(2, 60.0, 368.0, 540.0, 568.0), // figure 1 pt under B
         ];
         let g = Geometry {
             grid_bottom: 597.5,
@@ -1269,8 +1340,11 @@ mod tests {
         };
         let p = plan(&items, &[], &g);
         assert!((p.gap - 17.5).abs() < 1e-3, "{p:?}"); // 597.5 − 578 − 2
-        // 18.5 of growth fits (room 1 + gap 17.5)…
-        assert_eq!(super::decide(&p, ParagraphFlow::Push, 18.5, 18.5), decision(1.0, None, 0.0));
+                                                       // 18.5 of growth fits (room 1 + gap 17.5)…
+        assert_eq!(
+            super::decide(&p, ParagraphFlow::Push, 18.5, 18.5),
+            decision(1.0, None, 0.0)
+        );
         // …unless the new last line's descenders reach 1.5 pt further than the grid.
         let d = super::decide(&p, ParagraphFlow::Push, 18.5, 20.0);
         assert_eq!(d.blocked, Some(FlowBlocked::Obstacle), "{d:?}");
@@ -1299,8 +1373,15 @@ mod tests {
             let p = plan(&items, &[], &geometry(para, para));
             let want: Vec<usize> = (1..=6).chain([20]).collect();
             assert_eq!(p.movable, want, "{label}: {p:?}");
-            assert!(p.band.is_some_and(|b| b.l <= 72.9 && b.r >= 452.5), "{label}: {p:?}");
-            assert_eq!(decide(&p, ParagraphFlow::Push, 24.0).blocked, None, "{label}");
+            assert!(
+                p.band.is_some_and(|b| b.l <= 72.9 && b.r >= 452.5),
+                "{label}: {p:?}"
+            );
+            assert_eq!(
+                decide(&p, ParagraphFlow::Push, 24.0).blocked,
+                None,
+                "{label}"
+            );
         }
     }
 
@@ -1318,7 +1399,10 @@ mod tests {
         items.push(text(40, 54.0, 558.0, 510.0, 10.0)); // caption across both columns
         let p = plan(&items, &[], &geometry(para, para));
         assert_eq!(p.movable, (1..=6).collect::<Vec<_>>(), "{p:?}");
-        assert!(!p.movable.contains(&40) && p.movable.iter().all(|&i| i < 20), "{p:?}");
+        assert!(
+            !p.movable.contains(&40) && p.movable.iter().all(|&i| i < 20),
+            "{p:?}"
+        );
         assert_eq!(p.limit, FlowBlocked::Obstacle);
         assert!((p.room - (530.0 - 2.0 - 517.0)).abs() < 1e-3, "{p:?}");
     }
@@ -1412,14 +1496,22 @@ mod tests {
         let p = plan(&items, &[], &geometry(para, para));
         assert!(p.nothing_below, "{p:?}");
         let d = decide(&p, ParagraphFlow::Push, 50.0);
-        assert_eq!((d.overflow, d.blocked), (0.0, Some(FlowBlocked::PageBottom)), "{d:?}");
+        assert_eq!(
+            (d.overflow, d.blocked),
+            (0.0, Some(FlowBlocked::PageBottom)),
+            "{d:?}"
+        );
         assert!((d.past_bottom - 8.0).abs() < 1e-3, "{d:?}");
         // A frame around the paragraph still keeps it inside, and nothing is overlapped.
         let items = vec![item(1, 60.0, 40.0, 552.0, 110.0)];
         let p = plan(&items, &[], &geometry(para, para));
         assert!(p.nothing_below && p.limit == FlowBlocked::Obstacle, "{p:?}");
         let d = decide(&p, ParagraphFlow::Push, 50.0);
-        assert_eq!((d.overflow, d.blocked), (0.0, Some(FlowBlocked::Obstacle)), "{d:?}");
+        assert_eq!(
+            (d.overflow, d.blocked),
+            (0.0, Some(FlowBlocked::Obstacle)),
+            "{d:?}"
+        );
     }
 
     /// An annotation whose centre lies in the moved band moves, although it reaches below the
@@ -1451,9 +1543,16 @@ mod tests {
         let para = Rect::new(72.0, 600.0, 300.0, 650.0);
         let items = vec![item(1, 72.0, 560.0, 290.0, 590.0)];
         let p = plan(&items, &[], &geometry(para, para)).frozen();
-        assert!(p.movable.is_empty() && p.band.is_none() && !p.nothing_below, "{p:?}");
+        assert!(
+            p.movable.is_empty() && p.band.is_none() && !p.nothing_below,
+            "{p:?}"
+        );
         let d = decide(&p, ParagraphFlow::Push, 20.0);
-        assert_eq!((d.shift, d.blocked), (0.0, Some(FlowBlocked::Obstacle)), "{d:?}");
+        assert_eq!(
+            (d.shift, d.blocked),
+            (0.0, Some(FlowBlocked::Obstacle)),
+            "{d:?}"
+        );
         assert!((d.overflow - 12.0).abs() < 1e-3, "{d:?}"); // 20 − (600 − 590 − 2)
         assert_eq!(decide(&p, ParagraphFlow::Push, -10.0).shift, 0.0);
     }

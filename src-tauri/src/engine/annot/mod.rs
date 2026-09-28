@@ -37,7 +37,7 @@ use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{Annot, AnnotId, AnnotKind, PageIndex, Rgb};
 use crate::ipc::EngineError;
 use pdfium_render::prelude::{
-    FPDF_FORMHANDLE, PdfPage, PdfPageContentRegenerationStrategy, PdfPageIndex,
+    PdfPage, PdfPageContentRegenerationStrategy, PdfPageIndex, FPDF_FORMHANDLE,
 };
 use std::os::raw::c_int;
 
@@ -95,7 +95,10 @@ pub struct ScratchPage<'p> {
     pub page: PdfPage<'p>,
     /// Set by [`ScratchPage::open_with_form`]: `FORM_OnBeforeClosePage` must run before the
     /// page handle is dropped, or the form layer keeps a dangling page.
-    form: Option<(&'static dyn pdfium_render::prelude::PdfiumLibraryBindings, FPDF_FORMHANDLE)>,
+    form: Option<(
+        &'static dyn pdfium_render::prelude::PdfiumLibraryBindings,
+        FPDF_FORMHANDLE,
+    )>,
 }
 
 impl<'p> ScratchPage<'p> {

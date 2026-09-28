@@ -442,7 +442,14 @@ pub fn edit_text(
                     // token (`OpenDoc::hangul_font`) — one embed per document, not per page.
                     doc.adopt_hangul_token(&scratch.page);
                     let (token, _) = doc.hangul_token_for(new_text)?;
-                    replace_object(doc.pdf(), &mut scratch.page, object_id, new_text, token, &patch)?;
+                    replace_object(
+                        doc.pdf(),
+                        &mut scratch.page,
+                        object_id,
+                        new_text,
+                        token,
+                        &patch,
+                    )?;
                     replaced = true;
                 }
             }
@@ -727,9 +734,8 @@ pub fn replace_image(
     path: &str,
 ) -> Result<PageObjectList, EngineError> {
     check_generation(st.doc(doc_id)?, expect_generation)?;
-    let image = image::open(path).map_err(|e| {
-        EngineError::new(ErrorCode::InvalidArgument, format!("{path}: {e}"))
-    })?;
+    let image = image::open(path)
+        .map_err(|e| EngineError::new(ErrorCode::InvalidArgument, format!("{path}: {e}")))?;
     registry::mutate(
         st,
         doc_id,
@@ -849,9 +855,7 @@ pub fn transform(
                         object.scale(sx, sy).ctx("scale object")?;
                     }
                     if let Some(deg) = rotate_deg {
-                        object
-                            .rotate_clockwise_degrees(deg)
-                            .ctx("rotate object")?;
+                        object.rotate_clockwise_degrees(deg).ctx("rotate object")?;
                     }
                     object
                         .translate(PdfPoints::new(ax), PdfPoints::new(ay))
@@ -1025,7 +1029,8 @@ pub fn duplicate(
                     .pages()
                     .get(page_index as PdfPageIndex)
                     .ctx(&format!("load page {page_index}"))?;
-                source.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+                source
+                    .set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
                 if source.objects().len() != listed.objects.len() {
                     return Err(EngineError::stale(
                         "the page's objects changed since they were listed; re-list them",
@@ -1091,10 +1096,9 @@ fn match_copies(
     let mut out: Vec<Option<ObjectId>> = vec![None; expected.len()];
     // Last copy first, each taking the highest matching index still free.
     for (slot, (kind, rect)) in expected.iter().enumerate().rev() {
-        if let Some(i) = (0..objects.len())
-            .rev()
-            .find(|&i| !claimed[i] && objects[i].object_type == *kind && close(&objects[i].rect, rect))
-        {
+        if let Some(i) = (0..objects.len()).rev().find(|&i| {
+            !claimed[i] && objects[i].object_type == *kind && close(&objects[i].rect, rect)
+        }) {
             claimed[i] = true;
             out[slot] = Some(i as ObjectId);
         }

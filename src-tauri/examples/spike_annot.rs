@@ -48,10 +48,35 @@ const ST_INK: FPDF_ANNOTATION_SUBTYPE = 15;
 const ST_REDACT: FPDF_ANNOTATION_SUBTYPE = 28;
 
 const SUBTYPE_NAMES: [&str; 29] = [
-    "Unknown", "Text", "Link", "FreeText", "Line", "Square", "Circle", "Polygon", "Polyline",
-    "Highlight", "Underline", "Squiggly", "StrikeOut", "Stamp", "Caret", "Ink", "Popup",
-    "FileAttachment", "Sound", "Movie", "Widget", "Screen", "PrinterMark", "TrapNet", "Watermark",
-    "3D", "RichMedia", "XFAWidget", "Redact",
+    "Unknown",
+    "Text",
+    "Link",
+    "FreeText",
+    "Line",
+    "Square",
+    "Circle",
+    "Polygon",
+    "Polyline",
+    "Highlight",
+    "Underline",
+    "Squiggly",
+    "StrikeOut",
+    "Stamp",
+    "Caret",
+    "Ink",
+    "Popup",
+    "FileAttachment",
+    "Sound",
+    "Movie",
+    "Widget",
+    "Screen",
+    "PrinterMark",
+    "TrapNet",
+    "Watermark",
+    "3D",
+    "RichMedia",
+    "XFAWidget",
+    "Redact",
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -110,7 +135,11 @@ impl Png {
             .render_annotations(true);
         let bmp = page.render_with_config(&cfg).map_err(e)?;
         let img = bmp.as_image().map_err(e)?.to_rgba8();
-        Ok(Png { img, scale, page_h: page.height().value })
+        Ok(Png {
+            img,
+            scale,
+            page_h: page.height().value,
+        })
     }
 
     fn save(&self, name: &str) -> R<()> {
@@ -119,11 +148,21 @@ impl Png {
 
     /// Save a crop of `r` (expanded by `margin` pt) for eyeballing.
     fn save_crop(&self, name: &str, r: &PdfRect, margin: f32) -> R<()> {
-        let rr = rect(r.left().value - margin, r.bottom().value - margin, r.right().value + margin, r.top().value + margin);
+        let rr = rect(
+            r.left().value - margin,
+            r.bottom().value - margin,
+            r.right().value + margin,
+            r.top().value + margin,
+        );
         let (x0, y0, x1, y1) = self.px_rect(&rr);
-        let crop = image::imageops::crop_imm(&self.img, x0, y0, (x1 - x0).max(1), (y1 - y0).max(1)).to_image();
-        let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-        crop.save(out(&format!("spike_annot_crop_{safe}.png"))).map_err(e)
+        let crop = image::imageops::crop_imm(&self.img, x0, y0, (x1 - x0).max(1), (y1 - y0).max(1))
+            .to_image();
+        let safe: String = name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        crop.save(out(&format!("spike_annot_crop_{safe}.png")))
+            .map_err(e)
     }
 
     fn px_rect(&self, r: &PdfRect) -> (u32, u32, u32, u32) {
@@ -206,7 +245,12 @@ fn quad_bounds(q: &PdfQuadPoints) -> PdfRect {
 }
 
 fn quad_tl(r: &PdfRect) -> PdfQuadPoints {
-    let (l, b, rt, t) = (r.left().value, r.bottom().value, r.right().value, r.top().value);
+    let (l, b, rt, t) = (
+        r.left().value,
+        r.bottom().value,
+        r.right().value,
+        r.top().value,
+    );
     PdfQuadPoints::new_from_values(l, t, rt, t, l, b, rt, b)
 }
 
@@ -253,7 +297,11 @@ struct FileWriter {
     buf: Vec<u8>,
 }
 
-unsafe extern "C" fn write_block(this: *mut FPDF_FILEWRITE, data: *const c_void, size: c_ulong) -> c_int {
+unsafe extern "C" fn write_block(
+    this: *mut FPDF_FILEWRITE,
+    data: *const c_void,
+    size: c_ulong,
+) -> c_int {
     let w = this as *mut FileWriter;
     let slice = std::slice::from_raw_parts(data as *const u8, size as usize);
     (*w).buf.extend_from_slice(slice);
@@ -310,20 +358,30 @@ impl Raw {
             if !self.b().is_true(self.b().FPDFAnnot_HasKey(annot, key)) {
                 return None;
             }
-            let len = self.b().FPDFAnnot_GetStringValue(annot, key, std::ptr::null_mut(), 0);
+            let len = self
+                .b()
+                .FPDFAnnot_GetStringValue(annot, key, std::ptr::null_mut(), 0);
             if len <= 2 {
                 return Some(String::new());
             }
             let mut buf = vec![0u16; (len as usize) / 2];
-            self.b().FPDFAnnot_GetStringValue(annot, key, buf.as_mut_ptr() as *mut FPDF_WCHAR, len);
-            Some(String::from_utf16_lossy(&buf).trim_end_matches('\0').to_string())
+            self.b()
+                .FPDFAnnot_GetStringValue(annot, key, buf.as_mut_ptr() as *mut FPDF_WCHAR, len);
+            Some(
+                String::from_utf16_lossy(&buf)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            )
         }
     }
 
     fn get_number(&self, annot: FPDF_ANNOTATION, key: &str) -> Option<f32> {
         let mut v: f32 = 0.0;
         unsafe {
-            if self.b().is_true(self.b().FPDFAnnot_GetNumberValue(annot, key, &mut v)) {
+            if self
+                .b()
+                .is_true(self.b().FPDFAnnot_GetNumberValue(annot, key, &mut v))
+            {
                 Some(v)
             } else {
                 None
@@ -334,13 +392,20 @@ impl Raw {
     /// Normal-mode appearance stream content, `None` if the annotation has no /AP /N.
     fn get_ap(&self, annot: FPDF_ANNOTATION) -> Option<String> {
         unsafe {
-            let len = self.b().FPDFAnnot_GetAP(annot, AP_NORMAL, std::ptr::null_mut(), 0);
+            let len = self
+                .b()
+                .FPDFAnnot_GetAP(annot, AP_NORMAL, std::ptr::null_mut(), 0);
             if len <= 2 {
                 return None;
             }
             let mut buf = vec![0u16; (len as usize) / 2];
-            self.b().FPDFAnnot_GetAP(annot, AP_NORMAL, buf.as_mut_ptr() as *mut FPDF_WCHAR, len);
-            Some(String::from_utf16_lossy(&buf).trim_end_matches('\0').to_string())
+            self.b()
+                .FPDFAnnot_GetAP(annot, AP_NORMAL, buf.as_mut_ptr() as *mut FPDF_WCHAR, len);
+            Some(
+                String::from_utf16_lossy(&buf)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            )
         }
     }
 
@@ -349,10 +414,13 @@ impl Raw {
         unsafe {
             let n = self.b().FPDFAnnot_GetInkListCount(annot);
             for i in 0..n {
-                let count = self.b().FPDFAnnot_GetInkListPath(annot, i, std::ptr::null_mut(), 0);
+                let count = self
+                    .b()
+                    .FPDFAnnot_GetInkListPath(annot, i, std::ptr::null_mut(), 0);
                 let mut buf = vec![FS_POINTF { x: 0.0, y: 0.0 }; count as usize];
                 if count > 0 {
-                    self.b().FPDFAnnot_GetInkListPath(annot, i, buf.as_mut_ptr(), count);
+                    self.b()
+                        .FPDFAnnot_GetInkListPath(annot, i, buf.as_mut_ptr(), count);
                 }
                 paths.push(buf.iter().map(|p| (p.x, p.y)).collect());
             }
@@ -364,7 +432,10 @@ impl Raw {
         let mut s = FS_POINTF { x: 0.0, y: 0.0 };
         let mut t = FS_POINTF { x: 0.0, y: 0.0 };
         unsafe {
-            if self.b().is_true(self.b().FPDFAnnot_GetLine(annot, &mut s, &mut t)) {
+            if self
+                .b()
+                .is_true(self.b().FPDFAnnot_GetLine(annot, &mut s, &mut t))
+            {
                 Some(((s.x, s.y), (t.x, t.y)))
             } else {
                 None
@@ -373,13 +444,19 @@ impl Raw {
     }
 
     fn vertex_count(&self, annot: FPDF_ANNOTATION) -> usize {
-        unsafe { self.b().FPDFAnnot_GetVertices(annot, std::ptr::null_mut(), 0) as usize }
+        unsafe {
+            self.b()
+                .FPDFAnnot_GetVertices(annot, std::ptr::null_mut(), 0) as usize
+        }
     }
 
     fn border(&self, annot: FPDF_ANNOTATION) -> Option<(f32, f32, f32)> {
         let (mut h, mut v, mut w) = (0f32, 0f32, 0f32);
         unsafe {
-            if self.b().is_true(self.b().FPDFAnnot_GetBorder(annot, &mut h, &mut v, &mut w)) {
+            if self
+                .b()
+                .is_true(self.b().FPDFAnnot_GetBorder(annot, &mut h, &mut v, &mut w))
+            {
                 Some((h, v, w))
             } else {
                 None
@@ -388,7 +465,12 @@ impl Raw {
     }
 
     fn rect(&self, annot: FPDF_ANNOTATION) -> Option<FS_RECTF> {
-        let mut r = FS_RECTF { left: 0.0, top: 0.0, right: 0.0, bottom: 0.0 };
+        let mut r = FS_RECTF {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+        };
         unsafe {
             if self.b().is_true(self.b().FPDFAnnot_GetRect(annot, &mut r)) {
                 Some(r)
@@ -423,7 +505,10 @@ impl Raw {
     fn color(&self, annot: FPDF_ANNOTATION, ty: FPDFANNOT_COLORTYPE) -> Option<[u32; 4]> {
         let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
         unsafe {
-            if self.b().is_true(self.b().FPDFAnnot_GetColor(annot, ty, &mut r, &mut g, &mut b, &mut a)) {
+            if self.b().is_true(
+                self.b()
+                    .FPDFAnnot_GetColor(annot, ty, &mut r, &mut g, &mut b, &mut a),
+            ) {
                 Some([r, g, b, a])
             } else {
                 None
@@ -432,15 +517,28 @@ impl Raw {
     }
 
     fn set_color(&self, annot: FPDF_ANNOTATION, ty: FPDFANNOT_COLORTYPE, c: [u32; 4]) -> bool {
-        unsafe { self.b().is_true(self.b().FPDFAnnot_SetColor(annot, ty, c[0], c[1], c[2], c[3])) }
+        unsafe {
+            self.b().is_true(
+                self.b()
+                    .FPDFAnnot_SetColor(annot, ty, c[0], c[1], c[2], c[3]),
+            )
+        }
     }
 
     fn save(&self, doc: FPDF_DOCUMENT, name: &str) -> R<usize> {
         let mut w = Box::new(FileWriter {
-            fw: FPDF_FILEWRITE { version: 1, WriteBlock: Some(write_block) },
+            fw: FPDF_FILEWRITE {
+                version: 1,
+                WriteBlock: Some(write_block),
+            },
             buf: Vec::new(),
         });
-        let ok = unsafe { self.b().is_true(self.b().FPDF_SaveAsCopy(doc, &mut w.fw as *mut FPDF_FILEWRITE, 0)) };
+        let ok = unsafe {
+            self.b().is_true(
+                self.b()
+                    .FPDF_SaveAsCopy(doc, &mut w.fw as *mut FPDF_FILEWRITE, 0),
+            )
+        };
         if !ok {
             return Err("FPDF_SaveAsCopy failed".into());
         }
@@ -455,7 +553,9 @@ impl Raw {
             let mut buf = vec![0u16; (n + 1) as usize];
             let got = self.b().FPDFText_GetText(tp, 0, n, buf.as_mut_ptr());
             self.b().FPDFText_ClosePage(tp);
-            String::from_utf16_lossy(&buf[..got.max(0) as usize]).trim_end_matches('\0').to_string()
+            String::from_utf16_lossy(&buf[..got.max(0) as usize])
+                .trim_end_matches('\0')
+                .to_string()
         }
     }
 
@@ -468,9 +568,11 @@ impl Raw {
             let h = (ph * scale) as c_int;
             let bmp = self.b().FPDFBitmap_Create(w, h, 0);
             let _ = self.b().FPDFBitmap_FillRect(bmp, 0, 0, w, h, 0xFFFF_FFFF);
-            self.b().FPDF_RenderPageBitmap(bmp, page, 0, 0, w, h, 0, FPDF_ANNOT_RENDER_FLAG);
+            self.b()
+                .FPDF_RenderPageBitmap(bmp, page, 0, 0, w, h, 0, FPDF_ANNOT_RENDER_FLAG);
             if let Some(f) = form {
-                self.b().FPDF_FFLDraw(f, bmp, page, 0, 0, w, h, 0, FPDF_ANNOT_RENDER_FLAG);
+                self.b()
+                    .FPDF_FFLDraw(f, bmp, page, 0, 0, w, h, 0, FPDF_ANNOT_RENDER_FLAG);
             }
             let stride = self.b().FPDFBitmap_GetStride(bmp) as usize;
             let buf = self.b().FPDFBitmap_GetBuffer(bmp) as *const u8;
@@ -483,7 +585,11 @@ impl Raw {
                 }
             }
             self.b().FPDFBitmap_Destroy(bmp);
-            Png { img, scale, page_h: ph }
+            Png {
+                img,
+                scale,
+                page_h: ph,
+            }
         }
     }
 }
@@ -554,7 +660,12 @@ fn raw_describe_page(raw: Raw, path: &PathBuf, page_index: i32) -> R<Vec<String>
 
 fn section1_enumerate(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
     println!("\n==== Section 1: enumerate existing annotations ====");
-    for name in ["annotation-highlight.pdf", "annotation-line.pdf", "annotation-freetext.pdf", "160F-2019.pdf"] {
+    for name in [
+        "annotation-highlight.pdf",
+        "annotation-line.pdf",
+        "annotation-freetext.pdf",
+        "160F-2019.pdf",
+    ] {
         let path = fixture(name);
         let t = Instant::now();
         let document = pdfium.load_pdf_from_file(&path, None).map_err(e)?;
@@ -568,14 +679,19 @@ fn section1_enumerate(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
             }
             for (i, a) in annots.iter().enumerate() {
                 if name == "160F-2019.pdf" && i >= 3 {
-                    println!("  page {pi}: ... ({} annotations total on this page, rest omitted)", annots.len());
+                    println!(
+                        "  page {pi}: ... ({} annotations total on this page, rest omitted)",
+                        annots.len()
+                    );
                     break;
                 }
                 println!("  page {pi}: {}", describe_annotation(i, &a));
                 if let Some(link) = a.as_link_annotation() {
                     match link.link() {
                         Ok(l) => {
-                            let uri = l.action().and_then(|act| act.as_uri_action().and_then(|u| u.uri().ok()));
+                            let uri = l
+                                .action()
+                                .and_then(|act| act.as_uri_action().and_then(|u| u.uri().ok()));
                             let dest = l.destination().and_then(|d| d.page_index().ok());
                             println!("      link: uri={uri:?} dest_page={dest:?}");
                         }
@@ -606,8 +722,12 @@ fn section1_enumerate(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         page.annotations_mut().delete_annotation(first).map_err(e)?;
         let after_mem = page.annotations().len();
         drop(page);
-        document.save_to_file(&out("spike_annot_highlight_deleted.pdf")).map_err(e)?;
-        let re = pdfium.load_pdf_from_file(&out("spike_annot_highlight_deleted.pdf"), None).map_err(e)?;
+        document
+            .save_to_file(&out("spike_annot_highlight_deleted.pdf"))
+            .map_err(e)?;
+        let re = pdfium
+            .load_pdf_from_file(&out("spike_annot_highlight_deleted.pdf"), None)
+            .map_err(e)?;
         let after_disk = re.pages().get(0).map_err(e)?.annotations().len();
         rep.add(
             "delete annotation",
@@ -643,34 +763,53 @@ fn find_word(page: &PdfPage, word: &str, nth: usize) -> Option<PdfRect> {
 
 fn section2_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<Vec<Probe>> {
     println!("\n==== Section 2: create annotations on tracemonkey.pdf page 0 (high-level) ====");
-    let mut document = pdfium.load_pdf_from_file(&fixture("tracemonkey.pdf"), None).map_err(e)?;
+    let mut document = pdfium
+        .load_pdf_from_file(&fixture("tracemonkey.pdf"), None)
+        .map_err(e)?;
     let helv = document.fonts_mut().helvetica();
     let baseline = {
         let page = document.pages().get(0).map_err(e)?;
         let t = Instant::now();
         let png = Png::from_page(&page, 2.0, true)?;
-        rep.add("bench render tracemonkey p0 @2x (1224x1584)", format!("{:?}", t.elapsed()));
+        rep.add(
+            "bench render tracemonkey p0 @2x (1224x1584)",
+            format!("{:?}", t.elapsed()),
+        );
         png.save("spike_annot_baseline.png")?;
         png
     };
 
     // Micro-benchmark: cost of the default AutomaticOnEveryChange strategy (FPDFPage_GenerateContent per call).
-    for strategy in [PdfPageContentRegenerationStrategy::AutomaticOnEveryChange, PdfPageContentRegenerationStrategy::Manual] {
-        let d = pdfium.load_pdf_from_file(&fixture("tracemonkey.pdf"), None).map_err(e)?;
+    for strategy in [
+        PdfPageContentRegenerationStrategy::AutomaticOnEveryChange,
+        PdfPageContentRegenerationStrategy::Manual,
+    ] {
+        let d = pdfium
+            .load_pdf_from_file(&fixture("tracemonkey.pdf"), None)
+            .map_err(e)?;
         let mut p = d.pages().get(0).map_err(e)?;
         p.set_content_regeneration_strategy(strategy);
         let t = Instant::now();
         for i in 0..20 {
             let mut a = p.annotations_mut().create_square_annotation().map_err(e)?;
-            a.set_bounds(rect(10.0 + i as f32, 10.0, 30.0 + i as f32, 30.0)).map_err(e)?;
+            a.set_bounds(rect(10.0 + i as f32, 10.0, 30.0 + i as f32, 30.0))
+                .map_err(e)?;
             a.set_stroke_color(PdfColor::RED).map_err(e)?;
         }
-        rep.add(&format!("bench create 20 squares with {strategy:?}"), format!("{:?}", t.elapsed()));
+        rep.add(
+            &format!("bench create 20 squares with {strategy:?}"),
+            format!("{:?}", t.elapsed()),
+        );
     }
 
     let mut probes: Vec<Probe> = vec![];
     let mut page = document.pages().get(0).map_err(e)?;
-    println!("  page size {}x{} pt, regeneration strategy {:?}", page.width().value, page.height().value, page.content_regeneration_strategy());
+    println!(
+        "  page size {}x{} pt, regeneration strategy {:?}",
+        page.width().value,
+        page.height().value,
+        page.content_regeneration_strategy()
+    );
     // Annotation-only edits do not need content-stream regeneration; avoid FPDFPage_GenerateContent on every call.
     page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
 
@@ -678,11 +817,16 @@ fn section2_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<Vec<Probe>>
     let w_trace0 = find_word(&page, "trace", 0).unwrap_or(rect(100.0, 700.0, 160.0, 712.0));
     let w_trace1 = find_word(&page, "trace", 1).unwrap_or(rect(100.0, 680.0, 160.0, 692.0));
     let w_compiler = find_word(&page, "compiler", 0).unwrap_or(rect(100.0, 600.0, 160.0, 612.0));
-    let w_javascript = find_word(&page, "JavaScript", 0).unwrap_or(rect(100.0, 580.0, 160.0, 592.0));
+    let w_javascript =
+        find_word(&page, "JavaScript", 0).unwrap_or(rect(100.0, 580.0, 160.0, 592.0));
     let w_abstract = find_word(&page, "Abstract", 0).unwrap_or(rect(100.0, 560.0, 160.0, 572.0));
     println!(
         "  words: trace0={} trace1={} compiler={} JavaScript={} Abstract={}",
-        fmt_rect(&w_trace0), fmt_rect(&w_trace1), fmt_rect(&w_compiler), fmt_rect(&w_javascript), fmt_rect(&w_abstract)
+        fmt_rect(&w_trace0),
+        fmt_rect(&w_trace1),
+        fmt_rect(&w_compiler),
+        fmt_rect(&w_javascript),
+        fmt_rect(&w_abstract)
     );
 
     let t_create = Instant::now();
@@ -695,43 +839,92 @@ fn section2_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<Vec<Probe>>
             w_trace0.right().value.max(w_trace1.right().value),
             w_trace0.top().value.max(w_trace1.top().value),
         );
-        let mut a = page.annotations_mut().create_highlight_annotation().map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_highlight_annotation()
+            .map_err(e)?;
         a.set_bounds(union).map_err(e)?;
-        a.set_stroke_color(PdfColor::new(255, 255, 0, 153)).map_err(e)?; // alpha -> /CA 0.6
-        a.attachment_points_mut().create_attachment_point_at_end(quad_tl(&w_trace0)).map_err(e)?;
-        a.attachment_points_mut().create_attachment_point_at_end(quad_tl(&w_trace1)).map_err(e)?;
+        a.set_stroke_color(PdfColor::new(255, 255, 0, 153))
+            .map_err(e)?; // alpha -> /CA 0.6
+        a.attachment_points_mut()
+            .create_attachment_point_at_end(quad_tl(&w_trace0))
+            .map_err(e)?;
+        a.attachment_points_mut()
+            .create_attachment_point_at_end(quad_tl(&w_trace1))
+            .map_err(e)?;
         a.set_contents("Highlight with two quads").map_err(e)?;
         a.set_creator("SeePDF spike").map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
-        probes.push(Probe { name: "highlight(quad0)", rect: w_trace0, color: [255, 255, 0], tol: 90 });
-        probes.push(Probe { name: "highlight(quad1)", rect: w_trace1, color: [255, 255, 0], tol: 90 });
+        probes.push(Probe {
+            name: "highlight(quad0)",
+            rect: w_trace0,
+            color: [255, 255, 0],
+            tol: 90,
+        });
+        probes.push(Probe {
+            name: "highlight(quad1)",
+            rect: w_trace1,
+            color: [255, 255, 0],
+            tol: 90,
+        });
     }
     // 2. Underline (blue)
     {
-        let mut a = page.annotations_mut().create_underline_annotation().map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_underline_annotation()
+            .map_err(e)?;
         a.set_bounds(w_compiler).map_err(e)?;
         a.set_stroke_color(PdfColor::BLUE).map_err(e)?;
-        a.attachment_points_mut().create_attachment_point_at_end(quad_tl(&w_compiler)).map_err(e)?;
+        a.attachment_points_mut()
+            .create_attachment_point_at_end(quad_tl(&w_compiler))
+            .map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
-        probes.push(Probe { name: "underline", rect: w_compiler, color: [0, 0, 255], tol: 60 });
+        probes.push(Probe {
+            name: "underline",
+            rect: w_compiler,
+            color: [0, 0, 255],
+            tol: 60,
+        });
     }
     // 3. Strikeout (red)
     {
-        let mut a = page.annotations_mut().create_strikeout_annotation().map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_strikeout_annotation()
+            .map_err(e)?;
         a.set_bounds(w_javascript).map_err(e)?;
         a.set_stroke_color(PdfColor::RED).map_err(e)?;
-        a.attachment_points_mut().create_attachment_point_at_end(quad_tl(&w_javascript)).map_err(e)?;
+        a.attachment_points_mut()
+            .create_attachment_point_at_end(quad_tl(&w_javascript))
+            .map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
-        probes.push(Probe { name: "strikeout", rect: w_javascript, color: [255, 0, 0], tol: 60 });
+        probes.push(Probe {
+            name: "strikeout",
+            rect: w_javascript,
+            color: [255, 0, 0],
+            tol: 60,
+        });
     }
     // 4. Squiggly (green)
     {
-        let mut a = page.annotations_mut().create_squiggly_annotation().map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_squiggly_annotation()
+            .map_err(e)?;
         a.set_bounds(w_abstract).map_err(e)?;
-        a.set_stroke_color(PdfColor::new(0, 160, 0, 255)).map_err(e)?;
-        a.attachment_points_mut().create_attachment_point_at_end(quad_tl(&w_abstract)).map_err(e)?;
+        a.set_stroke_color(PdfColor::new(0, 160, 0, 255))
+            .map_err(e)?;
+        a.attachment_points_mut()
+            .create_attachment_point_at_end(quad_tl(&w_abstract))
+            .map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
-        probes.push(Probe { name: "squiggly", rect: w_abstract, color: [0, 160, 0], tol: 70 });
+        probes.push(Probe {
+            name: "squiggly",
+            rect: w_abstract,
+            color: [0, 160, 0],
+            tol: 70,
+        });
     }
     // 5. Ink via page-objects (pdfium-render has no ink-list API): two strokes, red, 3pt.
     {
@@ -741,53 +934,110 @@ fn section2_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<Vec<Probe>>
         a.set_stroke_color(PdfColor::RED).map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
         for (sx, ex) in [(12.0f32, 42.0f32), (42.0, 12.0)] {
-            let mut p = PdfPagePathObject::new(&document, PdfPoints::new(sx), PdfPoints::new(310.0), Some(PdfColor::RED), Some(PdfPoints::new(3.0)), None).map_err(e)?;
-            p.line_to(PdfPoints::new(ex), PdfPoints::new(400.0)).map_err(e)?;
-            p.line_to(PdfPoints::new(sx), PdfPoints::new(490.0)).map_err(e)?;
+            let mut p = PdfPagePathObject::new(
+                &document,
+                PdfPoints::new(sx),
+                PdfPoints::new(310.0),
+                Some(PdfColor::RED),
+                Some(PdfPoints::new(3.0)),
+                None,
+            )
+            .map_err(e)?;
+            p.line_to(PdfPoints::new(ex), PdfPoints::new(400.0))
+                .map_err(e)?;
+            p.line_to(PdfPoints::new(sx), PdfPoints::new(490.0))
+                .map_err(e)?;
             a.objects_mut().add_path_object(p).map_err(e)?;
         }
-        probes.push(Probe { name: "ink(path objects)", rect: r, color: [255, 0, 0], tol: 60 });
+        probes.push(Probe {
+            name: "ink(path objects)",
+            rect: r,
+            color: [255, 0, 0],
+            tol: 60,
+        });
     }
     // 6. Square, blue stroke + light-blue fill.
     {
         let r = rect(565.0, 600.0, 605.0, 660.0);
-        let mut a = page.annotations_mut().create_square_annotation().map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_square_annotation()
+            .map_err(e)?;
         a.set_bounds(r).map_err(e)?;
         a.set_stroke_color(PdfColor::BLUE).map_err(e)?;
-        a.set_fill_color(PdfColor::new(200, 220, 255, 255)).map_err(e)?;
+        a.set_fill_color(PdfColor::new(200, 220, 255, 255))
+            .map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
-        probes.push(Probe { name: "square(fill)", rect: rect(572.0, 607.0, 598.0, 653.0), color: [200, 220, 255], tol: 30 });
+        probes.push(Probe {
+            name: "square(fill)",
+            rect: rect(572.0, 607.0, 598.0, 653.0),
+            color: [200, 220, 255],
+            tol: 30,
+        });
     }
     // 7. Circle: NO high-level constructor in 0.9.4 -> raw section.
     // 8. Line: pdfium cannot create Line annotations -> raw section.
     // 9. FreeText (pdfium generates no AP for FreeText -> expected invisible).
     {
         let r = rect(300.0, 750.0, 560.0, 780.0);
-        let mut a = page.annotations_mut().create_free_text_annotation("SeePDF FreeText").map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_free_text_annotation("SeePDF FreeText")
+            .map_err(e)?;
         a.set_bounds(r).map_err(e)?;
         a.set_stroke_color(PdfColor::BLUE).map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
-        probes.push(Probe { name: "freetext(no AP)", rect: r, color: [0, 0, 255], tol: 80 });
+        probes.push(Probe {
+            name: "freetext(no AP)",
+            rect: r,
+            color: [0, 0, 255],
+            tol: 80,
+        });
     }
     // 9b. FreeText emulation: Stamp containing a text object + background path (portable AP).
     {
         let r = rect(60.0, 750.0, 290.0, 780.0);
-        let mut a = page.annotations_mut().create_stamp_annotation().map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_stamp_annotation()
+            .map_err(e)?;
         a.set_bounds(r).map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
         a.set_contents("SeePDF stamp-text").map_err(e)?;
-        let bg = PdfPagePathObject::new_rect(&document, r, Some(PdfColor::BLUE), Some(PdfPoints::new(1.0)), Some(PdfColor::new(255, 255, 200, 255))).map_err(e)?;
+        let bg = PdfPagePathObject::new_rect(
+            &document,
+            r,
+            Some(PdfColor::BLUE),
+            Some(PdfPoints::new(1.0)),
+            Some(PdfColor::new(255, 255, 200, 255)),
+        )
+        .map_err(e)?;
         a.objects_mut().add_path_object(bg).map_err(e)?;
-        let mut t = PdfPageTextObject::new(&document, "SeePDF text-in-stamp 한글", helv, PdfPoints::new(14.0)).map_err(e)?;
+        let mut t = PdfPageTextObject::new(
+            &document,
+            "SeePDF text-in-stamp 한글",
+            helv,
+            PdfPoints::new(14.0),
+        )
+        .map_err(e)?;
         t.set_fill_color(PdfColor::new(0, 0, 200, 255)).map_err(e)?;
-        t.translate(PdfPoints::new(66.0), PdfPoints::new(760.0)).map_err(e)?; // BEFORE add: no FPDFAnnot_UpdateObject after
+        t.translate(PdfPoints::new(66.0), PdfPoints::new(760.0))
+            .map_err(e)?; // BEFORE add: no FPDFAnnot_UpdateObject after
         a.objects_mut().add_text_object(t).map_err(e)?;
-        probes.push(Probe { name: "stamp(text+bg)", rect: r, color: [0, 0, 200], tol: 80 });
+        probes.push(Probe {
+            name: "stamp(text+bg)",
+            rect: r,
+            color: [0, 0, 200],
+            tol: 80,
+        });
     }
     // 10. Stamp with an image (64x64 gradient, magenta-ish).
     {
         let r = rect(565.0, 400.0, 605.0, 440.0);
-        let mut a = page.annotations_mut().create_stamp_annotation().map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_stamp_annotation()
+            .map_err(e)?;
         a.set_bounds(r).map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
         let mut img = RgbaImage::new(64, 64);
@@ -795,42 +1045,80 @@ fn section2_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<Vec<Probe>>
             *p = Rgba([255, (x * 4) as u8, (y * 4) as u8, 255]);
         }
         let dynimg = image::DynamicImage::ImageRgba8(img);
-        let mut obj = PdfPageImageObject::new_with_size(&document, &dynimg, PdfPoints::new(40.0), PdfPoints::new(40.0)).map_err(e)?;
-        obj.translate(PdfPoints::new(565.0), PdfPoints::new(400.0)).map_err(e)?;
+        let mut obj = PdfPageImageObject::new_with_size(
+            &document,
+            &dynimg,
+            PdfPoints::new(40.0),
+            PdfPoints::new(40.0),
+        )
+        .map_err(e)?;
+        obj.translate(PdfPoints::new(565.0), PdfPoints::new(400.0))
+            .map_err(e)?;
         a.objects_mut().add_image_object(obj).map_err(e)?;
-        probes.push(Probe { name: "stamp(image)", rect: rect(566.0, 401.0, 604.0, 439.0), color: [255, 60, 60], tol: 50 });
+        probes.push(Probe {
+            name: "stamp(image)",
+            rect: rect(566.0, 401.0, 604.0, 439.0),
+            color: [255, 60, 60],
+            tol: 50,
+        });
     }
     // 11. Link (URI) over "Abstract" + a quad; invisible by design.
     {
-        let mut a = page.annotations_mut().create_link_annotation("https://example.com/seepdf").map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_link_annotation("https://example.com/seepdf")
+            .map_err(e)?;
         a.set_bounds(w_abstract).map_err(e)?;
-        a.attachment_points_mut().create_attachment_point_at_end(quad_tl(&w_abstract)).map_err(e)?;
+        a.attachment_points_mut()
+            .create_attachment_point_at_end(quad_tl(&w_abstract))
+            .map_err(e)?;
     }
     // 12. Text (sticky note).
     {
         let r = rect(10.0, 700.0, 30.0, 720.0);
-        let mut a = page.annotations_mut().create_text_annotation("Sticky note contents").map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_text_annotation("Sticky note contents")
+            .map_err(e)?;
         a.set_bounds(r).map_err(e)?;
         a.set_stroke_color(PdfColor::YELLOW).map_err(e)?;
         a.set_creator("SeePDF spike").map_err(e)?;
         a.set_is_printed(true).map_err(e)?;
-        probes.push(Probe { name: "text(sticky)", rect: r, color: [255, 255, 0], tol: 90 });
+        probes.push(Probe {
+            name: "text(sticky)",
+            rect: r,
+            color: [255, 255, 0],
+            tol: 90,
+        });
     }
     // 13. Popup (standalone; cannot be linked to a parent via the public API).
     {
         let r = rect(565.0, 300.0, 605.0, 380.0);
-        let mut a = page.annotations_mut().create_popup_annotation().map_err(e)?;
+        let mut a = page
+            .annotations_mut()
+            .create_popup_annotation()
+            .map_err(e)?;
         a.set_bounds(r).map_err(e)?;
         a.set_contents("Popup body").map_err(e)?;
-        probes.push(Probe { name: "popup(unlinked)", rect: r, color: [255, 255, 0], tol: 90 });
+        probes.push(Probe {
+            name: "popup(unlinked)",
+            rect: r,
+            color: [255, 255, 0],
+            tol: 90,
+        });
     }
-    rep.add("bench create 13 annotations (Manual regeneration)", format!("{:?}", t_create.elapsed()));
+    rep.add(
+        "bench create 13 annotations (Manual regeneration)",
+        format!("{:?}", t_create.elapsed()),
+    );
     rep.add("annotations after create", page.annotations().len());
 
     // Save WITHOUT rendering first, then render, then save again.
     let t = Instant::now();
     drop(page);
-    document.save_to_file(&out("spike_annot_norender.pdf")).map_err(e)?;
+    document
+        .save_to_file(&out("spike_annot_norender.pdf"))
+        .map_err(e)?;
     rep.add("bench save (no render)", format!("{:?}", t.elapsed()));
 
     let page = document.pages().get(0).map_err(e)?;
@@ -843,14 +1131,23 @@ fn section2_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<Vec<Probe>>
     drop(document);
 
     // Re-open both and compare.
-    for (file, label) in [("spike_annot_norender.pdf", "norender"), ("spike_annot.pdf", "rendered")] {
+    for (file, label) in [
+        ("spike_annot_norender.pdf", "norender"),
+        ("spike_annot.pdf", "rendered"),
+    ] {
         let re = pdfium.load_pdf_from_file(&out(file), None).map_err(e)?;
         let page = re.pages().get(0).map_err(e)?;
-        println!("  reopened {file}: {} annotations", page.annotations().len());
+        println!(
+            "  reopened {file}: {} annotations",
+            page.annotations().len()
+        );
         for (i, a) in page.annotations().iter().enumerate() {
             println!("    {}", describe_annotation(i, &a));
             if let Some(link) = a.as_link_annotation() {
-                let uri = link.link().ok().and_then(|l| l.action().and_then(|act| act.as_uri_action().and_then(|u| u.uri().ok())));
+                let uri = link.link().ok().and_then(|l| {
+                    l.action()
+                        .and_then(|act| act.as_uri_action().and_then(|u| u.uri().ok()))
+                });
                 println!("      link uri={uri:?}");
             }
         }
@@ -866,7 +1163,18 @@ fn section2_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<Vec<Probe>>
             let diff = png.count_diff(&baseline, &p.rect, 40);
             rep.add(
                 &format!("render[{label}] {}", p.name),
-                format!("{} px near {:?} (baseline {}), {} px differ from baseline -> {}", n, p.color, base, diff, if n > base || diff > 50 { "VISIBLE" } else { "NOT VISIBLE" }),
+                format!(
+                    "{} px near {:?} (baseline {}), {} px differ from baseline -> {}",
+                    n,
+                    p.color,
+                    base,
+                    diff,
+                    if n > base || diff > 50 {
+                        "VISIBLE"
+                    } else {
+                        "NOT VISIBLE"
+                    }
+                ),
             );
             png.save_crop(&format!("{}_{}", label, p.name), &p.rect, 6.0)?;
         }
@@ -880,15 +1188,31 @@ fn section2_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<Vec<Probe>>
 fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
     println!("\n==== Section 2b: raw FFI creation on tracemonkey.pdf page 0 ====");
     let supported: Vec<&str> = (0..29)
-        .filter(|&st| unsafe { raw.b().is_true(raw.b().FPDFAnnot_IsSupportedSubtype(st as FPDF_ANNOTATION_SUBTYPE)) })
+        .filter(|&st| unsafe {
+            raw.b().is_true(
+                raw.b()
+                    .FPDFAnnot_IsSupportedSubtype(st as FPDF_ANNOTATION_SUBTYPE),
+            )
+        })
         .map(|st| SUBTYPE_NAMES[st as usize])
         .collect();
-    rep.add("FPDFAnnot_IsSupportedSubtype (creatable)", supported.join(","));
+    rep.add(
+        "FPDFAnnot_IsSupportedSubtype (creatable)",
+        supported.join(","),
+    );
     let obj_supported: Vec<&str> = (0..29)
-        .filter(|&st| unsafe { raw.b().is_true(raw.b().FPDFAnnot_IsObjectSupportedSubtype(st as FPDF_ANNOTATION_SUBTYPE)) })
+        .filter(|&st| unsafe {
+            raw.b().is_true(
+                raw.b()
+                    .FPDFAnnot_IsObjectSupportedSubtype(st as FPDF_ANNOTATION_SUBTYPE),
+            )
+        })
         .map(|st| SUBTYPE_NAMES[st as usize])
         .collect();
-    rep.add("FPDFAnnot_IsObjectSupportedSubtype (AppendObject)", obj_supported.join(","));
+    rep.add(
+        "FPDFAnnot_IsObjectSupportedSubtype (AppendObject)",
+        obj_supported.join(","),
+    );
 
     let baseline_raw;
     unsafe {
@@ -899,15 +1223,31 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
 
         // Circle with 50% opacity (alpha 128 -> /CA), yellow interior, 3pt border.
         let circle = raw.b().FPDFPage_CreateAnnot(page, ST_CIRCLE);
-        rep.add("raw create Circle", format!("handle null={}", circle.is_null()));
+        rep.add(
+            "raw create Circle",
+            format!("handle null={}", circle.is_null()),
+        );
         if !circle.is_null() {
             raw.set_rect(circle, &rect(565.0, 500.0, 605.0, 560.0));
-            rep.add("raw circle SetColor(C, alpha=128)", raw.set_color(circle, COLORTYPE_COLOR, [255, 0, 0, 128]));
+            rep.add(
+                "raw circle SetColor(C, alpha=128)",
+                raw.set_color(circle, COLORTYPE_COLOR, [255, 0, 0, 128]),
+            );
             // Every FPDFAnnot_SetColor call rewrites /CA from its alpha: pass the same alpha for IC.
             raw.set_color(circle, COLORTYPE_INTERIOR, [255, 255, 0, 128]);
-            rep.add("raw circle SetBorder(0,0,3)", raw.b().is_true(raw.b().FPDFAnnot_SetBorder(circle, 0.0, 0.0, 3.0)));
-            rep.add("raw circle CA readback", format!("{:?}", raw.get_number(circle, "CA")));
-            rep.add("raw circle border readback", format!("{:?}", raw.border(circle)));
+            rep.add(
+                "raw circle SetBorder(0,0,3)",
+                raw.b()
+                    .is_true(raw.b().FPDFAnnot_SetBorder(circle, 0.0, 0.0, 3.0)),
+            );
+            rep.add(
+                "raw circle CA readback",
+                format!("{:?}", raw.get_number(circle, "CA")),
+            );
+            rep.add(
+                "raw circle border readback",
+                format!("{:?}", raw.border(circle)),
+            );
             raw.b().FPDFAnnot_SetFlags(circle, FLAG_PRINT);
             raw.b().FPDFPage_CloseAnnot(circle);
         }
@@ -918,41 +1258,94 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
             raw.set_rect(ink, &rect(8.0, 100.0, 46.0, 280.0));
             raw.set_color(ink, COLORTYPE_COLOR, [0, 0, 255, 255]);
             raw.b().FPDFAnnot_SetBorder(ink, 0.0, 0.0, 4.0);
-            let s1: Vec<FS_POINTF> = (0..10).map(|i| FS_POINTF { x: 12.0 + (i % 2) as f32 * 30.0, y: 110.0 + i as f32 * 8.0 }).collect();
-            let s2: Vec<FS_POINTF> = (0..10).map(|i| FS_POINTF { x: 12.0 + i as f32 * 3.3, y: 200.0 + (i % 2) as f32 * 60.0 }).collect();
+            let s1: Vec<FS_POINTF> = (0..10)
+                .map(|i| FS_POINTF {
+                    x: 12.0 + (i % 2) as f32 * 30.0,
+                    y: 110.0 + i as f32 * 8.0,
+                })
+                .collect();
+            let s2: Vec<FS_POINTF> = (0..10)
+                .map(|i| FS_POINTF {
+                    x: 12.0 + i as f32 * 3.3,
+                    y: 200.0 + (i % 2) as f32 * 60.0,
+                })
+                .collect();
             let i1 = raw.b().FPDFAnnot_AddInkStroke(ink, s1.as_ptr(), s1.len());
             let i2 = raw.b().FPDFAnnot_AddInkStroke(ink, s2.as_ptr(), s2.len());
-            rep.add("raw ink AddInkStroke", format!("indices {i1},{i2}; InkList count {}", raw.b().FPDFAnnot_GetInkListCount(ink)));
+            rep.add(
+                "raw ink AddInkStroke",
+                format!(
+                    "indices {i1},{i2}; InkList count {}",
+                    raw.b().FPDFAnnot_GetInkListCount(ink)
+                ),
+            );
             raw.b().FPDFAnnot_SetFlags(ink, FLAG_PRINT);
             raw.b().FPDFPage_CloseAnnot(ink);
         }
         // Line / Redact / Polygon: expected unsupported.
-        for (st, name) in [(ST_LINE, "Line"), (ST_REDACT, "Redact"), (7, "Polygon"), (8, "Polyline"), (17, "FileAttachment")] {
+        for (st, name) in [
+            (ST_LINE, "Line"),
+            (ST_REDACT, "Redact"),
+            (7, "Polygon"),
+            (8, "Polyline"),
+            (17, "FileAttachment"),
+        ] {
             let h = raw.b().FPDFPage_CreateAnnot(page, st);
-            rep.add(&format!("raw create {name}"), format!("handle null={}", h.is_null()));
+            rep.add(
+                &format!("raw create {name}"),
+                format!("handle null={}", h.is_null()),
+            );
             if !h.is_null() {
                 raw.b().FPDFPage_CloseAnnot(h);
             }
         }
         // FreeText with DA only, then with an explicit AP stream (no font resources: works only in PDFium).
         let ft = raw.b().FPDFPage_CreateAnnot(page, ST_FREETEXT);
-        rep.add("raw create FreeText", format!("handle null={}", ft.is_null()));
+        rep.add(
+            "raw create FreeText",
+            format!("handle null={}", ft.is_null()),
+        );
         if !ft.is_null() {
             let r = rect(60.0, 700.0, 290.0, 730.0);
             raw.set_rect(ft, &r);
-            raw.b().FPDFAnnot_SetStringValue_str(ft, "DA", "0 0 1 rg /Helv 12 Tf");
-            raw.b().FPDFAnnot_SetStringValue_str(ft, "Contents", "raw FreeText via DA");
+            raw.b()
+                .FPDFAnnot_SetStringValue_str(ft, "DA", "0 0 1 rg /Helv 12 Tf");
+            raw.b()
+                .FPDFAnnot_SetStringValue_str(ft, "Contents", "raw FreeText via DA");
             raw.b().FPDFAnnot_SetFlags(ft, FLAG_PRINT);
             let png = raw.render(page, None, 2.0);
             let n = png.count_diff(&baseline_raw, &r, 40);
-            rep.add("raw FreeText DA-only render", format!("{n} px differ -> {}; AP generated by pdfium: {:?}", if n > 0 { "VISIBLE" } else { "NOT VISIBLE (no AP generated)" }, raw.get_ap(ft).map(|s| s.chars().take(160).collect::<String>())));
+            rep.add(
+                "raw FreeText DA-only render",
+                format!(
+                    "{n} px differ -> {}; AP generated by pdfium: {:?}",
+                    if n > 0 {
+                        "VISIBLE"
+                    } else {
+                        "NOT VISIBLE (no AP generated)"
+                    },
+                    raw.get_ap(ft)
+                        .map(|s| s.chars().take(160).collect::<String>())
+                ),
+            );
             png.save_crop("raw_freetext_DA_only", &r, 6.0)?;
             let ap = "0 0 1 RG 1 1 0.8 rg 60 700 230 30 re B BT 1 0 0 rg /Helv 14 Tf 66 710 Td (raw FreeText with SetAP) Tj ET";
-            let ok = raw.b().is_true(raw.b().FPDFAnnot_SetAP_str(ft, AP_NORMAL, ap));
+            let ok = raw
+                .b()
+                .is_true(raw.b().FPDFAnnot_SetAP_str(ft, AP_NORMAL, ap));
             let png = raw.render(page, None, 2.0);
             let n = png.count_diff(&baseline_raw, &r, 40);
-            rep.add("raw FreeText SetAP render", format!("SetAP ok={ok}, {n} px differ -> {}", if n > 0 { "VISIBLE" } else { "NOT VISIBLE" }));
-            rep.add("raw FreeText AP readback", format!("{:?}", raw.get_ap(ft).map(|s| s.len())));
+            rep.add(
+                "raw FreeText SetAP render",
+                format!(
+                    "SetAP ok={ok}, {n} px differ -> {}",
+                    if n > 0 { "VISIBLE" } else { "NOT VISIBLE" }
+                ),
+            );
+            rep.add(
+                "raw FreeText AP readback",
+                format!("{:?}", raw.get_ap(ft).map(|s| s.len())),
+            );
             raw.b().FPDFPage_CloseAnnot(ft);
         }
         // Sticky note: check what AP pdfium generates.
@@ -960,10 +1353,14 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         if !tx.is_null() {
             raw.set_rect(tx, &rect(10.0, 650.0, 30.0, 670.0));
             raw.set_color(tx, COLORTYPE_COLOR, [255, 200, 0, 255]);
-            raw.b().FPDFAnnot_SetStringValue_str(tx, "Contents", "raw sticky");
+            raw.b()
+                .FPDFAnnot_SetStringValue_str(tx, "Contents", "raw sticky");
             raw.b().FPDFAnnot_SetFlags(tx, FLAG_PRINT);
             let _ = raw.render(page, None, 1.0);
-            rep.add("raw Text(sticky) generated AP", format!("{:?}", raw.get_ap(tx)));
+            rep.add(
+                "raw Text(sticky) generated AP",
+                format!("{:?}", raw.get_ap(tx)),
+            );
             raw.b().FPDFPage_CloseAnnot(tx);
         }
         // Square via raw for the later re-color test.
@@ -986,7 +1383,11 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
             for i in 0..n {
                 let a = raw.b().FPDFPage_GetAnnot(page, i);
                 let st = raw.b().FPDFAnnot_GetSubtype(a);
-                v.push(format!("#{i} {} AP_len={:?}", SUBTYPE_NAMES[st as usize], raw.get_ap(a).map(|s| s.len())));
+                v.push(format!(
+                    "#{i} {} AP_len={:?}",
+                    SUBTYPE_NAMES[st as usize],
+                    raw.get_ap(a).map(|s| s.len())
+                ));
                 raw.b().FPDFPage_CloseAnnot(a);
             }
             v
@@ -1007,8 +1408,10 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         let r = rect(60.0, 700.0, 290.0, 730.0);
         let ft = raw.b().FPDFPage_CreateAnnot(page, ST_FREETEXT);
         raw.set_rect(ft, &r);
-        raw.b().FPDFAnnot_SetStringValue_str(ft, "DA", "0 0 1 rg /Helv 12 Tf");
-        raw.b().FPDFAnnot_SetStringValue_str(ft, "Contents", "persist me");
+        raw.b()
+            .FPDFAnnot_SetStringValue_str(ft, "DA", "0 0 1 rg /Helv 12 Tf");
+        raw.b()
+            .FPDFAnnot_SetStringValue_str(ft, "Contents", "persist me");
         raw.b().FPDFAnnot_SetFlags(ft, FLAG_PRINT);
         let _ = raw.render(page, None, 1.0);
         let in_mem = raw.get_ap(ft);
@@ -1016,7 +1419,10 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         raw.save(doc, "spike_annot_freetext_persist.pdf")?;
         raw.b().FPDF_ClosePage(page);
         raw.b().FPDF_CloseDocument(doc);
-        let doc = raw.b().FPDF_LoadDocument(out("spike_annot_freetext_persist.pdf").to_str().unwrap(), None);
+        let doc = raw.b().FPDF_LoadDocument(
+            out("spike_annot_freetext_persist.pdf").to_str().unwrap(),
+            None,
+        );
         let page = raw.b().FPDF_LoadPage(doc, 0);
         let ft = raw.b().FPDFPage_GetAnnot(page, 0);
         let on_disk = raw.get_ap(ft);
@@ -1027,13 +1433,24 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         png.save_crop("raw_freetext_persist_reopened", &r, 6.0)?;
         // Workaround: copy the generated AP into a real /AP stream with FPDFAnnot_SetAP, then save again.
         if let Some(ap) = raw.get_ap(ft) {
-            let ok = raw.b().is_true(raw.b().FPDFAnnot_SetAP_str(ft, AP_NORMAL, &ap));
+            let ok = raw
+                .b()
+                .is_true(raw.b().FPDFAnnot_SetAP_str(ft, AP_NORMAL, &ap));
             raw.b().FPDFPage_CloseAnnot(ft);
             raw.save(doc, "spike_annot_freetext_persist2.pdf")?;
-            let d2 = raw.b().FPDF_LoadDocument(out("spike_annot_freetext_persist2.pdf").to_str().unwrap(), None);
+            let d2 = raw.b().FPDF_LoadDocument(
+                out("spike_annot_freetext_persist2.pdf").to_str().unwrap(),
+                None,
+            );
             let p2 = raw.b().FPDF_LoadPage(d2, 0);
             let a2 = raw.b().FPDFPage_GetAnnot(p2, 0);
-            rep.add("raw FreeText(DA) SetAP(copy of generated AP) persisted", format!("SetAP ok={ok}; AP on disk {:?} bytes", raw.get_ap(a2).map(|s| s.len())));
+            rep.add(
+                "raw FreeText(DA) SetAP(copy of generated AP) persisted",
+                format!(
+                    "SetAP ok={ok}; AP on disk {:?} bytes",
+                    raw.get_ap(a2).map(|s| s.len())
+                ),
+            );
             raw.b().FPDFPage_CloseAnnot(a2);
             raw.b().FPDF_ClosePage(p2);
             raw.b().FPDF_CloseDocument(d2);
@@ -1045,7 +1462,9 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
     }
 
     // Re-open with the high-level API and verify.
-    let re = pdfium.load_pdf_from_file(&out("spike_annot_raw.pdf"), None).map_err(e)?;
+    let re = pdfium
+        .load_pdf_from_file(&out("spike_annot_raw.pdf"), None)
+        .map_err(e)?;
     let page = re.pages().get(0).map_err(e)?;
     for (i, a) in page.annotations().iter().enumerate() {
         println!("  reopened raw: {}", describe_annotation(i, &a));
@@ -1056,16 +1475,51 @@ fn section2b_raw_create(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
     let png = Png::from_page(&page, 2.0, true)?;
     png.save("spike_annot_raw_reopened.png")?;
     let checks = [
-        ("circle(interior yellow, 50% CA)", rect(575.0, 515.0, 595.0, 545.0), [255u8, 255, 128], 40),
-        ("ink(InkList)", rect(8.0, 100.0, 46.0, 280.0), [0, 0, 255], 60),
-        ("freetext(SetAP)", rect(60.0, 700.0, 290.0, 730.0), [255, 0, 0], 80),
-        ("square(raw)", rect(570.0, 205.0, 600.0, 255.0), [0, 255, 0], 60),
-        ("text(sticky raw)", rect(10.0, 650.0, 30.0, 670.0), [255, 200, 0], 90),
+        (
+            "circle(interior yellow, 50% CA)",
+            rect(575.0, 515.0, 595.0, 545.0),
+            [255u8, 255, 128],
+            40,
+        ),
+        (
+            "ink(InkList)",
+            rect(8.0, 100.0, 46.0, 280.0),
+            [0, 0, 255],
+            60,
+        ),
+        (
+            "freetext(SetAP)",
+            rect(60.0, 700.0, 290.0, 730.0),
+            [255, 0, 0],
+            80,
+        ),
+        (
+            "square(raw)",
+            rect(570.0, 205.0, 600.0, 255.0),
+            [0, 255, 0],
+            60,
+        ),
+        (
+            "text(sticky raw)",
+            rect(10.0, 650.0, 30.0, 670.0),
+            [255, 200, 0],
+            90,
+        ),
     ];
     for (name, r, color, tol) in checks {
         let n = png.count_near(&r, color, tol);
         let diff = png.count_diff(&baseline_raw, &r, 40);
-        rep.add(&format!("render[raw reopened] {name}"), format!("{n} px near {color:?}, {diff} px differ -> {}", if n > 0 || diff > 50 { "VISIBLE" } else { "NOT VISIBLE" }));
+        rep.add(
+            &format!("render[raw reopened] {name}"),
+            format!(
+                "{n} px near {color:?}, {diff} px differ -> {}",
+                if n > 0 || diff > 50 {
+                    "VISIBLE"
+                } else {
+                    "NOT VISIBLE"
+                }
+            ),
+        );
         png.save_crop(&format!("raw_{name}"), &r, 6.0)?;
     }
     Ok(())
@@ -1078,14 +1532,18 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
     println!("\n==== Section 3: modify + flatten ====");
     let mut moved_highlight_quad: Option<PdfRect> = None;
     let baseline = {
-        let d = pdfium.load_pdf_from_file(&fixture("tracemonkey.pdf"), None).map_err(e)?;
+        let d = pdfium
+            .load_pdf_from_file(&fixture("tracemonkey.pdf"), None)
+            .map_err(e)?;
         let p = d.pages().get(0).map_err(e)?;
         Png::from_page(&p, 2.0, true)?
     };
 
     // --- 3a. High-level modifications on the re-opened file (annotations now have APs).
     {
-        let document = pdfium.load_pdf_from_file(&out("spike_annot.pdf"), None).map_err(e)?;
+        let document = pdfium
+            .load_pdf_from_file(&out("spike_annot.pdf"), None)
+            .map_err(e)?;
         let mut page = document.pages().get(0).map_err(e)?;
         page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
         let n = page.annotations().len();
@@ -1095,7 +1553,9 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
             let a = page.annotations().get(i).map_err(e)?;
             match a.annotation_type() {
                 PdfPageAnnotationType::Square if square_idx.is_none() => square_idx = Some(i),
-                PdfPageAnnotationType::Highlight if highlight_idx.is_none() => highlight_idx = Some(i),
+                PdfPageAnnotationType::Highlight if highlight_idx.is_none() => {
+                    highlight_idx = Some(i)
+                }
                 _ => {}
             }
         }
@@ -1103,8 +1563,14 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
         let moved = rect(480.0, 560.0, 540.0, 640.0);
         if let Some(i) = square_idx {
             let mut a = page.annotations().get(i).map_err(e)?;
-            rep.add("modify square set_bounds", format!("{:?}", a.set_bounds(moved).map(|_| "ok")));
-            rep.add("modify square set_contents", format!("{:?}", a.set_contents("moved square").map(|_| "ok")));
+            rep.add(
+                "modify square set_bounds",
+                format!("{:?}", a.set_bounds(moved).map(|_| "ok")),
+            );
+            rep.add(
+                "modify square set_contents",
+                format!("{:?}", a.set_contents("moved square").map(|_| "ok")),
+            );
             // set_fill_color / set_stroke_color on an annotation that already has an AP is exercised
             // in the child process only: FPDFAnnot_SetColor returns false when /AP exists and
             // pdfium-render then calls FPDFPageObj_SetFillColor on the *annotation handle* (UB).
@@ -1115,34 +1581,98 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
         if let Some(i) = highlight_idx {
             let mut a = page.annotations().get(i).map_err(e)?;
             let old = a.bounds().map_err(e)?;
-            let new = rect(old.left().value, old.bottom().value - 200.0, old.right().value, old.top().value - 200.0);
+            let new = rect(
+                old.left().value,
+                old.bottom().value - 200.0,
+                old.right().value,
+                old.top().value - 200.0,
+            );
             let hl = a.as_highlight_annotation_mut().unwrap();
             let q = hl.attachment_points().get(0).map_err(e)?;
-            let nq = PdfQuadPoints::new_from_values(q.x1().value, q.y1().value - 200.0, q.x2().value, q.y2().value - 200.0, q.x3().value, q.y3().value - 200.0, q.x4().value, q.y4().value - 200.0);
-            hl.attachment_points_mut().set_attachment_point_at_index(0, nq).map_err(e)?;
+            let nq = PdfQuadPoints::new_from_values(
+                q.x1().value,
+                q.y1().value - 200.0,
+                q.x2().value,
+                q.y2().value - 200.0,
+                q.x3().value,
+                q.y3().value - 200.0,
+                q.x4().value,
+                q.y4().value - 200.0,
+            );
+            hl.attachment_points_mut()
+                .set_attachment_point_at_index(0, nq)
+                .map_err(e)?;
             let q1 = hl.attachment_points().get(1).map_err(e)?;
-            let nq1 = PdfQuadPoints::new_from_values(q1.x1().value, q1.y1().value - 200.0, q1.x2().value, q1.y2().value - 200.0, q1.x3().value, q1.y3().value - 200.0, q1.x4().value, q1.y4().value - 200.0);
-            hl.attachment_points_mut().set_attachment_point_at_index(1, nq1).map_err(e)?;
+            let nq1 = PdfQuadPoints::new_from_values(
+                q1.x1().value,
+                q1.y1().value - 200.0,
+                q1.x2().value,
+                q1.y2().value - 200.0,
+                q1.x3().value,
+                q1.y3().value - 200.0,
+                q1.x4().value,
+                q1.y4().value - 200.0,
+            );
+            hl.attachment_points_mut()
+                .set_attachment_point_at_index(1, nq1)
+                .map_err(e)?;
             hl.set_bounds(new).map_err(e)?;
             moved_quad = Some((quad_bounds(&nq), quad_bounds(&q)));
             moved_highlight_quad = Some(quad_bounds(&nq));
             let tr = nq.to_rect();
-            rep.add("PdfQuadPoints::to_rect() on PDFium-ordered quad", format!("to_rect={} vs min/max bounds={} (order-agnostic: OK)", fmt_rect(&tr), fmt_rect(&quad_bounds(&nq))));
+            rep.add(
+                "PdfQuadPoints::to_rect() on PDFium-ordered quad",
+                format!(
+                    "to_rect={} vs min/max bounds={} (order-agnostic: OK)",
+                    fmt_rect(&tr),
+                    fmt_rect(&quad_bounds(&nq))
+                ),
+            );
         }
         let png = Png::from_page(&page, 2.0, true)?;
         png.save("spike_annot_modified.png")?;
-        png.save_crop("modified_square_new", &rect(470.0, 550.0, 550.0, 650.0), 6.0)?;
-        png.save_crop("modified_highlight_old_and_new", &rect(70.0, 150.0, 230.0, 720.0), 6.0)?;
+        png.save_crop(
+            "modified_square_new",
+            &rect(470.0, 550.0, 550.0, 650.0),
+            6.0,
+        )?;
+        png.save_crop(
+            "modified_highlight_old_and_new",
+            &rect(70.0, 150.0, 230.0, 720.0),
+            6.0,
+        )?;
         let n_new = png.count_near(&rect(486.0, 566.0, 534.0, 634.0), [200, 220, 255], 30);
         let n_old = png.count_near(&rect(572.0, 607.0, 598.0, 653.0), [200, 220, 255], 30);
-        rep.add("modify square moved render", format!("{n_new} fill px at new rect, {n_old} at old rect -> {}", if n_new > 0 && n_old == 0 { "MOVED OK (AP re-mapped via Rect/BBox matrix)" } else { "PROBLEM" }));
+        rep.add(
+            "modify square moved render",
+            format!(
+                "{n_new} fill px at new rect, {n_old} at old rect -> {}",
+                if n_new > 0 && n_old == 0 {
+                    "MOVED OK (AP re-mapped via Rect/BBox matrix)"
+                } else {
+                    "PROBLEM"
+                }
+            ),
+        );
         if let Some((nr, or)) = moved_quad {
             let a = png.count_diff(&baseline, &nr, 40);
             let b = png.count_diff(&baseline, &or, 40);
-            rep.add("modify highlight quads moved -200 render (stale AP kept)", format!("new quad: {a} px differ from baseline; old quad: {b} px differ -> {}", if a > 50 && b < 50 { "MOVED OK (pdfium maps generated markup APs onto QuadPoints bounds)" } else { "PROBLEM" }));
+            rep.add(
+                "modify highlight quads moved -200 render (stale AP kept)",
+                format!(
+                    "new quad: {a} px differ from baseline; old quad: {b} px differ -> {}",
+                    if a > 50 && b < 50 {
+                        "MOVED OK (pdfium maps generated markup APs onto QuadPoints bounds)"
+                    } else {
+                        "PROBLEM"
+                    }
+                ),
+            );
         }
         drop(page);
-        document.save_to_file(&out("spike_annot_modified.pdf")).map_err(e)?;
+        document
+            .save_to_file(&out("spike_annot_modified.pdf"))
+            .map_err(e)?;
     }
 
     // --- 3b. Raw: remove AP, recolor, re-render -> AP regenerated with new colour.
@@ -1155,7 +1685,9 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
             let a = raw.b().FPDFPage_GetAnnot(page, i);
             if raw.b().FPDFAnnot_GetSubtype(a) == ST_SQUARE {
                 let before = raw.set_color(a, COLORTYPE_INTERIOR, [255, 0, 255, 255]);
-                let removed = raw.b().is_true(raw.b().FPDFAnnot_SetAP(a, AP_NORMAL, std::ptr::null()));
+                let removed =
+                    raw.b()
+                        .is_true(raw.b().FPDFAnnot_SetAP(a, AP_NORMAL, std::ptr::null()));
                 let after = raw.set_color(a, COLORTYPE_INTERIOR, [255, 0, 255, 255]);
                 rep.add("raw recolor square", format!("SetColor with AP present={before}; SetAP(NULL) removed AP={removed}; SetColor after removal={after}"));
                 raw.b().FPDFPage_CloseAnnot(a);
@@ -1167,7 +1699,9 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
         for i in 0..n {
             let a = raw.b().FPDFPage_GetAnnot(page, i);
             if raw.b().FPDFAnnot_GetSubtype(a) == 9 {
-                let removed = raw.b().is_true(raw.b().FPDFAnnot_SetAP(a, AP_NORMAL, std::ptr::null()));
+                let removed =
+                    raw.b()
+                        .is_true(raw.b().FPDFAnnot_SetAP(a, AP_NORMAL, std::ptr::null()));
                 rep.add("raw highlight SetAP(NULL) after quad move", removed);
                 raw.b().FPDFPage_CloseAnnot(a);
                 break;
@@ -1176,28 +1710,54 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
         }
         let png = raw.render(page, None, 2.0);
         let m = png.count_near(&rect(486.0, 566.0, 534.0, 634.0), [255, 0, 255], 40);
-        rep.add("raw recolor square render", format!("{m} magenta px -> {}", if m > 0 { "RECOLORED (AP regenerated on render)" } else { "NOT RECOLORED" }));
+        rep.add(
+            "raw recolor square render",
+            format!(
+                "{m} magenta px -> {}",
+                if m > 0 {
+                    "RECOLORED (AP regenerated on render)"
+                } else {
+                    "NOT RECOLORED"
+                }
+            ),
+        );
         if let Some(hq) = moved_highlight_quad {
             let y = png.count_diff(&baseline, &hq, 40);
-            rep.add("raw highlight regenerated at moved quad", format!("{y} px differ at new quad after AP removal + render -> {}", if y > 50 { "REGENERATED" } else { "MISSING" }));
+            rep.add(
+                "raw highlight regenerated at moved quad",
+                format!(
+                    "{y} px differ at new quad after AP removal + render -> {}",
+                    if y > 50 { "REGENERATED" } else { "MISSING" }
+                ),
+            );
             png.save_crop("modified_highlight_regenerated", &hq, 6.0)?;
         }
         raw.save(doc, "spike_annot_recolored.pdf")?;
         raw.b().FPDF_ClosePage(page);
         raw.b().FPDF_CloseDocument(doc);
-        let re = pdfium.load_pdf_from_file(&out("spike_annot_recolored.pdf"), None).map_err(e)?;
+        let re = pdfium
+            .load_pdf_from_file(&out("spike_annot_recolored.pdf"), None)
+            .map_err(e)?;
         let p = re.pages().get(0).map_err(e)?;
         let png = Png::from_page(&p, 2.0, true)?;
         png.save("spike_annot_recolored.png")?;
         let m = png.count_near(&rect(486.0, 566.0, 534.0, 634.0), [255, 0, 255], 40);
-        rep.add("raw recolor square persisted", format!("{m} magenta px after save+reopen"));
+        rep.add(
+            "raw recolor square persisted",
+            format!("{m} magenta px after save+reopen"),
+        );
     }
 
     // --- 3c. Flatten (pdfium-render uses FPDFPage_Flatten(FLAT_PRINT) + reload).
-    for (file, label) in [("spike_annot.pdf", "print-flag set"), ("spike_annot_noprint.pdf", "print-flag clear")] {
+    for (file, label) in [
+        ("spike_annot.pdf", "print-flag set"),
+        ("spike_annot_noprint.pdf", "print-flag clear"),
+    ] {
         if label == "print-flag clear" {
             // Build a variant where the print flag is cleared on every annotation.
-            let d = pdfium.load_pdf_from_file(&out("spike_annot.pdf"), None).map_err(e)?;
+            let d = pdfium
+                .load_pdf_from_file(&out("spike_annot.pdf"), None)
+                .map_err(e)?;
             let p = d.pages().get(0).map_err(e)?;
             for i in 0..p.annotations().len() {
                 let mut a = p.annotations().get(i).map_err(e)?;
@@ -1214,23 +1774,49 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
         let dt = t.elapsed();
         let (annots_after, objs_after) = (page.annotations().len(), page.objects().len());
         let png = Png::from_page(&page, 2.0, true)?;
-        png.save(&format!("spike_annot_flattened_{}.png", if label.contains("set") { "print" } else { "noprint" }))?;
+        png.save(&format!(
+            "spike_annot_flattened_{}.png",
+            if label.contains("set") {
+                "print"
+            } else {
+                "noprint"
+            }
+        ))?;
         let mut visible = vec![];
         for p in probes {
             let n = png.count_near(&p.rect, p.color, p.tol);
             let base = baseline.count_near(&p.rect, p.color, p.tol);
-            visible.push(format!("{}={}", p.name, if n > base { "vis" } else { "gone" }));
+            visible.push(format!(
+                "{}={}",
+                p.name,
+                if n > base { "vis" } else { "gone" }
+            ));
         }
         rep.add(
             &format!("flatten [{label}]"),
             format!("{res:?} in {dt:?}; annots {annots_before}->{annots_after}, page objects {objs_before}->{objs_after}; {}", visible.join(" ")),
         );
         drop(page);
-        let outname = format!("spike_annot_flattened_{}.pdf", if label.contains("set") { "print" } else { "noprint" });
+        let outname = format!(
+            "spike_annot_flattened_{}.pdf",
+            if label.contains("set") {
+                "print"
+            } else {
+                "noprint"
+            }
+        );
         document.save_to_file(&out(&outname)).map_err(e)?;
         let re = pdfium.load_pdf_from_file(&out(&outname), None).map_err(e)?;
         let p = re.pages().get(0).map_err(e)?;
-        rep.add(&format!("flatten [{label}] reopened"), format!("annots {}, objects {}, text chars {}", p.annotations().len(), p.objects().len(), p.text().map(|t| t.len()).unwrap_or(-1)));
+        rep.add(
+            &format!("flatten [{label}] reopened"),
+            format!(
+                "annots {}, objects {}, text chars {}",
+                p.annotations().len(),
+                p.objects().len(),
+                p.text().map(|t| t.len()).unwrap_or(-1)
+            ),
+        );
     }
     // Raw FPDFPage_Flatten(FLAT_NORMALDISPLAY) keeps annotations that lack the Print flag.
     unsafe {
@@ -1249,9 +1835,19 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
         for p in probes {
             let n = png.count_near(&p.rect, p.color, p.tol);
             let base = baseline.count_near(&p.rect, p.color, p.tol);
-            visible.push(format!("{}={}", p.name, if n > base { "vis" } else { "gone" }));
+            visible.push(format!(
+                "{}={}",
+                p.name,
+                if n > base { "vis" } else { "gone" }
+            ));
         }
-        rep.add("raw flatten FLAT_NORMALDISPLAY [print-flag clear]", format!("rc={rc} (1=success,2=nothing) GenerateContent={ok}; annots {before}->{after}; {}", visible.join(" ")));
+        rep.add(
+            "raw flatten FLAT_NORMALDISPLAY [print-flag clear]",
+            format!(
+                "rc={rc} (1=success,2=nothing) GenerateContent={ok}; annots {before}->{after}; {}",
+                visible.join(" ")
+            ),
+        );
         raw.save(doc, "spike_annot_flattened_normaldisplay.pdf")?;
         raw.b().FPDF_ClosePage(page);
         raw.b().FPDF_CloseDocument(doc);
@@ -1264,23 +1860,57 @@ fn section3_modify_flatten(pdfium: &Pdfium, raw: Raw, rep: &mut Report, probes: 
 // ---------------------------------------------------------------------------------------------
 fn field_summary(field: &PdfFormField) -> String {
     match field.field_type() {
-        PdfFormFieldType::Text => format!("Text value={:?} multiline={}", field.as_text_field().unwrap().value(), field.as_text_field().unwrap().is_multiline()),
+        PdfFormFieldType::Text => format!(
+            "Text value={:?} multiline={}",
+            field.as_text_field().unwrap().value(),
+            field.as_text_field().unwrap().is_multiline()
+        ),
         PdfFormFieldType::Checkbox => {
             let c = field.as_checkbox_field().unwrap();
-            format!("Checkbox checked={:?} export={:?} idx={}", c.is_checked(), c.group_value(), c.index_in_group())
+            format!(
+                "Checkbox checked={:?} export={:?} idx={}",
+                c.is_checked(),
+                c.group_value(),
+                c.index_in_group()
+            )
         }
         PdfFormFieldType::RadioButton => {
             let r = field.as_radio_button_field().unwrap();
-            format!("Radio checked={:?} group_value={:?} idx={}", r.is_checked(), r.group_value(), r.index_in_group())
+            format!(
+                "Radio checked={:?} group_value={:?} idx={}",
+                r.is_checked(),
+                r.group_value(),
+                r.index_in_group()
+            )
         }
         PdfFormFieldType::ComboBox => {
             let c = field.as_combo_box_field().unwrap();
-            let opts: Vec<String> = c.options().iter().map(|o| format!("{}{}", o.label().cloned().unwrap_or_default(), if o.is_set() { "*" } else { "" })).collect();
+            let opts: Vec<String> = c
+                .options()
+                .iter()
+                .map(|o| {
+                    format!(
+                        "{}{}",
+                        o.label().cloned().unwrap_or_default(),
+                        if o.is_set() { "*" } else { "" }
+                    )
+                })
+                .collect();
             format!("Combo value={:?} options={:?}", c.value(), opts)
         }
         PdfFormFieldType::ListBox => {
             let l = field.as_list_box_field().unwrap();
-            let opts: Vec<String> = l.options().iter().map(|o| format!("{}{}", o.label().cloned().unwrap_or_default(), if o.is_set() { "*" } else { "" })).collect();
+            let opts: Vec<String> = l
+                .options()
+                .iter()
+                .map(|o| {
+                    format!(
+                        "{}{}",
+                        o.label().cloned().unwrap_or_default(),
+                        if o.is_set() { "*" } else { "" }
+                    )
+                })
+                .collect();
             format!("List value={:?} options={:?}", l.value(), opts)
         }
         PdfFormFieldType::Signature => "Signature".to_string(),
@@ -1294,25 +1924,64 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
     let path = fixture("160F-2019.pdf");
     let document = pdfium.load_pdf_from_file(&path, None).map_err(e)?;
     let form = document.form();
-    rep.add("form present", format!("{} type={:?}", form.is_some(), form.map(|f| f.form_type())));
+    rep.add(
+        "form present",
+        format!("{} type={:?}", form.is_some(), form.map(|f| f.form_type())),
+    );
     let mut counts = std::collections::BTreeMap::new();
     let mut text_target: Option<(PdfPageIndex, usize, PdfRect, Option<String>)> = None;
     let mut check_target: Option<(PdfPageIndex, usize, PdfRect, bool, PdfFormFieldType)> = None;
     for (pi, page) in document.pages().iter().enumerate() {
         for (i, a) in page.annotations().iter().enumerate() {
             if let Some(field) = a.as_form_field() {
-                *counts.entry(format!("{:?}", field.field_type())).or_insert(0) += 1;
+                *counts
+                    .entry(format!("{:?}", field.field_type()))
+                    .or_insert(0) += 1;
                 let r = a.bounds().map_err(e)?;
                 if i < 12 {
-                    println!("  p{pi} #{i} {:?} {} {} readonly={}", field.name(), field_summary(field), fmt_rect(&r), field.is_read_only());
+                    println!(
+                        "  p{pi} #{i} {:?} {} {} readonly={}",
+                        field.name(),
+                        field_summary(field),
+                        fmt_rect(&r),
+                        field.is_read_only()
+                    );
                 }
-                if text_target.is_none() && field.field_type() == PdfFormFieldType::Text && r.width().value > 80.0 && r.height().value > 10.0 {
+                if text_target.is_none()
+                    && field.field_type() == PdfFormFieldType::Text
+                    && r.width().value > 80.0
+                    && r.height().value > 10.0
+                {
                     text_target = Some((pi as PdfPageIndex, i, r, field.name()));
                 }
-                if field.field_type() == PdfFormFieldType::Checkbox && !matches!(check_target, Some((_, _, _, _, PdfFormFieldType::Checkbox))) {
-                    check_target = Some((pi as PdfPageIndex, i, r, field.as_checkbox_field().unwrap().is_checked().unwrap_or(false), PdfFormFieldType::Checkbox));
-                } else if check_target.is_none() && field.field_type() == PdfFormFieldType::RadioButton {
-                    check_target = Some((pi as PdfPageIndex, i, r, field.as_radio_button_field().unwrap().is_checked().unwrap_or(false), PdfFormFieldType::RadioButton));
+                if field.field_type() == PdfFormFieldType::Checkbox
+                    && !matches!(check_target, Some((_, _, _, _, PdfFormFieldType::Checkbox)))
+                {
+                    check_target = Some((
+                        pi as PdfPageIndex,
+                        i,
+                        r,
+                        field
+                            .as_checkbox_field()
+                            .unwrap()
+                            .is_checked()
+                            .unwrap_or(false),
+                        PdfFormFieldType::Checkbox,
+                    ));
+                } else if check_target.is_none()
+                    && field.field_type() == PdfFormFieldType::RadioButton
+                {
+                    check_target = Some((
+                        pi as PdfPageIndex,
+                        i,
+                        r,
+                        field
+                            .as_radio_button_field()
+                            .unwrap()
+                            .is_checked()
+                            .unwrap_or(false),
+                        PdfFormFieldType::RadioButton,
+                    ));
                 }
             }
         }
@@ -1320,11 +1989,19 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
     rep.add("form field counts", format!("{counts:?}"));
     if let Some(f) = form {
         let values = f.field_values(document.pages());
-        println!("  field_values(): {} entries; sample {:?}", values.len(), values.iter().take(4).collect::<Vec<_>>());
+        println!(
+            "  field_values(): {} entries; sample {:?}",
+            values.len(),
+            values.iter().take(4).collect::<Vec<_>>()
+        );
     }
     let (tp, ti, trect, tname) = text_target.ok_or("no text field found")?;
     let (cp, ci, crect, cwas, ckind) = check_target.ok_or("no checkbox/radio found")?;
-    println!("  text target p{tp}#{ti} {tname:?} {}; toggle target ({ckind:?}) p{cp}#{ci} {} was {cwas}", fmt_rect(&trect), fmt_rect(&crect));
+    println!(
+        "  text target p{tp}#{ti} {tname:?} {}; toggle target ({ckind:?}) p{cp}#{ci} {} was {cwas}",
+        fmt_rect(&trect),
+        fmt_rect(&crect)
+    );
 
     // --- 4a. High-level set_value / set_checked (writes /V and /AS on the widget dict only).
     let base_png = Png::from_page(&document.pages().get(tp).map_err(e)?, 2.0, true)?;
@@ -1335,16 +2012,37 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         {
             let mut a = page.annotations().get(ti).map_err(e)?;
             let f = a.as_form_field_mut().unwrap().as_text_field_mut().unwrap();
-            rep.add("form high-level set_value", format!("{:?}", f.set_value("SeePDF 스파이크 12345").map(|_| "ok")));
-            rep.add("form high-level value readback (same session)", format!("{:?}", f.value()));
+            rep.add(
+                "form high-level set_value",
+                format!("{:?}", f.set_value("SeePDF 스파이크 12345").map(|_| "ok")),
+            );
+            rep.add(
+                "form high-level value readback (same session)",
+                format!("{:?}", f.value()),
+            );
             let mut c = page_c.annotations().get(ci).map_err(e)?;
             let ff = c.as_form_field_mut().unwrap();
             if ckind == PdfFormFieldType::Checkbox {
                 let cb = ff.as_checkbox_field_mut().unwrap();
-                rep.add("form high-level checkbox set_checked", format!("{:?} -> is_checked {:?}", cb.set_checked(!cwas).map(|_| "ok"), cb.is_checked()));
+                rep.add(
+                    "form high-level checkbox set_checked",
+                    format!(
+                        "{:?} -> is_checked {:?}",
+                        cb.set_checked(!cwas).map(|_| "ok"),
+                        cb.is_checked()
+                    ),
+                );
             } else {
                 let rb = ff.as_radio_button_field_mut().unwrap();
-                rep.add("form high-level radio set_checked", format!("{:?} -> is_checked {:?} group_value {:?}", rb.set_checked().map(|_| "ok"), rb.is_checked(), rb.group_value()));
+                rep.add(
+                    "form high-level radio set_checked",
+                    format!(
+                        "{:?} -> is_checked {:?} group_value {:?}",
+                        rb.set_checked().map(|_| "ok"),
+                        rb.is_checked(),
+                        rb.group_value()
+                    ),
+                );
             }
         }
         let png = Png::from_page(&page, 2.0, true)?;
@@ -1352,21 +2050,40 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         png.save_crop("form_highlevel_text", &trect, 6.0)?;
         png.save_crop("form_highlevel_checkbox", &crect, 6.0)?;
         let d = png.count_diff(&base_png, &trect, 40);
-        rep.add("form high-level render (same session)", format!("text rect: {d} px differ from baseline -> {}", if d > 50 { "VALUE VISIBLE" } else { "VALUE NOT VISIBLE (AP not regenerated)" }));
+        rep.add(
+            "form high-level render (same session)",
+            format!(
+                "text rect: {d} px differ from baseline -> {}",
+                if d > 50 {
+                    "VALUE VISIBLE"
+                } else {
+                    "VALUE NOT VISIBLE (AP not regenerated)"
+                }
+            ),
+        );
         if cp == tp {
             let d = png.count_diff(&base_png, &crect, 40);
-            rep.add("form high-level toggle render (same session)", format!("{d} px differ from baseline"));
+            rep.add(
+                "form high-level toggle render (same session)",
+                format!("{d} px differ from baseline"),
+            );
         }
         drop(page);
         drop(page_c);
     }
-    document.save_to_file(&out("spike_annot_form_highlevel.pdf")).map_err(e)?;
+    document
+        .save_to_file(&out("spike_annot_form_highlevel.pdf"))
+        .map_err(e)?;
     drop(document);
     {
-        let re = pdfium.load_pdf_from_file(&out("spike_annot_form_highlevel.pdf"), None).map_err(e)?;
+        let re = pdfium
+            .load_pdf_from_file(&out("spike_annot_form_highlevel.pdf"), None)
+            .map_err(e)?;
         let page = re.pages().get(tp).map_err(e)?;
         let a = page.annotations().get(ti).map_err(e)?;
-        let v = a.as_form_field().and_then(|f| f.as_text_field().map(|t| t.value()));
+        let v = a
+            .as_form_field()
+            .and_then(|f| f.as_text_field().map(|t| t.value()));
         let page_c = re.pages().get(cp).map_err(e)?;
         let c = page_c.annotations().get(ci).map_err(e)?;
         let cv = c.as_form_field().map(|f| match f.field_type() {
@@ -1386,8 +2103,13 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
     unsafe {
         let doc = raw.b().FPDF_LoadDocument(path.to_str().unwrap(), None);
         let mut ffi = form_fill_info();
-        let form = raw.b().FPDFDOC_InitFormFillEnvironment(doc, &mut *ffi as *mut FPDF_FORMFILLINFO);
-        rep.add("raw FPDFDOC_InitFormFillEnvironment", format!("null={}", form.is_null()));
+        let form = raw
+            .b()
+            .FPDFDOC_InitFormFillEnvironment(doc, &mut *ffi as *mut FPDF_FORMFILLINFO);
+        rep.add(
+            "raw FPDFDOC_InitFormFillEnvironment",
+            format!("null={}", form.is_null()),
+        );
         raw.b().FPDF_SetFormFieldHighlightAlpha(form, 0);
         let page = raw.b().FPDF_LoadPage(doc, tp as c_int);
         raw.b().FORM_OnAfterLoadPage(page, form);
@@ -1399,14 +2121,28 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
             raw.b().FORM_OnChar(form, page, ch as c_int, 0);
         }
         let killed = raw.b().FORM_ForceToKillFocus(form);
-        rep.add("raw FORM click+type", format!("LButtonDown={ok1} Up={ok2} killfocus={killed}"));
+        rep.add(
+            "raw FORM click+type",
+            format!("LButtonDown={ok1} Up={ok2} killfocus={killed}"),
+        );
         let annot = raw.b().FPDFPage_GetAnnot(page, ti as c_int);
         let ft = raw.b().FPDFAnnot_GetFormFieldType(form, annot);
-        let len = raw.b().FPDFAnnot_GetFormFieldValue(form, annot, std::ptr::null_mut(), 0);
+        let len = raw
+            .b()
+            .FPDFAnnot_GetFormFieldValue(form, annot, std::ptr::null_mut(), 0);
         let mut buf = vec![0u16; (len as usize) / 2];
-        raw.b().FPDFAnnot_GetFormFieldValue(form, annot, buf.as_mut_ptr(), len);
-        let value = String::from_utf16_lossy(&buf).trim_end_matches('\0').to_string();
-        rep.add("raw FORM value readback", format!("type={ft} (TEXTFIELD={FPDF_FORMFIELD_TEXTFIELD}) value={value:?} AP_len={:?}", raw.get_ap(annot).map(|s| s.len())));
+        raw.b()
+            .FPDFAnnot_GetFormFieldValue(form, annot, buf.as_mut_ptr(), len);
+        let value = String::from_utf16_lossy(&buf)
+            .trim_end_matches('\0')
+            .to_string();
+        rep.add(
+            "raw FORM value readback",
+            format!(
+                "type={ft} (TEXTFIELD={FPDF_FORMFIELD_TEXTFIELD}) value={value:?} AP_len={:?}",
+                raw.get_ap(annot).map(|s| s.len())
+            ),
+        );
         raw.b().FPDFPage_CloseAnnot(annot);
         // Toggle the checkbox by clicking on it (same page only).
         if cp == tp {
@@ -1426,7 +2162,17 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         png.save_crop("form_raw_text", &trect, 6.0)?;
         png.save_crop("form_raw_checkbox", &crect, 6.0)?;
         let d = png.count_diff(&base_png, &trect, 40);
-        rep.add("raw FORM render (FFLDraw, same session)", format!("text rect {d} px differ from baseline -> {}", if d > 50 { "VALUE VISIBLE" } else { "NOT VISIBLE" }));
+        rep.add(
+            "raw FORM render (FFLDraw, same session)",
+            format!(
+                "text rect {d} px differ from baseline -> {}",
+                if d > 50 {
+                    "VALUE VISIBLE"
+                } else {
+                    "NOT VISIBLE"
+                }
+            ),
+        );
         let bytes = raw.save(doc, "spike_annot_form_raw.pdf")?;
         rep.add("raw FORM save", format!("{bytes} bytes"));
         raw.b().FORM_OnBeforeClosePage(page, form);
@@ -1435,14 +2181,26 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
         raw.b().FPDF_CloseDocument(doc);
     }
     {
-        let re = pdfium.load_pdf_from_file(&out("spike_annot_form_raw.pdf"), None).map_err(e)?;
+        let re = pdfium
+            .load_pdf_from_file(&out("spike_annot_form_raw.pdf"), None)
+            .map_err(e)?;
         let page = re.pages().get(tp).map_err(e)?;
         let a = page.annotations().get(ti).map_err(e)?;
-        let v = a.as_form_field().and_then(|f| f.as_text_field().map(|t| t.value()));
-        let c = re.pages().get(cp).map_err(e)?.annotations().get(ci).map_err(e)?.as_form_field().map(|f| match f.field_type() {
-            PdfFormFieldType::Checkbox => f.as_checkbox_field().unwrap().is_checked(),
-            _ => f.as_radio_button_field().unwrap().is_checked(),
-        });
+        let v = a
+            .as_form_field()
+            .and_then(|f| f.as_text_field().map(|t| t.value()));
+        let c = re
+            .pages()
+            .get(cp)
+            .map_err(e)?
+            .annotations()
+            .get(ci)
+            .map_err(e)?
+            .as_form_field()
+            .map(|f| match f.field_type() {
+                PdfFormFieldType::Checkbox => f.as_checkbox_field().unwrap().is_checked(),
+                _ => f.as_radio_button_field().unwrap().is_checked(),
+            });
         let png = Png::from_page(&page, 2.0, true)?;
         png.save("spike_annot_form_raw_reopened.png")?;
         png.save_crop("form_raw_reopened_text", &trect, 6.0)?;
@@ -1461,14 +2219,25 @@ fn section4_forms(pdfium: &Pdfium, raw: Raw, rep: &mut Report) -> R<()> {
 // ---------------------------------------------------------------------------------------------
 fn section5_redaction(pdfium: &Pdfium, rep: &mut Report) -> R<()> {
     println!("\n==== Section 5: redaction on tracemonkey.pdf page 0 ====");
-    let document = pdfium.load_pdf_from_file(&fixture("tracemonkey.pdf"), None).map_err(e)?;
+    let document = pdfium
+        .load_pdf_from_file(&fixture("tracemonkey.pdf"), None)
+        .map_err(e)?;
     let mut page = document.pages().get(0).map_err(e)?;
     let target_word = "Gal";
     let target = find_word(&page, target_word, 0).ok_or("target word not found")?;
-    let target = rect(target.left().value - 1.0, target.bottom().value - 1.0, target.right().value + 1.0, target.top().value + 1.0);
+    let target = rect(
+        target.left().value - 1.0,
+        target.bottom().value - 1.0,
+        target.right().value + 1.0,
+        target.top().value + 1.0,
+    );
     let text_before = page.text().map_err(e)?.all();
     let count_before = text_before.matches(target_word).count();
-    println!("  target {:?} at {} ; occurrences before: {count_before}", target_word, fmt_rect(&target));
+    println!(
+        "  target {:?} at {} ; occurrences before: {count_before}",
+        target_word,
+        fmt_rect(&target)
+    );
 
     // Collect overlapping text objects (whole objects: pdfium cannot split a text object).
     let mut victims: Vec<(usize, String, PdfRect)> = vec![];
@@ -1487,26 +2256,71 @@ fn section5_redaction(pdfium: &Pdfium, rep: &mut Report) -> R<()> {
     for (i, t, r) in &victims {
         println!("  removing text object #{i} {} text={:?}", fmt_rect(r), t);
     }
-    rep.add("redaction victims", format!("{} text objects overlap the word rect (collateral text shown above)", victims.len()));
+    rep.add(
+        "redaction victims",
+        format!(
+            "{} text objects overlap the word rect (collateral text shown above)",
+            victims.len()
+        ),
+    );
     let t0 = Instant::now();
     for (i, _, _) in victims.iter().rev() {
         page.objects_mut().remove_object_at_index(*i).map_err(e)?;
     }
-    page.objects_mut().create_path_object_rect(target, None, None, Some(PdfColor::BLACK)).map_err(e)?;
+    page.objects_mut()
+        .create_path_object_rect(target, None, None, Some(PdfColor::BLACK))
+        .map_err(e)?;
     page.regenerate_content().map_err(e)?;
-    rep.add("bench redaction remove+box+regenerate", format!("{:?}", t0.elapsed()));
+    rep.add(
+        "bench redaction remove+box+regenerate",
+        format!("{:?}", t0.elapsed()),
+    );
     let text_mem = page.text().map_err(e)?.all();
-    rep.add("redaction text after (in memory)", format!("occurrences {} (chars {} -> {})", text_mem.matches(target_word).count(), text_before.len(), text_mem.len()));
+    rep.add(
+        "redaction text after (in memory)",
+        format!(
+            "occurrences {} (chars {} -> {})",
+            text_mem.matches(target_word).count(),
+            text_before.len(),
+            text_mem.len()
+        ),
+    );
     let png = Png::from_page(&page, 2.0, true)?;
     png.save("spike_annot_redacted.png")?;
-    png.save_crop("redacted", &rect(target.left().value - 80.0, target.bottom().value - 20.0, target.right().value + 80.0, target.top().value + 20.0), 0.0)?;
-    rep.add("redaction black box render", format!("{} black px in target rect", png.count_near(&target, [0, 0, 0], 20)));
+    png.save_crop(
+        "redacted",
+        &rect(
+            target.left().value - 80.0,
+            target.bottom().value - 20.0,
+            target.right().value + 80.0,
+            target.top().value + 20.0,
+        ),
+        0.0,
+    )?;
+    rep.add(
+        "redaction black box render",
+        format!(
+            "{} black px in target rect",
+            png.count_near(&target, [0, 0, 0], 20)
+        ),
+    );
     drop(page);
-    document.save_to_file(&out("spike_annot_redacted.pdf")).map_err(e)?;
-    let re = pdfium.load_pdf_from_file(&out("spike_annot_redacted.pdf"), None).map_err(e)?;
+    document
+        .save_to_file(&out("spike_annot_redacted.pdf"))
+        .map_err(e)?;
+    let re = pdfium
+        .load_pdf_from_file(&out("spike_annot_redacted.pdf"), None)
+        .map_err(e)?;
     let p = re.pages().get(0).map_err(e)?;
     let text_disk = p.text().map_err(e)?.all();
-    rep.add("redaction text after (reopened)", format!("occurrences of {target_word:?}: {} ; objects {}", text_disk.matches(target_word).count(), p.objects().len()));
+    rep.add(
+        "redaction text after (reopened)",
+        format!(
+            "occurrences of {target_word:?}: {} ; objects {}",
+            text_disk.matches(target_word).count(),
+            p.objects().len()
+        ),
+    );
     Ok(())
 }
 
@@ -1517,7 +2331,9 @@ fn section5_redaction(pdfium: &Pdfium, rep: &mut Report) -> R<()> {
 fn color_on_ap_child() -> R<()> {
     let lib = pdfium_lib();
     let pdfium = Pdfium::new(Pdfium::bind_to_library(&lib).map_err(e)?);
-    let document = pdfium.load_pdf_from_file(&out("spike_annot.pdf"), None).map_err(e)?;
+    let document = pdfium
+        .load_pdf_from_file(&out("spike_annot.pdf"), None)
+        .map_err(e)?;
     let page = document.pages().get(0).map_err(e)?;
     let mut done = 0;
     for i in 0..page.annotations().len() {
@@ -1525,18 +2341,28 @@ fn color_on_ap_child() -> R<()> {
         match a.annotation_type() {
             PdfPageAnnotationType::Square => {
                 let r = a.set_fill_color(PdfColor::new(255, 180, 180, 255));
-                println!("child: set_fill_color on square-with-AP -> {r:?}; readback {}", fmt_color(&a.fill_color()));
+                println!(
+                    "child: set_fill_color on square-with-AP -> {r:?}; readback {}",
+                    fmt_color(&a.fill_color())
+                );
                 done += 1;
             }
             PdfPageAnnotationType::Highlight => {
                 let r = a.set_stroke_color(PdfColor::GREEN_YELLOW);
-                println!("child: set_stroke_color on highlight-with-AP -> {r:?}; readback {}", fmt_color(&a.stroke_color()));
+                println!(
+                    "child: set_stroke_color on highlight-with-AP -> {r:?}; readback {}",
+                    fmt_color(&a.stroke_color())
+                );
                 done += 1;
             }
             _ => {}
         }
     }
-    if done == 2 { Ok(()) } else { Err("annotations missing".into()) }
+    if done == 2 {
+        Ok(())
+    } else {
+        Err("annotations missing".into())
+    }
 }
 
 fn main() {
@@ -1574,10 +2400,16 @@ fn run() -> R<()> {
 
     // Child-process UB probe.
     let exe = std::env::current_exe().map_err(e)?;
-    let outp = std::process::Command::new(exe).arg("color-on-ap").output().map_err(e)?;
+    let outp = std::process::Command::new(exe)
+        .arg("color-on-ap")
+        .output()
+        .map_err(e)?;
     let status = outp.status;
     let stdout = String::from_utf8_lossy(&outp.stdout).trim().to_string();
-    rep.add("set_*_color on annotation with AP (child process)", format!("exit={status:?}; {stdout}"));
+    rep.add(
+        "set_*_color on annotation with AP (child process)",
+        format!("exit={status:?}; {stdout}"),
+    );
 
     println!("\n==== SUMMARY ({:?} total) ====", t.elapsed());
     for l in &rep.lines {

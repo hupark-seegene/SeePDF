@@ -11,7 +11,7 @@ use seepdf_lib::engine::redact;
 use seepdf_lib::engine::registry;
 use seepdf_lib::engine::render::tiles;
 use seepdf_lib::engine::text;
-use seepdf_lib::ipc::types::{PageIndex, RedactOptions, Rect};
+use seepdf_lib::ipc::types::{PageIndex, Rect, RedactOptions};
 use seepdf_lib::ipc::ErrorCode;
 
 /// The word redacted in most of these tests, and the run it belongs to.
@@ -54,7 +54,11 @@ fn word_rect(doc_id: &str, page: PageIndex, needle: &str) -> Rect {
     .expect("word rect")
 }
 
-fn preview(doc_id: &str, page: PageIndex, rects: Vec<Rect>) -> seepdf_lib::ipc::types::RedactPreview {
+fn preview(
+    doc_id: &str,
+    page: PageIndex,
+    rects: Vec<Rect>,
+) -> seepdf_lib::ipc::types::RedactPreview {
     let doc_id = doc_id.to_string();
     with_doc(&doc_id.clone(), move |doc| {
         redact::preview(doc, page, &rects)
@@ -132,7 +136,10 @@ fn redact_preview_reports_collateral() {
     assert!(
         plan.text_objects.iter().any(|o| o.text.contains(TARGET)),
         "the object holding {TARGET:?} is listed: {:?}",
-        plan.text_objects.iter().map(|o| &o.text).collect::<Vec<_>>()
+        plan.text_objects
+            .iter()
+            .map(|o| &o.text)
+            .collect::<Vec<_>>()
     );
     assert!(
         plan.collateral.iter().any(|c| !c.is_empty()),
@@ -401,15 +408,16 @@ fn redact_batch_two_pages_is_one_undo_step() {
     let (text0, text1) = (page_text(&doc.doc_id, 0), page_text(&doc.doc_id, 1));
 
     // Out of order, and page 1 split over two entries: merged and sorted.
-    let r = apply_batch(
-        &doc.doc_id,
-        vec![(1, vec![r1]), (0, vec![r0]), (1, vec![])],
-    )
-    .expect("batch");
+    let r =
+        apply_batch(&doc.doc_id, vec![(1, vec![r1]), (0, vec![r0]), (1, vec![])]).expect("batch");
     assert!(r.verified);
     assert_eq!(r.pages, vec![0, 1]);
     assert!(r.removed_objects >= 2, "{}", r.removed_objects);
-    assert_eq!(r.doc_generation, before_generation + 1, "one generation for both pages");
+    assert_eq!(
+        r.doc_generation,
+        before_generation + 1,
+        "one generation for both pages"
+    );
     let info = with_doc(&doc.doc_id, |d| Ok(d.info())).unwrap();
     assert_eq!(info.undo_label.as_deref(), Some("undo.redact"));
     assert!(!page_text(&doc.doc_id, 0).contains(TARGET));
@@ -447,7 +455,11 @@ fn redact_batch_rolls_back_every_page() {
     assert_eq!(err.code, ErrorCode::VerifyFailed, "{err}");
     assert_eq!(err.page, Some(1));
     assert_eq!(generation(&doc.doc_id), before_generation);
-    assert_eq!(page_text(&doc.doc_id, 0), text0, "page 0 was rolled back too");
+    assert_eq!(
+        page_text(&doc.doc_id, 0),
+        text0,
+        "page 0 was rolled back too"
+    );
     assert_eq!(page_text(&doc.doc_id, 1), text1);
     let can_undo = with_doc(&doc.doc_id, |d| Ok(d.info().can_undo)).unwrap();
     assert!(!can_undo, "no undo step was left behind");
@@ -457,7 +469,11 @@ fn redact_batch_rolls_back_every_page() {
         let doc_id = form.doc_id.clone();
         with_doc(&doc_id.clone(), move |doc| {
             let fields = seepdf_lib::engine::form::list(doc, Some(0))?;
-            Ok(fields.iter().map(|f| f.rect).find(|r| r.width() > 40.0).expect("a widget"))
+            Ok(fields
+                .iter()
+                .map(|f| f.rect)
+                .find(|r| r.width() > 40.0)
+                .expect("a widget"))
         })
         .unwrap()
     };

@@ -40,7 +40,9 @@ pub fn history_spill_dir<R: Runtime>(app: Option<&AppHandle<R>>) -> PathBuf {
     let base = app
         .and_then(|a| a.path().temp_dir().ok())
         .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join("seepdf-history").join(std::process::id().to_string());
+    let dir = base
+        .join("seepdf-history")
+        .join(std::process::id().to_string());
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -104,8 +106,8 @@ fn write_recent<R: Runtime>(
     let store = app
         .store(RECENTS_FILE)
         .map_err(|e| EngineError::io(format!("open {RECENTS_FILE}: {e}")))?;
-    let value = serde_json::to_value(&entries)
-        .map_err(|e| EngineError::io(format!("recents: {e}")))?;
+    let value =
+        serde_json::to_value(&entries).map_err(|e| EngineError::io(format!("recents: {e}")))?;
     store.set(RECENTS_KEY, value);
     store
         .save()
@@ -161,7 +163,9 @@ pub fn set_recent_pinned<R: Runtime>(
         }
     }
     if !found {
-        return Err(EngineError::not_found(format!("no recent entry for {path}")));
+        return Err(EngineError::not_found(format!(
+            "no recent entry for {path}"
+        )));
     }
     write_recent(app, entries)
 }
@@ -180,10 +184,7 @@ pub fn clear_recent<R: Runtime>(app: &AppHandle<R>) -> Result<(), EngineError> {
 }
 
 /// Writes a thumbnail PNG for the recents grid and returns its id.
-pub fn write_thumbnail<R: Runtime>(
-    app: &AppHandle<R>,
-    png: &[u8],
-) -> Result<String, EngineError> {
+pub fn write_thumbnail<R: Runtime>(app: &AppHandle<R>, png: &[u8]) -> Result<String, EngineError> {
     let dir = thumbs_dir(app).ok_or_else(|| EngineError::io("no app data directory"))?;
     let id = uuid::Uuid::new_v4().simple().to_string();
     std::fs::write(dir.join(format!("{id}.png")), png)
@@ -195,10 +196,16 @@ pub fn write_thumbnail<R: Runtime>(
 pub fn reveal(path: &str) -> Result<(), EngineError> {
     let path = PathBuf::from(path);
     if !path.exists() {
-        return Err(EngineError::not_found(format!("{} is gone", path.display())));
+        return Err(EngineError::not_found(format!(
+            "{} is gone",
+            path.display()
+        )));
     }
     #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+    let result = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .spawn();
     #[cfg(target_os = "windows")]
     let result = std::process::Command::new("explorer")
         .arg(format!("/select,{}", path.display()))

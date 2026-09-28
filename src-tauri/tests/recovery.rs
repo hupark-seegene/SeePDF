@@ -77,7 +77,10 @@ fn write_creates_pdf_and_sidecar_that_reopen() {
     let pdf = root.join(format!("{}.pdf", entry.id));
     let sidecar = root.join(format!("{}.json", entry.id));
     assert!(pdf.is_file() && sidecar.is_file());
-    assert_eq!(Path::new(&entry.recovery_path), std::fs::canonicalize(&pdf).unwrap());
+    assert_eq!(
+        Path::new(&entry.recovery_path),
+        std::fs::canonicalize(&pdf).unwrap()
+    );
     assert!(Path::new(&entry.recovery_path).is_absolute());
     assert_eq!(entry.bytes, std::fs::metadata(&pdf).unwrap().len());
     assert_eq!(entry.pages, doc.info.page_count);
@@ -86,7 +89,11 @@ fn write_creates_pdf_and_sidecar_that_reopen() {
         entry.original_path.as_deref(),
         Some(fixture("tracemonkey.pdf").display().to_string().as_str())
     );
-    assert!(chrono::DateTime::parse_from_rfc3339(&entry.saved_at).is_ok(), "{}", entry.saved_at);
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&entry.saved_at).is_ok(),
+        "{}",
+        entry.saved_at
+    );
     // Sidecar == RecoveryEntry.
     let on_disk: RecoveryEntry = serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
     assert_eq!(on_disk, entry);
@@ -139,13 +146,19 @@ fn clear_removes_the_pair() {
     // A document that never wrote one has no id.
     let fresh = open("rotation.pdf");
     let fresh_id = fresh.doc_id.clone();
-    assert_eq!(with_state(move |st| recovery::recovery_id(st, &fresh_id)).unwrap(), None);
+    assert_eq!(
+        with_state(move |st| recovery::recovery_id(st, &fresh_id)).unwrap(),
+        None
+    );
 }
 
 #[test]
 fn list_is_newest_first_and_prunes_orphans() {
     let root = temp_root("list");
-    assert!(recovery::list(&root).unwrap().is_empty(), "missing dir = empty");
+    assert!(
+        recovery::list(&root).unwrap().is_empty(),
+        "missing dir = empty"
+    );
     let a = open("rotation.pdf");
     let b = open("tracemonkey.pdf");
     let c = open("alphatrans.pdf");
@@ -162,8 +175,14 @@ fn list_is_newest_first_and_prunes_orphans() {
     std::fs::write(root.join(".x.pdf.seepdf-1.tmp"), b"tmp").unwrap();
 
     let list = recovery::list(&root).unwrap();
-    assert_eq!(list.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), vec![eb.id.clone(), ea.id.clone()]);
-    assert!(!root.join(format!("{}.json", ec.id)).exists(), "orphan sidecar pruned");
+    assert_eq!(
+        list.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
+        vec![eb.id.clone(), ea.id.clone()]
+    );
+    assert!(
+        !root.join(format!("{}.json", ec.id)).exists(),
+        "orphan sidecar pruned"
+    );
     assert!(root.join("notes.json").exists());
 
     // Rewriting `a` makes it the newest.
@@ -183,7 +202,10 @@ fn discard_unknown_is_a_noop_and_bad_ids_are_rejected() {
     recovery::discard(&root, &uuid::Uuid::new_v4().to_string()).unwrap();
     assert_eq!(recovery::list(&root).unwrap(), vec![entry]);
     for bad in ["../../etc/passwd", "", "x"] {
-        assert_eq!(recovery::discard(&root, bad).unwrap_err().code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            recovery::discard(&root, bad).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
     }
 }
 
@@ -199,8 +221,14 @@ fn encrypted_document_stays_encrypted() {
     let entry = write(&root, &doc.doc_id);
     let bytes = std::fs::read(&entry.recovery_path).unwrap();
     let (without, with) = with_state(move |st| {
-        let without = st.pdfium.load_pdf_from_byte_vec(bytes.clone(), None).is_err();
-        let with = st.pdfium.load_pdf_from_byte_vec(bytes, Some("user")).is_ok();
+        let without = st
+            .pdfium
+            .load_pdf_from_byte_vec(bytes.clone(), None)
+            .is_err();
+        let with = st
+            .pdfium
+            .load_pdf_from_byte_vec(bytes, Some("user"))
+            .is_ok();
         Ok((without, with))
     })
     .unwrap();
@@ -217,5 +245,8 @@ fn open_documents_report_their_recovery_ids() {
     // `list_recovery` filters these out: they are live autosaves, not crash leftovers.
     assert!(live.contains(&entry.id));
     let fresh_id = fresh.doc_id.clone();
-    assert_eq!(with_state(move |st| recovery::recovery_id(st, &fresh_id)).unwrap(), None);
+    assert_eq!(
+        with_state(move |st| recovery::recovery_id(st, &fresh_id)).unwrap(),
+        None
+    );
 }

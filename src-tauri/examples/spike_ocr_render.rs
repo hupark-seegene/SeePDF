@@ -33,15 +33,42 @@ const DPI: f32 = 300.0;
 /// ground-truth file is exactly what is drawn.
 const KO_LINES: &[(&str, f32)] = &[
     ("SeePDF 광학 문자 인식 테스트 페이지", 18.0),
-    ("이 문서는 한국어와 영어가 섞인 스캔 문서를 흉내 내기 위해 만들어졌습니다.", 12.0),
-    ("대한민국의 수도는 서울이며, 부산은 두 번째로 큰 도시입니다.", 12.0),
-    ("계약서 제3조 (대금 지급) 갑은 을에게 2026년 9월 30일까지 금 1,250,000원을 지급한다.", 11.0),
-    ("The quick brown fox jumps over the lazy dog. 0123456789", 12.0),
-    ("Optical character recognition converts scanned images into searchable text.", 11.0),
-    ("영수증 번호: KR-2026-0915-0042   합계: ₩ 48,500   부가세 포함", 11.0),
-    ("Mixed line: 회의는 Tuesday 오후 3시에 Room 402에서 진행됩니다.", 12.0),
-    ("작은 글씨 테스트 – 가나다라마바사아자차카타파하 – small 9pt text line", 9.0),
-    ("띄어쓰기와 문장 부호, 그리고 괄호(소괄호)와 [대괄호]까지 인식되어야 합니다.", 11.0),
+    (
+        "이 문서는 한국어와 영어가 섞인 스캔 문서를 흉내 내기 위해 만들어졌습니다.",
+        12.0,
+    ),
+    (
+        "대한민국의 수도는 서울이며, 부산은 두 번째로 큰 도시입니다.",
+        12.0,
+    ),
+    (
+        "계약서 제3조 (대금 지급) 갑은 을에게 2026년 9월 30일까지 금 1,250,000원을 지급한다.",
+        11.0,
+    ),
+    (
+        "The quick brown fox jumps over the lazy dog. 0123456789",
+        12.0,
+    ),
+    (
+        "Optical character recognition converts scanned images into searchable text.",
+        11.0,
+    ),
+    (
+        "영수증 번호: KR-2026-0915-0042   합계: ₩ 48,500   부가세 포함",
+        11.0,
+    ),
+    (
+        "Mixed line: 회의는 Tuesday 오후 3시에 Room 402에서 진행됩니다.",
+        12.0,
+    ),
+    (
+        "작은 글씨 테스트 – 가나다라마바사아자차카타파하 – small 9pt text line",
+        9.0,
+    ),
+    (
+        "띄어쓰기와 문장 부호, 그리고 괄호(소괄호)와 [대괄호]까지 인식되어야 합니다.",
+        11.0,
+    ),
 ];
 
 fn repo_root() -> PathBuf {
@@ -105,7 +132,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. tracemonkey.pdf page 1 at 300 DPI + ground truth
     // ------------------------------------------------------------------------------------------
     {
-        let doc = pdfium.load_pdf_from_file(&root.join("fixtures").join("tracemonkey.pdf"), None)?;
+        let doc =
+            pdfium.load_pdf_from_file(&root.join("fixtures").join("tracemonkey.pdf"), None)?;
         let page = doc.pages().first()?;
         println!(
             "tracemonkey p1: {:.1} x {:.1} pt, rotation {:?}",
@@ -235,7 +263,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Horizontal scale so the glyph run fits the OCR box width exactly.
             let nb = obj.bounds()?;
             let natural_w = nb.right().value - nb.left().value;
-            let sx = if natural_w > 0.0 { box_w / natural_w } else { 1.0 };
+            let sx = if natural_w > 0.0 {
+                box_w / natural_w
+            } else {
+                1.0
+            };
             obj.scale(sx, 1.0)?;
             obj.translate(PdfPoints::new(x), PdfPoints::new(y))?;
             let added = page.objects_mut().add_text_object(obj)?;
@@ -313,10 +345,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Latin-only words: the built-in Helvetica needs no embedding (tiny file).
                 // Words with non-Latin-1 characters must use an embedded CID font instead.
                 let font = doc.fonts_mut().helvetica();
-                let mut page = doc.pages_mut().create_page_at_end(PdfPagePaperSize::Custom(
-                    PdfPoints::new(page_w),
-                    PdfPoints::new(page_h),
-                ))?;
+                let mut page = doc
+                    .pages_mut()
+                    .create_page_at_end(PdfPagePaperSize::Custom(
+                        PdfPoints::new(page_w),
+                        PdfPoints::new(page_h),
+                    ))?;
                 page.set_content_regeneration_strategy(strategy);
                 page.objects_mut().create_image_object(
                     PdfPoints::new(0.0),
@@ -337,7 +371,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Font size from the box height (word box ~ 0.87 em for mixed-case Latin),
                     // then horizontal scale so the glyph run spans exactly the box width.
                     let font_size = box_h * 1.15;
-                    let mut obj = PdfPageTextObject::new(&doc, &w.t, font, PdfPoints::new(font_size))?;
+                    let mut obj =
+                        PdfPageTextObject::new(&doc, &w.t, font, PdfPoints::new(font_size))?;
                     obj.set_render_mode(PdfPageTextRenderMode::Invisible)?;
                     let nb = obj.bounds()?;
                     let natural_w = nb.right().value - nb.left().value;
