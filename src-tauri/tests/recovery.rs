@@ -78,11 +78,19 @@ fn write_creates_pdf_and_sidecar_that_reopen() {
     let pdf = root.join(format!("{}.pdf", entry.id));
     let sidecar = root.join(format!("{}.json", entry.id));
     assert!(pdf.is_file() && sidecar.is_file());
+    // The same file as the one on disk. Compared through `canonicalize` on both sides:
+    // on Windows the engine deliberately strips the `\\?\` verbatim prefix that
+    // `canonicalize` adds (the path is shown in the UI and passed to Explorer).
     assert_eq!(
-        Path::new(&entry.recovery_path),
+        std::fs::canonicalize(&entry.recovery_path).unwrap(),
         std::fs::canonicalize(&pdf).unwrap()
     );
     assert!(Path::new(&entry.recovery_path).is_absolute());
+    assert!(
+        !entry.recovery_path.starts_with(r"\\?\"),
+        "no verbatim prefix leaks out: {}",
+        entry.recovery_path
+    );
     assert_eq!(entry.bytes, std::fs::metadata(&pdf).unwrap().len());
     assert_eq!(entry.pages, doc.info.page_count);
     assert_eq!(entry.name, "tracemonkey.pdf");
