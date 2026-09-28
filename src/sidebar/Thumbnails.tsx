@@ -12,7 +12,7 @@ import type { PageGeom } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
-import { devicePixelRatio } from "../viewer/geometry";
+import { useDevicePixelRatio } from "../viewer/useDevicePixelRatio";
 import "./sidebar.css";
 
 const GAP = 12;
@@ -27,6 +27,7 @@ export function Thumbnails() {
   const rotation = useViewStore((s) => s.rotation);
   const currentPage = useViewStore((s) => s.currentPage);
   const goToPage = useViewStore((s) => s.goToPage);
+  const dpr = useDevicePixelRatio();
 
   const listRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
@@ -100,7 +101,6 @@ export function Thumbnails() {
   }, [currentPage, rows]);
 
   if (!info) return null;
-  const dpr = devicePixelRatio();
 
   return (
     <div

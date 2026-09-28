@@ -24,7 +24,9 @@ export type DialogName =
   // generic choice prompt (Stage 9: 문단이 들어갈 자리가 부족합니다)
   | "choice"
   // 업데이트 확인 (v0.2.0)
-  | "update";
+  | "update"
+  // 도움말 › 단축키
+  | "shortcuts";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";
@@ -46,17 +48,32 @@ interface DialogStore {
 
 let key = 0;
 
+/**
+ * A prompt's promise must settle however its entry leaves the stack. `ask` puts a `dismiss` in the
+ * props that answers the prompt's cancel value (a no-op once it has been answered); an entry that
+ * is replaced by another of the same name, or closed from outside, is dismissed.
+ */
+function dismiss(entries: DialogEntry[]): void {
+  for (const entry of entries) (entry.props.dismiss as (() => void) | undefined)?.();
+}
+
 export const useDialogStore = create<DialogStore>((set, get) => ({
   stack: [],
   open(name, props = {}) {
-    set({ stack: [...get().stack.filter((e) => e.name !== name), { name, props, key: ++key }] });
+    const stack = get().stack;
+    set({ stack: [...stack.filter((e) => e.name !== name), { name, props, key: ++key }] });
+    dismiss(stack.filter((e) => e.name === name));
   },
   close(name) {
     const stack = get().stack;
-    set({ stack: name ? stack.filter((e) => e.name !== name) : stack.slice(0, -1) });
+    const kept = name ? stack.filter((e) => e.name !== name) : stack.slice(0, -1);
+    set({ stack: kept });
+    dismiss(stack.filter((e) => !kept.includes(e)));
   },
   closeAll() {
+    const stack = get().stack;
     set({ stack: [] });
+    dismiss(stack);
   },
 }));
 
@@ -73,36 +90,55 @@ export function isDialogOpen(): boolean {
   return useDialogStore.getState().stack.length > 0;
 }
 
-function ask<T>(name: DialogName, props: Record<string, unknown>): Promise<T> {
+/**
+ * Open a prompt and wait for its answer. Settles exactly once: with the user's answer, or with
+ * `cancelValue` when the prompt is replaced by another of its kind (a second password prompt, a
+ * second unsaved prompt) or closed from outside — a caller never hangs on a prompt nobody sees.
+ */
+function ask<T>(name: DialogName, props: Record<string, unknown>, cancelValue: T): Promise<T> {
   return new Promise<T>((resolve) => {
+    let settled = false;
+    const settle = (value: T): boolean => {
+      if (settled) return false;
+      settled = true;
+      resolve(value);
+      return true;
+    };
     openDialog(name, {
       ...props,
       resolve: (value: T) => {
-        closeDialog(name);
-        resolve(value);
+        if (!settle(value)) return;
+        // close this prompt only — never a newer one of the same name
+        const store = useDialogStore.getState();
+        const entry = store.stack.find((e) => e.props.dismiss === dismissThis);
+        if (entry) useDialogStore.setState({ stack: store.stack.filter((e) => e !== entry) });
       },
+      dismiss: dismissThis,
     });
+    function dismissThis(): void {
+      settle(cancelValue);
+    }
   });
 }
 
 /** 저장 / 저장 안 함 / 취소 (F-23). */
 export function askUnsaved(name: string): Promise<UnsavedAnswer> {
-  return ask<UnsavedAnswer>("unsaved", { name });
+  return ask<UnsavedAnswer>("unsaved", { name }, "cancel");
 }
 
 /** 암호 입력, retried in place: `null` = the user cancelled (F-01). */
 export function askPassword(fileName: string, wrong = false): Promise<string | null> {
-  return ask<string | null>("password", { fileName, wrong });
+  return ask<string | null>("password", { fileName, wrong }, null);
 }
 
 /** 여러 파일을 어떻게 열까요? — 각각 열기 / 하나로 합치기 (UI_SPEC §11). */
 export function askMultipleFiles(paths: string[]): Promise<MultipleFilesAnswer> {
-  return ask<MultipleFilesAnswer>("multipleFiles", { paths });
+  return ask<MultipleFilesAnswer>("multipleFiles", { paths }, null);
 }
 
 /** 페이지 추출: resolves with the chosen path + 원본에서 삭제, or `null`. */
 export function askExtract(pages: PageIndex[], info: DocInfo): Promise<{ removeAfter: boolean } | null> {
-  return ask<{ removeAfter: boolean } | null>("extract", { pages, info });
+  return ask<{ removeAfter: boolean } | null>("extract", { pages, info }, null);
 }
 
 /** A generic yes / no prompt: resolves `true` on the primary button, `false` on cancel / Esc. */
@@ -118,7 +154,7 @@ export interface ConfirmRequest {
 }
 
 export function askConfirm(req: ConfirmRequest): Promise<boolean> {
-  return ask<boolean>("confirm", { ...req });
+  return ask<boolean>("confirm", { ...req }, false);
 }
 
 /** One option of `askChoice`: a full-width button in the prompt's body. */
@@ -147,5 +183,5 @@ export interface ChoiceRequest<T extends string> {
 }
 
 export function askChoice<T extends string>(req: ChoiceRequest<T>): Promise<T> {
-  return ask<T>("choice", { ...req });
+  return ask<T>("choice", { ...req }, req.cancel.value);
 }

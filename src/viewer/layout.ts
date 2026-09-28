@@ -203,17 +203,31 @@ export function onScreenRange(layout: DocLayout, scrollTop: number, viewportH: n
 
 /**
  * The page the status bar shows: the one covering the point 35 % down the viewport, which is what
- * every other reader does — the page you are reading, not the sliver at the top edge.
+ * every other reader does — the page you are reading, not the sliver at the top edge. In 두 쪽 both
+ * pages of a spread share a row, and the spread is named by its first (left) page.
  */
 export function currentPageAt(layout: DocLayout, scrollTop: number, viewportH: number): PageIndex {
-  if (layout.items.length === 0) return 0;
   const probe = scrollTop + viewportH * 0.35;
-  let best = layout.items[0];
-  for (const item of layout.items) {
-    if (item.y <= probe) best = item;
+  let best: LayoutRow | null = null;
+  for (const row of layout.rows) {
+    if (row.pages.length === 0) continue;
+    if (best === null || row.y <= probe) best = row;
     else break;
   }
-  return best.page;
+  return best ? best.pages[0] : 0;
+}
+
+/**
+ * The page ◀ / ▶, ⌘↑ / ⌘↓ and Space go to: the first page of the previous / next row, so 두 쪽
+ * steps a whole spread. Clamped to the first and the last row.
+ */
+export function stepPage(current: PageIndex, delta: 1 | -1, pageCount: number, mode: ViewLayout): PageIndex {
+  if (pageCount <= 0) return 0;
+  const span = mode === "two" ? 2 : 1;
+  const last = pageCount - 1;
+  const rowStart = (page: PageIndex) => page - (page % span);
+  const from = rowStart(Math.max(0, Math.min(last, current)));
+  return Math.max(0, Math.min(rowStart(last), from + delta * span));
 }
 
 /** Scroll offset that puts a page at the top of the viewport (minus the top padding). */
@@ -247,4 +261,31 @@ export function fitZoomPercent(
   const widthPct = (availW / wPt) * 100;
   const pct = mode === "fit-width" ? widthPct : Math.min(widthPct, (availH / hPt) * 100);
   return Math.max(min, Math.min(max, Math.round(pct)));
+}
+
+/**
+ * 너비 맞춤 / 페이지 맞춤 for the whole view. 단일 fits the page it shows; 연속 and 두 쪽 fit the
+ * most demanding page of the document (the widest, for 너비 맞춤), so the zoom never depends on
+ * which page the scroll position happens to make current — with mixed portrait and landscape pages
+ * that dependency is a feedback loop (refit → re-anchor → new current page → refit …).
+ */
+export function fitZoomForView(
+  pages: PageGeom[],
+  mode: "fit-width" | "fit-page",
+  rotation: Rotation,
+  viewLayout: ViewLayout,
+  viewport: Size,
+  currentPage: PageIndex,
+): number | null {
+  if (viewLayout === "single") return fitZoomPercent(pages[currentPage], mode, rotation, viewLayout, viewport);
+  let best: number | null = null;
+  const seen = new Set<string>();
+  for (const page of pages) {
+    const size = `${page.widthPt}x${page.heightPt}`;
+    if (seen.has(size)) continue;
+    seen.add(size);
+    const fit = fitZoomPercent(page, mode, rotation, viewLayout, viewport);
+    if (fit !== null && (best === null || fit < best)) best = fit;
+  }
+  return best;
 }

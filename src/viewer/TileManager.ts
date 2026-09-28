@@ -40,6 +40,12 @@ export interface TileManagerOptions {
 export const MAX_INFLIGHT = 24;
 export const FLING_INFLIGHT = 8;
 export const MAX_MOUNTED_TILES = 120;
+/**
+ * How many loaded tile keys are remembered as "in the webview cache". Least recently loaded keys
+ * go first; the webview's own cache is not much bigger, and an unbounded set grew for the life of
+ * the window (every edit bumps the generation, so old keys can never match again).
+ */
+export const MAX_CACHED_KEYS = 2048;
 
 interface Admitted {
   req: TileRequest;
@@ -105,6 +111,11 @@ export class TileManager {
 
     this.queue = [...tiles].sort((a, b) => a.priority - b.priority || a.page - b.page || a.ty - b.ty || a.tx - b.tx);
     const wanted = new Set(this.queue.map((t) => t.key));
+    // A new render generation (document generation, scale key, rotation, night) never asks for an
+    // old key again: forget them.
+    if (generationChanged) {
+      for (const key of [...this.everLoaded]) if (!wanted.has(key)) this.everLoaded.delete(key);
+    }
 
     // Cancellation: a tile nobody wants any more is unmounted at once. On a generation bump the
     // engine has already dropped its render, so even a loaded tile would repaint stale pixels.
@@ -139,7 +150,7 @@ export class TileManager {
     const entry = this.admitted.get(key);
     if (!entry || entry.loaded) return;
     entry.loaded = true;
-    this.everLoaded.add(key);
+    this.rememberLoaded(key);
     this.pump();
   }
 
@@ -152,7 +163,14 @@ export class TileManager {
     this.pump();
   }
 
-  stats(): { generation: number; inflight: number; mounted: number; queued: number; limit: number } {
+  stats(): {
+    generation: number;
+    inflight: number;
+    mounted: number;
+    queued: number;
+    limit: number;
+    cachedKeys: number;
+  } {
     let inflight = 0;
     for (const entry of this.admitted.values()) if (!entry.loaded) inflight += 1;
     return {
@@ -161,6 +179,7 @@ export class TileManager {
       mounted: this.admitted.size,
       queued: this.queue.length,
       limit: this.inflightLimit,
+      cachedKeys: this.everLoaded.size,
     };
   }
 
@@ -173,6 +192,17 @@ export class TileManager {
   }
 
   // -------------------------------------------------------------------------
+
+  /** LRU by insertion order: a re-load moves the key to the young end. */
+  private rememberLoaded(key: string): void {
+    this.everLoaded.delete(key);
+    this.everLoaded.add(key);
+    while (this.everLoaded.size > MAX_CACHED_KEYS) {
+      const oldest = this.everLoaded.values().next().value;
+      if (oldest === undefined) break;
+      this.everLoaded.delete(oldest);
+    }
+  }
 
   /** Admit as many queued tiles as the in-flight and mounted budgets allow. */
   private pump(force = false): void {

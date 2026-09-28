@@ -31,6 +31,16 @@ export function isBareChord(chord: string): boolean {
   return !c.cmd && !c.ctrl && !c.alt;
 }
 
+/**
+ * Chords a text field owns even though they carry a modifier: its own undo/redo, clipboard,
+ * select-all and caret movement (⌘↑ / ⌘↓, Ctrl+Home / Ctrl+End). Claiming them from a field
+ * undid the *document* while the user was typing a title, and killed the field's paste on Windows.
+ */
+const FIELD_OWNED = new Set([
+  "edit.undo", "edit.redo", "edit.cut", "edit.copy", "edit.paste", "edit.selectAll",
+  "go.firstPage", "go.lastPage",
+]);
+
 export function useKeymap(opts: KeymapOptions): void {
   const ref = useRef(opts);
   ref.current = opts;
@@ -47,7 +57,7 @@ export function useKeymap(opts: KeymapOptions): void {
       const binding = lookup(e, os, active);
       if (!binding) return;
       const chord = chordsFor(binding, os).find(() => true) ?? "";
-      if (editing && isBareChord(chord)) return;
+      if (editing && (isBareChord(chord) || FIELD_OWNED.has(binding.id))) return;
       if (binding.momentary) {
         const token = parseChord(chord).key;
         if (held.has(token)) return;

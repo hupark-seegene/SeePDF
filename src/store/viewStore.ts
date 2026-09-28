@@ -48,6 +48,9 @@ export interface ViewState {
    * on the heading rather than on the top of the page.
    */
   scrollRequest: { page: PageIndex; nonce: number; yPt?: number } | null;
+  /** 뒤로 / 앞으로 (⌘[ / ⌘]): the pages `goToPage` jumped away from, newest last. */
+  backStack: PageIndex[];
+  forwardStack: PageIndex[];
 
   setZoom(percent: number): void;
   setZoomMode(mode: ZoomMode, percent?: number): void;
@@ -60,7 +63,14 @@ export interface ViewState {
   cycleNight(): void;
   setCurrentPage(page: PageIndex): void;
   goToPage(page: PageIndex, yPt?: number): void;
+  goBack(): void;
+  goForward(): void;
+  /** a new document starts with no 뒤로 / 앞으로 history */
+  resetHistory(): void;
 }
+
+/** 뒤로 remembers this many jumps. */
+const HISTORY_MAX = 50;
 
 function clamp(percent: number): number {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(percent)));
@@ -74,6 +84,8 @@ export const useViewStore = create<ViewState>((set, get) => ({
   night: "off",
   currentPage: 0,
   scrollRequest: null,
+  backStack: [],
+  forwardStack: [],
 
   setZoom(percent) {
     set({ zoomPercent: clamp(percent), zoomMode: "custom" });
@@ -110,10 +122,37 @@ export const useViewStore = create<ViewState>((set, get) => ({
     if (page !== get().currentPage) set({ currentPage: page });
   },
   goToPage(page, yPt) {
+    const from = get().currentPage;
     set({
       currentPage: page,
       scrollRequest: { page, nonce: (get().scrollRequest?.nonce ?? 0) + 1, yPt },
+      ...(page !== from ? { backStack: [...get().backStack, from].slice(-HISTORY_MAX), forwardStack: [] } : {}),
     });
+  },
+  goBack() {
+    const { backStack, forwardStack, currentPage } = get();
+    const page = backStack[backStack.length - 1];
+    if (page === undefined) return;
+    set({
+      currentPage: page,
+      scrollRequest: { page, nonce: (get().scrollRequest?.nonce ?? 0) + 1 },
+      backStack: backStack.slice(0, -1),
+      forwardStack: [...forwardStack, currentPage].slice(-HISTORY_MAX),
+    });
+  },
+  goForward() {
+    const { backStack, forwardStack, currentPage } = get();
+    const page = forwardStack[forwardStack.length - 1];
+    if (page === undefined) return;
+    set({
+      currentPage: page,
+      scrollRequest: { page, nonce: (get().scrollRequest?.nonce ?? 0) + 1 },
+      forwardStack: forwardStack.slice(0, -1),
+      backStack: [...backStack, currentPage].slice(-HISTORY_MAX),
+    });
+  },
+  resetHistory() {
+    set({ backStack: [], forwardStack: [] });
   },
 }));
 

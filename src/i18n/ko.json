@@ -61,6 +61,7 @@
   "menu.window.zoom": "확대/축소",
   "menu.help": "도움말",
   "menu.help.shortcuts": "단축키",
+  "shortcuts.group.mode": "모드",
   "menu.help.about": "SeePDF 정보",
   "menu.settings": "설정…",
   "menu.quit": "SeePDF 종료",

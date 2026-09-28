@@ -15,6 +15,8 @@
 let active = 0;
 let waiters: (() => void)[] = [];
 const writes = new Set<Promise<unknown>>();
+/** The annotation chunk's coalesced-patch queue (`actions.flushPatches`), once it is loaded. */
+let flushEdits: (() => Promise<boolean>) | null = null;
 
 /** A drag started hiding annotations. Pair with `dragSettled`. */
 export function dragBegan(): void {
@@ -38,6 +40,27 @@ export function isDragHiding(): boolean {
 export function whenDragIdle(): Promise<void> {
   if (active === 0) return Promise.resolve();
   return new Promise((resolve) => waiters.push(resolve));
+}
+
+/**
+ * `annot/actions.ts` registers its patch queue here when it loads, so the entry chunk (autosave)
+ * and the save flows can drain it without importing the annotation code. `flush` resolves `true`
+ * when it sent something.
+ */
+export function registerEditFlush(flush: () => Promise<boolean>): void {
+  flushEdits = flush;
+}
+
+/**
+ * Everything the user has done is in the engine: no drag is hiding an annotation, and the last
+ * nudge / slider patch still waiting out its coalescing delay has been sent. ⌘S, 다른 이름으로
+ * 저장, the unsaved-changes prompt and an autosave beat wait on this. Resolves `true` when a
+ * queued patch had to be sent (the document just changed).
+ */
+export async function whenEditsSettled(): Promise<boolean> {
+  // a new drag may start while the previous one settles: wait until none is hiding anything
+  while (active > 0) await whenDragIdle();
+  return flushEdits ? flushEdits() : false;
 }
 
 /** A snapshotting write (an autosave copy) is in flight: a drag must not hide until it lands. */

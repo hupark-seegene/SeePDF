@@ -205,6 +205,48 @@ describe("dragHide — hide the bitmap copy while an annotation is dragged", () 
     expect(calls).toEqual([`hidden:true:${annot.id}`, `hidden:false:${annot.id}`, `update:${annot.id}`]);
   });
 
+  it("back-to-back drags: drag 1's finish sends nothing while drag 2 hides, and leaves drag 2's hold on", async () => {
+    const annot = await setup();
+    // the engine's HIDDEN bit, as the calls reach it (the answer to drag 1's unhide is slow)
+    let hidden = false;
+    let unhides = 0;
+    let answerUnhide: () => void = () => undefined;
+    spyHidden(async (a) => {
+      hidden = a.hidden;
+      if (!a.hidden && ++unhides === 1) await new Promise<void>((r) => (answerUnhide = r));
+      return { viewNonce: ++nonce };
+    });
+    const real = api.updateAnnotation;
+    const sentWhileHidden: boolean[] = [];
+    vi.spyOn(api, "updateAnnotation").mockImplementation(async (a) => {
+      sentWhileHidden.push(hidden);
+      return real(a);
+    });
+
+    // drag 1, dropped; its unhide has not answered yet
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 5, 0) }], true);
+    await tick();
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 10, 0) }], false);
+    await tick();
+    // the user grabs it again at once
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 20, 0) }], true);
+    await tick();
+    answerUnhide();
+    // drag 2 sits still past the coalescing delay: nothing may be sent while it is hidden
+    await new Promise((r) => setTimeout(r, PATCH_COALESCE_MS + 40));
+    expect(sentWhileHidden.every((h) => !h)).toBe(true);
+    expect(hasPendingPatches()).toBe(true);
+    expect(dragHidePage()).toBe(0);
+
+    dragPatch(0, [{ id: annot.id, patch: movePatch(annot, 30, 0) }], false);
+    await endDrag();
+    // one update per drag, none of them with the HIDDEN bit set
+    expect(sentWhileHidden).toEqual([false, false]);
+    expect(hasPendingPatches()).toBe(false);
+    expect(hidden).toBe(false);
+    expect(useAnnotStore.getState().byPage[0].find((a) => a.id === annot.id)?.rect.l).toBe(40);
+  });
+
   it("repaints built-in, image and foreign stamps, drawn ink and image signatures — not optimistic ghosts", () => {
     const base = { id: "a", page: 0, subtype: "Stamp", rect: { l: 0, b: 0, r: 1, t: 1 }, color: [0, 0, 0], fillColor: null, opacity: 1, borderWidth: 1, contents: "", author: null, created: null, modified: null, hidden: false, printed: true, locked: false, editable: "full" } as unknown as Annot;
     expect(canRepaint({ ...base, kind: "stamp", stampKind: "결재" })).toBe(true);

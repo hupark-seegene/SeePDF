@@ -25,6 +25,12 @@ export interface KeyBinding {
    * viewer's pointer layer (Stage 1 (c)), which is the only place that knows about drag distance.
    */
   sharesChordWith?: string;
+  /**
+   * The operating system performs this chord itself (⌘Q is the native menu's 종료, Alt+F4 the
+   * window manager's close — both go through the unsaved-changes guard). The row is listed for
+   * display only; the keymap never claims the key.
+   */
+  native?: boolean;
 }
 
 export const KEYMAP: KeyBinding[] = [
@@ -39,7 +45,7 @@ export const KEYMAP: KeyBinding[] = [
   { id: "file.docInfo", labelKey: "menu.file.docInfo", mac: ["Cmd+I"], win: ["Ctrl+D"], when: "doc", group: "file" },
   { id: "tools.stamp", labelKey: "menu.tools.stamp", mac: ["Alt+Cmd+W"], win: ["Ctrl+Alt+W"], when: "doc", group: "file" },
   { id: "app.settings", labelKey: "menu.settings", mac: ["Cmd+Comma"], win: ["Ctrl+Comma"], when: "always", group: "file" },
-  { id: "app.quit", labelKey: "menu.quit", mac: ["Cmd+Q"], win: ["Alt+F4"], when: "always", group: "file" },
+  { id: "app.quit", labelKey: "menu.quit", mac: ["Cmd+Q"], win: ["Alt+F4"], when: "always", group: "file", native: true },
 
   // Edit ---------------------------------------------------------------------
   { id: "edit.undo", labelKey: "menu.edit.undo", mac: ["Cmd+Z"], win: ["Ctrl+Z"], when: "doc", group: "edit" },
@@ -121,13 +127,16 @@ export const KEYMAP: KeyBinding[] = [
 
 export const KEYMAP_BY_ID: Record<string, KeyBinding> = Object.fromEntries(KEYMAP.map((b) => [b.id, b]));
 /**
- * Native-menu items with no shortcut row above (the 도구 menu in `src-tauri/src/app/menu.rs`).
- * Without them here `menu:tools/…` would never reach the dispatcher. `settings` is the app menu's
- * 설정… (its id predates the keymap's `app.settings`), `app.checkUpdates` its 업데이트 확인….
+ * Native-menu items with no shortcut row above (`src-tauri/src/app/menu.rs`). Without them here
+ * `menu:<id>` would never reach the dispatcher — `menuParity.test.ts` checks the two tables agree.
+ * `settings` is the app menu's 설정… (its id predates the keymap's `app.settings`),
+ * `app.checkUpdates` its 업데이트 확인…, `file.revealInFinder` the 파일 menu's Finder에서 보기
+ * (the title bar calls the same command `file.reveal`).
  */
 export const MENU_ONLY_IDS: readonly string[] = [
   "tools.ocr", "tools.batchOcr", "tools.security", "tools.compress", "tools.compare", "tools.merge",
-  "settings", "app.checkUpdates",
+  "tools.redact", "settings", "app.checkUpdates", "file.clearRecent", "file.revealInFinder",
+  "edit.deselect", "help.shortcuts",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 
@@ -209,15 +218,25 @@ export function matchesChord(
   return eventTokens(e).includes(c.key);
 }
 
+/**
+ * How specific a context is. When two active rows share a chord, the more specific one wins —
+ * Windows Ctrl+D is 문서 정보 (`doc`) everywhere but 복제 (`pages`) in 페이지 mode (UI_SPEC §13).
+ */
+const SPECIFICITY: Record<KeyContext, number> = { always: 0, doc: 1, canvas: 2, pages: 2 };
+
 /** Find the command for an event, honouring the active context. */
 export function lookup(
   e: ModifierState & Pick<KeyboardEvent, "key" | "code">,
   os: OsName,
   contexts: KeyContext[],
 ): KeyBinding | undefined {
-  return KEYMAP.find(
-    (b) => contexts.includes(b.when) && chordsFor(b, os).some((chord) => matchesChord(e, chord, os)),
-  );
+  let best: KeyBinding | undefined;
+  for (const b of KEYMAP) {
+    if (b.native || !contexts.includes(b.when)) continue;
+    if (best && SPECIFICITY[b.when] <= SPECIFICITY[best.when]) continue;
+    if (chordsFor(b, os).some((chord) => matchesChord(e, chord, os))) best = b;
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------

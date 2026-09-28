@@ -13,12 +13,15 @@ import { useAppStore, type Mode, type ToolId } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
 import { usePagesStore } from "../store/pagesStore";
+import { useAnnotStore } from "../store/annotStore";
 import { openDialog } from "../dialogs/dialogState";
 import { openContextMenu, type MenuEntry } from "./contextMenuStore";
 import { toolController } from "../tools/ToolController";
 import { clearTextSelection, findStep, selectAllOnCurrentPage } from "../viewer/viewerCommands";
+import { stepPage } from "../viewer/layout";
 import { editLeaveGuard, runAnnotCommand } from "../tools/commands";
 import { toggleFullScreen, toggleReadingMode } from "./readingMode";
+import { isEditingTarget } from "../keys/useKeymap";
 import type { PageOp } from "../ipc/types";
 
 export type CommandId = string;
@@ -115,7 +118,11 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         if (info) openDialog("compare");
         return;
       case "file.reveal":
+      case "file.revealInFinder":
         if (info?.path) void api.revealInFileManager({ path: info.path });
+        return;
+      case "file.clearRecent":
+        void api.clearRecent().then(() => useAppStore.getState().refreshRecents());
         return;
       case "file.copyPath":
         if (info?.path && typeof navigator !== "undefined" && navigator.clipboard) {
@@ -150,14 +157,28 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "tools.split":
         if (info) openDialog("split");
         return;
+      // 도구 › 영역 표시: the redaction tool lives in 편집 mode
+      case "tools.redact":
+        if (!info) return;
+        if (app.mode !== "edit") app.setMode("edit");
+        useAppStore.getState().setTool("redact");
+        toolController.arm("redact");
+        return;
+      case "help.shortcuts":
+        openDialog("shortcuts");
+        return;
 
       // Edit -----------------------------------------------------------------
       // A coalesced annotation patch must reach the engine before the snapshot is popped, or undo
       // would skip an edit the user has already seen (IPC_CONTRACT §7.8).
+      // The native Edit menu's custom 실행 취소 item fires even while a text field has focus:
+      // the field's own typing is undone, never the document behind it.
       case "edit.undo":
+        if (undoInField("undo")) return;
         void import("../annot/sync").then((m) => m.undoWithAnnots());
         return;
       case "edit.redo":
+        if (undoInField("redo")) return;
         void import("../annot/sync").then((m) => m.redoWithAnnots());
         return;
       case "edit.find":
@@ -172,8 +193,11 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "edit.findPrevious":
         findStep(-1);
         return;
+      // 편집 › 선택 해제: whatever is selected — text, annotations, 페이지 cells
       case "edit.deselect":
         clearTextSelection();
+        useAnnotStore.getState().select([]);
+        if (app.mode === "pages") pages.clear();
         return;
       case "edit.selectAll": {
         // An input / textarea / contenteditable selects its own value first: Select All is a
@@ -270,16 +294,22 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
 
       // Navigation -----------------------------------------------------------
       case "go.nextPage":
-        if (info) view.goToPage(Math.min(info.pageCount - 1, view.currentPage + 1));
+        if (info) view.goToPage(stepPage(view.currentPage, 1, info.pageCount, view.layout));
         return;
       case "go.previousPage":
-        view.goToPage(Math.max(0, view.currentPage - 1));
+        if (info) view.goToPage(stepPage(view.currentPage, -1, info.pageCount, view.layout));
         return;
       case "go.firstPage":
         view.goToPage(0);
         return;
       case "go.lastPage":
         if (info) view.goToPage(info.pageCount - 1);
+        return;
+      case "go.back":
+        view.goBack();
+        return;
+      case "go.forward":
+        view.goForward();
         return;
       case "go.goToPage": {
         const field = document.querySelector<HTMLInputElement>(".page-input");
@@ -330,6 +360,17 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         if (import.meta.env.DEV) console.info(`[command] ${id} — not implemented`);
     }
   }, []);
+}
+
+/** 실행 취소 / 다시 실행 with a text field focused: the field's own history, not the document's. */
+function undoInField(command: "undo" | "redo"): boolean {
+  if (typeof document === "undefined" || !isEditingTarget(document.activeElement)) return false;
+  try {
+    document.execCommand(command);
+  } catch {
+    // a webview without the command: doing nothing beats undoing the document
+  }
+  return true;
 }
 
 /** ⇧⌘O — the recents list as a menu, plus 메뉴 지우기 (UI_SPEC §2). */

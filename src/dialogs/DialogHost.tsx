@@ -13,6 +13,7 @@ import { SplitDialog } from "./SplitDialog";
 import { PrintDialog } from "./PrintDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import { DocInfoDialog } from "./DocInfoDialog";
+import { ShortcutsDialog } from "./ShortcutsDialog";
 import { ChoiceDialog, ConfirmDialog, ExtractDialog, InsertFromDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
 import type { ChoiceRequest, MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
 import type { PageIndex, RecoveryEntry, StampRole } from "../ipc/types";
@@ -69,6 +70,8 @@ function Current({ entry }: { entry: DialogEntry }) {
       return <SettingsDialog onClose={close} />;
     case "docInfo":
       return <DocInfoDialog onClose={close} />;
+    case "shortcuts":
+      return <ShortcutsDialog onClose={close} />;
     case "extract":
       return <ExtractDialog pages={p.pages as PageIndex[]} onClose={close} />;
     case "insertFrom":

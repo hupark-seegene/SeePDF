@@ -3,6 +3,8 @@
  * closes, the primary button is the accent one and 36 px tall.
  *
  * Rendered in the webview (never a native sheet) so it is themed and localised like everything else.
+ * It is modal for the keyboard too: Tab / Shift+Tab wrap inside it, focus that lands on the app
+ * behind it is pulled back, and Esc closes it wherever focus is.
  */
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { useT } from "../i18n/useT";
@@ -37,7 +39,40 @@ export function Dialog({
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
 
-  // focus the first control so the keyboard works immediately, and restore it on close
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Focus trap: whatever moves focus onto the app behind the backdrop (a click that slipped
+  // through, a programmatic focus) is sent back into the dialog. Another modal surface (the OCR
+  // sheet) or a menu opened from the dialog keeps its focus.
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => {
+      const dlg = ref.current;
+      const target = e.target as HTMLElement | null;
+      if (!dlg || !target || dlg.contains(target) || typeof target.closest !== "function") return;
+      if (target.closest('[role="dialog"], [role="menu"]')) return;
+      focusables(dlg)[0]?.focus();
+    };
+    // Esc from wherever focus is (the `.dlg` handler below only sees keys from inside it).
+    const onKeyDown = (e: KeyboardEvent) => {
+      const dlg = ref.current;
+      if (e.key !== "Escape" || !dlg) return;
+      const target = e.target as Node | null;
+      if (target && dlg.contains(target)) return;
+      if (target instanceof HTMLElement && target.closest('[role="dialog"], [role="menu"]')) return;
+      e.stopPropagation();
+      onCloseRef.current();
+    };
+    document.addEventListener("focusin", onFocusIn);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("focusin", onFocusIn);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
+
+  // Focus the first control so the keyboard works immediately, and restore it on close. Declared
+  // after the trap, so the trap is already gone when focus goes back to the app.
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const first = ref.current?.querySelector<HTMLElement>(
@@ -60,6 +95,22 @@ export function Dialog({
           if (e.key === "Escape") {
             e.stopPropagation();
             onClose();
+            return;
+          }
+          if (e.key === "Tab" && ref.current) {
+            // wrap at the edges instead of walking out onto the app behind the backdrop
+            const list = focusables(ref.current);
+            if (list.length === 0) return;
+            const first = list[0];
+            const last = list[list.length - 1];
+            const active = document.activeElement;
+            if (e.shiftKey && (active === first || !ref.current.contains(active))) {
+              e.preventDefault();
+              last.focus();
+            } else if (!e.shiftKey && (active === last || !ref.current.contains(active))) {
+              e.preventDefault();
+              first.focus();
+            }
           }
         }}
       >
@@ -94,6 +145,16 @@ export function Dialog({
         </footer>
       </div>
     </div>
+  );
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** The dialog's keyboard-reachable controls, in tab order (hidden ones excluded). */
+function focusables(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (el) => !el.closest("[hidden], [inert]") && el.getAttribute("aria-hidden") !== "true",
   );
 }
 

@@ -18,7 +18,7 @@ import { useAppStore } from "../store/appStore";
 import { toast } from "./toastStore";
 import { openDialog } from "../dialogs/dialogState";
 import { windowLabel } from "../ipc/env";
-import { trackWrite, whenDragIdle } from "../annot/dragGate";
+import { trackWrite, whenEditsSettled } from "../annot/dragGate";
 import type { DocGeneration, DocId, DocInfo, RecoveryEntry, Settings } from "../ipc/types";
 
 export const DEFAULT_AUTOSAVE_SEC = 60;
@@ -136,7 +136,8 @@ export class AutosaveController {
 export const autosave = new AutosaveController({
   current: () => useDocStore.getState().info,
   write: (docId) => trackWrite(api.writeRecovery({ docId })),
-  idle: whenDragIdle,
+  // the recovery copy includes the last nudge still waiting out its coalescing delay
+  idle: () => whenEditsSettled().then(() => undefined),
   clear: (docId) => api.clearRecovery({ docId }),
   onFail: (info, e) =>
     toast("autosave.failed", { name: info.name }, { tone: "danger", detail: e instanceof Error ? e.message : String(e) }),

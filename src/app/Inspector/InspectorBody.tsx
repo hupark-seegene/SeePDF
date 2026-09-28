@@ -221,7 +221,8 @@ export function InspectorBody() {
         <section className="field-group">
           <h3 className="field-label text-xs">{t("prop.note")}</h3>
           <textarea
-            key={one.id}
+            // uncontrolled: a new note text from the engine (⌘Z, another edit) remounts it
+            key={`${one.id}:${one.kind === "textbox" ? (one.text ?? one.contents) : one.contents}`}
             className="field inspector-note"
             defaultValue={one.kind === "textbox" ? (one.text ?? one.contents) : one.contents}
             placeholder={t("prop.note.placeholder")}

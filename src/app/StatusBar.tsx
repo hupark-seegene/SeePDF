@@ -8,6 +8,7 @@ import { useJobStore } from "../store/jobStore";
 import { useAppStore } from "../store/appStore";
 import { shortcutFor } from "../keys/keymap";
 import type { ViewLayout } from "../ipc/types";
+import { stepPage } from "../viewer/layout";
 
 const LAYOUTS: { id: ViewLayout; labelKey: string; keyId: string }[] = [
   { id: "single", labelKey: "view.layout.single", keyId: "view.layout.single" },
@@ -37,6 +38,9 @@ export function StatusBar() {
   useEffect(() => setPageField(String(currentPage + 1)), [currentPage]);
 
   const total = info?.pageCount ?? 0;
+  // 두 쪽 steps a whole spread (the current page is the spread's left page)
+  const previousPage = stepPage(currentPage, -1, total, layout);
+  const nextPage = stepPage(currentPage, 1, total, layout);
   const zoomLabel = zoomMode === "fit-width"
     ? t("view.zoom.fitWidth")
     : zoomMode === "fit-page"
@@ -50,9 +54,9 @@ export function StatusBar() {
           icon={ChevronLeft}
           label={t("menu.go.previousPage")}
           shortcut={shortcutFor("go.previousPage", os)}
-          disabled={!info || currentPage <= 0}
+          disabled={!info || previousPage >= currentPage}
           size={16}
-          onClick={() => goToPage(Math.max(0, currentPage - 1))}
+          onClick={() => goToPage(previousPage)}
         />
         <form
           className="page-jump"
@@ -78,9 +82,9 @@ export function StatusBar() {
           icon={ChevronRight}
           label={t("menu.go.nextPage")}
           shortcut={shortcutFor("go.nextPage", os)}
-          disabled={!info || currentPage >= total - 1}
+          disabled={!info || nextPage <= currentPage}
           size={16}
-          onClick={() => goToPage(Math.min(total - 1, currentPage + 1))}
+          onClick={() => goToPage(nextPage)}
         />
 
         <span className="status-sep" />

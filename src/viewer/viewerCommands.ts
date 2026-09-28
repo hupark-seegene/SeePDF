@@ -20,6 +20,7 @@ import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
 import { useSearchStore } from "./search/SearchController";
+import { stepPage } from "./layout";
 import { getTextLayer } from "./text/textLayers";
 import { selectionText, useSelectionStore } from "./text/selection";
 
@@ -216,7 +217,8 @@ export function useViewerCommands(enabled: boolean): void {
         claim(e);
         if (e.shiftKey) {
           const view = useViewStore.getState();
-          view.goToPage(Math.max(0, view.currentPage - 1));
+          const count = useDocStore.getState().info?.pageCount ?? 0;
+          if (count) view.goToPage(stepPage(view.currentPage, -1, count, view.layout));
           return;
         }
         spaceDownAt = performance.now();
@@ -245,7 +247,7 @@ export function useViewerCommands(enabled: boolean): void {
       }
       const info = useDocStore.getState().info;
       const view = useViewStore.getState();
-      if (info) view.goToPage(Math.min(info.pageCount - 1, view.currentPage + 1));
+      if (info) view.goToPage(stepPage(view.currentPage, 1, info.pageCount, view.layout));
     };
 
     // Keep the mirror in step with our own selection (rAF-coalesced: a drag fires per pointermove).
