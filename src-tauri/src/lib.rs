@@ -106,6 +106,8 @@ pub fn run() {
         .manage(PendingOpens::default())
         .manage(WindowDocs::default())
         .manage(commands::recovery::RecoveryIds::default())
+        // P2 읽어 주기: one system voice for the whole app, stopped on exit (below).
+        .manage(std::sync::Arc::new(app::tts::Tts::system()))
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -208,6 +210,8 @@ pub fn run() {
             commands::recovery::discard_recovery,
             // --- pages (Stage 1b) ---
             commands::pages::page_ops,
+            commands::pages::set_page_boxes,
+            commands::pages::resize_pages,
             commands::pages::extract_pages,
             commands::pages::split_document,
             commands::pages::merge_documents,
@@ -233,6 +237,11 @@ pub fn run() {
             commands::export::export_flattened,
             commands::export::estimate_export,
             commands::export::print_prepare,
+            commands::export::export_annotation_summary,
+            // --- read aloud (P2) ---
+            commands::tts::tts_speak,
+            commands::tts::tts_stop,
+            commands::tts::tts_status,
             // --- OCR (Stage 1b engine layer, 1f workers) ---
             commands::ocr::ocr_capabilities,
             commands::ocr::ocr_page_status,
@@ -242,6 +251,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building the tauri application")
         .run(|_app, _event| {
+            // P2 읽어 주기: the voice is a child process — never let it outlive the app.
+            if let tauri::RunEvent::Exit = &_event {
+                if let Some(tts) = _app.try_state::<std::sync::Arc<app::tts::Tts>>() {
+                    tts.stop();
+                }
+            }
             // Finder double-click / `open -a SeePDF x.pdf` / Dock drop. Only fires for a
             // bundled .app whose Info.plist has CFBundleDocumentTypes.
             #[cfg(any(target_os = "macos", target_os = "ios"))]

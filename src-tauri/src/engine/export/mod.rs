@@ -12,6 +12,7 @@
 //! call, so the scratch document is serialised rather than read back page by page.
 
 pub mod job;
+pub mod summary;
 
 use crate::engine::raw;
 use crate::engine::render::geometry;

@@ -9,9 +9,10 @@
  */
 import { useMemo } from "react";
 import {
-  Circle, Highlighter, MessageSquarePlus, Minus, MoveUpRight, PenLine, Signature, Square,
+  Circle, Download, Highlighter, MessageSquarePlus, Minus, MoveUpRight, PenLine, Signature, Square,
   Stamp, Sticker, Strikethrough, Trash2, Type, Underline, Waves,
 } from "lucide-react";
+import { openDialog } from "../dialogs/dialogState";
 import type { Annot, AnnotKind } from "../ipc/types";
 import { formatRelativeDay } from "../i18n";
 import { useT } from "../i18n/useT";
@@ -115,6 +116,18 @@ export function AnnotationList() {
 
   return (
     <div className="annot-list">
+      {/* P2 주석 목록 내보내기: the 내보내기 dialog, opened on its 주석 목록 format */}
+      <div className="annot-list-head">
+        <span className="text-xs dim">{t("sidebar.annotations.count", { count: total })}</span>
+        <button
+          type="button"
+          className="btn quiet annot-list-export"
+          onClick={() => openDialog("export", { format: "annotations" })}
+        >
+          <Download size={14} strokeWidth={1.75} aria-hidden />
+          {t("sidebar.annotations.export")}
+        </button>
+      </div>
       <div className="annot-list-filters" role="group" aria-label={t("sidebar.annotations.filter")}>
         {FILTERS.map((f) => {
           const on = !!filter?.includes(f.kind);

@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeftRight, Copy, FilePlus2, Plus, RotateCcw, RotateCw, Scissors, SplitSquareHorizontal, Trash2,
+  ArrowLeftRight, Copy, Crop, FilePlus2, Plus, RotateCcw, RotateCw, Scaling, Scissors, SplitSquareHorizontal, Trash2,
 } from "lucide-react";
 import { useT } from "../i18n/useT";
 import { thumbUrl } from "../ipc/protocol";
@@ -255,8 +255,11 @@ export function Organizer() {
         await insertFromFileFlow(at);
       },
       split: () => openDialog("split"),
+      // P2: the crop tool and 페이지 크기 변경 act on the selection (or the focused page)
+      crop: () => openDialog("crop", { pages: selected.length ? selected : undefined }),
+      resize: () => openDialog("resize", { pages: selected.length ? selected : undefined }),
     }),
-    [target, run],
+    [target, selected, run],
   );
 
   const cellMenu = (page: PageIndex, x: number, y: number) => {
@@ -273,6 +276,8 @@ export function Organizer() {
         { id: "duplicate", labelKey: "pages.duplicate", onSelect: actions.duplicate },
         { id: "extract", labelKey: "pages.extract", onSelect: actions.extract },
         { id: "insertAfter", labelKey: "pages.insertAfter", onSelect: () => void actions.insertFrom(page + 1) },
+        { id: "crop", labelKey: "pages.crop", onSelect: actions.crop },
+        { id: "resize", labelKey: "pages.resize", onSelect: actions.resize },
         { id: "sep2", separator: true },
         { id: "exportImage", labelKey: "pages.exportImage", onSelect: () => openDialog("export") },
         { id: "delete", labelKey: "pages.delete", danger: true, onSelect: actions.remove },
@@ -427,6 +432,8 @@ export function Organizer() {
         <RailButton icon={FilePlus2} labelKey="pages.insertFromFile" onSelect={() => void actions.insertFrom(nextInsertAt(selected, count))} />
         <RailButton icon={ArrowLeftRight} labelKey="pages.reverse" onSelect={actions.reverse} />
         <RailButton icon={SplitSquareHorizontal} labelKey="pages.split" onSelect={actions.split} />
+        <RailButton icon={Crop} labelKey="pages.crop" onSelect={actions.crop} />
+        <RailButton icon={Scaling} labelKey="pages.resize" onSelect={actions.resize} />
 
         <span className="rail-spacer" />
         <label className="org-size text-xs dim">

@@ -10,8 +10,8 @@ use crate::engine::pages;
 use crate::engine::types::CmdStatus;
 use crate::engine::{EngineHandle, Lane, Submit};
 use crate::ipc::types::{
-    DocInfo, ExtractPagesResult, JobEvent, JobId, MergeInput, MergeResult, PageIndex, PageOp,
-    SplitMode,
+    DocInfo, ExtractPagesResult, JobEvent, JobId, MergeInput, MergeResult, PageBoxesArgs,
+    PageIndex, PageOp, PageSelection, ResizeMode, ResizeTarget, SplitMode,
 };
 use crate::ipc::EngineError;
 use std::path::PathBuf;
@@ -27,6 +27,38 @@ pub async fn page_ops(
     engine
         .call(Lane::Edit, "page_ops", move |st| {
             pages::apply_ops(st, &doc_id, ops)
+        })
+        .await
+}
+
+/// P2 crop (§7.3a): crop and/or media box of `pages`, one undo step `undo.pageCrop`. One named
+/// struct (`{ args }`), because `crop: null` (reset) must stay apart from an absent `crop`,
+/// which a top-level `Option<Option<_>>` command argument cannot tell.
+#[tauri::command]
+pub async fn set_page_boxes(
+    engine: State<'_, EngineHandle>,
+    args: PageBoxesArgs,
+) -> Result<DocInfo, EngineError> {
+    engine
+        .call(Lane::Edit, "set_page_boxes", move |st| {
+            pages::boxes::set_page_boxes(st, &args.doc_id, &args.pages, args.crop, args.media)
+        })
+        .await
+}
+
+/// P2 resize (§7.3a): new page size, content scaled or centred, one undo step
+/// `undo.pageResize`.
+#[tauri::command]
+pub async fn resize_pages(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    pages: PageSelection,
+    size: ResizeTarget,
+    mode: ResizeMode,
+) -> Result<DocInfo, EngineError> {
+    engine
+        .call(Lane::Edit, "resize_pages", move |st| {
+            pages::boxes::resize_pages(st, &doc_id, &pages, size, mode)
         })
         .await
 }

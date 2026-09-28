@@ -41,6 +41,7 @@ fn text_spec(role: StampRole, text: &str, anchor: StampAnchor) -> PageStampSpec 
         rotate_deg: 0.0,
         opacity: 1.0,
         pages: PageSelection::All(AllPages::All),
+        bates: Default::default(),
     }
 }
 
@@ -309,6 +310,7 @@ fn stamp_image_subset_shared_xobject_and_undo() {
         rotate_deg: 0.0,
         opacity: 0.5,
         pages: PageSelection::List(vec![2, 0]),
+        bates: Default::default(),
     };
     let result = add(&doc.doc_id, spec.clone()).expect("image stamp");
     assert_eq!(result.pages_stamped, 2);
@@ -584,4 +586,68 @@ fn rotated_stamp_stays_inside_the_page_at_every_corner() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// P2 — Bates numbering (`{{bates}}`)
+// ---------------------------------------------------------------------------------------
+
+/// 14 pages, `ABC` + 6 digits from 101: every page carries its own number, as extractable
+/// text, in the saved file too; a range counts only the stamped pages; `remove_stamps` with
+/// the footer role takes the numbers off again.
+#[test]
+fn stamp_bates_numbers_every_page_and_is_extractable() {
+    use seepdf_lib::ipc::types::BatesOptions;
+    let doc = open("tracemonkey.pdf");
+    assert_eq!(doc.info.page_count, 14);
+    let mut spec = text_spec(StampRole::Footer, "{{bates}}", StampAnchor::Br);
+    spec.bates = BatesOptions {
+        bates_start: 101,
+        bates_digits: 6,
+        bates_prefix: "ABC".into(),
+        bates_suffix: String::new(),
+    };
+    let result = add(&doc.doc_id, spec).expect("add_stamp with {{bates}}");
+    assert_eq!(result.pages_stamped, 14);
+    assert_eq!(result.info.undo_label.as_deref(), Some("undo.headerFooter"));
+    for p in 0..14u16 {
+        let text = page_text(&doc.doc_id, p);
+        let expected = format!("ABC{:06}", 101 + p as u32);
+        assert!(text.contains(&expected), "page {}: {expected} missing", p + 1);
+        // exactly one Bates number per page
+        assert_eq!(text.matches("ABC000").count(), 1, "page {}", p + 1);
+    }
+    let reopened = reopen(save_bytes(&doc.doc_id), None);
+    assert!(page_text(&reopened.doc_id, 0).contains("ABC000101"));
+    assert!(page_text(&reopened.doc_id, 13).contains("ABC000114"));
+
+    // a range counts the stamped pages: 3, 4, 5 get 000001 … 000003 (suffix kept)
+    let other = open("tracemonkey.pdf");
+    let mut ranged = text_spec(StampRole::Header, "Exhibit {{bates}}", StampAnchor::Tr);
+    ranged.pages = PageSelection::List(vec![2, 3, 4]);
+    ranged.bates = BatesOptions {
+        bates_suffix: "-K".into(),
+        ..BatesOptions::default()
+    };
+    add(&other.doc_id, ranged).expect("ranged bates");
+    assert!(page_text(&other.doc_id, 2).contains("Exhibit 000001-K"));
+    assert!(page_text(&other.doc_id, 4).contains("Exhibit 000003-K"));
+    assert!(!page_text(&other.doc_id, 5).contains("Exhibit"));
+
+    // remove_stamps with the role takes the numbers off (role support unchanged)
+    let removed = with_state({
+        let id = doc.doc_id.clone();
+        move |st| stamp::remove_stamps(st, &id, None, Some(StampRole::Footer))
+    })
+    .expect("remove footers");
+    assert_eq!(removed.removed, 14);
+    assert!(!page_text(&doc.doc_id, 0).contains("ABC000101"));
+
+    // bad options are refused before anything changes
+    let mut bad = text_spec(StampRole::Footer, "{{bates}}", StampAnchor::Br);
+    bad.bates.bates_digits = 0;
+    assert_eq!(add(&doc.doc_id, bad).unwrap_err().code, ErrorCode::InvalidArgument);
+    let mut bad = text_spec(StampRole::Footer, "{{bates}}", StampAnchor::Br);
+    bad.bates.bates_prefix = "x".repeat(65);
+    assert_eq!(add(&doc.doc_id, bad).unwrap_err().code, ErrorCode::InvalidArgument);
 }

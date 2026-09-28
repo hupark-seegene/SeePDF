@@ -196,6 +196,24 @@ export type PageOp =
 export type MergeWarning = 'formsDropped' | 'outlineDropped' | 'metadataDropped';
 
 // ---------------------------------------------------------------------------
+// 7.3a Page boxes and page size (P2 자르기 / 페이지 크기 변경)
+// ---------------------------------------------------------------------------
+
+/** Inset from each page's current crop box, in points, as the page is SEEN (`/Rotate` applied). */
+export interface Margins { top: number; right: number; bottom: number; left: number }
+/** An absolute rect in unrotated user space (the same for every page), or margins per page. */
+export type CropSpec = Rect | { margins: Margins };
+export interface SetPageBoxesArgs {
+  docId: DocId;
+  pages: PageIndex[] | 'all';
+  crop?: CropSpec | null;      // absent = unchanged, null = reset (crop box = media box)
+  media?: Rect | null;         // absent = unchanged; null is invalidArgument
+}
+/** Named sizes keep each page's orientation; `{ w, h }` is the size as seen, in points. */
+export type ResizeTarget = 'A4' | 'Letter' | 'A3' | { w: number; h: number };
+export type ResizeMode = 'scaleContent' | 'centerContent';
+
+// ---------------------------------------------------------------------------
 // 7.4 Page objects (text and image editing)
 // ---------------------------------------------------------------------------
 
@@ -303,6 +321,14 @@ export interface StampSpec {
   rotateDeg: number;          // -180..180, about the stamp centre; 0 for header/footer
   opacity: number;            // 0..1 (fill + stroke alpha)
   pages: PageIndex[] | 'all';
+  /**
+   * P2 Bates numbering: `{{bates}}` = batesPrefix + (batesStart + n, zero-padded to batesDigits) +
+   * batesSuffix, n counting the STAMPED pages in ascending order. Defaults 1 / 6 / '' / ''.
+   */
+  batesStart?: number;        // >= 0
+  batesDigits?: number;       // 1..12
+  batesPrefix?: string;       // <= 64 characters
+  batesSuffix?: string;       // <= 64 characters
 }
 export interface StampResult { info: DocInfo; pagesStamped: number }
 /** Stage 8 `remove_stamps`: `removed == 0` is not an error. */
@@ -380,6 +406,9 @@ export interface ExportImagesArgs {
   docId: DocId; pages: PageIndex[]; format: 'png' | 'jpeg'; dpi: number; quality?: number;
   outDir: string; baseName: string; transparentBackground?: boolean;
 }
+/** P2 `export_annotation_summary`: CSV is UTF-8 with a BOM (Excel), TXT / Markdown without. */
+export type SummaryFormat = 'txt' | 'csv' | 'md';
+export interface AnnotationSummaryResult { count: number; bytes: number }
 
 // ---------------------------------------------------------------------------
 // 7.9 OCR
@@ -424,6 +453,14 @@ export type JobEvent =
 // ---------------------------------------------------------------------------
 // 11. App, settings, recents
 // ---------------------------------------------------------------------------
+
+/** P2 읽어 주기: the OS voice (`say` on macOS, System.Speech on Windows). */
+export interface TtsStatus {
+  supported: boolean;          // an offline system voice exists here
+  speaking: boolean;
+  engine: 'say' | 'sapi' | null;
+  voice: string | null;        // the voice of the current (or last) utterance, when one was picked
+}
 
 export interface RecentEntry {
   path: string; name: string; dir: string; pages: number; bytes: number;

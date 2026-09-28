@@ -70,6 +70,7 @@ pub const MENU_IDS: &[&str] = &[
     "view.fitWidth",
     "view.readingMode",
     "view.night",
+    "view.readAloud",
     "go.nextPage",
     "go.previousPage",
     "go.firstPage",
@@ -145,6 +146,7 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("view.fitWidth", "너비에 맞춤", "Fit Width"),
     ("view.readingMode", "읽기 모드", "Reading Mode"),
     ("view.night", "야간 모드", "Night Mode"),
+    ("view.readAloud", "이 페이지 읽어 주기", "Read This Page Aloud"),
     ("view.fullScreen", "전체 화면", "Full Screen"),
     // go
     ("go.nextPage", "다음 페이지", "Next Page"),
@@ -288,6 +290,9 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
             app,
             Some(t("view.fullScreen")),
         )?)
+        .separator()
+        // P2 읽어 주기: the current page with the system voice (no shortcut).
+        .item(&item("view.readAloud", None)?)
         .build()?;
 
     let go_menu = SubmenuBuilder::new(app, t("go"))

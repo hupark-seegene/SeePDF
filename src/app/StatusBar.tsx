@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Moon, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AudioLines, ChevronLeft, ChevronRight, Moon, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
@@ -7,6 +7,7 @@ import { useViewStore, ZOOM_STEPS } from "../store/viewStore";
 import { useJobStore } from "../store/jobStore";
 import { useAppStore } from "../store/appStore";
 import { shortcutFor } from "../keys/keymap";
+import { useTtsStore } from "../tts/ttsStore";
 import type { ViewLayout } from "../ipc/types";
 
 const LAYOUTS: { id: ViewLayout; labelKey: string; keyId: string }[] = [
@@ -31,6 +32,7 @@ export function StatusBar() {
   const setZoom = useViewStore((s) => s.setZoom);
   const setZoomMode = useViewStore((s) => s.setZoomMode);
   const job = useJobStore((s) => s.active);
+  const speaking = useTtsStore((s) => s.speaking);
   const cancelJob = useJobStore((s) => s.cancel);
 
   const [pageField, setPageField] = useState(String(currentPage + 1));
@@ -171,6 +173,16 @@ export function StatusBar() {
       </div>
 
       <div className="status-right">
+        {/* 읽어 주기 (P2): pressed while the system voice speaks; a click stops it */}
+        {speaking && (
+          <IconButton
+            icon={AudioLines}
+            label={`${t("tts.speaking")} — ${t("tts.stop")}`}
+            active
+            size={16}
+            onClick={() => void import("../tts/speak").then((m) => m.stopSpeaking())}
+          />
+        )}
         {job && job.state === "running" && (
           <div className="job-slot" role="status">
             <span className="text-sm">{t(job.labelKey)}</span>

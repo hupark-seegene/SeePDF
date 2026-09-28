@@ -24,7 +24,9 @@ export type DialogName =
   // generic choice prompt (Stage 9: 문단이 들어갈 자리가 부족합니다)
   | "choice"
   // 업데이트 확인 (v0.2.0)
-  | "update";
+  | "update"
+  // P2: 자르기 and 페이지 크기 변경 (페이지 mode)
+  | "crop" | "resize";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";

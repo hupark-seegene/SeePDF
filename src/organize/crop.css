@@ -1,0 +1,78 @@
+/* 자르기 (P2) — the crop tool of 페이지 mode. Tokens only. */
+
+.crop-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.crop-preview {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 400px;
+}
+
+.crop-surface {
+  position: relative;
+  overflow: hidden;
+  background: var(--page-paper);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--elevation-1);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.crop-page {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* the area to keep; everything around it is dimmed by one oversized shadow */
+.crop-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--accent);
+  box-shadow: 0 0 0 4000px color-mix(in srgb, var(--bg-app) 62%, transparent);
+  cursor: move;
+}
+
+.crop-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  background: var(--bg-panel);
+}
+
+.crop-handle[data-handle="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+.crop-handle[data-handle="n"] { left: 50%; top: 0; cursor: ns-resize; }
+.crop-handle[data-handle="ne"] { left: 100%; top: 0; cursor: nesw-resize; }
+.crop-handle[data-handle="e"] { left: 100%; top: 50%; cursor: ew-resize; }
+.crop-handle[data-handle="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop-handle[data-handle="s"] { left: 50%; top: 100%; cursor: ns-resize; }
+.crop-handle[data-handle="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+.crop-handle[data-handle="w"] { left: 0; top: 50%; cursor: ew-resize; }
+
+.crop-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.crop-margins {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: var(--space-2) var(--space-4);
+}
+
+.crop-side { min-width: 3em; }

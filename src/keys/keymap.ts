@@ -128,6 +128,8 @@ export const KEYMAP_BY_ID: Record<string, KeyBinding> = Object.fromEntries(KEYMA
 export const MENU_ONLY_IDS: readonly string[] = [
   "tools.ocr", "tools.batchOcr", "tools.security", "tools.compress", "tools.compare", "tools.merge",
   "settings", "app.checkUpdates",
+  // P2: 보기 ▸ 이 페이지 읽어 주기
+  "view.readAloud",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 

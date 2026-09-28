@@ -11,11 +11,12 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { useMock } from "./env";
 import { parseRawPage, parseTextLayer, type RawPage, type TextLayerView } from "./binary";
 import type {
-  Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, CompareOptions, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
+  Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, AnnotationSummaryResult, CompareOptions, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
   DuplicateObjectsResult, RedactBatchMark, RedactBatchResult,
   EngineError, EngineStats, ErrorCode, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, ObjectId,
   ObjectsResult, OcrApplyPage, OcrEngine, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
-  RedactPreview, RemoveStampsResult, Rgb, SaveResult, SearchEvent, Settings, StampResult, StampRole, StampSpec, TextEditProbe, ViewportHint,
+  RedactPreview, RemoveStampsResult, ResizeMode, ResizeTarget, Rgb, SaveResult, SearchEvent, SetPageBoxesArgs, Settings, StampResult, StampRole,
+  StampSpec, SummaryFormat, TextEditProbe, TtsStatus, ViewportHint,
 } from "./types";
 
 export { parseTextLayer, parseRawPage };
@@ -255,6 +256,22 @@ export function resetForm(a: { docId: DocId }): Promise<DocInfo> {
 
 export function pageOps(a: { docId: DocId; ops: PageOp[] }): Promise<DocInfo> {
   return call("page_ops", a, (mock) => mock.pageOps(a));
+}
+
+/**
+ * P2 자르기 (§7.3a): crop and/or media box of `pages` — one undo step `undo.pageCrop`. `crop: null`
+ * resets the crop box to the media box (원래대로); `crop: { margins }` insets each page's own crop box
+ * as it is seen. One struct argument (`args`): a top-level `crop: null` would arrive as "absent".
+ */
+export function setPageBoxes(a: SetPageBoxesArgs): Promise<DocInfo> {
+  return call("set_page_boxes", { args: a }, (mock) => mock.setPageBoxes(a));
+}
+
+/** P2 페이지 크기 변경 (§7.3a): new size, content scaled to fit or centred — one undo step `undo.pageResize`. */
+export function resizePages(
+  a: { docId: DocId; pages: PageIndex[] | "all"; size: ResizeTarget; mode: ResizeMode },
+): Promise<DocInfo> {
+  return call("resize_pages", a, (mock) => mock.resizePages(a));
 }
 
 export function extractPages(
@@ -503,6 +520,16 @@ export function exportFlattened(
   return call("export_flattened", { ...a, onProgress: channel(onProgress) }, (mock) => mock.exportFlattened(a, onProgress));
 }
 
+/**
+ * P2 주석 목록 내보내기 (§7.7a): one row per annotation of `pages` (default all), page order, as TXT,
+ * CSV (UTF-8 with BOM, for Excel) or Markdown, labelled in `locale` (default: the app language).
+ */
+export function exportAnnotationSummary(
+  a: { docId: DocId; path: string; format: SummaryFormat; pages?: PageIndex[]; locale?: "ko" | "en" },
+): Promise<AnnotationSummaryResult> {
+  return call("export_annotation_summary", a, (mock) => mock.exportAnnotationSummary(a));
+}
+
 export function estimateExport(
   a: { docId: DocId; pages: PageIndex[]; format: "png" | "jpeg"; dpi: number },
 ): Promise<{ bytes: number; sampledPages: number }> {
@@ -561,6 +588,28 @@ export function ocrRecognizeNative(
 // ---------------------------------------------------------------------------
 // 11. App, settings, recents
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 11a. Read aloud (P2 읽어 주기)
+// ---------------------------------------------------------------------------
+
+/**
+ * Speaks `text` with the OS voice (macOS `say`, Windows System.Speech), stopping whatever was
+ * speaking. `lang` picks the voice (default: Korean when the text has Hangul); `rate` 0.5 … 2.
+ * `unsupported` where there is no system voice.
+ */
+export function ttsSpeak(a: { text: string; lang?: string; rate?: number }): Promise<TtsStatus> {
+  return call("tts_speak", a, (mock) => mock.ttsSpeak(a));
+}
+
+export function ttsStop(): Promise<TtsStatus> {
+  return call("tts_stop", {}, (mock) => mock.ttsStop());
+}
+
+/** Polled while the 읽어 주기 bar is up: `speaking` turns false when the voice has finished. */
+export function ttsStatus(): Promise<TtsStatus> {
+  return call("tts_status", {}, (mock) => mock.ttsStatus());
+}
 
 export function getRecent(): Promise<RecentEntry[]> {
   return call("get_recent", {}, (mock) => mock.getRecent());
@@ -643,9 +692,20 @@ export async function openFileDialog(options: OpenDialogOptions = {}): Promise<s
   return Array.isArray(picked) ? picked : [picked];
 }
 
-export async function saveFileDialog(options: { title?: string; defaultPath?: string } = {}): Promise<string | null> {
-  if (useMock()) return "/Users/veri/Documents/SeePDF-샘플 (사본).pdf";
-  return invoke<string | null>("plugin:dialog|save", { options: { filters: PDF_FILTER, ...options } });
+/** A save panel; PDF unless `filters` says otherwise (주석 목록 내보내기: .txt / .csv / .md). */
+export async function saveFileDialog(
+  options: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] } = {},
+): Promise<string | null> {
+  if (useMock()) {
+    const ext = options.filters?.[0]?.extensions[0];
+    if (ext && ext !== "pdf") {
+      const name = (options.defaultPath ?? "").split(/[\\/]/).pop() || `SeePDF-샘플.${ext}`;
+      return `/Users/veri/Documents/${name}`;
+    }
+    return "/Users/veri/Documents/SeePDF-샘플 (사본).pdf";
+  }
+  const { filters, ...rest } = options;
+  return invoke<string | null>("plugin:dialog|save", { options: { filters: filters ?? PDF_FILTER, ...rest } });
 }
 
 /** Everything the annotation list needs to render an author string. */

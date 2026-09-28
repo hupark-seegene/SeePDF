@@ -2,11 +2,14 @@
  * 내보내기 (UI_SPEC §10, F-24/F-25): format list on the left, options on the right, an estimated
  * size from `estimate_export`, then progress in the status-bar job slot and a completion toast with
  * Finder에서 보기.
+ *
+ * P2 주석 목록: every annotation of the range as TXT, CSV (Excel, UTF-8 with BOM) or Markdown
+ * (`export_annotation_summary`). The 주석 sidebar's 내보내기… opens the dialog on this format.
  */
 import { useEffect, useMemo, useState } from "react";
-import { FileText, Image as ImageIcon, Layers } from "lucide-react";
+import { FileText, Image as ImageIcon, Layers, MessageSquareText } from "lucide-react";
 import { useT } from "../i18n/useT";
-import { formatBytes } from "../i18n";
+import { formatBytes, getLocale } from "../i18n";
 import * as api from "../ipc/api";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
@@ -17,23 +20,33 @@ import { Dialog, Row } from "./Dialog";
 import { RangePicker } from "./RangePicker";
 import { resolveRange, type RangeChoice } from "./pageRange";
 import { dirName, message, revealAction, suggestName } from "./flows";
-import type { JobEvent, PageIndex } from "../ipc/types";
+import type { JobEvent, PageIndex, SummaryFormat } from "../ipc/types";
 
-type Format = "pdfFlattened" | "png" | "jpeg" | "text";
+export type ExportFormat = "pdfFlattened" | "png" | "jpeg" | "text" | "annotations";
+type Format = ExportFormat;
 
 const FORMATS: { id: Format; labelKey: string; icon: typeof FileText }[] = [
   { id: "pdfFlattened", labelKey: "export.format.pdfFlattened", icon: Layers },
   { id: "png", labelKey: "export.format.png", icon: ImageIcon },
   { id: "jpeg", labelKey: "export.format.jpeg", icon: ImageIcon },
   { id: "text", labelKey: "export.format.text", icon: FileText },
+  { id: "annotations", labelKey: "export.format.annotations", icon: MessageSquareText },
 ];
 
-export function ExportDialog({ onClose }: { onClose(): void }) {
+const SUMMARY_FORMATS: SummaryFormat[] = ["csv", "txt", "md"];
+const SUMMARY_FILTER: Record<SummaryFormat, { name: string; extensions: string[] }> = {
+  csv: { name: "CSV", extensions: ["csv"] },
+  txt: { name: "Text", extensions: ["txt"] },
+  md: { name: "Markdown", extensions: ["md"] },
+};
+
+export function ExportDialog({ onClose, initialFormat }: { onClose(): void; initialFormat?: ExportFormat }) {
   const t = useT();
   const info = useDocStore((s) => s.info);
   const currentPage = useViewStore((s) => s.currentPage);
   const selected = usePagesStore((s) => s.selected);
-  const [format, setFormat] = useState<Format>("png");
+  const [format, setFormat] = useState<Format>(initialFormat ?? "png");
+  const [summaryFormat, setSummaryFormat] = useState<SummaryFormat>("csv");
   const [range, setRange] = useState<RangeChoice>({ mode: "all", text: "" });
   const [dpi, setDpi] = useState(150);
   const [quality, setQuality] = useState(85);
@@ -75,6 +88,7 @@ export function ExportDialog({ onClose }: { onClose(): void }) {
     try {
       if (isImage) await runImages(info.docId, pages, format as "png" | "jpeg");
       else if (format === "text") await runText(info.docId, pages);
+      else if (format === "annotations") await runAnnotations(info.docId, pages);
       else await runFlattened(info.docId, pages);
     } catch (e) {
       toast("export.failed", undefined, { tone: "danger", detail: message(e) });
@@ -110,6 +124,25 @@ export function ExportDialog({ onClose }: { onClose(): void }) {
     if (!outPath) return;
     await api.exportText({ docId, pages: list, outPath });
     toast("export.done", { name: baseNameOf(outPath) }, { tone: "success", actions: [revealAction(dirName(outPath))] });
+  };
+
+  const runAnnotations = async (docId: string, list: PageIndex[]) => {
+    const ext = summaryFormat;
+    const outPath = await api.saveFileDialog({
+      defaultPath: `${stem(info?.name ?? "document")}-${t("annotSummary.title")}.${ext}`,
+      filters: [SUMMARY_FILTER[summaryFormat]],
+    });
+    if (!outPath) return;
+    const all = list.length === (info?.pageCount ?? 0);
+    const result = await api.exportAnnotationSummary({
+      docId, path: outPath, format: summaryFormat, pages: all ? undefined : list, locale: getLocale(),
+    });
+    if (result.count === 0) toast("export.annotations.empty", undefined, { tone: "info" });
+    else
+      toast("export.annotations.done", { count: result.count }, {
+        tone: "success",
+        actions: [revealAction(dirName(outPath))],
+      });
   };
 
   const runFlattened = async (docId: string, list: PageIndex[]) => {
@@ -209,6 +242,25 @@ export function ExportDialog({ onClose }: { onClose(): void }) {
                 <span>{t("export.flattenForms")}</span>
               </label>
             </>
+          )}
+
+          {format === "annotations" && (
+            <Row labelKey="export.annotations.format">
+              <div className="dlg-radio-group" role="radiogroup" aria-label={t("export.annotations.format")}>
+                {SUMMARY_FORMATS.map((f) => (
+                  <label key={f} className="dlg-radio text-base">
+                    <input
+                      type="radio"
+                      name="summary-format"
+                      checked={summaryFormat === f}
+                      onChange={() => setSummaryFormat(f)}
+                    />
+                    <span>{t(`export.annotations.${f}`)}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="dlg-hint text-xs">{t("export.annotations.hint")}</p>
+            </Row>
           )}
 
           <p className="export-estimate text-sm" aria-live="polite">

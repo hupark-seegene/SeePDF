@@ -12,6 +12,7 @@ import { appBus } from "./bus";
 import { setMockAssetResolver } from "./protocol";
 import { encodeRawPage, encodeTextLayer, CHAR_SPACE, type TextChar, type TextLine, type TextWord } from "./binary";
 import { pngDataUrl, solidPngDataUrl, type RgbaPixel } from "./png";
+import { marginsToUser, resizedVisualSize, visualSize, visualToUserSize } from "../organize/cropGeometry";
 import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, DocGeneration, DocId, DocInfo, EngineError,
   EngineStats, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, Mat6, MergeWarning, OcrApplyPage, OcrPage, OutlineNode,
@@ -20,6 +21,7 @@ import type {
   ObjectId, ObjectsResult, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, Rgb,
   CompareOptions, CompareReport, ComparePage, DiffOp, RecoveryEntry,
   DuplicateObjectsResult, RedactBatchMark, RedactBatchResult,
+  AnnotationSummaryResult, ResizeMode, ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus,
 } from "./types";
 
 import documentFixture from "../test/ipc-samples/document.json";
@@ -80,6 +82,13 @@ let settings = { ...settingsSeed, night: settingsSeed.night ?? "off" } as Settin
  */
 const stampsOf = new Map<DocId, { role: StampRole; page: PageIndex }[]>();
 const pendingOpens: { path: string; source: "argv" | "macos-opened" | "drop" | "dialog" | "recent" }[] = [];
+/**
+ * P2 읽어 주기: one fake voice for the whole app. It "speaks" for a while proportional to the text
+ * (so the bar can be seen in `vite dev`) unless stopped; tests call `ttsStop` or read `mockTts`.
+ */
+export const mockTts = { speaking: false, text: "", rate: 1, lang: undefined as string | undefined, timer: 0 as ReturnType<typeof setTimeout> | 0 };
+/** The media box of a mock page (P2 자르기): its crop box when first touched. */
+type MockGeom = PageGeom & { media?: Rect };
 
 function err(code: EngineError["code"], message: string, extra: Partial<EngineError> = {}): EngineError {
   return { code, message, ...extra };
@@ -670,6 +679,54 @@ export const mock = {
     return { info: structuredClone(merged.info), warnings };
   },
 
+  // 7.3a crop / resize (P2) ----------------------------------------------------
+  async setPageBoxes(a: SetPageBoxesArgs): Promise<DocInfo> {
+    const d = doc(a.docId);
+    if (a.media === null) throw err("invalidArgument", "media: null is not supported");
+    const pages = mockPageList(d, a.pages);
+    if (a.crop === undefined && a.media === undefined) return structuredClone(d.info);
+    // validate every page first: a failure changes nothing (like the engine's rollback)
+    const next = new Map<PageIndex, MockGeom>();
+    for (const index of pages) {
+      const g = structuredClone(d.info.pages[index]) as MockGeom;
+      const media = a.media ?? g.media ?? g.crop;
+      let crop: Rect | null = null;
+      if (a.crop === null) crop = media;
+      else if (a.crop && "margins" in a.crop) crop = marginsToUser(g.rotation, g.crop, a.crop.margins);
+      else if (a.crop) crop = a.crop;
+      else if (a.media) crop = g.crop;
+      if (crop) crop = intersectRect(crop, media);
+      if (!crop || crop.r - crop.l < 1 || crop.t - crop.b < 1) {
+        throw err("invalidArgument", `the crop box of page ${index + 1} is empty`, { page: index });
+      }
+      const { w, h } = visualSize({ rotation: g.rotation, crop });
+      next.set(index, { ...g, media, crop, widthPt: round2(w), heightPt: round2(h) });
+    }
+    mutate(d, { reason: "pages", pages, undoLabel: "undo.pageCrop" }, () => {
+      d.info.pages = d.info.pages.map((g) => next.get(g.index) ?? g);
+    });
+    // like the engine: the DocInfo *after* the step (generation, history labels)
+    return structuredClone(d.info);
+  },
+  async resizePages(a: { docId: DocId; pages: PageIndex[] | "all"; size: ResizeTarget; mode: ResizeMode }): Promise<DocInfo> {
+    const d = doc(a.docId);
+    if (typeof a.size !== "string" && !(a.size.w >= 1 && a.size.h >= 1 && a.size.w <= 14400 && a.size.h <= 14400)) {
+      throw err("invalidArgument", "page size out of range");
+    }
+    const pages = mockPageList(d, a.pages);
+    mutate(d, { reason: "pages", pages, undoLabel: "undo.pageResize" }, () => {
+      d.info.pages = d.info.pages.map((g) => {
+        if (!pages.includes(g.index)) return g;
+        const seen = resizedVisualSize(g, a.size);
+        const user = visualToUserSize(g.rotation, seen.w, seen.h);
+        const box = { l: 0, b: 0, r: round2(user.w), t: round2(user.h) };
+        return { ...g, crop: box, media: box, widthPt: round2(seen.w), heightPt: round2(seen.h) } as MockGeom;
+      });
+      d.info.bytes += 400 * pages.length;
+    });
+    return structuredClone(d.info);
+  },
+
   // 7.4 page objects ---------------------------------------------------------
   // Stateful (Stage 7): moves, deletes, additions and paragraph edits change the list, and undo
   // restores it — enough for the 편집 flow tests. Pixels and the text layer stay fixture-based.
@@ -1081,6 +1138,21 @@ export const mock = {
     const chars = a.pages.reduce((n, p) => n + textPage(d, p).text.length, 0);
     return { chars };
   },
+  /** P2: counts what the engine would write (links / widgets are not comments). */
+  async exportAnnotationSummary(
+    a: { docId: DocId; path: string; format: SummaryFormat; pages?: PageIndex[]; locale?: "ko" | "en" },
+  ): Promise<AnnotationSummaryResult> {
+    const d = doc(a.docId);
+    if (!a.path) throw err("invalidArgument", "the output path is empty");
+    const pages = a.pages?.length ? a.pages : d.info.pages.map((p) => p.index);
+    if (pages.some((p) => p < 0 || p >= d.info.pageCount)) throw err("invalidArgument", "page out of range");
+    const count = pages.reduce(
+      (n, p) => n + (d.annots.get(p) ?? []).filter((x) => x.kind !== "link" && x.kind !== "widget").length,
+      0,
+    );
+    writtenFiles.add(a.path);
+    return delay({ count, bytes: (a.format === "csv" ? 3 : 0) + 120 + 160 * count }, 20);
+  },
   async exportFlattened(
     a: { docId: DocId; outPath: string; annotations: boolean; forms: boolean; pages?: PageIndex[] },
     onProgress: (e: JobEvent) => void,
@@ -1183,6 +1255,28 @@ export const mock = {
     return mutate(d, { reason: "ocr", pages: "all", undoLabel: "undo.ocrApply" }, () => structuredClone(d.info));
   },
 
+  // 11a. read aloud (P2) --------------------------------------------------------
+  async ttsSpeak(a: { text: string; lang?: string; rate?: number }): Promise<TtsStatus> {
+    if (!a.text.trim()) throw err("invalidArgument", "there is no text to read");
+    if (mockTts.timer) clearTimeout(mockTts.timer);
+    const rate = Math.min(2, Math.max(0.5, a.rate ?? 1));
+    Object.assign(mockTts, { speaking: true, text: a.text, rate, lang: a.lang });
+    mockTts.timer = setTimeout(() => {
+      mockTts.speaking = false;
+      mockTts.timer = 0;
+    }, Math.min(8000, 400 + (a.text.length * 40) / rate));
+    return mockTtsStatus();
+  },
+  async ttsStop(): Promise<TtsStatus> {
+    if (mockTts.timer) clearTimeout(mockTts.timer);
+    mockTts.timer = 0;
+    mockTts.speaking = false;
+    return mockTtsStatus();
+  },
+  async ttsStatus(): Promise<TtsStatus> {
+    return mockTtsStatus();
+  },
+
   // 11. app, settings, recents ----------------------------------------------
   async getRecent(): Promise<RecentEntry[]> {
     return delay(structuredClone(recents), 10);
@@ -1233,6 +1327,23 @@ export const mock = {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+function mockTtsStatus(): TtsStatus {
+  const hangul = /[\uac00-\ud7a3]/.test(mockTts.text);
+  return { supported: true, speaking: mockTts.speaking, engine: "say", voice: hangul || mockTts.lang?.startsWith("ko") ? "Yuna" : null };
+}
+
+/** `PageIndex[] | 'all'` → sorted, deduplicated, validated indices. */
+function mockPageList(d: MockDoc, pages: PageIndex[] | "all"): PageIndex[] {
+  const list = pages === "all" ? d.info.pages.map((p) => p.index) : [...new Set(pages)].sort((x, y) => x - y);
+  if (!list.length || list.some((p) => p < 0 || p >= d.info.pageCount)) throw err("invalidArgument", "page out of range");
+  return list;
+}
+
+function intersectRect(a: Rect, b: Rect): Rect | null {
+  const r = { l: Math.max(a.l, b.l), b: Math.max(a.b, b.b), r: Math.min(a.r, b.r), t: Math.min(a.t, b.t) };
+  return r.r > r.l && r.t > r.b ? r : null;
+}
 
 function listOf(d: MockDoc, page: PageIndex): AnnotList {
   return {
@@ -1902,6 +2013,8 @@ export function resetMock(): void {
   recoveryIdOf.clear();
   stampsOf.clear();
   writtenFiles.clear();
+  if (mockTts.timer) clearTimeout(mockTts.timer);
+  Object.assign(mockTts, { speaking: false, text: "", rate: 1, lang: undefined, timer: 0 });
   nextRecovery = 1;
   for (const job of jobs.values()) job.cancel();
   jobs.clear();

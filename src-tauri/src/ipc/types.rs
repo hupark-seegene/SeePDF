@@ -773,6 +773,96 @@ pub struct MergeResult {
 }
 
 // ---------------------------------------------------------------------------------------
+// §7.3a Page boxes and page size (P2)
+// ---------------------------------------------------------------------------------------
+
+/// Inset from each page's current crop box, in points, **as the page is seen** (`/Rotate`
+/// applied): `top` is the displayed top edge whatever the rotation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Margins {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+/// `set_page_boxes.crop`: an absolute rectangle in unrotated user space (the same for every
+/// page), or margins inset from each page's own crop box.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CropSpec {
+    Rect(Rect),
+    Margins { margins: Margins },
+}
+
+/// `set_page_boxes(args)`. `crop` / `media`: absent = unchanged, `null` = reset (crop only:
+/// the crop box becomes the media box; a `null` media box is `invalidArgument`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageBoxesArgs {
+    pub doc_id: DocId,
+    pub pages: PageSelection,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub crop: Option<Option<CropSpec>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub media: Option<Option<Rect>>,
+}
+
+/// Absent → `None`, `null` → `Some(None)`, a value → `Some(Some(v))` (with `#[serde(default)]`).
+fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// A named paper size for `resize_pages` (portrait dimensions; the page's own orientation
+/// is kept).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaperName {
+    A4,
+    Letter,
+    A3,
+}
+
+impl PaperName {
+    /// Portrait width × height in points.
+    pub fn size_pt(self) -> (f32, f32) {
+        match self {
+            PaperName::A4 => (595.28, 841.89),
+            PaperName::Letter => (612.0, 792.0),
+            PaperName::A3 => (841.89, 1190.55),
+        }
+    }
+}
+
+/// `'A4' | 'Letter' | 'A3' | { w, h }` — `{ w, h }` is the size **as seen**, in points.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ResizeTarget {
+    Named(PaperName),
+    Size { w: f32, h: f32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResizeMode {
+    /// Scale the page content uniformly to fit the new size, centred.
+    ScaleContent,
+    /// Keep the content at 100 % and centre it (a smaller page clips it).
+    CenterContent,
+}
+
+// ---------------------------------------------------------------------------------------
 // §7.4 Page objects
 // ---------------------------------------------------------------------------------------
 
@@ -1140,6 +1230,46 @@ pub struct ExportTextResult {
     pub chars: u64,
 }
 
+/// `export_annotation_summary` output format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SummaryFormat {
+    Txt,
+    Csv,
+    Md,
+}
+
+/// `export_annotation_summary` (P2): rows written and file size.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationSummaryResult {
+    pub count: u32,
+    pub bytes: u64,
+}
+
+/// Which OS voice `tts_speak` drives (P2 read aloud).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TtsEngine {
+    /// macOS `/usr/bin/say`.
+    Say,
+    /// Windows PowerShell + `System.Speech.Synthesis`.
+    Sapi,
+}
+
+/// `tts_speak` / `tts_stop` / `tts_status`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TtsStatus {
+    /// An offline OS voice exists on this platform.
+    pub supported: bool,
+    /// An utterance is playing right now.
+    pub speaking: bool,
+    pub engine: Option<TtsEngine>,
+    /// The voice of the current (or last) utterance, when one was picked explicitly.
+    pub voice: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrintPrepareResult {
@@ -1324,6 +1454,60 @@ pub struct PageStampSpec {
     /// 0..1, fill and stroke alpha.
     pub opacity: f32,
     pub pages: PageSelection,
+    /// P2 Bates numbering: what `{{bates}}` expands to. Flattened, so the wire fields are
+    /// `batesStart` / `batesDigits` / `batesPrefix` / `batesSuffix`, each optional.
+    #[serde(flatten)]
+    pub bates: BatesOptions,
+}
+
+/// `{{bates}}` = `batesPrefix` + (`batesStart` + n, zero-padded to `batesDigits`) +
+/// `batesSuffix`, where n counts the **stamped** pages in ascending order (0 for the first).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatesOptions {
+    #[serde(
+        default = "BatesOptions::default_start",
+        skip_serializing_if = "BatesOptions::is_default_start"
+    )]
+    pub bates_start: u64,
+    #[serde(
+        default = "BatesOptions::default_digits",
+        skip_serializing_if = "BatesOptions::is_default_digits"
+    )]
+    pub bates_digits: u8,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bates_prefix: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bates_suffix: String,
+}
+
+impl BatesOptions {
+    fn default_start() -> u64 {
+        1
+    }
+
+    fn default_digits() -> u8 {
+        6
+    }
+
+    fn is_default_start(v: &u64) -> bool {
+        *v == Self::default_start()
+    }
+
+    fn is_default_digits(v: &u8) -> bool {
+        *v == Self::default_digits()
+    }
+}
+
+impl Default for BatesOptions {
+    fn default() -> Self {
+        Self {
+            bates_start: Self::default_start(),
+            bates_digits: Self::default_digits(),
+            bates_prefix: String::new(),
+            bates_suffix: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1816,6 +2000,66 @@ pub struct AppInfo {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// P2: `set_page_boxes` tells "leave the crop alone" (absent) from "reset it" (`null`),
+    /// and `crop` takes a rect or `{ margins }`.
+    #[test]
+    fn page_boxes_args_keep_null_apart_from_absent() {
+        let absent: PageBoxesArgs =
+            serde_json::from_value(json!({ "docId": "d1", "pages": "all" })).unwrap();
+        assert_eq!(absent.crop, None);
+        assert_eq!(absent.media, None);
+        let reset: PageBoxesArgs =
+            serde_json::from_value(json!({ "docId": "d1", "pages": [0], "crop": null })).unwrap();
+        assert_eq!(reset.crop, Some(None));
+        let rect: PageBoxesArgs = serde_json::from_value(json!({
+            "docId": "d1", "pages": [0, 2],
+            "crop": { "l": 10, "b": 20, "r": 300, "t": 400 },
+            "media": { "l": 0, "b": 0, "r": 612, "t": 792 }
+        }))
+        .unwrap();
+        assert_eq!(rect.crop, Some(Some(CropSpec::Rect(Rect::new(10.0, 20.0, 300.0, 400.0)))));
+        assert_eq!(rect.media, Some(Some(Rect::new(0.0, 0.0, 612.0, 792.0))));
+        let margins: PageBoxesArgs = serde_json::from_value(json!({
+            "docId": "d1", "pages": "all",
+            "crop": { "margins": { "top": 1, "right": 2, "bottom": 3, "left": 4 } }
+        }))
+        .unwrap();
+        assert_eq!(
+            margins.crop,
+            Some(Some(CropSpec::Margins {
+                margins: Margins { top: 1.0, right: 2.0, bottom: 3.0, left: 4.0 }
+            }))
+        );
+        let named: ResizeTarget = serde_json::from_value(json!("Letter")).unwrap();
+        assert_eq!(named, ResizeTarget::Named(PaperName::Letter));
+        let sized: ResizeTarget = serde_json::from_value(json!({ "w": 300, "h": 400 })).unwrap();
+        assert_eq!(sized, ResizeTarget::Size { w: 300.0, h: 400.0 });
+        assert_eq!(
+            serde_json::from_value::<ResizeMode>(json!("scaleContent")).unwrap(),
+            ResizeMode::ScaleContent
+        );
+    }
+
+    /// P2 Bates fields are optional on the wire and default to 1 / 6 digits / no affixes.
+    #[test]
+    fn stamp_spec_bates_fields_are_optional() {
+        let base = json!({
+            "role": "footer",
+            "source": { "kind": "text", "text": "{{bates}}", "fontSizePt": 9, "color": [0, 0, 0] },
+            "anchor": "br", "marginPt": 24, "rotateDeg": 0, "opacity": 1, "pages": "all"
+        });
+        let plain: PageStampSpec = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(plain.bates, BatesOptions::default());
+        let mut with = base;
+        with["batesStart"] = json!(101);
+        with["batesDigits"] = json!(6);
+        with["batesPrefix"] = json!("ABC");
+        let spec: PageStampSpec = serde_json::from_value(with).unwrap();
+        assert_eq!(spec.bates.bates_start, 101);
+        assert_eq!(spec.bates.bates_prefix, "ABC");
+        assert_eq!(spec.bates.bates_suffix, "");
+    }
 
     /// The error shape JS receives on rejection: `{ code, message }`, with `page` / `detail`
     /// present only when they are (`IPC_CONTRACT.md` §2).

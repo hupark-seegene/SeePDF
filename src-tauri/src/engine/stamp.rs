@@ -23,6 +23,13 @@
 //! alpha channel (an `/SMask`), because PDFium's content generator emits no graphics state for
 //! form or image objects.
 //!
+//! ## Tokens
+//!
+//! `{{page}}`, `{{total}}`, `{{date}}`, `{{filename}}` and (P2) `{{bates}}` are expanded per page
+//! in one pass ([`expand_tokens`]). A Bates number ([`bates_label`]) counts the **stamped** pages
+//! in ascending order from `batesStart`, zero-padded to `batesDigits`, between `batesPrefix` and
+//! `batesSuffix`; it is ordinary Helvetica text, so it is searchable and extractable.
+//!
 //! ## Marking
 //!
 //! Every object we add carries the marked-content tag `SeePDF:Stamp` (`FPDFPageObj_AddMark`)
@@ -38,7 +45,7 @@ use crate::engine::registry::{self, MutateOpts};
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
-    ChangeReason, PageIndex, PageSelection, PageStampSource, PageStampSpec, Rect,
+    BatesOptions, ChangeReason, PageIndex, PageSelection, PageStampSource, PageStampSpec, Rect,
     RemoveStampsResult, StampAnchor, StampResult, StampRole,
 };
 use crate::ipc::{EngineError, ErrorCode};
@@ -50,6 +57,10 @@ pub const STAMP_MARK: &str = "SeePDF:Stamp";
 pub const ROLE_PARAM: &str = "role";
 /// Line spacing, as a multiple of the font size (same as `add_text_object`).
 const LINE_HEIGHT: f32 = 1.2;
+/// Widest zero-padding a Bates number may ask for (P2).
+pub const BATES_MAX_DIGITS: u8 = 12;
+/// Longest Bates prefix / suffix, in characters.
+pub const BATES_MAX_AFFIX: usize = 64;
 
 /// `add_stamp` — one undo step for the whole operation.
 pub fn add_stamp(
@@ -105,8 +116,17 @@ pub fn add_stamp(
                 let scratch = ScratchPage::open(doc, pages[0])?;
                 doc.adopt_hangul_token(&scratch.page);
             }
-            for &p in &pages {
-                let resolved = substitute(text, p + 1, total, &date, &file_stem);
+            for (n, &p) in pages.iter().enumerate() {
+                let resolved = expand_tokens(
+                    text,
+                    &Tokens {
+                        page: p + 1,
+                        total,
+                        date: &date,
+                        filename: &file_stem,
+                        bates: &bates_label(&spec.bates, n),
+                    },
+                );
                 let mut lines = Vec::new();
                 for line in resolved.replace("\r\n", "\n").split('\n') {
                     if line.trim().is_empty() {
@@ -197,6 +217,22 @@ fn validate(spec: &PageStampSpec) -> Result<(), EngineError> {
     if !spec.opacity.is_finite() || !(0.0..=1.0).contains(&spec.opacity) {
         return Err(EngineError::invalid("opacity must be within 0..1"));
     }
+    let bates = &spec.bates;
+    if bates.bates_digits == 0 || bates.bates_digits > BATES_MAX_DIGITS {
+        return Err(EngineError::invalid(format!(
+            "batesDigits must be within 1..={BATES_MAX_DIGITS}"
+        )));
+    }
+    if bates.bates_prefix.chars().count() > BATES_MAX_AFFIX
+        || bates.bates_suffix.chars().count() > BATES_MAX_AFFIX
+    {
+        return Err(EngineError::invalid(format!(
+            "batesPrefix / batesSuffix are limited to {BATES_MAX_AFFIX} characters"
+        )));
+    }
+    if bates.bates_start > 999_999_999_999_999 {
+        return Err(EngineError::invalid("batesStart is out of range"));
+    }
     match &spec.source {
         PageStampSource::Text {
             text, font_size_pt, ..
@@ -246,12 +282,77 @@ fn resolve_pages(selection: &PageSelection, count: u16) -> Result<Vec<PageIndex>
 }
 
 /// `{{page}}` (1-based), `{{total}}`, `{{date}}`, `{{filename}}`; anything else stays literal.
+/// `{{bates}}` expands to nothing here — see [`expand_tokens`].
 pub fn substitute(template: &str, page: u16, total: u16, date: &str, filename: &str) -> String {
-    template
-        .replace("{{page}}", &page.to_string())
-        .replace("{{total}}", &total.to_string())
-        .replace("{{date}}", date)
-        .replace("{{filename}}", filename)
+    expand_tokens(
+        template,
+        &Tokens {
+            page,
+            total,
+            date,
+            filename,
+            bates: "",
+        },
+    )
+}
+
+/// The values the stamp tokens expand to on one page.
+pub struct Tokens<'a> {
+    /// 1-based.
+    pub page: u16,
+    pub total: u16,
+    pub date: &'a str,
+    pub filename: &'a str,
+    /// The page's Bates number ([`bates_label`]).
+    pub bates: &'a str,
+}
+
+/// One left-to-right pass over `template`: `{{page}}`, `{{total}}`, `{{date}}`,
+/// `{{filename}}` and `{{bates}}` are replaced, anything else (an unknown `{{x}}`, a lone
+/// `{{`) stays literal. A single pass, so a file name or Bates prefix that itself contains
+/// `{{page}}` is written as typed rather than expanded a second time.
+pub fn expand_tokens(template: &str, tokens: &Tokens<'_>) -> String {
+    let mut out = String::with_capacity(template.len() + 16);
+    let mut rest = template;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let Some(close) = after.find("}}") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let value = match &after[..close] {
+            "page" => Some(tokens.page.to_string()),
+            "total" => Some(tokens.total.to_string()),
+            "date" => Some(tokens.date.to_string()),
+            "filename" => Some(tokens.filename.to_string()),
+            "bates" => Some(tokens.bates.to_string()),
+            _ => None,
+        };
+        match value {
+            Some(v) => {
+                out.push_str(&v);
+                rest = &after[close + 2..];
+            }
+            None => {
+                // Keep the braces and continue right after them, so `{{{{page}}` still finds
+                // the inner token.
+                out.push_str("{{");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// P2 Bates number of the `n`-th stamped page (0-based, ascending page order):
+/// prefix + (`start` + n, zero-padded) + suffix. A number wider than the padding is written in
+/// full rather than cut.
+pub fn bates_label(opts: &BatesOptions, n: usize) -> String {
+    let number = opts.bates_start.saturating_add(n as u64);
+    let width = opts.bates_digits as usize;
+    format!("{}{:0width$}{}", opts.bates_prefix, number, opts.bates_suffix)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -649,6 +750,36 @@ mod tests {
     }
 
     #[test]
+    fn bates_numbers_are_padded_and_count_stamped_pages() {
+        let opts = BatesOptions {
+            bates_start: 101,
+            bates_digits: 6,
+            bates_prefix: "ABC".into(),
+            bates_suffix: "-K".into(),
+        };
+        assert_eq!(bates_label(&opts, 0), "ABC000101-K");
+        assert_eq!(bates_label(&opts, 13), "ABC000114-K");
+        let narrow = BatesOptions {
+            bates_digits: 2,
+            ..BatesOptions::default()
+        };
+        assert_eq!(bates_label(&narrow, 0), "01");
+        assert_eq!(bates_label(&narrow, 999), "1000", "wider than the padding, never cut");
+        let tokens = Tokens {
+            page: 2,
+            total: 14,
+            date: "2026-09-28",
+            filename: "{{page}}",
+            bates: "ABC000102",
+        };
+        assert_eq!(
+            expand_tokens("{{bates}} · {{page}}/{{total}} {{filename}} {{nope}} {{", &tokens),
+            "ABC000102 · 2/14 {{page}} {{nope}} {{"
+        );
+        assert_eq!(expand_tokens("{{{{page}}", &tokens), "{{2");
+    }
+
+    #[test]
     fn rotated_box_is_anchored_by_its_bounding_box() {
         let space = VisualSpace::new(0, Rect::new(0.0, 0.0, 600.0, 800.0));
         let (w, h) = (300.0, 60.0);
@@ -675,6 +806,7 @@ mod tests {
                     rotate_deg: deg,
                     opacity: 1.0,
                     pages: PageSelection::All(crate::ipc::types::AllPages::All),
+                    bates: Default::default(),
                 };
                 let m = placement(&spec, &space, w, h);
                 for (u, v) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
@@ -709,6 +841,7 @@ mod tests {
             rotate_deg: 45.0,
             opacity: 1.0,
             pages: PageSelection::All(crate::ipc::types::AllPages::All),
+            bates: Default::default(),
         };
         let m = placement(&spec, &space, 200.0, 40.0);
         let (x, y) = apply(m, 100.0, 20.0);

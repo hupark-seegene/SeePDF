@@ -595,6 +595,60 @@ impl AnnotRef<'_> {
         moved
     }
 
+    /// P2 page resize: maps every `/QuadPoints` corner through the affine `m`
+    /// (`[a, b, c, d, e, f]`, row-vector convention), keeping each quad's corner order as the
+    /// producer wrote it. Returns how many quads were rewritten.
+    ///
+    /// Same caveat as [`Self::translate_quads`]: clear a markup annotation's appearance first,
+    /// or PDFium may grow its `BBox` to the half-mapped quads.
+    pub fn transform_quads(&mut self, m: [f32; 6]) -> usize {
+        let map = |x: f32, y: f32| (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
+        let mut done = 0;
+        for i in 0..self.quad_count() {
+            let mut q = FS_QUADPOINTSF {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 0.0,
+                y2: 0.0,
+                x3: 0.0,
+                y3: 0.0,
+                x4: 0.0,
+                y4: 0.0,
+            };
+            // SAFETY: `i < quad_count()`; `q` is a valid out-parameter.
+            let ok = unsafe {
+                self.bindings
+                    .FPDFAnnot_GetAttachmentPoints(self.handle, i, &mut q)
+            };
+            if !self.bindings.is_true(ok) {
+                continue;
+            }
+            let (x1, y1) = map(q.x1, q.y1);
+            let (x2, y2) = map(q.x2, q.y2);
+            let (x3, y3) = map(q.x3, q.y3);
+            let (x4, y4) = map(q.x4, q.y4);
+            let mapped = FS_QUADPOINTSF {
+                x1,
+                y1,
+                x2,
+                y2,
+                x3,
+                y3,
+                x4,
+                y4,
+            };
+            // SAFETY: `self.handle` is live; `mapped` is a valid in-parameter.
+            let ok = unsafe {
+                self.bindings
+                    .FPDFAnnot_SetAttachmentPoints(self.handle, i, &mapped)
+            };
+            if self.bindings.is_true(ok) {
+                done += 1;
+            }
+        }
+        done
+    }
+
     /// `FPDFAnnot_SetURI` — a `/Link` annotation's URI action. Go-to-page destinations
     /// cannot be created through PDFium's public API.
     pub fn set_uri(&mut self, uri: &str) -> bool {

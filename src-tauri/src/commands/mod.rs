@@ -19,6 +19,7 @@ pub mod save;
 pub mod security;
 pub mod stamp;
 pub mod text;
+pub mod tts;
 
 use crate::ipc::EngineError;
 

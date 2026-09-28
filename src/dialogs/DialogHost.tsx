@@ -7,7 +7,7 @@
 import { lazy, Suspense } from "react";
 import { useOcrDialogOpen } from "../ocr/dialogState";
 import { closeDialog, useDialogStore, type DialogEntry } from "./dialogState";
-import { ExportDialog } from "./ExportDialog";
+import { ExportDialog, type ExportFormat } from "./ExportDialog";
 import { MergeDialog } from "./MergeDialog";
 import { SplitDialog } from "./SplitDialog";
 import { PrintDialog } from "./PrintDialog";
@@ -35,6 +35,9 @@ const BatchOcrDialog = lazy(() => import("../ocr/batch/BatchOcrDialog"));
 const StampPickerDialog = lazy(() => import("./StampPickerDialog"));
 // 업데이트 확인 (v0.2.0): rare, its own chunk (the updater plugin is behind a further import).
 const UpdateDialog = lazy(() => import("../update/UpdateDialog"));
+// 자르기 / 페이지 크기 변경 (P2): 페이지 mode only, each in its own chunk.
+const CropDialog = lazy(() => import("../organize/CropDialog"));
+const ResizeDialog = lazy(() => import("./ResizeDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -58,7 +61,19 @@ function Current({ entry }: { entry: DialogEntry }) {
   const close = () => closeDialog(entry.name);
   switch (entry.name) {
     case "export":
-      return <ExportDialog onClose={close} />;
+      return <ExportDialog onClose={close} initialFormat={p.format as ExportFormat | undefined} />;
+    case "crop":
+      return (
+        <Suspense fallback={null}>
+          <CropDialog onClose={close} pages={p.pages as PageIndex[] | undefined} />
+        </Suspense>
+      );
+    case "resize":
+      return (
+        <Suspense fallback={null}>
+          <ResizeDialog onClose={close} pages={p.pages as PageIndex[] | undefined} />
+        </Suspense>
+      );
     case "merge":
       return <MergeDialog onClose={close} initialPaths={p.paths as string[] | undefined} />;
     case "split":

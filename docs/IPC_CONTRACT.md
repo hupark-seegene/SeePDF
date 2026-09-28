@@ -376,6 +376,53 @@ Engine: `engine/pages/`. One `page_ops` call is one `registry::mutate` = one gen
 `/AcroForm`). `merge_documents` creates an untitled in-memory document and is the only importer.
 Owner (b). Feature F-16.
 
+### 7.3a Page boxes and page size — 자르기 / 페이지 크기 변경 (P2)
+
+```ts
+export interface Margins { top: number; right: number; bottom: number; left: number }  // pt, as SEEN
+export type CropSpec = Rect | { margins: Margins };
+export interface SetPageBoxesArgs {
+  docId: DocId; pages: PageIndex[] | 'all';
+  crop?: CropSpec | null;   // absent = unchanged, null = reset (crop box = media box)
+  media?: Rect | null;      // absent = unchanged, null = invalidArgument
+}
+set_page_boxes(a: { args: SetPageBoxesArgs }): Promise<DocInfo>       // one struct argument, see below
+export type ResizeTarget = 'A4' | 'Letter' | 'A3' | { w: number; h: number };   // { w, h } = as seen, pt
+export type ResizeMode = 'scaleContent' | 'centerContent';
+resize_pages(a: { docId: DocId; pages: PageIndex[] | 'all'; size: ResizeTarget; mode: ResizeMode }): Promise<DocInfo>
+```
+
+Engine: `engine/pages/boxes.rs`. Each call is one `registry::mutate` over the named pages = one undo step,
+`undo.pageCrop` / `undo.pageResize`, `reason: 'pages'`, `changedPages` = the pages; the returned `DocInfo`
+already carries the new geometry of every changed page (`mutate` refines ≤ 32 named pages, the command the
+rest), so the frontend `adopt`s it. Any error rolls the whole batch back (no generation, no undo entry).
+
+* `set_page_boxes` takes **one struct argument** `args` (like `export_images`): a top-level `crop: null`
+  would reach Rust as "absent" (tauri deserialises a missing key and `null` alike for `Option`).
+* `crop: Rect` — unrotated user space, the same rect for every page, clipped to each media box.
+  `crop: { margins }` — inset from **each page's own** crop box as the page is seen (`/Rotate` applied,
+  `top` = the displayed top edge), mapped with `stamp::visual_to_user`; this is what the 자르기 tool sends.
+  `crop: null` (원래대로) sets the crop box to the media box — PDFium cannot delete a `/CropBox`, and an
+  equal one is the same page. A new `media` clips an explicit crop box that sticks out of it. Written with
+  `FPDFPage_SetCropBox` / `SetMediaBox` (page dictionary only; the content stream is untouched, so a crop
+  never deletes anything). A page that inherits its media box from the page tree is measured through
+  `FPDF_GetPageBoundingBox` with the crop box widened first.
+* `resize_pages`: the page becomes `[0 0 w h]` (media = crop; trim / bleed / art boxes follow the content,
+  clipped). A named size keeps each page's orientation (a landscape page gets landscape A4); `{ w, h }` is the
+  size as seen. The content is mapped from the old crop box by one uniform matrix — scaled to fit and centred
+  (`scaleContent`) or at 100 % and centred (`centerContent`, a smaller page clips) — with
+  `FPDFPage_TransFormWithClip`, which wraps the content streams in `q <old crop> re W* n <m> cm … Q` and
+  transforms the page's shading patterns; every object stays an ordinary, editable page object. (A Form
+  XObject wrapper was rejected: it makes every object read-only and loses the annotations.) Annotations follow:
+  `FPDFPage_TransformAnnots` maps every `/Rect` without touching appearance `BBox`es (appearances scale with
+  their rect), then markup `/QuadPoints` (appearance cleared, regenerated on the next render), link quads,
+  `/InkList` strokes and `/Popup` rects are mapped by hand. `/L`, `/Vertices`, `/CL` of third-party
+  annotations keep their values (their appearance moves).
+* Errors: `invalidArgument` for an empty / out-of-range page list, a non-finite box, a side < 1 pt or
+  > 14 400 pt, margins < 0 or leaving < 1 pt, a crop outside the media box, `media: null`.
+* Known limits: a shading pattern shared by several resized pages is transformed once per page; after a resize
+  the page's content is three streams (PDFium's content generator handles that on later edits).
+
 ### 7.4 Page objects (text and image editing)
 
 ```ts
@@ -634,6 +681,12 @@ export interface StampSpec {
   rotateDeg: number;       // -180..180, counter-clockwise as seen, about the stamp centre
   opacity: number;         // 0..1
   pages: PageIndex[] | 'all';
+  // P2 Bates numbering, all optional: {{bates}} = batesPrefix + (batesStart + n, zero-padded to batesDigits)
+  // + batesSuffix, n counting the STAMPED pages in ascending order (a range 3-5 from 1 gives 1, 2, 3)
+  batesStart?: number;     // >= 0, default 1
+  batesDigits?: number;    // 1..12, default 6; a wider number is written in full, never cut
+  batesPrefix?: string;    // <= 64 characters, default ''
+  batesSuffix?: string;    // <= 64 characters, default ''
 }
 export interface StampResult { info: DocInfo; pagesStamped: number }
 add_stamp(a: { docId: DocId; spec: StampSpec }): Promise<StampResult>
@@ -646,8 +699,11 @@ Engine: `engine/stamp.rs` (Rust type names `PageStampSpec` / `PageStampSource`, 
 already the stamp *annotation*; the wire shape is the one above). One `mutate` = one undo step, label
 `undo.watermark` (role `watermark`) or `undo.headerFooter`; `changedPages` is `'all'` or the list.
 * Text: `{{page}}` (1-based), `{{total}}`, `{{date}}` (local `YYYY-MM-DD`), `{{filename}}` (file name
-  without extension, `Untitled` for an unsaved document) are replaced per page; unknown `{{x}}` stay
-  literal; `\n` splits lines. One text object per line, Helvetica for Latin-1 and the bundled Hangul
+  without extension, `Untitled` for an unsaved document) and (P2) `{{bates}}` are replaced per page in **one
+  pass** (a file name or prefix that contains `{{page}}` is written as typed); unknown `{{x}}` stay literal;
+  `\n` splits lines. The Bates fields are flattened into `PageStampSpec` (`BatesOptions`) and are not
+  serialised when they hold their defaults. `remove_stamps` treats a Bates header / footer like any other
+  (its role). One text object per line, Helvetica for Latin-1 and the bundled Hangul
   subset otherwise (embedded once per document). Box = widest line × (lines × size × 1.2); lines are
   left / centred / right-aligned by the anchor's column.
 * Image: drawn once on a scratch page and copied in as **one Form XObject** that every stamped page
@@ -888,6 +944,28 @@ annotations without the Print flag. `print_prepare` is the fallback path for the
 primary print path is the frontend's print-only DOM plus `getCurrentWebview().print()`.
 Owner (b). Features F-24, F-25, F-26.
 
+### 7.7a Annotation summary export — 주석 목록 내보내기 (P2)
+
+```ts
+export type SummaryFormat = 'txt' | 'csv' | 'md';
+export interface AnnotationSummaryResult { count: number; bytes: number }
+export_annotation_summary(a: { docId: DocId; path: string; format: SummaryFormat; pages?: PageIndex[];
+                               locale?: 'ko' | 'en' }): Promise<AnnotationSummaryResult>
+```
+
+Engine: `engine/export/summary.rs`, `Lane::Background`. One row per annotation of `pages` (default all), pages
+ascending, within a page in `/Annots` order (what the 주석 sidebar lists); links and widgets are left out,
+popups never appear on their own. Columns: page number, page label (`/PageLabels`), kind (the sidebar's name,
+from `src/i18n/*.json` in `locale` — default the app language), author, created, modified (PDF dates shown in
+local time `YYYY-MM-DD HH:MM:SS`; unparseable ones as found), colour `#RRGGBB`, contents (a text box's text
+when `/Contents` is empty), and for text markup the **quoted text**: the characters of the page's cached text
+layer whose box centre lies in one of the quads, reading order, whitespace folded. CSV is RFC 4180 (CRLF,
+`"` doubled, quoted when needed) in UTF-8 **with a BOM** so Excel reads Hangul; a free-text cell starting with
+`=`, `+`, `-` or `@` gets a leading `'` (formula injection). TXT is blocks per annotation, Markdown a heading
+per page and a bullet per annotation (markup characters escaped); both UTF-8 without a BOM. The file is written
+atomically; `count == 0` still writes the (empty) list. Errors: `invalidArgument` (empty path, page out of
+range), `io`.
+
 ### 7.8 History
 
 ```ts
@@ -1108,6 +1186,27 @@ Native dialogs are called directly (no npm wrapper needed):
 and `invoke('plugin:dialog|save', { options: { defaultPath, filters } })`. The dialog plugin adds picked
 paths to the fs scope automatically.
 
+### 11a. Read aloud — 읽어 주기 (P2)
+
+```ts
+export interface TtsStatus { supported: boolean; speaking: boolean; engine: 'say' | 'sapi' | null; voice: string | null }
+tts_speak(a: { text: string; lang?: string; rate?: number }): Promise<TtsStatus>   // rate 0.5 … 2, default 1
+tts_stop(): Promise<TtsStatus>
+tts_status(): Promise<TtsStatus>
+```
+
+`app/tts.rs` + `commands/tts.rs` — no pdfium, so not on the engine thread (a blocking pool thread instead).
+The operating system's own voice, offline: macOS `/usr/bin/say` with the text on **stdin** (no argv length
+limit, a leading `-` cannot become an option), `-v` = `Yuna` for Korean text when installed (else the first
+`ko_*` voice of `say -v ?`), `-r` = 185 × rate words per minute; Windows `powershell.exe -EncodedCommand`
+running `System.Speech.Synthesis.SpeechSynthesizer` (text read from stdin as UTF-8 bytes, a voice whose culture
+matches, `Rate` = round(10 · ln rate / ln 3)), no console window; elsewhere `supported: false` and `tts_speak`
+answers `unsupported`. `lang` (`ko`, `en-US`) picks the voice; absent = Korean when the text has Hangul, else
+the system voice. One utterance for the whole app: `tts_speak` stops the current one first; `tts_stop`, the
+state being dropped and `RunEvent::Exit` kill the process. `speaking` turns false by itself when the voice
+ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors: `invalidArgument` (blank text,
+> 200 000 characters, a non-positive rate), `unsupported`.
+
 ---
 
 ## 12. Command → owner → feature index
@@ -1137,6 +1236,9 @@ paths to the fs scope automatically.
 | `compress_estimate`, `compress_apply`, `compress_discard` | Stage 4, `engine/compress.rs` | P1-5 |
 | `compare_documents` | Stage 5, `engine/compare.rs` | P1-6 |
 | `write_recovery`, `clear_recovery`, `list_recovery`, `discard_recovery` | Stage 5, `engine/recovery.rs` | P1-8 |
+| `set_page_boxes`, `resize_pages` | P2, `engine/pages/boxes.rs` | P2 crop / resize |
+| `export_annotation_summary` | P2, `engine/export/summary.rs` | P2 annotation summary |
+| `tts_speak`, `tts_stop`, `tts_status` | P2, `app/tts.rs` | P2 read aloud |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

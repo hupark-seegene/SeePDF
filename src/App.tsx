@@ -23,6 +23,7 @@ import { useToastStore } from "./app/toastStore";
 import { useContextMenuStore } from "./app/contextMenuStore";
 import { usePrintStore } from "./print/printStore";
 import { useT } from "./i18n/useT";
+import { useTtsStore } from "./tts/ttsStore";
 
 // Everything below the fold is code-split: the welcome screen, the page organizer, the dialog host
 // (which lazily carries the OCR sheet), the toast layer and the context menu. The entry chunk is
@@ -37,6 +38,8 @@ const ContextMenu = lazy(() => import("./app/ContextMenu"));
 const PrintRoot = lazy(() => import("./print/PrintRoot"));
 // 문서 비교 (P1-6): the full-window side-by-side view, only while compare mode is on.
 const CompareView = lazy(() => import("./compare/CompareView"));
+// 읽어 주기 (P2): the floating 속도 / 정지 bar, only while the system voice speaks.
+const TtsBar = lazy(() => import("./tts/TtsBar"));
 
 /**
  * The window is closing: document B of 문서 비교 lives outside `docStore`, so release it here — the
@@ -58,6 +61,13 @@ async function stopBatchOcr(): Promise<void> {
   if (!useJobStore.getState().jobs.some((j) => j.kind === "batchOcr" && j.state === "running")) return;
   const { cancelBatch } = await import("./ocr/batch/flow");
   await cancelBatch();
+}
+
+/** The window is closing while the system voice reads: stop it (the voice is app-wide, not per window). */
+async function stopReading(): Promise<void> {
+  if (!useTtsStore.getState().speaking) return;
+  const { stopSpeaking } = await import("./tts/speak");
+  await stopSpeaking();
 }
 
 /** Cheap synchronous test so the default menu is only suppressed over a page (the import is async). */
@@ -85,6 +95,7 @@ export default function App() {
   const menuOpen = useContextMenuStore((s) => s.menu !== null);
   const printing = usePrintStore((s) => s.job !== null);
   const comparing = useCompareStore((s) => s.session !== null);
+  const speaking = useTtsStore((s) => s.speaking);
   const readingMode = useAppStore((s) => s.readingMode);
   // 읽기 모드 (P1-12) only means something over a document
   const reading = readingMode && info !== null;
@@ -141,6 +152,7 @@ export default function App() {
               if (current) await autosave.clear(current.docId);
               await leaveCompare();
               await stopBatchOcr();
+              await stopReading();
               await win.destroy();
             }
             return;
@@ -151,6 +163,7 @@ export default function App() {
           }
           await leaveCompare();
           await stopBatchOcr();
+          await stopReading();
         });
       })
       .then((fn) => {
@@ -246,6 +259,11 @@ export default function App() {
       {(dialogOpen || ocrOpen) && (
         <Suspense fallback={null}>
           <DialogHost />
+        </Suspense>
+      )}
+      {speaking && (
+        <Suspense fallback={null}>
+          <TtsBar />
         </Suspense>
       )}
       {hasToasts && (

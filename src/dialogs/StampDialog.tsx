@@ -28,8 +28,9 @@ import { RangePicker } from "./RangePicker";
 import { resolveRange, type RangeChoice } from "./pageRange";
 import { message } from "./flows";
 import {
-  ANCHORS, STAMP_TOKENS, anchorStyle, buildStampSpec, expandTokens, imageStampHeight, initialStampForm, insertToken,
-  isoDate, removeStampsArgs, stemOf, switchRole, validateStamp, visualPageSize, type StampForm, type StampToken,
+  ANCHORS, BATES_MAX_AFFIX, BATES_MAX_DIGITS, STAMP_TOKENS, anchorStyle, batesLabel, batesPreset, buildStampSpec,
+  expandTokens, imageStampHeight, initialStampForm, insertToken, isoDate, removeStampsArgs, stemOf, switchRole,
+  usesBates, validateStamp, visualPageSize, type StampForm, type StampToken,
 } from "./stamp";
 
 const ROLES: StampRole[] = ["watermark", "header", "footer"];
@@ -146,7 +147,9 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
     total: info.pageCount,
     date: isoDate(),
     filename: stemOf(info.name),
+    bates: batesLabel(form, 0),
   });
+  const bates = form.source === "text" && usesBates(form.text);
   const pos = anchorStyle(form.anchor, form.marginPt, pageW, pageH);
   const num = (v: string, fallback: number) => {
     const n = Number(v);
@@ -177,6 +180,11 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
                   {t(`stamp.role.${r}`)}
                 </button>
               ))}
+            </div>
+            <div className="inline-row">
+              <button type="button" className="btn quiet" onClick={() => setForm((f) => batesPreset(f))}>
+                {t("stamp.bates.preset")}
+              </button>
             </div>
           </Row>
 
@@ -218,6 +226,64 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
                 </div>
                 {error === "emptyText" && <p className="dlg-hint danger text-xs">{t("stamp.error.emptyText")}</p>}
               </Row>
+              {bates && (
+                <Row labelKey="stamp.bates.section">
+                  <div className="stamp-bates">
+                    <label className="inline-row text-sm">
+                      <span className="dim">{t("stamp.bates.start")}</span>
+                      <input
+                        className="field num"
+                        type="number"
+                        min={0}
+                        step={1}
+                        aria-label={t("stamp.bates.start")}
+                        value={form.batesStart}
+                        onChange={(e) => patch({ batesStart: num(e.target.value, form.batesStart) })}
+                      />
+                    </label>
+                    <label className="inline-row text-sm">
+                      <span className="dim">{t("stamp.bates.digits")}</span>
+                      <input
+                        className="field num"
+                        type="number"
+                        min={1}
+                        max={BATES_MAX_DIGITS}
+                        step={1}
+                        aria-label={t("stamp.bates.digits")}
+                        value={form.batesDigits}
+                        onChange={(e) => patch({ batesDigits: num(e.target.value, form.batesDigits) })}
+                      />
+                    </label>
+                    <label className="inline-row text-sm">
+                      <span className="dim">{t("stamp.bates.prefix")}</span>
+                      <input
+                        className="field"
+                        maxLength={BATES_MAX_AFFIX}
+                        aria-label={t("stamp.bates.prefix")}
+                        value={form.batesPrefix}
+                        onChange={(e) => patch({ batesPrefix: e.target.value })}
+                      />
+                    </label>
+                    <label className="inline-row text-sm">
+                      <span className="dim">{t("stamp.bates.suffix")}</span>
+                      <input
+                        className="field"
+                        maxLength={BATES_MAX_AFFIX}
+                        aria-label={t("stamp.bates.suffix")}
+                        value={form.batesSuffix}
+                        onChange={(e) => patch({ batesSuffix: e.target.value })}
+                      />
+                    </label>
+                  </div>
+                  <p className="dlg-hint text-xs mono" data-testid="bates-sample">
+                    {t("stamp.bates.sample", {
+                      first: batesLabel(form, 0),
+                      last: batesLabel(form, Math.max(0, (pages?.length ?? 1) - 1)),
+                    })}
+                  </p>
+                  <p className="dlg-hint text-xs">{t("stamp.bates.hint")}</p>
+                </Row>
+              )}
               <Row labelKey="stamp.fontSize">
                 <div className="inline-row">
                   <input

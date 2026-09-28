@@ -12,8 +12,8 @@ use crate::engine::export::{self, job::JobReporter};
 use crate::engine::types::CmdStatus;
 use crate::engine::{EngineHandle, Lane, Submit};
 use crate::ipc::types::{
-    ExportEstimate, ExportImagesArgs, ExportTextResult, ImageFormat, JobEvent, JobId, PageIndex,
-    PrintPrepareResult,
+    AnnotationSummaryResult, ExportEstimate, ExportImagesArgs, ExportTextResult, ImageFormat,
+    JobEvent, JobId, Locale, PageIndex, PrintPrepareResult, SummaryFormat,
 };
 use crate::ipc::EngineError;
 use std::path::PathBuf;
@@ -107,6 +107,33 @@ pub async fn export_text(
     engine
         .call(Lane::Background, "export_text", move |st| {
             export::export_text(st, &doc_id, &pages, &out_path)
+        })
+        .await
+}
+
+/// P2 주석 목록 내보내기 (§7.7a): one row per annotation of `pages` (default all) as TXT, CSV
+/// (UTF-8 with BOM) or Markdown, labelled in `locale` (default: the app language).
+#[tauri::command]
+pub async fn export_annotation_summary(
+    app: tauri::AppHandle,
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    path: String,
+    format: SummaryFormat,
+    pages: Option<Vec<PageIndex>>,
+    locale: Option<Locale>,
+) -> Result<AnnotationSummaryResult, EngineError> {
+    let locale = locale.unwrap_or_else(|| crate::app::store::get_settings(&app).locale);
+    engine
+        .call(Lane::Background, "export_annotation_summary", move |st| {
+            export::summary::export_annotation_summary(
+                st,
+                &doc_id,
+                &path,
+                format,
+                pages.as_deref(),
+                locale,
+            )
         })
         .await
 }
