@@ -19,6 +19,7 @@ import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { onDocChanged } from "../ipc/events";
 import { setEditCommandHandler, setEditLeaveGuard } from "../tools/commands";
+import { isDialogOpen } from "../dialogs/dialogState";
 import { toolController } from "../tools/ToolController";
 import { useEditStore } from "./editStore";
 import {
@@ -35,8 +36,20 @@ function typing(target: EventTarget | null): boolean {
   return tag === "input" || tag === "textarea" || tag === "select" || !!el?.isContentEditable;
 }
 
+/**
+ * Before 편집 mode is left or the document closed: an open text editor is committed first (its flow
+ * may ask 문단이 들어갈 자리가 부족합니다 — 계속 편집 or a declined font keeps the mode), then pending
+ * 영역 표시 marks ask to be discarded.
+ */
+function leaveGuard(): Promise<boolean> | null {
+  if (!useEditStore.getState().session) return confirmLeave();
+  return commitSession().then((done) => (done ? (confirmLeave() ?? true) : false));
+}
+
 export function onEditKeyDown(e: KeyboardEvent): void {
-  if (useAppStore.getState().mode !== "edit" || typing(e.target)) return;
+  // a prompt (글꼴 바꾸기, 문단이 들어갈 자리가 부족합니다) owns the keys: its Esc answers it rather
+  // than cancelling the editor underneath
+  if (useAppStore.getState().mode !== "edit" || typing(e.target) || isDialogOpen()) return;
   const store = useEditStore.getState();
   const claim = () => {
     e.preventDefault();
@@ -165,7 +178,7 @@ function start(): () => void {
   });
   document.addEventListener("copy", onClipboardEvent, true);
   document.addEventListener("paste", onClipboardEvent, true);
-  setEditLeaveGuard(confirmLeave);
+  setEditLeaveGuard(leaveGuard);
   const offMarks = watchMarks();
   const offChanged = onDocChanged(onDocChangedForMarks);
   return () => {

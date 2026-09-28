@@ -322,6 +322,37 @@ pub fn transplant(
     Ok(())
 }
 
+/// Stage 9 paragraph flow: moves the object at `index` of `page` by `(dx, dy)` in place —
+/// `FPDFPageObj_Transform` plus `FPDFPageObj_TransformClipPath`, so a clipped image or a
+/// clipped text run keeps its clip (the object and its clip move together). A shading object
+/// is the exception: PDFium's `CPDF_ShadingObject::Transform` already moves its clip path.
+///
+/// The object is marked dirty; the caller regenerates the page content once at the end.
+pub fn translate(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    index: usize,
+    dx: f32,
+    dy: f32,
+) -> Result<(), EngineError> {
+    let handle = object_at(bindings, page, index)?;
+    let (dx, dy) = (dx as f64, dy as f64);
+    // SAFETY: `handle` belongs to the live `page`; the calls take plain numbers.
+    let kind = unsafe { bindings.FPDFPageObj_GetType(handle) };
+    // SAFETY: as above; both transforms act on this one object only (its clip path is a
+    // private copy-on-write value).
+    unsafe {
+        bindings.FPDFPageObj_Transform(handle, 1.0, 0.0, 0.0, 1.0, dx, dy);
+        if kind != FPDF_PAGEOBJ_SHADING {
+            bindings.FPDFPageObj_TransformClipPath(handle, 1.0, 0.0, 0.0, 1.0, dx, dy);
+        }
+    }
+    Ok(())
+}
+
+/// `FPDF_PAGEOBJ_SHADING` (public/fpdf_edit.h).
+const FPDF_PAGEOBJ_SHADING: c_int = 4;
+
 /// `FPDFImageObj_LoadJpegFileInline` on the **existing** image object at `index`: the stream
 /// is replaced by `jpeg` (a complete JPEG file, stored as `/DCTDecode`), while the object's
 /// matrix, clip path and graphics state are kept — which a remove + re-add would lose.

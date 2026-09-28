@@ -211,6 +211,8 @@ pub async fn probe_paragraph(
 }
 
 /// Stage 7: replace a paragraph's objects with reflowed text — one undo step.
+/// Stage 9: `edit.flow` (`push` default / `overlap` / `fit`) decides what the content below
+/// does, and `edit.dryRun` returns the same result without changing anything.
 #[tauri::command]
 pub async fn edit_paragraph(
     engine: State<'_, EngineHandle>,

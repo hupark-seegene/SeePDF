@@ -152,6 +152,18 @@ pub struct Pending {
     /// The generation the estimate was made from; `apply` refuses (`stale`) once the document
     /// has moved on.
     pub base_generation: DocGeneration,
+    /// The report's `beforeBytes` / `imagesDownsampled`, for [`Pending::saves_nothing`].
+    pub before_bytes: u64,
+    pub images_downsampled: u32,
+}
+
+impl Pending {
+    /// `true` when applying would replace the document for no gain: no image was downsampled,
+    /// or the file did not get smaller. The same rule as the dialog's `applyBlock`
+    /// (`src/dialogs/compress.ts`), which disables 적용 for exactly these reports.
+    pub fn saves_nothing(&self) -> bool {
+        self.images_downsampled == 0 || self.bytes.len() as u64 >= self.before_bytes
+    }
 }
 
 /// Validates the options, snapshots the document into a scratch copy and returns the pages
@@ -746,6 +758,8 @@ pub fn finish(
         token,
         bytes: Arc::from(bytes.into_boxed_slice()),
         base_generation,
+        before_bytes,
+        images_downsampled,
     });
     Ok(report)
 }
@@ -774,8 +788,16 @@ fn take_pending(
 }
 
 /// `compress_apply` — replaces the document with the pending bytes as one undo step.
+///
+/// A result that [saves nothing](Pending::saves_nothing) is spent without touching the
+/// document: no undo step, no dirty flag, no new generation — the current `DocInfo` comes back
+/// as it is. That check comes first, so such a token is never `stale` (there is nothing to
+/// apply to a changed document either).
 pub fn apply(st: &mut EngineState<'_>, doc_id: &str, token: u64) -> Result<DocInfo, EngineError> {
     let pending = take_pending(st, doc_id, token)?;
+    if pending.saves_nothing() {
+        return Ok(st.doc(doc_id)?.info());
+    }
     if st.doc(doc_id)?.generation != pending.base_generation {
         return Err(EngineError::stale(
             "the document changed after the estimate; estimate again",

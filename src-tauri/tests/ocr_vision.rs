@@ -243,6 +243,10 @@ mod mac {
         let doc_id = doc.doc_id.clone();
         let before = with_doc(&doc_id, |d| Ok(d.generation)).expect("generation");
         let hits_before = count_hits(&doc_id, "정확도");
+        // Phrases across word gaps: Vision's padded word boxes sit too close together for PDFium
+        // to infer the spaces, so `ocr_apply` writes them (the layer read `SeePDF2026version`).
+        let phrases = ["가능한 한글", "SeePDF 2026 version"];
+        let phrases_before: Vec<usize> = phrases.iter().map(|p| count_hits(&doc_id, p)).collect();
         let id = doc_id.clone();
         let info = with_state(move |st| {
             let mut progress = |_: usize, _: u16| {};
@@ -255,6 +259,9 @@ mod mac {
             hits_before + 1,
             "the invisible Vision layer is searchable"
         );
+        for (phrase, before) in phrases.iter().zip(&phrases_before) {
+            assert_eq!(count_hits(&doc_id, phrase), before + 1, "{phrase:?} across a word gap");
+        }
         let id = doc_id.clone();
         with_state(move |st| registry::undo(st, &id, false).map(|_| ())).expect("undo");
         assert_eq!(count_hits(&doc_id, "정확도"), hits_before, "undone in one step");

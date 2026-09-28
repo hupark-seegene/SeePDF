@@ -339,7 +339,11 @@ export function probeParagraph(a: { docId: DocId; page: PageIndex; at: Point }):
   return call("probe_paragraph", a, (mock) => mock.probeParagraph(a));
 }
 
-/** Stage 7: rewrite a paragraph with reflow — one undo step (`undo.paragraphEdit`). */
+/**
+ * Stage 7: rewrite a paragraph with reflow — one undo step (`undo.paragraphEdit`). Stage 9: `edit.flow`
+ * says what the content below does (`push` by default) and `edit.dryRun` answers the same result
+ * without changing anything (no generation bump, no undo entry).
+ */
 export function editParagraph(a: {
   docId: DocId; page: PageIndex; expectGeneration: DocGeneration; edit: ParagraphEdit; allowFontSubstitution: boolean;
 }): Promise<ParagraphEditResult> {

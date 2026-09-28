@@ -4,7 +4,12 @@
  * colour, a font-family approximation), a right-edge width handle and a small floating bar.
  *
  * Korean-IME safe like `annot/editors.tsx`: the textarea is uncontrolled and read on commit, never
- * re-rendered from React state while a Hangul syllable is being composed.
+ * re-rendered from React state while a Hangul syllable is being composed; a commit that arrives
+ * mid-composition (a click outside lands before the browser ends it) waits for it to end.
+ *
+ * Stage 9: once the text grows past the original box, a dashed line marks the original bottom and a
+ * hint says 완료 will push the content below down — the paper-backed textarea covers that content
+ * while typing, which otherwise reads as if it had been deleted.
  *
  * Rotation (Stage 8): the engine writes the text along the page's own +x, so under a /Rotate or a
  * view rotation the mask, the textarea and the width handle sit in one frame anchored at the text's
@@ -19,7 +24,7 @@ import { useT } from "../i18n/useT";
 import { useViewStore } from "../store/viewStore";
 import { Swatches, rgbCss } from "../app/Swatches";
 import { useEditStore, type EditSession } from "./editStore";
-import { cancelSession, commitSession, setSessionTextReader } from "./actions";
+import { cancelSession, commitSession, setSessionFocuser, setSessionTextReader } from "./actions";
 import { deltaToPage, editorRotation, fontStack } from "./geometry";
 
 const ALIGNS: { id: ParagraphAlign; icon: typeof AlignLeft }[] = [
@@ -31,6 +36,8 @@ const ALIGNS: { id: ParagraphAlign; icon: typeof AlignLeft }[] = [
 const BAR_H = 36;
 /** approximate bar width, so it is pulled left rather than clipped by the page box */
 const BAR_W = 460;
+/** longest a commit waits for an IME composition to end before it reads the text anyway */
+const SETTLE_MS = 300;
 
 /** The page rect the session covers before any typing. */
 function sessionRect(s: EditSession): Rect {
@@ -45,7 +52,9 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
   const patch = useEditStore((s) => s.patchSession);
   const ref = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const [composing, setComposing] = useState(false);
+  // a ref, not state: nothing re-renders while a syllable is being composed
+  const composing = useRef(false);
+  const settleWaiters = useRef<(() => void)[]>([]);
   const [heightPx, setHeightPx] = useState(0);
 
   const probe = session.kind === "paragraph" ? session.probe : null;
@@ -62,6 +71,8 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
   // the first line's box starts at the ascender; CSS centres the glyphs in the line box
   const topPx = -Math.max(0, (leadingPt - session.fontSizePt) / 2) * s;
   const bottomPx = Math.max(boxH, topPx + heightPx);
+  // the text reaches past the original paragraph by more than half a line (a 문단 편집 only)
+  const grown = probe !== null && heightPx > 0 && topPx + heightPx > boxH + (leadingPt * s) / 2;
   // the frame's on-screen extent (upright), for the bar and the notice
   const extent = ctx.rectToBox({
     l: rect.l,
@@ -78,14 +89,32 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
     setHeightPx(el.scrollHeight);
   };
 
+  const releaseSettled = () => {
+    for (const resolve of settleWaiters.current.splice(0)) resolve();
+  };
+
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.focus({ preventScroll: true });
     el.setSelectionRange(el.value.length, el.value.length);
     grow();
-    setSessionTextReader(() => ref.current?.value ?? "");
-    return () => setSessionTextReader(null);
+    setSessionTextReader(
+      () => ref.current?.value ?? "",
+      () =>
+        composing.current
+          ? new Promise<void>((resolve) => {
+              settleWaiters.current.push(resolve);
+              setTimeout(resolve, SETTLE_MS);
+            })
+          : null,
+    );
+    setSessionFocuser(() => ref.current?.focus({ preventScroll: true }));
+    return () => {
+      setSessionTextReader(null);
+      setSessionFocuser(null);
+      releaseSettled();
+    };
   }, []);
 
   // size / width changes re-flow the textarea
@@ -104,7 +133,10 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
   }, []);
 
   const colour = night === "dark" ? "var(--page-ink)" : rgbCss(session.color);
-  const barTop = extent.y - BAR_H - 8 >= 0 ? extent.y - BAR_H - 8 : extent.y + extent.h + 8;
+  const barAbove = extent.y - BAR_H - 8 >= 0;
+  const barTop = barAbove ? extent.y - BAR_H - 8 : extent.y + extent.h + 8;
+  // notices sit under the box, or under the bar when the bar had to go below it
+  const noticeTop = barAbove ? extent.y + extent.h + 4 : barTop + BAR_H + 4;
 
   const startWidthDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation();
@@ -143,6 +175,14 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
         style={{ left: originX, top: originY, transform: deg ? `rotate(${deg}deg)` : undefined }}
       >
         {probe && <div className="edit-mask" style={{ left: -1, top: -1, width: boxW + 2, height: boxH + 2 }} />}
+        {grown && (
+          <div
+            className="edit-origin-line"
+            data-testid="edit-origin-line"
+            aria-hidden
+            style={{ left: -1, top: boxH, width: Math.max(boxW, widthPx) + 2 }}
+          />
+        )}
         <textarea
           ref={ref}
           className="edit-text"
@@ -163,11 +203,17 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
             color: colour,
           }}
           onInput={grow}
-          onCompositionStart={() => setComposing(true)}
-          onCompositionEnd={() => setComposing(false)}
+          onCompositionStart={() => {
+            composing.current = true;
+          }}
+          onCompositionEnd={() => {
+            composing.current = false;
+            // the final `input` may follow `compositionend` in the same task: read after both
+            setTimeout(releaseSettled, 0);
+          }}
           onKeyDown={(e) => {
             e.stopPropagation();
-            if (composing || e.nativeEvent.isComposing) return;
+            if (composing.current || e.nativeEvent.isComposing) return;
             if (e.key === "Escape") {
               e.preventDefault();
               cancelSession();
@@ -227,10 +273,15 @@ export function TextEditor({ ctx, session }: { ctx: PageLayerContext; session: E
           {t("common.done")}
         </button>
       </div>
-      {probe?.mixedStyles && (
-        <p className="edit-notice text-xs" style={{ left: Math.max(4, extent.x), top: extent.y + extent.h + 4 }}>
-          {t("edit.paragraph.mixedStyles")}
-        </p>
+      {(probe?.mixedStyles || grown) && (
+        <div className="edit-notices" style={{ left: Math.max(4, extent.x), top: noticeTop }}>
+          {probe?.mixedStyles && <p className="edit-notice text-xs">{t("edit.paragraph.mixedStyles")}</p>}
+          {grown && (
+            <p className="edit-notice text-xs" role="status">
+              {t("edit.flow.hint")}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

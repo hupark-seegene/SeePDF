@@ -82,7 +82,7 @@
   outline: 1px solid var(--accent);
   outline-offset: 1px;
   /* paper, not transparent: text that grows past the original box stays legible while typing
-     (the overflow toast warns after the commit) */
+     (a dashed line marks the original bottom; 완료 pushes the content below down) */
   background: var(--page-paper);
   resize: none;
   overflow: hidden;
@@ -124,9 +124,25 @@
 .edit-bar-size input { width: 56px; height: 26px; }
 .edit-bar-align { display: flex; gap: 2px; }
 
-.edit-notice {
+/* Stage 9: the original paragraph's bottom, once the text grows past it (above the paper textarea) */
+.edit-origin-line {
+  position: absolute;
+  z-index: 4;
+  height: 0;
+  border-top: 1px dashed var(--accent);
+  pointer-events: none;
+}
+
+.edit-notices {
   position: absolute;
   z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.edit-notice {
   margin: 0;
   padding: 2px 6px;
   border-radius: var(--radius-sm);

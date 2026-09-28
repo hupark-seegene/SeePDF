@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMPRESS_PRESETS, buildCompressOptions, formatDeltaPct, summarize } from "./compress";
+import { COMPRESS_PRESETS, applyBlock, buildCompressOptions, formatDeltaPct, summarize } from "./compress";
 
 describe("compress.summarize", () => {
   it("reports a saving as a negative delta", () => {
@@ -11,6 +11,23 @@ describe("compress.summarize", () => {
   });
   it("survives an empty document", () => {
     expect(summarize({ beforeBytes: 0, afterBytes: 0 })).toEqual({ deltaBytes: 0, deltaPct: 0, noGain: true });
+  });
+});
+
+describe("compress.applyBlock", () => {
+  it("allows 적용 only for a real saving with at least one image downsampled", () => {
+    expect(applyBlock({ beforeBytes: 1000, afterBytes: 577, imagesDownsampled: 3 })).toBeNull();
+  });
+  it("blocks a result that is not smaller", () => {
+    expect(applyBlock({ beforeBytes: 1000, afterBytes: 1000, imagesDownsampled: 3 })).toBe("noGain");
+    expect(applyBlock({ beforeBytes: 1000, afterBytes: 1002, imagesDownsampled: 3 })).toBe("noGain");
+  });
+  it("blocks a result that downsampled nothing, even if the rewrite came out smaller", () => {
+    expect(applyBlock({ beforeBytes: 1000, afterBytes: 990, imagesDownsampled: 0 })).toBe("noImages");
+  });
+  it("reports 'not smaller' first when both hold", () => {
+    expect(applyBlock({ beforeBytes: 1000, afterBytes: 1002, imagesDownsampled: 0 })).toBe("noGain");
+    expect(applyBlock({ beforeBytes: 0, afterBytes: 0, imagesDownsampled: 0 })).toBe("noGain");
   });
 });
 

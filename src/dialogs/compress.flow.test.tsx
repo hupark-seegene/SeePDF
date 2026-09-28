@@ -46,8 +46,9 @@ describe("dialogs.compress.flow", () => {
     expect(useToastStore.getState().toasts.at(-1)?.messageKey).toBe("compress.done");
   });
 
-  it("warns in amber when the result is not smaller, and a new estimate discards the old token", async () => {
+  it("a result that is not smaller warns in amber, turns 적용 off and offers only 닫기 / 다시 예상", async () => {
     const discard = vi.spyOn(mock, "compressDiscard");
+    const apply = vi.spyOn(mock, "compressApply");
     const run = await openCompress();
     fireEvent.click(screen.getByRole("radio", { name: /300 DPI/ }));
     fireEvent.click(run);
@@ -55,13 +56,53 @@ describe("dialogs.compress.flow", () => {
     expect(screen.getByTestId("compress-delta").textContent).toMatch(/^\+/);
     expect(screen.getByTestId("compress-delta")).toHaveClass("compress-warn");
 
-    fireEvent.click(screen.getByRole("button", { name: "다시 예상" }));
+    // 적용 stays off, with the reason beside it; the footer's way out is 닫기, not 취소
+    expect(screen.getByRole("button", { name: "적용" })).toBeDisabled();
+    expect(screen.getByTestId("compress-blocked")).toHaveTextContent("적용할 수 없습니다");
+    expect(screen.getByRole("button", { name: "닫기" }).closest(".dlg-foot")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "취소" })).toBeNull();
+    expect(screen.getByRole("button", { name: "다시 예상" })).toBeEnabled();
+    // nothing to apply, so the engine's rewritten copy is released straight away
     await waitFor(() => expect(discard).toHaveBeenCalledWith({ docId: "d1", token: 1 }));
-    await screen.findByText("현재 크기", {}, { timeout: 2000 });
 
-    // changing the preset invalidates the shown estimate and releases its token
-    fireEvent.click(screen.getByRole("radio", { name: /96 DPI/ }));
+    fireEvent.click(screen.getByRole("button", { name: "다시 예상" }));
+    await screen.findByText("현재 크기", {}, { timeout: 2000 });
     await waitFor(() => expect(discard).toHaveBeenCalledWith({ docId: "d1", token: 2 }));
+    expect(screen.getByRole("button", { name: "적용" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "닫기" }));
+    await waitFor(() => expect(useDialogStore.getState().stack).toHaveLength(0));
+    expect(apply).not.toHaveBeenCalled();
+    const info = useDocStore.getState().info;
+    expect(info?.dirty).toBe(false);
+    expect(info?.canUndo).toBe(false);
+  });
+
+  it("a result that downsampled no image turns 적용 off even when the rewrite is smaller", async () => {
+    const original = mock.compressEstimate.bind(mock);
+    vi.spyOn(mock, "compressEstimate").mockImplementation((a, onEvent) =>
+      original(a, (e) => onEvent(e.type === "done" && e.report ? { ...e, report: { ...e.report, imagesDownsampled: 0 } } : e)),
+    );
+    const run = await openCompress();
+    fireEvent.click(run);
+    expect(await screen.findByRole("alert", {}, { timeout: 2000 })).toHaveTextContent("줄일 이미지가 없습니다");
+    expect(screen.getByTestId("compress-delta").textContent).toMatch(/^−\d/);
+    expect(screen.getByRole("button", { name: "적용" })).toBeDisabled();
+    expect(screen.getByTestId("compress-blocked")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "닫기" })).toBeInTheDocument();
+  });
+
+  it("changing the preset invalidates a real saving and releases its token", async () => {
+    const discard = vi.spyOn(mock, "compressDiscard");
+    const run = await openCompress();
+    fireEvent.click(run);
+    await screen.findByText("현재 크기", {}, { timeout: 2000 });
+    expect(screen.getByRole("button", { name: "적용" })).toBeEnabled();
+    expect(screen.queryByTestId("compress-blocked")).toBeNull();
+    expect(discard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("radio", { name: /96 DPI/ }));
+    await waitFor(() => expect(discard).toHaveBeenCalledWith({ docId: "d1", token: 1 }));
     expect(screen.queryByText("현재 크기")).toBeNull();
     expect(screen.getByRole("button", { name: "적용" })).toBeDisabled();
   });

@@ -10,7 +10,7 @@ import { Dialog, Row } from "./Dialog";
 import { runExtract, baseName, runPageOps } from "./flows";
 import { parsePageRange } from "./pageRange";
 import type { PageIndex } from "../ipc/types";
-import type { MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
+import type { ChoiceRequest, MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
 
 /** 암호 입력 — `passwordRequired` / `passwordWrong` (F-01). */
 export function PasswordDialog({
@@ -81,6 +81,44 @@ export function ConfirmDialog({
       primary={{ labelKey: confirmKey ?? "common.ok", onSelect: () => resolve(true), danger }}
     >
       <p className="text-base">{t(bodyKey, bodyParams)}</p>
+    </Dialog>
+  );
+}
+
+/**
+ * A choice prompt (`askChoice`): the options as a stack of full-width buttons, the footer's quiet
+ * button (and Esc) answers `cancel`. The first enabled option takes the focus.
+ */
+export function ChoiceDialog({
+  titleKey,
+  bodyKey,
+  bodyParams,
+  hintKey,
+  hintParams,
+  options,
+  cancel,
+  resolve,
+}: ChoiceRequest<string> & { resolve(value: string): void }) {
+  const t = useT();
+  const firstEnabled = options.findIndex((o) => !o.disabled);
+  return (
+    <Dialog titleKey={titleKey} size="sm" onClose={() => resolve(cancel.value)} cancelKey={cancel.labelKey}>
+      <p className="text-base">{t(bodyKey, bodyParams)}</p>
+      {hintKey && <p className="dlg-hint text-xs">{t(hintKey, hintParams)}</p>}
+      <div className="dlg-choices" role="group" aria-label={t(titleKey)}>
+        {options.map((o, i) => (
+          <button
+            key={o.value}
+            type="button"
+            className={o.primary ? "btn primary" : "btn"}
+            disabled={o.disabled}
+            autoFocus={i === firstEnabled}
+            onClick={() => resolve(o.value)}
+          >
+            {t(o.labelKey, o.labelParams)}
+          </button>
+        ))}
+      </div>
     </Dialog>
   );
 }

@@ -11,7 +11,7 @@ import type {
   DocId, ObjectId, ObjectsResult, PageIndex, ParagraphAlign, ParagraphProbe, Point, Rect, RedactPreview, Rgb,
 } from "../ipc/types";
 
-export type EditSession =
+export type EditSession = (
   | {
       kind: "paragraph";
       page: PageIndex;
@@ -23,6 +23,11 @@ export type EditSession =
       align: ParagraphAlign;
       /** the user already agreed to the bundled Hangul font for this session */
       consented: boolean;
+      /**
+       * Where to look for the paragraph again when the document changes under the editor: points
+       * inside its first line and that line's text, from the page listing the probe ran on.
+       */
+      firstLine?: { at: Point[]; texts: string[] };
     }
   | {
       kind: "addText";
@@ -34,7 +39,11 @@ export type EditSession =
       fontSizePt: number;
       color: Rgb;
       align: ParagraphAlign;
-    };
+    }
+) & {
+  /** set by `openSession`: which editor this is — stable across patches (a re-found probe keeps the typed text) */
+  serial?: number;
+};
 
 export interface EditSelection {
   page: PageIndex;
@@ -81,6 +90,8 @@ interface EditState {
   removeMarks(ids: number[]): void;
   /** drop the marks (and previews) of `pages`, or of every page */
   clearMarks(pages?: PageIndex[]): void;
+  /** move these marks by `dy` points (Stage 9: the content under them moved with a paragraph edit) */
+  moveMarks(ids: number[], dy: number): void;
   selectMark(id: number | null): void;
   setPreview(page: PageIndex, state: RedactPreviewState | null): void;
   setRedactOptions(patch: { fill?: Rgb; overlay?: string }): void;
@@ -88,6 +99,7 @@ interface EditState {
 }
 
 let nextMark = 1;
+let nextSession = 1;
 const NO_MARKS = { marks: [] as RedactMark[], markSel: null, previews: {} };
 
 export const useEditStore = create<EditState>((set, get) => ({
@@ -125,7 +137,7 @@ export const useEditStore = create<EditState>((set, get) => ({
   },
 
   openSession(session) {
-    set({ session, selection: null });
+    set({ session: { ...session, serial: nextSession++ }, selection: null });
   },
 
   patchSession(patch) {
@@ -176,6 +188,14 @@ export const useEditStore = create<EditState>((set, get) => ({
       marks: kept,
       previews: nextPreviews,
       markSel: kept.some((m) => m.id === markSel) ? markSel : null,
+    });
+  },
+
+  moveMarks(ids, dy) {
+    const move = new Set(ids);
+    if (!move.size || dy === 0) return;
+    set({
+      marks: get().marks.map((m) => (move.has(m.id) ? { ...m, rect: { ...m.rect, b: m.rect.b + dy, t: m.rect.t + dy } } : m)),
     });
   },
 

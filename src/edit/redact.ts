@@ -280,6 +280,38 @@ export function onDocChangedForMarks(e: DocChangedEvent): void {
   toast("redact.marksDropped");
 }
 
+/**
+ * Stage 9: a paragraph edit moved the content below it by `shifted` points (`shiftedPt`, > 0 = down)
+ * out of `band` (`movedBand`: the paragraph's column, from its old bottom down to the moved stack).
+ * Pending marks on that page in the column below the paragraph whose vertical centre lies in the band
+ * move with the content — a mark drawn with a margin around the last moved line reaches below the band
+ * and still moves — so they keep covering what they were drawn over (the engine moves annotations by
+ * the same rule). A mark that lies mostly in the band without moving (it reaches up into the edited
+ * paragraph) covers moved and unmoved content at once: it is dropped (with the notice) rather than
+ * redact the wrong thing after the move.
+ */
+export function followFlow(page: PageIndex, band: Rect, shifted: number): void {
+  if (Math.abs(shifted) < 0.05) return;
+  const marks = marksOn(page);
+  if (marks.length === 0) return;
+  const slack = 0.15 * (band.r - band.l);
+  const inColumn = (r: Rect) => r.l >= band.l - slack && r.r <= band.r + slack;
+  const moves = (r: Rect) => inColumn(r) && r.t <= band.t + 1 && (r.b + r.t) / 2 >= band.b;
+  const straddles = (r: Rect) => {
+    const across = Math.min(r.r, band.r) - Math.max(r.l, band.l);
+    const down = Math.min(r.t, band.t) - Math.max(r.b, band.b);
+    return across > 0 && down > 0.5 * (r.t - r.b);
+  };
+  const move = marks.filter((m) => moves(m.rect)).map((m) => m.id);
+  const drop = marks.filter((m) => !moves(m.rect) && straddles(m.rect)).map((m) => m.id);
+  const store = useEditStore.getState();
+  if (move.length) store.moveMarks(move, -shifted);
+  if (drop.length) {
+    store.removeMarks(drop);
+    toast("redact.marksDropped");
+  }
+}
+
 /** Re-preview every page whose marks changed (a store subscription while 편집 is active). */
 export function watchMarks(): () => void {
   for (const p of markedPages()) schedulePreview(p);

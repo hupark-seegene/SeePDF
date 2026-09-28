@@ -546,6 +546,55 @@ impl AnnotRef<'_> {
         self.bindings.is_true(ok)
     }
 
+    /// Stage 9 paragraph flow: moves every `/QuadPoints` quad by `(dx, dy)`, keeping each
+    /// quad's corner order exactly as the producer wrote it. Returns how many quads moved.
+    ///
+    /// On a markup annotation with an `/AP`, `FPDFAnnot_SetAttachmentPoints` may *grow* the
+    /// appearance `BBox` to the half-moved quads' bounds, which then squashes the drawing;
+    /// callers clear the appearance first (see `objects::flow`).
+    pub fn translate_quads(&mut self, dx: f32, dy: f32) -> usize {
+        let mut moved = 0;
+        for i in 0..self.quad_count() {
+            let mut q = FS_QUADPOINTSF {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 0.0,
+                y2: 0.0,
+                x3: 0.0,
+                y3: 0.0,
+                x4: 0.0,
+                y4: 0.0,
+            };
+            // SAFETY: `i < quad_count()`; `q` is a valid out-parameter.
+            let ok = unsafe {
+                self.bindings
+                    .FPDFAnnot_GetAttachmentPoints(self.handle, i, &mut q)
+            };
+            if !self.bindings.is_true(ok) {
+                continue;
+            }
+            let moved_q = FS_QUADPOINTSF {
+                x1: q.x1 + dx,
+                y1: q.y1 + dy,
+                x2: q.x2 + dx,
+                y2: q.y2 + dy,
+                x3: q.x3 + dx,
+                y3: q.y3 + dy,
+                x4: q.x4 + dx,
+                y4: q.y4 + dy,
+            };
+            // SAFETY: `self.handle` is live; `moved_q` is a valid in-parameter.
+            let ok = unsafe {
+                self.bindings
+                    .FPDFAnnot_SetAttachmentPoints(self.handle, i, &moved_q)
+            };
+            if self.bindings.is_true(ok) {
+                moved += 1;
+            }
+        }
+        moved
+    }
+
     /// `FPDFAnnot_SetURI` — a `/Link` annotation's URI action. Go-to-page destinations
     /// cannot be created through PDFium's public API.
     pub fn set_uri(&mut self, uri: &str) -> bool {

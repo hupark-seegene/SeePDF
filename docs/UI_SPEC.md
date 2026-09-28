@@ -112,7 +112,7 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
 | 주석 | 텍스트 상자 | `crosshair` | drag a box or click for auto-size, then edit inline | 선택 |
 | 주석 | 도장 / 서명 | ghost preview follows the cursor (a built-in 도장 shows its label) | click places, drag sizes; first use opens 도장 선택 (결재 · 승인 · 기밀, APPROVED · FINAL · DRAFT · CONFIDENTIAL, 이미지 선택…) / 서명 만들기 (그리기 · 입력 · 이미지 + 저장된 서명); the panel's 도장 변경… / 서명 변경… reopens it | 선택 |
 | 편집 | 선택 | arrow (`move` over an object) | hover outlines the object under the pointer (the smallest one); click selects, ⇧click adds/removes; a drag on empty space draws a marquee that selects the objects wholly inside it (⇧ adds; a plain click deselects); drag moves (on drop: one `transform_object` per selected object, in order, as one gesture — a part-way failure toasts "개체 N개 중 M개만 이동했습니다"); corner handles scale (⇧ or an image keeps the aspect); double-click on text opens 문단 편집; ⌫/⌦ deletes, arrows nudge 1 pt (⇧ 10); ⌘D duplicates 10 pt right and down, ⌘C / ⌘V copy and paste onto the page in view (each further paste onto a page one more 10 pt step; another page through `duplicate_objects` `targetPage`; an object that cannot go there toasts, as does a clipboard whose objects changed) — the copies are selected; a 읽기 전용 / 이동만 가능 object shows its badge + reason and refuses the gesture | 선택 해제 |
-| 편집 | 텍스트 수정 | `text` over text | click → 문단 편집 (Stage 7): the whole paragraph (`probe_paragraph`) opens in an editing box over its own area — the original masked with the page paper, the text at the paragraph's size × zoom, leading, alignment, colour and an approximate font family; a right-edge handle sets the width; a floating bar has 크기 · 색상 · 정렬 (왼쪽/가운데/오른쪽/양쪽 맞춤) · 취소 · 완료. Mixed styles show 서식이 하나로 통일됩니다. On a rotated page or view the box (mask, text, width handle) turns with the page, so the text reads the way it will be written; the bar stays upright. 완료 / ⌘↵ / a click outside commits with reflow (`edit_paragraph`, one undo step 문단 편집), Esc cancels. Characters the paragraph's font lacks ask once to switch to the SeePDF 한글 글꼴; a paragraph that grows past its area toasts that it may overlap the text below. A refused paragraph toasts its reason | 선택 |
+| 편집 | 텍스트 수정 | `text` over text | click → 문단 편집 (Stage 7): the whole paragraph (`probe_paragraph`) opens in an editing box over its own area — the original masked with the page paper, the text at the paragraph's size × zoom, leading, alignment, colour and an approximate font family; a right-edge handle sets the width; a floating bar has 크기 · 색상 · 정렬 (왼쪽/가운데/오른쪽/양쪽 맞춤) · 취소 · 완료. Mixed styles show 서식이 하나로 통일됩니다. On a rotated page or view the box (mask, text, width handle) turns with the page, so the text reads the way it will be written; the bar stays upright. 완료 / ⌘↵ / a click outside commits with reflow (`edit_paragraph`, one undo step 문단 편집), Esc cancels. Characters the paragraph's font lacks ask once to switch to the SeePDF 한글 글꼴. **The content below follows the paragraph** (Stage 9): while typing, once the text runs more than half a line past the original box a dashed line marks the original bottom and a notice says 완료하면 아래 내용이 밀립니다 (the paper-backed box covers what is below — it is not deleted); 텍스트 추가 never shows either. 완료 first asks `edit_paragraph` for a `push` dry run (nothing written), then writes with `push` — the in-column content that follows moves down by the growth (up when the paragraph got shorter), with a toast 아래 내용을 N pt 옮겼습니다 / 당겼습니다 + 실행 취소 (the edit and the moves are one undo step). When something in the way (a figure or table across the column, a footer, a box around the paragraph) or the page's bottom margin stops the push **and** the paragraph spacing cannot absorb the rest — i.e. something would really overlap — the prompt 문단이 들어갈 자리가 부족합니다 (§10) asks first; with nothing below the paragraph it says the text would run past the page's bottom margin instead. Pending 영역 표시 marks over the content that moved move with it (a mark half over moved content is dropped with 문서가 바뀌어 표시한 영역을 지웠습니다). Every call of one 완료 is pinned to the generation the paragraph was found at: when the document changes meanwhile (undo / redo under the prompt or under the editor) nothing is written — the paragraph is looked up again (inside its first line where it was, then by that line's text wherever it moved), the **same** editor stays open with the typed text (편집하는 동안 문서가 바뀌어 저장하지 않았습니다…) and 완료 writes it; if it is gone, the editor still stays open with the typed text (이 문단을 더 이상 찾을 수 없습니다 … 복사해 두거나 Esc로 닫으세요). Emptying the box and pressing 완료 deletes the paragraph and pulls what followed it up into its place (one `edit_paragraph` with no text, toast 아래 내용을 N pt 당겼습니다 + 실행 취소). A page whose rewrite would drop an inline image or a gradient refuses paragraph editing up front (edit.reason.unwritableContent); a write the engine refuses after the probe accepted the paragraph never drops what was typed — the toast says why and the editor stays open; when only the content below cannot be moved on that page, the prompt offers 겹쳐서 그대로 쓰기 instead of pushing. A commit that arrives mid-composition (a click outside) waits for the IME to finish the syllable. A refused paragraph toasts its reason | 선택 |
 | 편집 | 텍스트 추가 | `crosshair` | click → the same editing box, empty, in the tool default (12 pt black unless `toolDefaults.addText`); 완료 writes `add_text_object` sized to the typed text | 선택 |
 | 편집 | 이미지 추가 | `crosshair` | drag a box, or click for a 240 pt box at the click (kept on the page) → PNG/JPEG picker → placed inside the box with its aspect kept | 선택 |
 | 편집 | 영역 표시 | `crosshair` | drag marks a region, snapped to the whole of every text run it crosses (a run is removed whole, so the box covers it) and keeping its own extent elsewhere — shown that way while dragging; a click on text marks that run's bounds (`list_page_objects`); every mark is clipped to the page box; a click on a mark selects it (× / ⌫ removes). Marks are pending (nothing is written), kept per page, drawn hatched in every 편집 tool, and survive tool switches; leaving 편집, closing the document or opening another with marks asks 표시한 영역을 버릴까요?; undo / redo / page ops / OCR drop them (toast). Text the preview says goes although it reaches outside a mark is outlined amber | 선택 |
@@ -243,6 +243,20 @@ and a clean close (저장 / 저장 안 함 / nothing to save) call `clear_recove
 document back to clean. A failed copy toasts once per document. While an annotation drag has something hidden, a
 beat waits for the drop, ⌘S is queued until it and ⌘Z / ⇧⌘Z are ignored (nothing may capture the transient HIDDEN
 bit); image / foreign stamps and image signatures are hidden too, the ghost painting an engine snapshot of them.
+
+**문단이 들어갈 자리가 부족합니다** (Stage 9, 380 px, `askChoice`): one line saying what blocks the push and how many
+pt would overlap (the paragraph spacing already counted: a push the spacing absorbs never asks), then the answers
+stacked full width — 글자 크기 줄여 맞추기 (N%) (accent; N from a `fit` dry run, disabled with a note when even 70 %
+does not fit; writes with `fit`, toasts 글자 크기를 N%로 줄여 맞췄습니다) · 아래로 밀고 남은 부분은 겹치기 (writes with
+`push` — moved as far as there is room — and toasts how much still overlaps) — and 계속 편집 in the footer. When the
+content below cannot be moved on this page at all (its content stream cannot be rewritten), the line says 이 페이지에서는
+아래 내용을 옮길 수 없어 N pt가 겹칩니다 and the second answer is 겹쳐서 그대로 쓰기 (writes with `overlap`). With
+nothing below the paragraph (`pastBottomPt`), the line says 아래에는 다른 내용이 없지만, 문단이 페이지 아래 여백을 N pt
+넘어갑니다, the second answer is 그대로 쓰기 (페이지 아래로 넘침) and its toast 문단이 페이지 아래 여백을 N pt 넘었습니다 (also Esc and a click on the backdrop: back to the box with the typed text,
+nothing written). The first enabled answer has the focus. While any prompt is open, 편집 mode's own keys (Esc, ⌫,
+arrows, ⌘C / ⌘V / ⌘D) stay off, so Esc answers the prompt instead of cancelling the editor underneath. Leaving
+편집 (another mode, 페이지 정리, closing or replacing the document) commits an open editor first, so the prompt can
+appear there too; 계속 편집 (or a declined font) keeps the mode and the typed text.
 
 **Others**: 암호 입력 (on `passwordRequired`, retries in place) · 저장하지 않은 변경 사항 (저장 / 저장 안 함 /
 취소) · 파일 합치기 (ordered list with drag, per-file range field, warnings for forms/outline) ·
@@ -988,6 +1002,33 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `ocr.layout.block` | 단일 블록 | Single block |
 | `status.ocr` | 텍스트 인식 중… | Recognizing text… |
 | `error.busy` | 지금은 처리할 수 없습니다. 잠시 후 다시 시도해 주세요. | Busy right now. Please try again in a moment. |
+
+### 15.20a Stage 9 — the content below an edited paragraph (`edit.flow.*`)
+| Key | ko | en |
+|---|---|---|
+| `edit.flow.hint` | 완료하면 아래 내용이 밀립니다 | Content below moves down when you finish |
+| `edit.flow.blockedTitle` | 문단이 들어갈 자리가 부족합니다 | Not Enough Room for the Paragraph |
+| `edit.flow.blocked.pageBottom` | 아래 내용을 페이지 끝까지 밀어도 {{pt}}pt가 겹칩니다. | Even pushed to the bottom of the page, the content below would still overlap by {{pt}} pt. |
+| `edit.flow.blocked.obstacle` | 아래에 있는 다른 내용(그림·표·바닥글 등) 때문에 더 밀 수 없어 {{pt}}pt가 겹칩니다. | Other content below (a figure, table or footer) stops the push, so {{pt}} pt would overlap. |
+| `edit.flow.blocked.pastBottom` | 아래에는 다른 내용이 없지만, 문단이 페이지 아래 여백을 {{pt}}pt 넘어갑니다. | Nothing is below, but the paragraph would run {{pt}} pt past the page's bottom margin. |
+| `edit.flow.keepPastBottom` | 그대로 쓰기 (페이지 아래로 넘침) | Keep It (Runs Past the Page Bottom) |
+| `edit.flow.pastBottom` | 문단이 페이지 아래 여백을 {{pt}}pt 넘었습니다 | The paragraph runs {{pt}} pt past the page's bottom margin |
+| `edit.flow.docChanged` | 편집하는 동안 문서가 바뀌어 저장하지 않았습니다. 문단을 다시 찾았으니 완료를 다시 눌러 주세요 | The document changed while you were editing, so nothing was saved. The paragraph was found again — press Done again |
+| `edit.flow.paragraphGone` | 편집하는 동안 문서가 바뀌어 이 문단을 더 이상 찾을 수 없습니다. 입력한 내용은 편집 상자에 남아 있으니 복사해 두거나 Esc로 닫으세요 | The document changed while you were editing and this paragraph can no longer be found. What you typed is still in the editor — copy it, or press Esc to close |
+| `edit.flow.blocked.unmovable` | 이 페이지에서는 아래 내용을 옮길 수 없어 {{pt}}pt가 겹칩니다. | The content below cannot be moved on this page, so {{pt}} pt would overlap. |
+| `edit.flow.overlapInPlace` | 겹쳐서 그대로 쓰기 | Write It Overlapping |
+| `edit.reason.unwritableContent` | 이 페이지의 인라인 이미지나 그라데이션은 다시 쓸 수 없어 문단을 편집하면 사라집니다. 이 문단은 편집할 수 없습니다 | This page's inline images or gradients cannot be rewritten and would be lost, so this paragraph cannot be edited |
+| `edit.flow.fit` | 글자 크기 줄여 맞추기 ({{pct}}%) | Shrink text to fit ({{pct}}%) |
+| `edit.flow.fitTooSmall` | 글자를 {{pct}}%까지 줄여도 원래 자리에 다 들어가지 않습니다. | Even at {{pct}}%, the text does not fit its original area. |
+| `edit.flow.overlap` | 아래로 밀고 남은 부분은 겹치기 | Push down and overlap the rest |
+| `edit.flow.keepEditing` | 계속 편집 | Keep Editing |
+| `edit.flow.pushed` | 아래 내용을 {{pt}}pt 옮겼습니다 | Moved the content below down by {{pt}} pt |
+| `edit.flow.pulled` | 아래 내용을 {{pt}}pt 당겼습니다 | Moved the content below up by {{pt}} pt |
+| `edit.flow.pushedOverlap` | 아래 내용을 {{pt}}pt 옮겼지만 {{over}}pt는 겹칩니다 | Moved the content below down by {{pt}} pt; {{over}} pt still overlaps |
+| `edit.flow.overlaps` | 문단이 아래 내용과 {{pt}}pt 겹칩니다 | The paragraph overlaps the content below by {{pt}} pt |
+| `edit.flow.fitted` | 글자 크기를 {{pct}}%로 줄여 맞췄습니다 | Shrank the text to {{pct}}% to fit |
+
+`edit.paragraph.overflow` (Stage 7's "may overlap the text below" toast) is gone: the flow above replaces it.
 
 ### 15.21 Notes for the implementer
 

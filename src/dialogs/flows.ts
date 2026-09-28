@@ -65,8 +65,7 @@ export async function openPath(
     // a 복구 copy opens under the original document's name, not `<uuid>.pdf` (Stage 8)
     const info = await docs.open(path, password, opts.recovery?.name);
     if (info) {
-      // the document this one replaced was dealt with by the unsaved gate: its copy can go
-      if (previous && previous.docId !== info.docId) await autosave.clear(previous.docId);
+      if (previous && previous.docId !== info.docId) await releaseReplaced(previous);
       if (opts.recovery) markRecovered(info.docId, opts.recovery);
       await afterOpen(info);
       return info;
@@ -75,7 +74,8 @@ export async function openPath(
     if (error?.code === "passwordRequired" || error?.code === "passwordWrong") {
       const entered = await askPassword(baseName(path), error.code === "passwordWrong");
       if (entered === null) {
-        useDocStore.setState({ status: "empty", error: null });
+        // 취소 on the password prompt: whatever was on screen stays, loaded and current
+        useDocStore.setState({ status: previous ? "ready" : "empty", error: null });
         return null;
       }
       password = entered;
@@ -85,8 +85,30 @@ export async function openPath(
       tone: "danger",
       detail: error?.message,
     });
+    // A failed open replaces nothing: `docs.open` kept `docId` / `info`, so the previous document
+    // is still displayed and still open in the engine — it must not be closed, and the store goes
+    // back to `ready` (the toast carries the error; the welcome banner is only for an empty window).
+    if (previous) useDocStore.setState({ status: "ready", error: null });
     return null;
   }
+}
+
+/**
+ * The document `openPath` (or `mergePaths`) just replaced in this window. The unsaved gate already
+ * dealt with it, so its 복구 copy goes (cleared first, while the engine can still name it), and then
+ * the engine lets go of it — before this, every opened file stayed loaded until the app quit.
+ *
+ * Multi-window: `close_document` has no guard of its own (it closes whatever id it is given, even if
+ * another window's `window_bind_document` still points at it). Closing here is safe because
+ * `previous` is exactly the document this window is bound to (`docStore` binds on open / adopt /
+ * close), and no document is shared between windows: every window — `open_in_new_window` included —
+ * opens its own file with `open_document` (or builds one with `merge_documents`), which allocates a
+ * fresh docId each time. If windows ever share a docId, this must first ask the backend whether
+ * another window is still bound to it.
+ */
+async function releaseReplaced(previous: DocInfo): Promise<void> {
+  await autosave.clear(previous.docId);
+  await api.closeDocument({ docId: previous.docId }).catch(() => undefined);
 }
 
 async function afterOpen(info: DocInfo): Promise<void> {
@@ -136,22 +158,35 @@ export async function touchRecent(info: DocInfo): Promise<void> {
   await useAppStore.getState().refreshRecents();
 }
 
-/** 파일 합치기 — the merged document becomes the window's document (it has no path yet). */
-export async function mergePaths(inputs: { path: string; range?: string }[]): Promise<DocInfo | null> {
+/**
+ * 파일 합치기 — the merged document becomes the window's document (it has no path yet). It replaces
+ * the current document exactly like `openPath` does: the leave guard (pending 편집 marks, then
+ * 저장 / 저장 안 함 / 취소) runs first, and the replaced document is released only once the merge
+ * has succeeded — a failed merge leaves it displayed and open.
+ */
+export async function mergePaths(
+  inputs: { path: string; range?: string }[],
+  opts: { guard?: boolean } = {},
+): Promise<DocInfo | null> {
+  if (opts.guard !== false && !(await confirmLeaveDocument())) return null;
+  const previous = useDocStore.getState().info;
+  let merged: Awaited<ReturnType<typeof api.mergeDocuments>>;
   try {
-    const { info, warnings } = await api.mergeDocuments({ inputs });
-    usePagesStore.getState().reset();
-    useDocStore.getState().adopt(info);
-    for (const w of warnings) {
-      if (w === "formsDropped") toast("pages.merge.formWarning", undefined, { tone: "info" });
-      if (w === "outlineDropped") toast("pages.merge.outlineWarning", undefined, { tone: "info" });
-    }
-    toast("pages.merge.done", { count: inputs.length }, { tone: "success" });
-    return info;
+    merged = await api.mergeDocuments({ inputs });
   } catch (e) {
     toast("error.openFailed", undefined, { tone: "danger", detail: message(e) });
     return null;
   }
+  const { info, warnings } = merged;
+  usePagesStore.getState().reset();
+  useDocStore.getState().adopt(info);
+  if (previous && previous.docId !== info.docId) await releaseReplaced(previous);
+  for (const w of warnings) {
+    if (w === "formsDropped") toast("pages.merge.formWarning", undefined, { tone: "info" });
+    if (w === "outlineDropped") toast("pages.merge.outlineWarning", undefined, { tone: "info" });
+  }
+  toast("pages.merge.done", { count: inputs.length }, { tone: "success" });
+  return info;
 }
 
 // ---------------------------------------------------------------------------

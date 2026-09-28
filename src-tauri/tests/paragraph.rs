@@ -12,8 +12,8 @@ use seepdf_lib::engine::registry;
 use seepdf_lib::engine::save;
 use seepdf_lib::engine::text::layer;
 use seepdf_lib::ipc::types::{
-    NotEditableReason, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphProbe,
-    TextEditStrategy,
+    NotEditableReason, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphFlow,
+    ParagraphProbe, TextEditStrategy,
 };
 use seepdf_lib::ipc::{EngineError, ErrorCode};
 
@@ -129,7 +129,14 @@ fn edit_of(p: &ParagraphProbe, text: &str) -> ParagraphEdit {
         font_size_pt: None,
         color: None,
         align: None,
+        flow: None,
+        dry_run: false,
     }
+}
+
+fn overlap(mut e: ParagraphEdit) -> ParagraphEdit {
+    e.flow = Some(ParagraphFlow::Overlap);
+    e
 }
 
 fn norm(s: &str) -> String {
@@ -242,9 +249,16 @@ fn paragraph_edit_shorter_and_longer() {
     let a = probe(&doc.doc_id, 0, 200.0, 690.0).unwrap();
     let c_before = probe(&doc.doc_id, 0, 100.0, 623.0).unwrap();
 
-    // Shorter: one line, no overflow, the rest of the page untouched.
-    let short = edit_with(&doc.doc_id, 0, a.doc_generation, edit_of(&a, "Short text now."), false)
-        .expect("edit shorter");
+    // Shorter: one line, no overflow, the rest of the page untouched (`overlap` is the Stage 7
+    // behaviour; the default `push` flow is pinned in `tests/paragraph_flow.rs`).
+    let short = edit_with(
+        &doc.doc_id,
+        0,
+        a.doc_generation,
+        overlap(edit_of(&a, "Short text now.")),
+        false,
+    )
+    .expect("edit shorter");
     assert_eq!(short.lines, 1);
     assert_eq!(short.overflow_pt, 0.0);
     assert!(short.rect.t <= a.rect.t + 1.0 && (short.rect.l - a.rect.l).abs() < 1.5);
@@ -262,12 +276,15 @@ fn paragraph_edit_shorter_and_longer() {
     let long = format!("{PARA_A_TEXT} {PARA_A_TEXT}");
     // Wide enough that the longer paragraph stays clear of paragraph C (overlapping text is
     // exactly the overflow the UI warns about, and re-detecting it is ambiguous).
-    let mut e = edit_of(&a2, &long);
+    let mut e = overlap(edit_of(&a2, &long));
     e.width = Some(460.0);
     let result = edit_with(&doc.doc_id, 0, a2.doc_generation, e, false).expect("edit longer");
     assert!(result.lines >= 4 && result.lines > a2.lines, "{}", result.lines);
     assert!(result.rect.b > 630.0, "clear of paragraph C: {:?}", result.rect);
-    assert!(result.overflow_pt > 0.0);
+    // Stage 9 meaning: how far the new text runs over what is below — nothing here.
+    assert_eq!(result.overflow_pt, 0.0);
+    assert_eq!((result.shifted_pt, result.moved_objects), (0.0, 0), "overlap moves nothing");
+    assert_eq!(probe(&doc.doc_id, 0, 100.0, 623.0).unwrap().rect, c_before.rect);
     let text = saved_text(&doc.doc_id, 0);
     assert!(text.contains(&norm(&long)), "in order: {text}");
     let again = probe(&doc.doc_id, 0, 80.0, 705.0).unwrap();
@@ -305,8 +322,12 @@ fn paragraph_edit_korean_needs_consent() {
     assert_eq!(p.text, korean);
     assert_eq!(p.strategy, TextEditStrategy::InPlace);
 
-    // The probe of Helvetica text reports what a Korean edit would need.
-    let c = probe(&doc.doc_id, 0, 100.0, 623.0).unwrap();
+    // The probe of Helvetica text reports what a Korean edit would need. Paragraph C followed
+    // the edited paragraph (Stage 9 push), by exactly the change in line count.
+    let moved = (4.0 - done.lines as f32) * 14.4;
+    let c = probe(&doc.doc_id, 0, 100.0, 623.0 + moved).unwrap();
+    assert_eq!(c.text, PARA_C_TEXT);
+    assert!((done.shifted_pt + moved).abs() < 0.05, "{} vs {moved}", done.shifted_pt);
     assert_eq!(c.strategy, TextEditStrategy::InPlace);
 }
 

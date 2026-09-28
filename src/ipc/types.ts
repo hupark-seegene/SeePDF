@@ -229,20 +229,42 @@ export interface ParagraphProbe {
   lines: number;
   strategy: 'inPlace' | 'replaceFont' | 'refused';        // for the CURRENT text, as TextEditProbe
   substituteFont?: string;
-  reason?: PageObject['reason'] | 'glyphsMissing' | 'rotatedText';
+  // 'unwritableContent' (Stage 9): editing would rewrite a content stream holding an inline image or a
+  // shading, which PDFium cannot write back — refused rather than lose it
+  reason?: PageObject['reason'] | 'glyphsMissing' | 'rotatedText' | 'unwritableContent';
   docGeneration?: DocGeneration;  // the generation `objectIds` belong to (the engine sends it; optional here)
 }
+/**
+ * Stage 9: what happens to the content below a paragraph whose height changed.
+ * `push` moves the in-column content that follows it (down when it grew, up when it shrank) as far
+ * as the first obstacle / the page's bottom margin allows; `overlap` moves nothing (Stage 7
+ * behaviour); `fit` moves nothing and scales font size + leading (0.7 … 1) to fit the original height.
+ */
+export type ParagraphFlow = 'push' | 'overlap' | 'fit';
 export interface ParagraphEdit {
   objectIds: ObjectId[];          // from the probe
-  text: string;                   // '\n' = hard line break inside the paragraph
+  text: string;                   // '\n' = hard line break inside the paragraph; empty = delete the paragraph
+                                  // (with flow 'push', what follows moves up into its place)
   width?: number;                 // new box width in pt (default: probe rect width)
   fontSizePt?: number; color?: Rgb; align?: ParagraphAlign;
+  flow?: ParagraphFlow;           // default 'push'
+  dryRun?: boolean;               // default false: compute the layout + flow plan, change nothing, no undo entry
 }
 export interface ParagraphEditResult {
-  objects: ObjectsResult;         // page objects after the edit
+  objects: ObjectsResult;         // page objects after the edit (a dry run: `objects` is empty — never store it)
   rect: Rect;                     // box actually occupied by the new text
   lines: number;
-  overflowPt: number;             // how far the new text extends below the original rect bottom (0 if not)
+  overflowPt: number;             // how far the NEW text still extends over content below after the flow (0 if not, or nothing is below)
+  shiftedPt: number;              // how far the content below moved: > 0 pushed down, < 0 pulled up, 0 none
+  movedObjects: number;           // page objects moved by the flow
+  movedAnnotations: number;       // annotations moved with them
+  roomPt: number;                 // how far the content below could move down before the page bottom margin / an obstacle
+  // push could not make all the room: overflowPt = what still overlaps after pushing roomPt (the paragraph
+  // spacing counts); 'pageBottom' with overflowPt 0 and pastBottomPt > 0 = nothing below, the text runs past the margin
+  blocked?: 'pageBottom' | 'obstacle';
+  fitScale?: number;              // flow 'fit': font size + leading factor applied (0.7 … 1)
+  pastBottomPt?: number;          // nothing below the paragraph: how far the new text runs past the page's bottom margin
+  movedBand?: Rect;               // content moved: the region it came from (column × paragraph bottom … stack bottom)
 }
 
 // ---------------------------------------------------------------------------

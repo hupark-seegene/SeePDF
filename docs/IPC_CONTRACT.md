@@ -447,22 +447,44 @@ export interface ParagraphProbe {
   lines: number;
   strategy: 'inPlace' | 'replaceFont' | 'refused';        // for the CURRENT text, as TextEditProbe
   substituteFont?: string;
-  reason?: PageObject['reason'] | 'glyphsMissing' | 'rotatedText';
+  reason?: PageObject['reason'] | 'glyphsMissing' | 'rotatedText'
+    | 'unwritableContent';        // Stage 9: the edit would drop an inline image / shading PDFium cannot write back
   docGeneration: DocGeneration;   // additive: the generation objectIds belong to (use as expectGeneration)
 }
 probe_paragraph(a: { docId: DocId; page: PageIndex; at: Point }): Promise<ParagraphProbe | null>   // null = no text there
 
+export type ParagraphFlow = 'push' | 'overlap' | 'fit';                 // Stage 9
 export interface ParagraphEdit {
   objectIds: ObjectId[];          // from the probe
-  text: string;                   // '\n' = hard line break
+  text: string;                   // '\n' = hard line break; empty / whitespace-only = delete the paragraph
+                                  // (round 2: with 'push' what follows moves up into its place; lines 0)
   width?: number;                 // box width in pt, measured from rect.l (default: rect width)
   fontSizePt?: number; color?: Rgb; align?: ParagraphProbe['align'];
+  flow?: ParagraphFlow;           // Stage 9, default 'push'
+  dryRun?: boolean;               // Stage 9, default false: compute the layout + flow plan, change nothing
 }
 export interface ParagraphEditResult {
-  objects: { objects: PageObject[]; docGeneration: DocGeneration };
-  rect: Rect;                     // box the new text occupies (union of the new objects' bounds)
+  objects: { objects: PageObject[]; docGeneration: DocGeneration };   // dry run: objects EMPTY (page unchanged,
+                                  // not re-listed), docGeneration = the current one
+  rect: Rect;                     // box the new text occupies (union of the new objects' bounds);
+                                  // deleted: a zero-height box at the paragraph's top
   lines: number;                  // blank lines (from '\n\n') included
-  overflowPt: number;             // how far below the original rect's bottom the new text reaches (0 if not)
+  overflowPt: number;             // how far the NEW text still extends over content below after the flow;
+                                  // 0 when push made the room it needed (the paragraph spacing counts),
+                                  // and 0 when NOTHING is below (see pastBottomPt)
+  shiftedPt: number;              // Stage 9: content below moved > 0 down, < 0 up, 0 none
+  movedObjects: number;           // Stage 9: page objects moved by the flow
+  movedAnnotations: number;       // Stage 9: annotations moved with them
+  roomPt: number;                 // Stage 9: how far the content below could move down (page bottom margin /
+                                  // obstacle); with nothing movable, how far the paragraph's line grid may grow
+  blocked?: 'pageBottom' | 'obstacle';   // Stage 9, push only: set only when something still overlaps
+                                  // (overflowPt > 0) — or, with nothing below, the text runs past the floor
+  fitScale?: number;              // Stage 9, fit only: factor applied to font size + leading (0.7 … 1)
+  pastBottomPt: number;           // Stage 9: nothing below the paragraph — how far the new text runs past the
+                                  // page's bottom margin (the floor); 0 otherwise
+  movedBand?: Rect;               // Stage 9, when content moved: the region it came from (column × original
+                                  // bottom + ¼ size … stack bottom − ¼ size); the UI moves pending 영역 표시
+                                  // marks inside it by −shiftedPt, as the engine moves annotations
 }
 edit_paragraph(a: { docId: DocId; page: PageIndex; expectGeneration: DocGeneration; edit: ParagraphEdit;
   allowFontSubstitution: boolean }): Promise<ParagraphEditResult>
@@ -475,19 +497,128 @@ x-range; a short left-flush line whose successor's first word would have fitted 
 by > 0.5·size starts a new one (not when centred, or flush right with an inset > 3·size). Alignment from edge
 variance (justify needs ≥ 3 lines). A click on rotated text → `refused/rotatedText`, on a Form XObject with
 text → `refused/insideXObject`, on the invisible OCR layer → `refused/invisible`; a `noUnicode` run refuses
-the paragraph. Coverage + advance widths come from one **trial object** in the candidate font (every distinct
+the paragraph. SeePDF's own stamps (`SeePDF:Stamp`: headers, footers, watermarks) never join a paragraph —
+a header 4 pt above a first line used to be folded into it and deleted by the edit — and an edit naming a
+stamp's object is `invalidArgument`. Coverage + advance widths come from one **trial object** in the candidate font (every distinct
 glyph, read back through a fresh text page, placed off-page — PDFium's fake-bold filter drops a repeated
 glyph near the same position) on a scratch page that is never regenerated, so the probe does not mutate.
 A font without a usable space glyph (LaTeX subsets) stays `inPlace`: words become separate objects with a
 0.3 em space. Edit: `stale` on generation mismatch; `fontCoverage` when the paragraph's font cannot draw the
 new text and `allowFontSubstitution` is false (substitute: Helvetica for Latin-1, else SeePDF Hangul);
 greedy breaking at spaces, by character only for a word wider than the box; first line honours the indent;
-justify = one object per word (last line left), otherwise one object per line. New objects are appended,
-the old ones removed, nothing else moves; one `registry::mutate` = one undo step `undo.paragraphEdit`.
-`fontSizePt` scales the line height proportionally. Known gaps: hanging indents / bulleted lists detect
+justify = one object per word (last line left), the stretched word gap capped at 0.75 × size (a line that
+would need more stays short of the right edge, so it never reads back as two lines — the probe splits at
+1 × size); a paragraph whose non-last lines are ≥ 75 % flush right still detects as justify, and a line
+whose word gaps are all ≥ 0.55 × size counts as flush (a justified line that stopped short at the cap,
+long words), so a justified paragraph stays justified edit after edit. New objects
+are appended, the old ones removed (PDFium writes objects it did not parse into a new content stream at
+the end of the page, so the edited paragraph is read — copied, searched — after the rest of the page; the
+public API cannot place it back in its stream); one `registry::mutate` = one undo step `undo.paragraphEdit` (text **and** every flow
+move). `fontSizePt` scales the line height proportionally. Known gaps: hanging indents / bulleted lists detect
 line by line; kerning, horizontal scaling, shear (synthetic italic), stroke colour and per-run styles are
 not preserved (mixedStyles merges to the dominant style); right-aligned paragraphs with small ragged-left
 insets may split.
+
+**Flow (Stage 9, `engine/objects/flow.rs`).** A longer paragraph used to be drawn over what follows it.
+All geometry is in user space: detected text is upright there and lines are laid out at `baseline − row ×
+leading`, so "below" is −y — on a `/Rotate`d page that is the paragraph's own reading direction.
+* **Growth** compares line grids, not ink: bottom = last baseline − 0.25 × size (original: detected lines;
+  new: `firstBaseline − (lines − 1) × leading`). A descender typed into the last line moves nothing; one
+  more line moves the content below by exactly one leading.
+* **Column** = x-range of the original rect ∪ the new rect, **widened to the text block**: a text line
+  below that overlaps the column and starts (or ends) within 2.5 × size of its left (right) edge, or wraps
+  it on both sides, widens it — the body text under a one-line, ragged or block-quote paragraph follows it
+  instead of being an obstacle — unless that line also reaches into another column's content (content
+  beside the column, from the paragraph's top down to the line, that does not hug the column's edge): a
+  caption spanning two columns stays an obstacle. **Below** = top ≤ original ink bottom + 0.25 × size.
+  **In-column** = overlap with the column ≥ 60 % of the object's width and ≤ 15 % of the column width
+  sticking out on either side (a right-column paragraph never takes in left-column content).
+  **Continuation lines**: a text line below that starts within 0.5 × size of the left edge of a movable
+  line 0.8 … 2.2 × size above it is movable too (a paragraph's short last line is never an obstacle inside
+  its own paragraph). **List markers**: a narrow object (≤ 3 × size) just left of a movable line's text (≤
+  2 × size away), on its baseline band, that belongs to no other column moves with it.
+* **Obstacles**: objects below that overlap the column but are not in it (full-width figures / tables),
+  AcroForm widgets below that overlap it, SeePDF **header / footer stamps** below that overlap it (a
+  stamped page number), the **running footer**, the bottom edge of a **container** (a non-text object
+  overlapping ≥ half the column that starts above the paragraph's bottom and ends below it — a frame or
+  shaded box, a table grid drawn as one path; its bounds' bottom + 3 pt, clear of the stroke; never an
+  object taller than half the page — a page background or page frame), and the top
+  of an in-column object that **straddles** an obstacle's top (a line wrapped beside a figure that sticks
+  out of the column cannot move, so it is in the way itself).
+  **Running footer** = among the body content overlapping the column (not the whole page: on two columns
+  the other column's lines would hide the gap), the lowest band, separated from everything above by ≥ 2 ×
+  the page's **line pitch** (1.5 × for a band narrower than a quarter of the column — a page number at
+  LaTeX's `\footskip` or Word's footer distance; 0.75 × for such a band inside the bottom 72 pt) and
+  starting in the bottom 20 % of the crop box — **and looking like a footer**: short (a page number),
+  inside the bottom 72 pt, centred in the column, set smaller than the body above it (≤ 0.9 × its median
+  size: footnotes, copyright blocks), or starting with a thin rule (a footnote separator). A letter's
+  signature block (left-aligned, body size, above the bottom inch) is body content and follows the text.
+  The pitch is the median baseline step of the text in the column (the paragraph's own leading when there
+  are fewer than 3 steps), so it does not depend on which paragraph is edited. Never moved; not a footer
+  when the edited paragraph is in it.
+  **Movable** = below, in-column, not footer, bottom at or above the first (highest) obstacle's top: text,
+  image, path, Form XObject and shading objects, translated in place with their clip paths. Never moved and
+  never an obstacle: watermark stamps (and stamps without a role), invisible text (an OCR layer stays on
+  its scan), anything above the paragraph.
+* **Floor** (page bottom margin) = `max(crop.b, min(lowest body bottom, crop.b + 18))` — content may move
+  into the bottom margin down to 18 pt above the crop box edge, never below content that already sits lower,
+  never out of the crop box (body = not stamp / footer, not taller than half the page).
+  **roomPt** = from the bottom of the movable stack (the paragraph's own line-grid bottom when nothing is
+  movable) down to the higher of the first obstacle's top and the floor; `blocked` names which one limits.
+  **gap** / **free** are measured from the paragraph's **line grid** (the same reference as the growth, not
+  its ink) and keep a line's **clearance** (`leading − size`): gap = grid bottom − top of the highest
+  movable object − clearance; free = grid bottom − top of the first content or obstacle below − clearance
+  (or down to the floor, without clearance), both ≥ 0. **reach** = how far the new text's ink reaches below
+  the original grid bottom = `max(growth, grid bottom − new ink bottom)` (a descender deeper than the
+  nominal ¼ size reaches further).
+* **push**: growth > 0 → `need = max(0, reach − gap)` (the least shift that keeps the new ink a clearance
+  above what follows); the movable set moves down by `min(max(growth, need), roomPt)`; `remaining = need −
+  shift`; only `remaining > 0` is `blocked` with `overflowPt = remaining` (it includes the clearance). With
+  nothing movable but something in the way, `overflowPt = reach − free`. growth < 0 → it moves up by
+  |growth|. **Nothing below** (no content, footer, header / footer stamp or widget below in the column — a
+  frame's edge does not count): nothing moves; reach > free → `blocked` (`'pageBottom'`, or `'obstacle'`
+  when a frame's bottom edge limits), `overflowPt = 0` and `pastBottomPt = reach − free` — the text runs
+  past the margin, it overlaps nothing. **overlap**: nothing moves; `overflowPt = max(0, reach − free)`
+  (with nothing below, that amount is `pastBottomPt` instead). **fit**: nothing moves; font size and
+  leading × the largest factor in {1, 0.98, …, 0.70} whose grid fits the original bottom (`fitScale`); if
+  0.70 does not fit, the remainder as for overlap. **Empty text** deletes the paragraph; with push, what
+  follows moves up by `paragraph top − top of the first movable object` (it takes the paragraph's place).
+* **Annotations** in the column below the paragraph whose vertical **centre** lies in the moved band (top
+  ≤ original bottom + tol, bottom ≥ stack bottom − tol) move by the same distance — a box drawn around the
+  last moved line reaches below the band and still moves: `/Rect` always (an existing appearance follows it through the
+  `/Rect`↔`/BBox` matrix); text markup also moves its `/QuadPoints` and has its appearance cleared (PDFium
+  regenerates it at the next render — the pre-save render included); links move their `/QuadPoints`; ink
+  moves its `/InkList` and keeps its appearance. Widgets and popups never move. Keys PDFium cannot write
+  (`/L`, `/Vertices`, `/CL`) keep their old values; the appearance moves.
+* **dryRun**: the same layout, plan and result without mutating — no generation bump, no undo entry, the
+  trial objects dropped with a never-regenerated scratch page; a substitute font (Helvetica / SeePDF Hangul)
+  is measured in a throwaway document so nothing is embedded; the page is not re-listed (`objects.objects`
+  is empty — on a dense page the listing costs more than the plan). `stale`, `fontCoverage`,
+  `unwritableContent` and every validation error are reported exactly as for the real edit. The
+  serialised document is byte-identical afterwards (except the random second half of the trailer `/ID`,
+  which differs between any two saves).
+* **Unwritable content / content-stream rehearsal** (`raw::page::rewrite_set`): PDFium's content
+  generator skips inline images (`BI … ID … EI`) and shading objects (`sh`) in every content stream it
+  regenerates, and the public API cannot tell an inline image from an XObject one. It also writes each
+  object whole (state, clip, matrix) — but a page's content streams are one stream cut into pieces, and a
+  producer may cut inside an object or a `q … Q` block (160F-2019.pdf: a `Tm` ends one piece and its `TJ`
+  starts the next; a clip opened in one piece is closed in the next), so regenerating one piece used to
+  draw the next piece's text at another object's matrix and leave a clip open over the rest of the page.
+  So the probe, the dry run and the write rehearse the rewrite on a copy of the page in a throw-away
+  document (`FPDF_ImportPagesByIndex`; the streams of the paragraph's objects and of the objects the flow
+  moves regenerated, the copy re-parsed, every object's matrix, font size and clip compared): an object
+  that comes back moved, clipped or missing is regenerated too (its stream writes it whole); when that does
+  not settle, every stream of the page is regenerated (then no piece depends on another — at the price
+  PDFium's generator always has for rewritten text: `TJ` kerning and `Tc` / `Tw` are not written back, so
+  long kerned lines drift by about a glyph). Refused (`probe: refused/unwritableContent`; edit:
+  `unsupported`, `detail "unwritableContent"`) only when the paragraph's own streams would lose an inline
+  image or a shading; when only the streams of the content **below** would, that content stays where it is
+  and is in the way (push: nothing moves, `blocked: 'obstacle'`, `overflowPt` as for overlap), so the
+  prompt still offers fit / overlap. The write re-parses the page and rolls the mutation back if anything
+  went missing. Content in a stream the edit does not touch (a header drawn in a stream of its own) is safe.
+* Known gaps: third-party artifacts that are not `SeePDF:Stamp` (e.g. an Acrobat watermark wider than the
+  column below the paragraph) are treated as content / obstacles; the new text is written into a stream of
+  its own at the end of the page (reading order, above).
 
 ### 7.4a Page stamps — watermark, header, footer (P1-4, Stage 4)
 
@@ -640,9 +771,11 @@ page, then `done{elapsedMs, report}` — or `cancelled` / `error`. The open docu
   8-bit gray; PDFium writes Flate, which can come out larger — `afterBytes` shows it).
 * The result is verified (`save::verify_bytes`) and kept as the document's single pending entry
   (a new estimate replaces it; close, undo/redo, save or any reload drop it).
-* `compress_apply`: unknown/spent token → `notFound`; the document changed since the estimate →
-  `stale`; otherwise the document is replaced from the pending bytes (`mutate_bytes`), one undo step,
-  and the returned `DocInfo.undoLabel` is `undo.compress`. `compress_discard` of an unknown token is a
+* `compress_apply`: unknown/spent token → `notFound`; a result that saves nothing (`imagesDownsampled
+  == 0` or `afterBytes >= beforeBytes` — the dialog disables 적용 for exactly these) is spent and the
+  current `DocInfo` comes back unchanged (no undo step, not dirty, same generation); the document
+  changed since the estimate → `stale`; otherwise the document is replaced from the pending bytes
+  (`mutate_bytes`), one undo step, and the returned `DocInfo.undoLabel` is `undo.compress`. `compress_discard` of an unknown token is a
   no-op. Cancel with `cancel_job`.
 
 ### 7.6b Compare two documents (P1-6, Stage 5)

@@ -47,6 +47,8 @@ Acrobat show exactly what SeePDF showed.
   image, 9 anchors, rotation, opacity, page range — one undo step, correct on rotated pages
 * 압축: downsample images to 300 / 150 / 96 DPI on a scratch copy, show the measured before/after
   size, then apply (one undo step) or discard
+* 문단 편집: click a paragraph, retype it, and the text re-flows in its box; the content below moves
+  down or up to make room, with fit / overlap options when the page is full (one undo step)
 * 문서 비교: word-level text diff of two PDFs page by page, shown side by side with deletions marked
   on the left and insertions on the right, 이전/다음 변경 navigation and 변경만 보기
 * 자동 저장 / 복구: while a document has unsaved changes, a recovery copy is kept (every 30 s / 1 min /

@@ -56,7 +56,10 @@ interface MockDoc {
 const docs = new Map<DocId, MockDoc>();
 const jobs = new Map<JobId, { cancel: () => void }>();
 /** 압축 예상 results waiting for 적용 / 취소: at most one per document, like the engine. */
-const pendingCompress = new Map<DocId, { token: number; afterBytes: number }>();
+const pendingCompress = new Map<
+  DocId,
+  { token: number; beforeBytes: number; afterBytes: number; imagesDownsampled: number }
+>();
 let nextCompressToken = 1;
 /** Recovery copies (P1-8): what `$APPDATA/SeePDF/recovery` would hold, and each open doc's id. */
 const recoveryFiles = new Map<string, RecoveryEntry>();
@@ -823,31 +826,32 @@ export const mock = {
     const fontName = first.fontName ?? "Helvetica";
     const hangul = needsHangulFont(fontName, a.edit.text, members.map((o) => o.text ?? "").join(""));
     if (hangul && !a.allowFontSubstitution) throw err("fontCoverage", "the paragraph font cannot render the new text");
-    const rect = members.reduce((u, o) => unionR(u, o.rect), members[0].rect);
-    const size = a.edit.fontSizePt ?? first.fontSizePt ?? 11;
-    const color = a.edit.color ?? first.color ?? [0, 0, 0];
-    const width = a.edit.width ?? rect.r - rect.l;
-    const leading = members.length > 1 ? Math.abs(members[0].matrix[5] - members[1].matrix[5]) : size * 1.2;
-    const wrapped = wrapText(a.edit.text, width, size);
+    const plan = planParagraphEdit(d, a.page, a.edit, hangul ? "SeePDF Hangul" : fontName);
+    const fields = {
+      rect: plan.box,
+      lines: plan.lines,
+      overflowPt: round2(plan.overflowPt),
+      shiftedPt: round2(plan.shiftPt),
+      movedObjects: plan.shiftPt !== 0 ? plan.movable.length : 0,
+      movedAnnotations: plan.shiftPt !== 0 ? plan.annots.length : 0,
+      roomPt: round2(plan.roomPt),
+      pastBottomPt: round2(plan.pastBottomPt),
+      ...(plan.blocked ? { blocked: plan.blocked } : null),
+      ...(plan.fitScale !== undefined ? { fitScale: plan.fitScale } : null),
+      ...(plan.shiftPt !== 0 && plan.band ? { movedBand: plan.band } : null),
+    };
+    // a dry run answers the same fields and leaves everything as it was: no generation, no undo step,
+    // and (like the engine) no page listing
+    if (a.edit.dryRun) return { objects: { docGeneration: d.info.docGeneration, objects: [] }, ...fields };
     return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.paragraphEdit" }, () => {
+      const dy = -plan.shiftPt;
+      if (dy !== 0) {
+        for (const i of plan.movable) translateObj(list[i], dy);
+        for (const annot of plan.annots) translateAnnot(annot, dy);
+      }
       const drop = new Set(a.edit.objectIds);
-      const kept = list.filter((_, i) => !drop.has(i));
-      const top = first.matrix[5];
-      let used: Rect | null = null;
-      wrapped.forEach((line, i) => {
-        if (!line) return;
-        const o = textObj(line, rect.l, top - i * leading, measure(line, size), size, color, hangul ? "SeePDF Hangul" : fontName, first.ours);
-        used = used ? unionR(used, o.rect) : o.rect;
-        kept.push(o);
-      });
-      d.objects.set(a.page, kept);
-      const box: Rect = used ?? { l: rect.l, b: rect.t, r: rect.l, t: rect.t };
-      return () => ({
-        objects: listObjects(d, a.page),
-        rect: box,
-        lines: wrapped.length,
-        overflowPt: Math.max(0, Math.round((rect.b - box.b) * 100) / 100),
-      });
+      d.objects.set(a.page, [...list.filter((_, i) => !drop.has(i)), ...plan.objects]);
+      return () => ({ objects: listObjects(d, a.page), ...fields });
     })();
   },
 
@@ -971,11 +975,9 @@ export const mock = {
       report: (elapsedMs) => {
         const token = nextCompressToken++;
         const afterBytes = Math.round(before * ratio);
-        pendingCompress.set(a.docId, { token, afterBytes });
-        return {
-          token, beforeBytes: before, afterBytes, imagesTotal,
-          imagesDownsampled: a.options.targetDpi === 300 ? 0 : imagesTotal - 1, elapsedMs,
-        };
+        const imagesDownsampled = a.options.targetDpi === 300 ? 0 : imagesTotal - 1;
+        pendingCompress.set(a.docId, { token, beforeBytes: before, afterBytes, imagesDownsampled });
+        return { token, beforeBytes: before, afterBytes, imagesTotal, imagesDownsampled, elapsedMs };
       },
     });
   },
@@ -984,6 +986,8 @@ export const mock = {
     const pending = pendingCompress.get(a.docId);
     if (!pending || pending.token !== a.token) throw err("notFound", `compress result ${a.token}`);
     pendingCompress.delete(a.docId);
+    // like the engine: a result that saves nothing is spent without touching the document
+    if (pending.imagesDownsampled === 0 || pending.afterBytes >= pending.beforeBytes) return structuredClone(d.info);
     mutate(d, { reason: "edit", pages: "all", structure: true, undoLabel: "undo.compress" }, () => {
       d.info.bytes = pending.afterBytes;
     });
@@ -1098,8 +1102,11 @@ export const mock = {
     const prev = d.undo.pop();
     if (!prev) throw err("invalidArgument", "nothing to undo");
     d.redo.push(snapshot(d));
+    // The engine's generation only ever grows (`doc.generation += 1` after the restore): a
+    // generation is never handed out twice, so an id pinned to it cannot name another state.
+    const generation = d.info.docGeneration;
     restore(d, prev);
-    d.info.docGeneration += 1;
+    d.info.docGeneration = generation + 1;
     d.info.canUndo = d.undo.length > 0;
     d.info.canRedo = true;
     d.info.redoLabel = d.redo[d.redo.length - 1]?.info.undoLabel ?? null;
@@ -1115,8 +1122,9 @@ export const mock = {
     const next = d.redo.pop();
     if (!next) throw err("invalidArgument", "nothing to redo");
     d.undo.push(snapshot(d));
+    const generation = d.info.docGeneration;
     restore(d, next);
-    d.info.docGeneration += 1;
+    d.info.docGeneration = generation + 1;
     d.info.canUndo = true;
     d.info.canRedo = d.redo.length > 0;
     d.info.redoLabel = d.redo[d.redo.length - 1]?.info.undoLabel ?? null;
@@ -1641,6 +1649,158 @@ function textObj(text: string, x: number, baseline: number, width: number, size:
     fontSizePt: size,
     color,
     editable: "full",
+  };
+}
+
+const round2 = (v: number) => Math.round(v * 100) / 100 || 0;
+
+function translateObj(o: MockObj, dy: number): void {
+  o.rect = { ...o.rect, b: o.rect.b + dy, t: o.rect.t + dy };
+  o.matrix = [o.matrix[0], o.matrix[1], o.matrix[2], o.matrix[3], o.matrix[4], o.matrix[5] + dy];
+}
+
+function translateAnnot(a: Annot, dy: number): void {
+  a.rect = { ...a.rect, b: a.rect.b + dy, t: a.rect.t + dy };
+  if (a.quads) a.quads = a.quads.map((q) => ({ ...q, b: q.b + dy, t: q.t + dy }));
+  if (a.inkPaths) a.inkPaths = a.inkPaths.map((path) => path.map((v, k) => (k % 2 ? v + dy : v)));
+  if (a.linePoints) {
+    const [x1, y1, x2, y2] = a.linePoints;
+    a.linePoints = [x1, y1 + dy, x2, y2 + dy];
+  }
+}
+
+interface ParagraphPlan {
+  /** the new text objects, laid out downward from the paragraph's first baseline */
+  objects: MockObj[];
+  box: Rect;
+  lines: number;
+  /** indices into the page list of the objects the flow moves, and the annotations moving with them */
+  movable: number[];
+  annots: Annot[];
+  /** > 0 down, < 0 up */
+  shiftPt: number;
+  roomPt: number;
+  overflowPt: number;
+  /** nothing below: how far the new text runs past the bottom margin */
+  pastBottomPt: number;
+  blocked?: "pageBottom" | "obstacle";
+  fitScale?: number;
+  /** the region the moved content came from (column × paragraph bottom … stack bottom) */
+  band?: Rect;
+}
+
+/**
+ * The fake engine's flow (Stage 9 contract; upright pages only). Content that follows the paragraph
+ * = objects whose top is at or below its original bottom (± a quarter of the size) and that sit in
+ * its column (the original ∪ new box, horizontally): ≥ 60 % of the object inside, sticking out by
+ * ≤ 15 % of the column. Below-and-overlapping objects that are not in the column are obstacles; the
+ * movable set stops at the first one. `room` = from the lowest movable bottom (or, with nothing to
+ * move, the paragraph's own bottom) down to that obstacle's top or the bottom margin (crop + 18 pt).
+ */
+function planParagraphEdit(d: MockDoc, page: PageIndex, edit: ParagraphEdit, font: string): ParagraphPlan {
+  const list = pageObjects(d, page);
+  const members = edit.objectIds.map((id) => list[id]);
+  const first = members[0];
+  const orig = members.reduce((u, o) => unionR(u, o.rect), first.rect);
+  const size = edit.fontSizePt ?? first.fontSizePt ?? 11;
+  const color = edit.color ?? first.color ?? [0, 0, 0];
+  const width = edit.width ?? orig.r - orig.l;
+  const leading = members.length > 1 ? Math.abs(members[0].matrix[5] - members[1].matrix[5]) : size * 1.2;
+  const top = first.matrix[5];
+  const flow = edit.flow ?? "push";
+  // no text: the paragraph is deleted and, with push, what follows moves up into its place
+  const emptied = !edit.text.trim();
+
+  const bottomAt = (f: number) => top - (wrapText(edit.text, width, size * f).length - 1) * leading * f - size * f * 0.24;
+  let scale = 1;
+  if (flow === "fit") {
+    for (let k = 0; k <= 15; k += 1) {
+      scale = round2(1 - 0.02 * k);
+      if (bottomAt(scale) >= orig.b - 0.01) break;
+    }
+  }
+  const sz = size * scale;
+  const lead = leading * scale;
+  const wrapped = emptied ? [] : wrapText(edit.text, width, sz);
+  const objects: MockObj[] = [];
+  let used: Rect | null = null;
+  wrapped.forEach((line, i) => {
+    if (!line) return;
+    const o = textObj(line, orig.l, top - i * lead, measure(line, sz), sz, color, font, first.ours);
+    used = used ? unionR(used, o.rect) : o.rect;
+    objects.push(o);
+  });
+  const box: Rect = used ?? { l: orig.l, b: orig.t, r: orig.l, t: orig.t };
+  const newBottom = bottomAt(scale);
+  let delta = emptied ? 0 : orig.b - newBottom; // > 0: the paragraph grew
+
+  const cl = Math.min(orig.l, box.l);
+  const cr = Math.max(orig.r, box.r);
+  const overlapOf = (r: Rect) => Math.max(0, Math.min(r.r, cr) - Math.max(r.l, cl));
+  const inColumn = (r: Rect) => {
+    const w = r.r - r.l;
+    if (w <= 0) return r.l >= cl && r.l <= cr;
+    const out = Math.max(0, cl - r.l) + Math.max(0, r.r - cr);
+    return overlapOf(r) >= 0.6 * w && out <= 0.15 * (cr - cl);
+  };
+  const isBelow = (r: Rect) => r.t <= orig.b + 0.25 * size && (overlapOf(r) > 0 || inColumn(r));
+  const drop = new Set(edit.objectIds);
+  const below = list.map((o, i) => ({ o, i })).filter((e) => !drop.has(e.i) && isBelow(e.o.rect));
+  const obstacles = below.filter((e) => !inColumn(e.o.rect));
+  const obstacleTop = obstacles.length ? Math.max(...obstacles.map((e) => e.o.rect.t)) : null;
+  const movable = below.filter((e) => inColumn(e.o.rect) && (obstacleTop === null || e.o.rect.b >= obstacleTop - 0.01));
+  const margin = (d.info.pages[page]?.crop.b ?? 0) + 18;
+  const byObstacle = obstacleTop !== null && obstacleTop >= margin;
+  const limit = byObstacle ? (obstacleTop as number) : margin;
+  const lowest = movable.length ? Math.min(...movable.map((e) => e.o.rect.b)) : orig.b;
+  const roomPt = Math.max(0, lowest - limit);
+  if (emptied && movable.length) delta = Math.min(0, Math.max(...movable.map((e) => e.o.rect.t)) - orig.t);
+
+  // the paragraph spacing above the first thing that follows: a push may use it up before the new
+  // text touches what follows (the engine's `gap`)
+  const gap = movable.length ? Math.max(0, orig.b - Math.max(...movable.map((e) => e.o.rect.t))) : 0;
+  const nothingBelow = below.length === 0;
+  let shiftPt = 0;
+  let overflowPt = 0;
+  let pastBottomPt = 0;
+  let blocked: ParagraphPlan["blocked"];
+  if (flow === "push") {
+    if (delta > 0.01 && nothingBelow) {
+      // only the page bottom: nothing is overlapped, the text runs past the margin
+      if (delta > roomPt + 0.01) {
+        blocked = "pageBottom";
+        pastBottomPt = delta - roomPt;
+      }
+    } else if (delta > 0.01) {
+      if (movable.length) shiftPt = Math.min(delta, roomPt);
+      const remaining = delta - roomPt - gap;
+      if (remaining > 0.01) {
+        blocked = byObstacle ? "obstacle" : "pageBottom";
+        overflowPt = remaining;
+      }
+    } else if (delta < -0.01 && movable.length) {
+      shiftPt = delta;
+    }
+  } else if (delta > 0.01 && below.length) {
+    // nothing moves: how far the new text reaches over the first thing below
+    const firstTop = Math.max(...below.map((e) => e.o.rect.t));
+    overflowPt = Math.max(0, Math.min(delta, firstTop - newBottom));
+  } else if (delta > 0.01) {
+    pastBottomPt = Math.max(0, margin - newBottom);
+  }
+
+  // annotations in the moved band and in the column go with the content (never widgets)
+  const bandBottom = byObstacle ? (obstacleTop as number) - 0.01 : -Infinity;
+  const annots = (d.annots.get(page) ?? []).filter(
+    (an) => an.subtype !== "Widget" && an.rect.t <= orig.b + 0.25 * size && an.rect.b >= bandBottom && inColumn(an.rect),
+  );
+  const band: Rect | undefined = movable.length
+    ? { l: cl, r: cr, t: orig.b + 0.25 * size, b: lowest - 0.25 * size }
+    : undefined;
+  return {
+    objects, box, lines: wrapped.length, movable: movable.map((e) => e.i), annots, shiftPt, roomPt, overflowPt, pastBottomPt,
+    blocked, band,
+    ...(flow === "fit" ? { fitScale: scale } : null),
   };
 }
 

@@ -1,6 +1,8 @@
 /**
  * 압축 (P1-5): pick a target DPI, run 예상 on a scratch copy (a cancellable job), compare the
  * before/after sizes, then 적용 (one undo step) — or close, which discards the pending result.
+ * An estimate that saves nothing (no image downsampled, or not smaller) leaves 적용 off with the
+ * reason beside it — only 닫기 / 다시 예상 — and its result is released at once.
  * Lazy-loaded from `DialogHost`.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -16,7 +18,7 @@ import { Dialog, Row } from "./Dialog";
 import { RangePicker } from "./RangePicker";
 import { resolveRange, type RangeChoice } from "./pageRange";
 import { message } from "./flows";
-import { COMPRESS_PRESETS, DEFAULT_PRESET, buildCompressOptions, formatDeltaPct, summarize } from "./compress";
+import { COMPRESS_PRESETS, DEFAULT_PRESET, applyBlock, buildCompressOptions, formatDeltaPct, summarize } from "./compress";
 
 type Phase = "idle" | "estimating" | "ready" | "applying";
 
@@ -104,6 +106,8 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
           ref.jobId = null;
           if (e.report) {
             ref.token = e.report.token;
+            // nothing to apply: the engine need not hold the rewritten copy while the dialog is open
+            if (applyBlock(e.report)) discard(ref);
             setReport(e.report);
             setPhase("ready");
           } else {
@@ -143,7 +147,7 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
   };
 
   const apply = async () => {
-    if (!report) return;
+    if (!report || applyBlock(report)) return;
     setPhase("applying");
     live.current.token = null; // consumed by apply, success or not
     try {
@@ -166,6 +170,7 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
   };
 
   const summary = report ? summarize(report) : null;
+  const block = report ? applyBlock(report) : null;
   const estimating = phase === "estimating";
 
   return (
@@ -173,7 +178,16 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
       titleKey="compress.title"
       size="lg"
       onClose={onClose}
-      primary={{ labelKey: "common.apply", onSelect: () => void apply(), disabled: phase !== "ready" }}
+      // a result that saves nothing has nothing to cancel: the choices are 닫기 / 다시 예상
+      cancelKey={block ? "common.close" : undefined}
+      footerExtra={
+        block ? (
+          <span className="dlg-hint text-xs" data-testid="compress-blocked">
+            {t("compress.applyBlocked")}
+          </span>
+        ) : undefined
+      }
+      primary={{ labelKey: "common.apply", onSelect: () => void apply(), disabled: phase !== "ready" || block !== null }}
     >
       <Row labelKey="compress.quality" hintKey="compress.hint">
         <div className="compress-presets" role="radiogroup" aria-label={t("compress.quality")}>
@@ -249,9 +263,9 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
               </tr>
             </tbody>
           </table>
-          {summary.noGain && (
+          {block && (
             <p className="compress-warn text-sm" role="alert">
-              {t("compress.noGain")}
+              {block === "noGain" ? t("compress.noGain") : t("compress.noImages")}
             </p>
           )}
         </>

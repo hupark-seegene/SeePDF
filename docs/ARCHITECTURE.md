@@ -395,10 +395,13 @@ Per line `font_size_pt = rowHeightPx × 72/dpi`; per word: `PdfPageTextObject::n
 `scale(clamp(box_w_pt / natural_w, 0.5, 2.0), 1.0)` **before** `translate(x_pt, baseline_pt)` →
 `add_text_object`; pixels map to points with `page.pixels_to_points(x, y, &same_render_config)` so
 `/Rotate` is honoured, and the object is rotated back by the page rotation. Spaces are rebuilt from
-`line.text` (Tesseract over-segments Hangul into syllables); words with confidence < 30 are skipped;
-`Manual` + one `regenerate_content()` per page (2 ms for 730 words vs 81 ms automatic). Latin-1-only
-words use `helvetica()` (no embedding); everything else uses the bundled Hangul font
-(`load_true_type_from_bytes(bytes, true)`, once per document).
+`line.text` (Tesseract over-segments Hangul into syllables), and every word but a line's last is written
+with a trailing U+0020 (`set_text` after the fit is measured on the bare word): PDFium only *infers* a word
+break from a gap wider than about a quarter glyph, which Vision's padded boxes (6–13 px at 300 DPI) miss,
+and a run of nothing but a space has a zero-width rect that `CPDF_TextPage` skips. Words with confidence
+< 30 are skipped; `Manual` + one `regenerate_content()` per page (2 ms for 730 words vs 81 ms
+automatic). Latin-1-only words use `helvetica()` (no embedding); everything else uses the bundled Hangul
+font (`load_true_type_from_bytes(bytes, true)`, once per document).
 
 ---
 

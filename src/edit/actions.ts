@@ -7,14 +7,18 @@
  * layer does not re-list a page it already knows.
  */
 import * as api from "../ipc/api";
-import type { DocGeneration, DocId, ObjectId, PageIndex, PageObject, ParagraphEdit, ParagraphEditResult, Point, Rect, Rgb } from "../ipc/types";
-import { toast } from "../app/toastStore";
-import { askConfirm } from "../dialogs/dialogState";
+import type {
+  DocGeneration, DocId, ObjectId, PageIndex, PageObject, ParagraphEdit, ParagraphEditResult, ParagraphFlow, ParagraphProbe,
+  Point, Rect, Rgb,
+} from "../ipc/types";
+import { toast, type ToastAction } from "../app/toastStore";
+import { askChoice, askConfirm } from "../dialogs/dialogState";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
 import { useEditStore, type EditSession } from "./editStore";
 import { scaleArgs, textRectFor, unionRects } from "./geometry";
+import { followFlow } from "./redact";
 
 // ---------------------------------------------------------------------------
 // Plumbing
@@ -96,6 +100,8 @@ export function reasonKey(reason: string | undefined): string {
       return "edit.reason.glyphsMissing";
     case "rotatedText":
       return "edit.reason.rotatedText";
+    case "unwritableContent":
+      return "edit.reason.unwritableContent";
     default:
       return "edit.reason.unknown";
   }
@@ -391,13 +397,33 @@ export async function restyleText(page: PageIndex, id: ObjectId, patch: { fontSi
 
 /** Reads the live textarea (uncontrolled — Hangul IME safe); set by the open editor. */
 let readText: (() => string) | null = null;
+/** Resolves once no IME composition is in progress (set by the open editor with the reader). */
+let settleText: (() => Promise<void> | null) | null = null;
 
-export function setSessionTextReader(fn: (() => string) | null): void {
+/**
+ * The open editor registers how to read its text and, optionally, how to wait for an IME
+ * composition to end: `settle` returns `null` when nothing is being composed, else a promise.
+ */
+export function setSessionTextReader(fn: (() => string) | null, settle?: () => Promise<void> | null): void {
   readText = fn;
+  settleText = fn ? (settle ?? null) : null;
 }
 
 export function sessionText(): string {
   return readText ? readText() : "";
+}
+
+/**
+ * The text to commit. A click outside arrives on `pointerdown`, before the browser ends a Hangul
+ * composition, so while one is in progress wait for it (the editor bounds the wait) and read again;
+ * if the editor is gone by then, keep what it showed when the commit started.
+ */
+async function settledSessionText(): Promise<string> {
+  const early = sessionText();
+  const pending = settleText?.();
+  if (!pending) return early;
+  await pending;
+  return readText ? readText() : early;
 }
 
 /** Click with 텍스트 수정: probe the paragraph under `at` and open the editor on it. */
@@ -425,8 +451,29 @@ export async function beginParagraphEdit(page: PageIndex, at: Point): Promise<bo
     color: probe.color,
     align: probe.align,
     consented: false,
+    firstLine: firstLineOf(page, probe),
   });
   return true;
+}
+
+/**
+ * The paragraph's first line in the page listing the probe ran on: points inside its objects (where
+ * the paragraph is looked up again if the document changes under the editor) and their text (to find
+ * it when it moved). `undefined` when the listing is of another generation.
+ */
+function firstLineOf(page: PageIndex, p: ParagraphProbe): { at: Point[]; texts: string[] } | undefined {
+  const entry = useEditStore.getState().pages[page];
+  if (!entry || entry.docGeneration !== p.docGeneration) return undefined;
+  const members = entry.objects.filter((o) => o.type === "text" && p.objectIds.includes(o.objectId));
+  if (members.length === 0) return undefined;
+  const baseline = Math.max(...members.map((o) => o.matrix[5]));
+  const line = members
+    .filter((o) => Math.abs(o.matrix[5] - baseline) <= 0.25 * p.fontSizePt)
+    .sort((a, b) => a.rect.l - b.rect.l);
+  return {
+    at: line.slice(0, 3).map((o): Point => [(o.rect.l + o.rect.r) / 2, (o.rect.b + o.rect.t) / 2]),
+    texts: line.map((o) => o.text ?? "").filter((t) => t.trim() !== ""),
+  };
 }
 
 /** Click with 텍스트 추가: an empty editor in the tool's default style. */
@@ -456,23 +503,42 @@ function isFontRefusal(e: unknown): boolean {
   return /replaceFont|font ?substitut/i.test(`${e.message} ${e.detail ?? ""}`);
 }
 
-let committing = false;
+let inflightCommit: Promise<boolean> | null = null;
 
 /**
- * 완료 / ⌘↵ / click outside. Resolves `true` when the session is over (written, unchanged, or
- * failed with a toast) and `false` when it stays open (the user declined the font change).
+ * 완료 / ⌘↵ / click outside. Resolves `true` when the session is over (written or unchanged) and
+ * `false` when it stays open (the user declined the font change, chose 계속 편집 when the paragraph
+ * has no room to grow, the document changed under the editor, or a paragraph write failed — what was
+ * typed is never dropped after the probe said the paragraph could be edited).
+ *
+ * One commit at a time: a call while one runs gets that commit's answer. A click on a mode tab
+ * starts the commit on `pointerdown` (the editor's click-outside) and asks the leave guard on
+ * `click`; the guard must wait for the real answer, not see a refusal because a commit is running.
  */
-export async function commitSession(text = sessionText()): Promise<boolean> {
+export function commitSession(text?: string): Promise<boolean> {
+  if (inflightCommit) return inflightCommit;
   const session = useEditStore.getState().session;
   const doc = docId();
-  if (!session || !doc) return true;
-  if (committing) return false;
-  committing = true;
-  try {
-    return session.kind === "addText" ? await commitAddText(doc, session, text) : await commitParagraph(doc, session, text);
-  } finally {
-    committing = false;
-  }
+  if (!session || !doc) return Promise.resolve(true);
+  const job = (async () => {
+    const typed = text ?? (await settledSessionText());
+    // the latest state of the same session (a width / size change while the IME settled counts)
+    const current = useEditStore.getState().session;
+    if (!current || current.kind !== session.kind || current.page !== session.page) return true; // cancelled meanwhile
+    return current.kind === "addText" ? commitAddText(doc, current, typed) : commitParagraph(doc, current, typed);
+  })();
+  const running = job.finally(() => {
+    if (inflightCommit === running) inflightCommit = null;
+  });
+  inflightCommit = running;
+  return running;
+}
+
+/** Put the caret back in the open editor (after a prompt answered 계속 편집). */
+let focusEditor: (() => void) | null = null;
+
+export function setSessionFocuser(fn: (() => void) | null): void {
+  focusEditor = fn;
 }
 
 async function commitAddText(doc: string, s: Extract<EditSession, { kind: "addText" }>, raw: string): Promise<boolean> {
@@ -515,49 +581,250 @@ async function commitParagraph(doc: string, s: Extract<EditSession, { kind: "par
     return true;
   }
 
-  // Everything deleted: remove the paragraph's objects instead of writing an empty one.
-  if (!text.trim()) {
-    try {
-      const result = await api.deleteObjects({
-        docId: doc, page: s.page, objectIds: p.objectIds, expectGeneration: generationFor(s.page),
-      });
-      store.setPage(s.page, result);
-    } catch (e) {
-      fail(e, s.page);
-    }
-    useEditStore.getState().closeSession();
-    return true;
-  }
+  // The probe's object ids belong to the generation it ran at: every call below is pinned to it,
+  // so a change while the editor or one of its prompts is open (undo / redo under the prompt)
+  // makes the engine refuse the write as `stale` instead of replacing whatever those ids name now.
+  const generation = p.docGeneration ?? generationFor(s.page);
+
+  // Everything deleted: `edit_paragraph` with no text removes the paragraph and pulls what followed it
+  // up into its place (a push dry run is never blocked by that; no font is involved).
+  const emptied = !text.trim();
 
   let allow = s.consented;
-  if (p.strategy === "replaceFont" && !allow) {
+  if (p.strategy === "replaceFont" && !allow && !emptied) {
     if (!(await confirmFont())) return false;
     allow = true;
     useEditStore.getState().patchSession({ consented: true });
   }
 
-  const run = (allowFontSubstitution: boolean): Promise<ParagraphEditResult> =>
-    api.editParagraph({ docId: doc, page: s.page, expectGeneration: generationFor(s.page), edit, allowFontSubstitution });
+  // the same session (a patch keeps the probe): Esc while a call is in flight writes nothing
+  const open = () => {
+    const current = useEditStore.getState().session;
+    return current?.kind === "paragraph" && current.probe === p;
+  };
+  const run = (flow: ParagraphFlow, dryRun: boolean): Promise<ParagraphEditResult> =>
+    api.editParagraph({
+      docId: doc,
+      page: s.page,
+      expectGeneration: generation,
+      edit: { ...edit, flow, ...(dryRun ? { dryRun: true } : null) },
+      allowFontSubstitution: allow,
+    });
 
-  let result: ParagraphEditResult;
+  // Stage 9: plan the flow first (nothing written), so a paragraph that grew pushes the content
+  // below it down — or, when that is blocked, the user picks what to do before anything changes.
+  let plan: ParagraphEditResult;
+  // false: the engine cannot move what follows on this page; the text can still be written over it
+  let pushable = true;
   try {
     try {
-      result = await run(allow);
+      plan = await run("push", true);
     } catch (e) {
       if (allow || !isFontRefusal(e)) throw e;
       if (!(await confirmFont())) return false;
+      allow = true;
       useEditStore.getState().patchSession({ consented: true });
-      result = await run(true);
+      plan = await run("push", true);
     }
   } catch (e) {
-    fail(e, s.page);
-    useEditStore.getState().closeSession();
-    return true;
+    if (isStale(e)) return refind(doc, s.page, p);
+    if (!isUnwritable(e)) return keepOpen(s.page, e);
+    // Only the push is unwritable (what follows sits in a stream that cannot be rewritten): nothing
+    // moves, and `overlap` / `fit` may still write the paragraph — offer them instead of dropping
+    // what was typed.
+    try {
+      plan = await run("overlap", true);
+      pushable = false;
+    } catch (e2) {
+      if (isStale(e2)) return refind(doc, s.page, p);
+      return keepOpen(s.page, e2);
+    }
+  }
+  if (!open()) return true;
+
+  let flow: ParagraphFlow = pushable ? "push" : "overlap";
+  const blocked = pushable ? plan.blocked : plan.overflowPt > 0.05 ? "obstacle" : undefined;
+  if (blocked) {
+    const choice = await askBlocked({ ...plan, blocked }, run, pushable);
+    if (!open()) return true;
+    if (choice === "keepEditing") {
+      setTimeout(() => focusEditor?.(), 0);
+      return false;
+    }
+    if (choice === "fit") flow = "fit";
+  }
+
+  let result: ParagraphEditResult;
+  try {
+    result = await run(flow, false);
+  } catch (e) {
+    if (isStale(e)) return refind(doc, s.page, p);
+    return keepOpen(s.page, e);
   }
   useEditStore.getState().setPage(s.page, result.objects);
   useEditStore.getState().closeSession();
-  if (result.overflowPt > 0) toast("edit.paragraph.overflow");
+  // pending 영역 표시 marks over the content that moved go with it
+  if (result.movedBand) followFlow(s.page, result.movedBand, result.shiftedPt);
+  flowToast(result, flow);
   return true;
+}
+
+function isStale(e: unknown): boolean {
+  return api.isSeePdfError(e) && e.code === "stale";
+}
+
+function isUnwritable(e: unknown): boolean {
+  return api.isSeePdfError(e) && (e.detail?.startsWith("unwritableContent") ?? false);
+}
+
+/**
+ * Points inside the paragraph's first line from its box alone (when the listing the probe ran on is
+ * not at hand): the middle, past the indent, and before the right edge — a short first line of
+ * right-aligned or centred text holds one of them.
+ */
+function anchorsOf(p: ParagraphProbe): Point[] {
+  const y = p.rect.t - 0.5 * p.fontSizePt;
+  return [
+    [(p.rect.l + p.rect.r) / 2, y],
+    [p.rect.l + Math.max(0, p.firstLineIndentPt) + p.fontSizePt, y],
+    [p.rect.r - p.fontSizePt, y],
+  ];
+}
+
+/**
+ * The document changed while the editor (or one of its prompts) was open, so the engine refused the
+ * write as `stale`: the probe's object ids may name other objects by now. Nothing was written. The
+ * paragraph is looked up again — inside its first line where it was, then, if it moved (an undo or a
+ * redo shifted it), wherever a line with its first line's text is now. When it is found with the same
+ * text, the editor stays open on it with everything typed kept (the same editor: its key does not
+ * depend on where the paragraph is), and the next 완료 writes it. When it is gone, the editor stays
+ * open too, so what was typed can still be copied; Esc closes it.
+ */
+async function refind(doc: string, page: PageIndex, p: ParagraphProbe): Promise<boolean> {
+  void loadPage(doc, page, -1);
+  const session = useEditStore.getState().session;
+  const firstLine = session?.kind === "paragraph" && session.probe === p ? session.firstLine : undefined;
+  const same = (found: ParagraphProbe | null): found is ParagraphProbe =>
+    found !== null && found.strategy !== "refused" && found.text === p.text && found.lines === p.lines;
+  const probeAt = (at: Point) => api.probeParagraph({ docId: doc, page, at }).catch(() => null);
+  let fresh: ParagraphProbe | null = null;
+  for (const at of [...(firstLine?.at ?? []), ...anchorsOf(p)]) {
+    const found = await probeAt(at);
+    if (same(found)) {
+      fresh = found;
+      break;
+    }
+  }
+  if (!fresh && firstLine?.texts.length) {
+    const listed = await api.listPageObjects({ docId: doc, page }).catch(() => null);
+    const lines = (listed?.objects ?? []).filter((o) => o.type === "text" && firstLine.texts.includes(o.text ?? ""));
+    for (const o of lines.slice(0, 6)) {
+      const found = await probeAt([(o.rect.l + o.rect.r) / 2, (o.rect.b + o.rect.t) / 2]);
+      if (same(found)) {
+        fresh = found;
+        break;
+      }
+    }
+  }
+  const current = useEditStore.getState().session;
+  if (current?.kind !== "paragraph" || current.probe !== p) return true; // closed meanwhile
+  setTimeout(() => focusEditor?.(), 0);
+  if (fresh) {
+    useEditStore.getState().patchSession({
+      probe: fresh,
+      firstLine: firstLineOf(page, fresh) ?? (firstLine && { at: [], texts: firstLine.texts }),
+    });
+    toast("edit.flow.docChanged");
+    return false;
+  }
+  toast("edit.flow.paragraphGone", undefined, { tone: "danger" });
+  return false;
+}
+
+/**
+ * A paragraph call failed after the probe said the paragraph could be edited: say why and keep the
+ * editor open with what was typed (it can be changed, copied, or dropped with Esc).
+ */
+function keepOpen(page: PageIndex, e: unknown): false {
+  if (isUnwritable(e)) {
+    toast(reasonKey("unwritableContent"), undefined, { tone: "danger" });
+  } else {
+    fail(e, page);
+  }
+  setTimeout(() => focusEditor?.(), 0);
+  return false;
+}
+
+type BlockedChoice = "fit" | "overlap" | "keepEditing";
+
+/** Points for a toast / prompt: one decimal, never "-0". */
+const pts = (v: number) => Math.round(Math.abs(v) * 10) / 10;
+
+/** Nothing below the paragraph: the push was blocked by the page bottom, and nothing is overlapped. */
+function runsPastBottom(r: ParagraphEditResult): boolean {
+  return r.overflowPt <= 0.05 && (r.pastBottomPt ?? 0) > 0.05;
+}
+
+/**
+ * 문단이 들어갈 자리가 부족합니다: 글자 크기 줄여 맞추기 (N%, from a `fit` dry run — disabled when
+ * even the smallest size still does not fit) · 아래로 밀고 남은 부분은 겹치기 · 계속 편집. With nothing
+ * below the paragraph, the text would run past the page's bottom margin instead: the body and the
+ * second option say so. When the content below cannot be moved at all on this page (`pushable`
+ * false), the body says that and the second option writes the text over it.
+ */
+async function askBlocked(
+  plan: ParagraphEditResult,
+  run: (flow: ParagraphFlow, dryRun: boolean) => Promise<ParagraphEditResult>,
+  pushable = true,
+): Promise<BlockedChoice> {
+  const fit = await run("fit", true).catch(() => null);
+  const scale = fit?.fitScale;
+  const fits = fit !== null && scale !== undefined && fit.overflowPt <= 0.05 && (fit.pastBottomPt ?? 0) <= 0.05;
+  const pct = Math.round((scale ?? MIN_FIT_SCALE) * 100);
+  const past = runsPastBottom(plan);
+  const bodyKey = !pushable
+    ? "edit.flow.blocked.unmovable"
+    : past
+      ? "edit.flow.blocked.pastBottom"
+      : plan.blocked === "obstacle"
+        ? "edit.flow.blocked.obstacle"
+        : "edit.flow.blocked.pageBottom";
+  const overlapKey = !pushable ? "edit.flow.overlapInPlace" : past ? "edit.flow.keepPastBottom" : "edit.flow.overlap";
+  return askChoice<BlockedChoice>({
+    titleKey: "edit.flow.blockedTitle",
+    bodyKey,
+    bodyParams: { pt: pts(past ? (plan.pastBottomPt ?? 0) : plan.overflowPt) },
+    ...(fits ? null : { hintKey: "edit.flow.fitTooSmall", hintParams: { pct: Math.round(MIN_FIT_SCALE * 100) } }),
+    options: [
+      { value: "fit", labelKey: "edit.flow.fit", labelParams: { pct }, primary: true, disabled: !fits },
+      { value: "overlap", labelKey: overlapKey },
+    ],
+    cancel: { value: "keepEditing", labelKey: "edit.flow.keepEditing" },
+  });
+}
+
+/** The smallest `fit` factor the engine tries (Stage 9 contract). */
+const MIN_FIT_SCALE = 0.7;
+
+/** What the flow did, with 실행 취소 (the edit and its moves are one undo step). */
+function flowToast(result: ParagraphEditResult, flow: ParagraphFlow): void {
+  const undo: ToastAction = {
+    labelKey: "common.undo",
+    onSelect: () => void import("../annot/sync").then((m) => m.undoWithAnnots()),
+  };
+  const shifted = pts(result.shiftedPt);
+  const over = pts(result.overflowPt);
+  const past = pts(result.pastBottomPt ?? 0);
+  if (over === 0 && past > 0) {
+    toast("edit.flow.pastBottom", { pt: past }, { actions: [undo] });
+  } else if (over > 0) {
+    if (shifted > 0) toast("edit.flow.pushedOverlap", { pt: shifted, over }, { actions: [undo] });
+    else toast("edit.flow.overlaps", { pt: over }, { actions: [undo] });
+  } else if (flow === "fit" && result.fitScale !== undefined && result.fitScale < 1) {
+    toast("edit.flow.fitted", { pct: Math.round(result.fitScale * 100) }, { actions: [undo] });
+  } else if (shifted > 0) {
+    toast(result.shiftedPt > 0 ? "edit.flow.pushed" : "edit.flow.pulled", { pt: shifted }, { actions: [undo] });
+  }
 }
 
 // ---------------------------------------------------------------------------

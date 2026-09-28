@@ -253,6 +253,7 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
         dpi: (cmd.dpi as 300) ?? 300,
         skipPagesWithText: Boolean(cmd.skipPagesWithText ?? false),
         replaceExisting: Boolean(cmd.replaceExisting ?? true),
+        engine: cmd.engine === undefined ? undefined : (String(cmd.engine) as "tesseract" | "vision"),
       });
       await new Promise((r) => setTimeout(r, 400));
       return { result, state: snapshot() };
@@ -299,6 +300,12 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
       const text = m.currentSelectionText();
       return { ok: m.copyToClipboard(text), chars: text.length };
     }
+    /** Webview console errors / warnings and uncaught errors since the bridge started (or `clear`). */
+    case "console": {
+      const out = consoleLog.slice();
+      if (cmd.clear) consoleLog.length = 0;
+      return { count: out.length, entries: out.slice(-Number(cmd.limit ?? 50)) };
+    }
     case "sleep":
       await new Promise((r) => setTimeout(r, Number(cmd.ms ?? 500)));
       return { slept: cmd.ms ?? 500 };
@@ -309,6 +316,35 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
 
 let started = false;
 let stopped = false;
+
+/** Ring buffer behind the `console` op: `console.error` / `console.warn` and uncaught errors. */
+const consoleLog: { level: string; text: string; at: number }[] = [];
+function captureConsole(): void {
+  const push = (level: string, args: unknown[]) => {
+    const text = args
+      .map((a) => (a instanceof Error ? `${a.name}: ${a.message}` : typeof a === "string" ? a : safeJson(a)))
+      .join(" ")
+      .slice(0, 600);
+    consoleLog.push({ level, text, at: Math.round(performance.now()) });
+    if (consoleLog.length > 500) consoleLog.shift();
+  };
+  for (const level of ["error", "warn"] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      push(level, args);
+      original(...args);
+    };
+  }
+  window.addEventListener("error", (e) => push("uncaught", [e.error ?? e.message]));
+  window.addEventListener("unhandledrejection", (e) => push("unhandledrejection", [e.reason]));
+}
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
 
 /**
  * Poll the dev server for work. Started once, from `App.tsx`, only in dev.
@@ -323,6 +359,7 @@ export function startDevBridge(run: Run): void {
   if (started) return;
   started = true;
   stopped = false;
+  captureConsole();
   if (import.meta.hot) {
     import.meta.hot.dispose(() => {
       stopped = true;

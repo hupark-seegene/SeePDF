@@ -159,6 +159,11 @@ export function StatusBar() {
           {ZOOM_STEPS.map((z) => (
             <option key={z} value={String(z)}>{`${z}%`}</option>
           ))}
+          {/* A custom zoom off the preset list (slider, pinch, a restored recent) needs its own
+              option, or the <select> falls back to showing the first one ("25%"). */}
+          {zoomMode === "custom" && !(ZOOM_STEPS as readonly number[]).includes(zoomPercent) && (
+            <option value={String(zoomPercent)} hidden>{`${zoomPercent}%`}</option>
+          )}
           <option value="fit-page">{t("view.zoom.fitPage")}</option>
           <option value="fit-width">{t("view.zoom.fitWidth")}</option>
           <option value="actual">{t("view.zoom.actual")}</option>

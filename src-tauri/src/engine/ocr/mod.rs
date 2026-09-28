@@ -19,6 +19,17 @@
 //! and one `regenerate_content()` per page: 730 words take 2 ms that way and 81 ms under the
 //! default `AutomaticOnEveryChange` strategy (ocr spike gotcha 12).
 //!
+//! **Word spaces.** Every word but the last of its line is written with a trailing U+0020
+//! (`"quick "`). PDFium's extractor otherwise only *guesses* a word break from the gap between
+//! two runs — wider than about a quarter of a glyph — which tesseract's tight ink boxes (~24 px
+//! apart at 300 DPI) clear and Vision's padded ones (6–13 px) do not: its layer read
+//! `Thequickbrownfox`. PDFium never generates a second space next to a real one, so both engines
+//! extract single spaces. The space rides on the word's own run because a run of nothing but a
+//! space has a zero-width (ink) rect, and `CPDF_TextPage` skips those; the word is still fitted
+//! to its box on its own, so word selection rects are unchanged and only the space's box (the
+//! font's space advance at the word's scale) is approximate. Lines need no separator: the
+//! baseline jump makes PDFium emit `\r\n`.
+//!
 //! **Rotation.** PDFium's renderer applies `/Rotate`, so the OCR boxes are in *display* pixel
 //! space while page objects live in unrotated user space. `page.pixels_to_points` (`FPDF_Device
 //! ToPage`) is the conversion that knows about `/Rotate`, and the text object is rotated by the
@@ -347,6 +358,8 @@ fn apply_page(
     let mut added = 0usize;
     for line in &ocr.lines {
         let size_pt = line_font_size(line, ocr.dpi);
+        // Pass 1: the line's usable words, each with its origin and width in user space.
+        let mut placed: Vec<PlacedWord<'_>> = Vec::with_capacity(line.words.len());
         for word in &line.words {
             if word.confidence < MIN_CONFIDENCE || word.text.trim().is_empty() {
                 continue;
@@ -362,9 +375,9 @@ fn apply_page(
             }
             // Both bottom corners of the box, in user space. `pixels_to_points` wraps
             // `FPDF_DeviceToPage`, which applies the page's `/Rotate` for us.
-            let (bl_x, bl_y) = to_points(&scratch.page, &config, left, bottom)?;
-            let (br_x, br_y) = to_points(&scratch.page, &config, right, bottom)?;
-            let box_w = ((br_x - bl_x).powi(2) + (br_y - bl_y).powi(2)).sqrt();
+            let bl = to_points(&scratch.page, &config, left, bottom)?;
+            let br = to_points(&scratch.page, &config, right, bottom)?;
+            let box_w = ((br.0 - bl.0).powi(2) + (br.1 - bl.1).powi(2)).sqrt();
             if box_w <= 0.0 {
                 continue;
             }
@@ -387,35 +400,28 @@ fn apply_page(
                     }
                 }
             };
-            let mut object =
-                PdfPageTextObject::new(document, &word.text, font, PdfPoints::new(size_pt))
-                    .ctx("create OCR text object")?;
-            object
-                .set_render_mode(PdfPageTextRenderMode::Invisible)
-                .ctx("set render mode 3")?;
-            let natural = object.bounds().ctx("measure OCR word")?.to_rect();
-            let natural_w = natural.width().value;
-            let sx = if natural_w > 0.0 {
-                (box_w / natural_w).clamp(MIN_SX, MAX_SX)
-            } else {
-                1.0
-            };
-            // Order matters: scale post-multiplies in page space, so it must happen before the
-            // translate that positions the run (ocr spike gotcha 11).
-            object.scale(sx, 1.0).ctx("fit OCR word to its box")?;
-            if page_rotation % 360 != 0 {
-                object
-                    .rotate_counter_clockwise_degrees(page_rotation as f32)
-                    .ctx("rotate OCR word")?;
-            }
-            object
-                .translate(PdfPoints::new(bl_x), PdfPoints::new(bl_y))
-                .ctx("place OCR word")?;
-            scratch
-                .page
-                .objects_mut()
-                .add_text_object(object)
-                .ctx("add OCR word")?;
+            placed.push(PlacedWord {
+                // The box is the ink: stray whitespace around a token would shift the fit.
+                text: word.text.trim(),
+                font,
+                bl,
+                box_w,
+            });
+        }
+
+        // Pass 2: the runs; every word but the line's last carries the word space (module
+        // docs, "Word spaces").
+        let last = placed.len().saturating_sub(1);
+        for (i, word) in placed.iter().enumerate() {
+            add_invisible_word(
+                &mut scratch.page,
+                document,
+                word,
+                i < last,
+                size_pt,
+                page_rotation,
+            )
+            .map_err(|e| e.with_page(ocr.page))?;
             added += 1;
         }
     }
@@ -425,6 +431,63 @@ fn apply_page(
             .regenerate_content()
             .ctx("regenerate page content")?;
     }
+    Ok(())
+}
+
+/// One word of a line, ready to place.
+struct PlacedWord<'a> {
+    text: &'a str,
+    font: PdfFontToken,
+    /// The box's bottom-left corner in user space: the run's origin.
+    bl: (f32, f32),
+    /// The box width in points, along the (possibly rotated) baseline.
+    box_w: f32,
+}
+
+/// Adds one invisible (`3 Tr`) text object for `word`, fitted to its box, with a trailing
+/// U+0020 when `space_after`.
+///
+/// The fit is measured on the bare word, before the space is appended, so the glyphs fill the
+/// box exactly as they did without it and the space simply follows at the same scale.
+fn add_invisible_word<'a>(
+    page: &mut PdfPage<'a>,
+    document: &PdfDocument<'a>,
+    word: &PlacedWord<'_>,
+    space_after: bool,
+    size_pt: f32,
+    page_rotation: Rotation,
+) -> Result<(), EngineError> {
+    let mut object =
+        PdfPageTextObject::new(document, word.text, word.font, PdfPoints::new(size_pt))
+            .ctx("create OCR text object")?;
+    object
+        .set_render_mode(PdfPageTextRenderMode::Invisible)
+        .ctx("set render mode 3")?;
+    let natural_w = object.bounds().ctx("measure OCR word")?.to_rect().width().value;
+    let sx = if natural_w > 0.0 {
+        (word.box_w / natural_w).clamp(MIN_SX, MAX_SX)
+    } else {
+        1.0
+    };
+    if space_after {
+        object
+            .set_text(format!("{} ", word.text))
+            .ctx("append the OCR word space")?;
+    }
+    // Order matters: scale post-multiplies in page space, so it must happen before the
+    // translate that positions the run (ocr spike gotcha 11).
+    object.scale(sx, 1.0).ctx("fit OCR word to its box")?;
+    if page_rotation % 360 != 0 {
+        object
+            .rotate_counter_clockwise_degrees(page_rotation as f32)
+            .ctx("rotate OCR word")?;
+    }
+    object
+        .translate(PdfPoints::new(word.bl.0), PdfPoints::new(word.bl.1))
+        .ctx("place OCR word")?;
+    page.objects_mut()
+        .add_text_object(object)
+        .ctx("add OCR word")?;
     Ok(())
 }
 

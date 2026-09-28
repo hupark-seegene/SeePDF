@@ -1,6 +1,7 @@
 /**
  * 편집 mode flows against the mock adapter (Stage 7): select + move + scale + delete, 문단 편집
- * with the font-substitution confirm and the overflow toast, Esc cancel, 텍스트 추가, 이미지 추가.
+ * with the font-substitution confirm, Esc cancel, 텍스트 추가, 이미지 추가. The Stage 9 flow of the
+ * content below an edited paragraph lives in `flow.flow.test.tsx`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -130,7 +131,7 @@ describe("편집 · 선택", () => {
 });
 
 describe("편집 · 텍스트 수정", () => {
-  it("edits a paragraph: asks before the Hangul font, retries with consent, warns on overflow", async () => {
+  it("edits a paragraph: asks before the Hangul font, retries the dry run with consent, then writes", async () => {
     const { ctx, surface } = await setup("editText");
     const edit = vi.spyOn(mock, "editParagraph");
     fireEvent.pointerDown(surface, at(ctx, 100, 642));
@@ -143,13 +144,16 @@ describe("편집 · 텍스트 수정", () => {
 
     await waitFor(() => expect(confirmTop()).not.toBeNull());
     expect(edit).toHaveBeenCalledTimes(1);
-    expect(edit.mock.calls[0][0].allowFontSubstitution).toBe(false);
+    expect(edit.mock.calls[0][0]).toMatchObject({ allowFontSubstitution: false, edit: { flow: "push", dryRun: true } });
     act(() => confirmTop()!(true));
 
-    await waitFor(() => expect(edit).toHaveBeenCalledTimes(2));
-    expect(edit.mock.calls[1][0].allowFontSubstitution).toBe(true);
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(3));
+    expect(edit.mock.calls[1][0]).toMatchObject({ allowFontSubstitution: true, edit: { flow: "push", dryRun: true } });
+    expect(edit.mock.calls[2][0]).toMatchObject({ allowFontSubstitution: true, edit: { flow: "push" } });
+    expect(edit.mock.calls[2][0].edit.dryRun).toBeUndefined();
     await waitFor(() => expect(useEditStore.getState().session).toBeNull());
-    expect(toastKeys()).toContain("edit.paragraph.overflow");
+    // the last paragraph of the page: nothing below to move, so nothing to report
+    expect(toastKeys().filter((k) => k.startsWith("edit.flow."))).toEqual([]);
     expect(objects().filter((o) => o.fontName === "SeePDF Hangul").length).toBeGreaterThan(2);
   });
 
@@ -190,10 +194,11 @@ describe("편집 · 텍스트 수정", () => {
     await waitFor(() => expect(confirmTop()).not.toBeNull());
     expect(edit).not.toHaveBeenCalled();
     act(() => confirmTop()!(true));
-    await waitFor(() => expect(edit).toHaveBeenCalledTimes(1));
-    expect(edit.mock.calls[0][0].allowFontSubstitution).toBe(true);
+    await waitFor(() => expect(edit).toHaveBeenCalledTimes(2));
+    expect(edit.mock.calls[0][0]).toMatchObject({ allowFontSubstitution: true, edit: { dryRun: true } });
+    expect(edit.mock.calls[1][0].allowFontSubstitution).toBe(true);
     await waitFor(() => expect(useEditStore.getState().session).toBeNull());
-    expect(toastKeys()).not.toContain("edit.paragraph.overflow");
+    expect(toastKeys().filter((k) => k.startsWith("edit.flow."))).toEqual([]);
   });
 
   it("a refused paragraph toasts its reason and opens nothing", async () => {

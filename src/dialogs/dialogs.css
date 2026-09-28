@@ -93,6 +93,20 @@
 
 .dlg-hint.danger { color: var(--danger); }
 
+/* askChoice: the answers stacked full width, so long Korean labels never squeeze the footer */
+.dlg-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-block-start: var(--space-3);
+}
+
+.dlg-choices .btn {
+  width: 100%;
+  height: var(--control-dialog);
+  justify-content: center;
+}
+
 .dlg-radio-group {
   display: flex;
   flex-direction: column;

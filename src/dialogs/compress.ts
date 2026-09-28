@@ -1,5 +1,6 @@
 /**
- * Pure logic behind 압축 (P1-5): presets, the before/after arithmetic and the "no gain" warning.
+ * Pure logic behind 압축 (P1-5): presets, the before/after arithmetic, the "no gain" warning and
+ * when 적용 is off.
  */
 import type { CompressOptions, CompressPreset, CompressReport, PageIndex } from "../ipc/types";
 
@@ -23,6 +24,20 @@ export function summarize(r: Pick<CompressReport, "beforeBytes" | "afterBytes">)
   const deltaBytes = r.afterBytes - r.beforeBytes;
   const deltaPct = r.beforeBytes > 0 ? Math.round((deltaBytes / r.beforeBytes) * 1000) / 10 : 0;
   return { deltaBytes, deltaPct, noGain: r.afterBytes >= r.beforeBytes };
+}
+
+/**
+ * Why 적용 is off for an estimate, or `null` when there is a real saving. Applying a result that
+ * saves nothing would still rewrite the document — one undo step and a dirty document for no gain —
+ * so the dialog only offers 닫기 / 다시 예상. "Not smaller" wins over "no image downsampled": it is
+ * the fact the size table shows.
+ */
+export type CompressBlock = "noGain" | "noImages";
+
+export function applyBlock(r: Pick<CompressReport, "beforeBytes" | "afterBytes" | "imagesDownsampled">): CompressBlock | null {
+  if (r.afterBytes >= r.beforeBytes) return "noGain";
+  if (r.imagesDownsampled === 0) return "noImages";
+  return null;
 }
 
 /** `−42.3%` / `+0.2%` / `0%` — a real minus sign, and the sign is always shown for a change. */

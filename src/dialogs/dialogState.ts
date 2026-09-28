@@ -20,7 +20,9 @@ export type DialogName =
   // 도장 선택 (P1-12)
   | "stampPicker"
   // generic 확인 prompt (Stage 7: 글꼴 바꾸기)
-  | "confirm";
+  | "confirm"
+  // generic choice prompt (Stage 9: 문단이 들어갈 자리가 부족합니다)
+  | "choice";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";
@@ -115,4 +117,33 @@ export interface ConfirmRequest {
 
 export function askConfirm(req: ConfirmRequest): Promise<boolean> {
   return ask<boolean>("confirm", { ...req });
+}
+
+/** One option of `askChoice`: a full-width button in the prompt's body. */
+export interface ChoiceOption<T extends string> {
+  value: T;
+  labelKey: string;
+  labelParams?: Record<string, string | number>;
+  /** the accent button (at most one) */
+  primary?: boolean;
+  disabled?: boolean;
+}
+
+/**
+ * A prompt with several answers: the options stack in the body (long Korean labels fit a small
+ * dialog), the footer's quiet button — and Esc, and a click on the backdrop — answer `cancel`.
+ */
+export interface ChoiceRequest<T extends string> {
+  titleKey: string;
+  bodyKey: string;
+  bodyParams?: Record<string, string | number>;
+  /** a secondary line under the body (e.g. why an option is disabled) */
+  hintKey?: string;
+  hintParams?: Record<string, string | number>;
+  options: ChoiceOption<T>[];
+  cancel: { value: T; labelKey: string };
+}
+
+export function askChoice<T extends string>(req: ChoiceRequest<T>): Promise<T> {
+  return ask<T>("choice", { ...req });
 }

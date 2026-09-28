@@ -38,6 +38,7 @@ use crate::ipc::types::{
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
 
+pub mod flow;
 pub mod paragraph;
 
 /// Line spacing of a multi-line `add_text_object`, as a multiple of the font size.
@@ -487,6 +488,10 @@ fn not_editable(reason: NotEditableReason) -> EngineError {
         NotEditableReason::GlyphsMissing => "the font does not have glyphs for this text",
         NotEditableReason::RotatedText => {
             "this text is rotated relative to the page and cannot be reflowed"
+        }
+        NotEditableReason::UnwritableContent => {
+            "rewriting this page would drop content PDFium cannot write back (an inline image \
+             or a shading)"
         }
     };
     EngineError::new(ErrorCode::Unsupported, message)

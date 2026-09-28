@@ -50,7 +50,7 @@ export function RedactPanel() {
       </p>
 
       <h3 className="field-label text-xs">{t("prop.fillColor")}</h3>
-      <div className="redact-fills" role="radiogroup" aria-label={t("prop.fillColor")}>
+      <div className="swatches redact-fills" role="radiogroup" aria-label={t("prop.fillColor")}>
         {FILLS.map((f) => {
           const on = f.rgb.join() === fill.join();
           return (

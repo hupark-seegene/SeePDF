@@ -786,6 +786,9 @@ pub enum NotEditableReason {
     GlyphsMissing,
     /// Stage 7 `probe_paragraph`: the text is rotated relative to the page.
     RotatedText,
+    /// Stage 9 `probe_paragraph` / `edit_paragraph`: rewriting the page would drop content
+    /// PDFium's content generator cannot write back (an inline image, a shading `sh`).
+    UnwritableContent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -902,7 +905,8 @@ pub struct ParagraphProbe {
 #[serde(rename_all = "camelCase")]
 pub struct ParagraphEdit {
     pub object_ids: Vec<ObjectId>,
-    /// `'\n'` = hard line break.
+    /// `'\n'` = hard line break. Empty (or whitespace-only) deletes the paragraph; with flow
+    /// `push`, what follows moves up into its place.
     pub text: String,
     /// New box width in pt (default: the probe rect's width).
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -913,18 +917,87 @@ pub struct ParagraphEdit {
     pub color: Option<Rgb>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub align: Option<ParagraphAlign>,
+    /// Stage 9: what happens to the content below the paragraph (default `push`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub flow: Option<ParagraphFlow>,
+    /// Stage 9: compute the layout + flow plan and change nothing (no generation bump, no
+    /// undo entry, nothing embedded).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub dry_run: bool,
+}
+
+/// Stage 9 — what the content below an edited paragraph does (`IPC_CONTRACT.md` §7.4b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParagraphFlow {
+    /// The content that follows the paragraph in its column moves with its bottom edge:
+    /// down when it grew (as far as the page bottom margin / the first obstacle allow), up
+    /// when it shrank.
+    #[default]
+    Push,
+    /// Nothing else moves (the Stage 7 behaviour); a longer paragraph may cover what follows.
+    Overlap,
+    /// Nothing else moves; font size and leading shrink (0.7 … 1) until the paragraph fits
+    /// its original height.
+    Fit,
+}
+
+/// Stage 9 — why a `push` could not make all the room it needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FlowBlocked {
+    /// The content below would leave the page's bottom margin — or, with nothing below the
+    /// paragraph (`pastBottomPt` > 0, `overflowPt` 0), the paragraph itself would.
+    PageBottom,
+    /// Something that does not follow the paragraph is in the way: a figure or table wider
+    /// than the column, a form field, a SeePDF header / footer stamp, the running footer, the
+    /// bottom edge of a box around the paragraph.
+    Obstacle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParagraphEditResult {
-    /// The page objects after the edit (`{ docGeneration, objects }`).
+    /// The page objects after the edit (`{ docGeneration, objects }`); for a dry run the
+    /// page did not change, so `objects` is empty (`docGeneration` is the current one).
     pub objects: PageObjectList,
     /// The box the new text actually occupies.
     pub rect: Rect,
     pub lines: u32,
-    /// How far the new text extends below the original rect's bottom (0 if it does not).
+    /// How far the new text still extends over the content below after the flow was applied
+    /// (0 when a push made all the room it needed — the paragraph spacing counts — or when
+    /// nothing is below).
     pub overflow_pt: f32,
+    /// Stage 9: how far the content below moved — > 0 pushed down, < 0 pulled up, 0 none.
+    #[serde(default)]
+    pub shifted_pt: f32,
+    /// Stage 9: page objects moved by the flow.
+    #[serde(default)]
+    pub moved_objects: u32,
+    /// Stage 9: annotations moved with them.
+    #[serde(default)]
+    pub moved_annotations: u32,
+    /// Stage 9: how far the content below could move down before it reaches the page bottom
+    /// margin or an obstacle.
+    #[serde(default)]
+    pub room_pt: f32,
+    /// Stage 9 (`push` only): the push needed more than `roomPt`; `overflowPt` is what is
+    /// left after pushing `roomPt`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub blocked: Option<FlowBlocked>,
+    /// Stage 9 (`fit` only): the factor applied to font size and leading, 0.7 … 1.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fit_scale: Option<f32>,
+    /// Stage 9: nothing is below the paragraph and the new text runs this far past the page's
+    /// bottom margin (nothing is overlapped, so `overflowPt` is 0). 0 otherwise.
+    #[serde(default)]
+    pub past_bottom_pt: f32,
+    /// Stage 9: when content moved (`shiftedPt` ≠ 0), the region it came from — the
+    /// paragraph's column, from its original bottom down to the moved stack's bottom (plus a
+    /// quarter of the font size on both ends). Annotations inside it moved by `−shiftedPt`;
+    /// the UI moves pending 영역 표시 marks inside it the same way.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub moved_band: Option<Rect>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1990,6 +2063,26 @@ mod tests {
         let minimal: ParagraphEdit =
             serde_json::from_value(json!({ "objectIds": [], "text": "x" })).unwrap();
         assert!(minimal.width.is_none() && minimal.align.is_none() && minimal.color.is_none());
+        // Stage 9: `flow` defaults to push (absent on the wire), `dryRun` to false.
+        assert!(minimal.flow.is_none() && !minimal.dry_run);
+        assert_eq!(minimal.flow.unwrap_or_default(), ParagraphFlow::Push);
+        let wire = serde_json::to_value(&minimal).unwrap();
+        assert!(wire.get("flow").is_none() && wire.get("dryRun").is_none());
+        for (name, flow) in [
+            ("push", ParagraphFlow::Push),
+            ("overlap", ParagraphFlow::Overlap),
+            ("fit", ParagraphFlow::Fit),
+        ] {
+            let e: ParagraphEdit = serde_json::from_value(
+                json!({ "objectIds": [1], "text": "x", "flow": name, "dryRun": true }),
+            )
+            .unwrap();
+            assert_eq!(e.flow, Some(flow));
+            assert!(e.dry_run);
+            let back = serde_json::to_value(&e).unwrap();
+            assert_eq!(back["flow"], json!(name));
+            assert_eq!(back["dryRun"], json!(true));
+        }
 
         let result = ParagraphEditResult {
             objects: PageObjectList {
@@ -1999,6 +2092,14 @@ mod tests {
             rect: Rect::new(1.0, 2.0, 3.0, 4.0),
             lines: 3,
             overflow_pt: 12.5,
+            shifted_pt: 28.8,
+            moved_objects: 4,
+            moved_annotations: 1,
+            room_pt: 40.0,
+            blocked: None,
+            fit_scale: None,
+            past_bottom_pt: 0.0,
+            moved_band: Some(Rect::new(72.0, 500.0, 300.0, 600.0)),
         };
         assert_eq!(
             serde_json::to_value(&result).unwrap(),
@@ -2006,9 +2107,41 @@ mod tests {
                 "objects": { "docGeneration": 8, "objects": [] },
                 "rect": { "l": 1.0, "b": 2.0, "r": 3.0, "t": 4.0 },
                 "lines": 3,
-                "overflowPt": 12.5
+                "overflowPt": 12.5,
+                "shiftedPt": 28.799999237060547,
+                "movedObjects": 4,
+                "movedAnnotations": 1,
+                "roomPt": 40.0,
+                "pastBottomPt": 0.0,
+                "movedBand": { "l": 72.0, "b": 500.0, "r": 300.0, "t": 600.0 }
             })
         );
+        let blocked = ParagraphEditResult {
+            blocked: Some(FlowBlocked::PageBottom),
+            fit_scale: Some(0.86),
+            past_bottom_pt: 8.5,
+            moved_band: None,
+            ..result.clone()
+        };
+        let v = serde_json::to_value(&blocked).unwrap();
+        assert_eq!(v["blocked"], json!("pageBottom"));
+        assert!((v["fitScale"].as_f64().unwrap() - 0.86).abs() < 1e-6);
+        assert_eq!(v["pastBottomPt"], json!(8.5));
+        assert!(v.get("movedBand").is_none());
+        assert_eq!(
+            serde_json::to_value(NotEditableReason::UnwritableContent).unwrap(),
+            json!("unwritableContent")
+        );
+        assert_eq!(serde_json::to_value(FlowBlocked::Obstacle).unwrap(), json!("obstacle"));
+        // A Stage 7 result (no Stage 9 fields) still parses.
+        let old: ParagraphEditResult = serde_json::from_value(json!({
+            "objects": { "docGeneration": 8, "objects": [] },
+            "rect": { "l": 1.0, "b": 2.0, "r": 3.0, "t": 4.0 },
+            "lines": 3, "overflowPt": 0.0
+        }))
+        .unwrap();
+        assert!(old.blocked.is_none() && old.moved_objects == 0 && old.shifted_pt == 0.0);
+        assert!(old.past_bottom_pt == 0.0 && old.moved_band.is_none());
     }
 
     #[test]

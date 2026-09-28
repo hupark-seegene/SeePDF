@@ -313,8 +313,13 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
   );
 }
 
+/**
+ * One editor per session: a patch — even a probe found again elsewhere on the page, with new object
+ * ids and a new box — keeps the same textarea and what was typed in it. Only a new session (a new
+ * serial) mounts a new editor.
+ */
 function sessionKey(s: NonNullable<ReturnType<typeof useEditStore.getState>["session"]>): string {
-  return s.kind === "paragraph" ? `p:${s.probe.objectIds.join(",")}` : `a:${s.at.join(",")}`;
+  return `${s.kind === "paragraph" ? "p" : "a"}:${s.serial ?? 0}`;
 }
 
 function boxStyle(box: { x: number; y: number; w: number; h: number }): React.CSSProperties {

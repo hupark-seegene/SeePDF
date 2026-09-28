@@ -493,6 +493,20 @@ fn open_direct<'p>(document: &PdfDocument<'p>, p: PageIndex) -> Result<PdfPage<'
     Ok(page)
 }
 
+/// Every stamp on `page`: its top-level object index (ascending) and its role (`None` when the
+/// `SeePDF:Stamp` mark carries no role this build knows).
+pub fn stamp_roles(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+) -> Vec<(usize, Option<StampRole>)> {
+    (0..raw::object::object_count(bindings, page))
+        .filter_map(|i| {
+            raw::object::mark_param(bindings, page, i, STAMP_MARK, ROLE_PARAM)
+                .map(|found| (i, found.as_deref().and_then(StampRole::from_name)))
+        })
+        .collect()
+}
+
 /// Indices (ascending) of the top-level objects on `page` that are stamps of `role` (any role
 /// when `None`).
 pub fn stamp_indices(

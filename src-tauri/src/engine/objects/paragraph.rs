@@ -27,19 +27,20 @@
 //! then written one object per word, with a synthetic space. Justified lines are always one
 //! object per word; everything else is one object per line.
 
-use super::{check_font_size, check_generation, not_editable, object_at, relist, rgb_of};
+use super::{check_font_size, check_generation, flow, not_editable, object_at, relist, rgb_of};
 use crate::engine::annot::ScratchPage;
-use crate::engine::fonts;
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
 use crate::engine::types::EngineState;
+use crate::engine::{fonts, raw, stamp};
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
-    ChangeReason, DocGeneration, NotEditableReason, ObjectId, PageIndex, ParagraphAlign,
-    ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, Rect, Rgb, TextEditStrategy,
+    ChangeReason, DocGeneration, FlowBlocked, NotEditableReason, ObjectId, PageIndex,
+    ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphFlow, ParagraphProbe, Point,
+    Rect, Rgb, StampRole, TextEditStrategy,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Baselines within this fraction of the font size are one line.
 const BASELINE_TOL: f32 = 0.25;
@@ -67,6 +68,19 @@ const INDENT_MAX: f32 = 3.0;
 const FIT_SLACK: f32 = 0.15;
 /// The space of a font without a usable space glyph, × size.
 const SYNTHETIC_SPACE: f32 = 0.3;
+/// A justified line never stretches its word gaps past this (× size): the probe splits a
+/// baseline band at gaps wider than [`SPLIT_GAP`] × size, and a line SeePDF wrote must read
+/// back as one line (the side bearings add a little to the advance gap). A line that would
+/// need more stays short of the right edge, like TeX's underfull boxes.
+const JUSTIFY_MAX_GAP: f32 = 0.75;
+/// A paragraph is justified when at least this share of its lines (all but the last) end at
+/// the right edge — so a line that could not be stretched (see [`JUSTIFY_MAX_GAP`]) does not
+/// turn it into a left-aligned one on the next edit.
+const JUSTIFY_FLUSH_SHARE: f32 = 0.75;
+/// A line whose word gaps are all at least this wide (× size, ink to ink) was stretched by
+/// justification but stopped short of the right edge at [`JUSTIFY_MAX_GAP`] (long words): it
+/// counts as flush. A normal word space is about 0.25–0.35 × size.
+const STRETCHED_GAP: f32 = 0.55;
 /// Trial objects are created at this size so the loose widths keep their precision.
 const TRIAL_SIZE: f32 = 100.0;
 /// …and placed far off the page. PDFium's text page drops a character that repeats the same
@@ -556,6 +570,19 @@ fn join_lines(texts: &[String]) -> String {
     out
 }
 
+/// A justified line that could not reach the right edge: separate words, every gap between them
+/// stretched well past a word space (see [`STRETCHED_GAP`]).
+fn stretched(runs: &[Run], line: &Line) -> bool {
+    let size = line.size;
+    let mut gaps = line
+        .runs
+        .windows(2)
+        .map(|w| runs[w[1]].bounds.l - runs[w[0]].bounds.r)
+        .filter(|&gap| gap > WORD_GAP * size)
+        .peekable();
+    gaps.peek().is_some() && gaps.all(|gap| gap >= STRETCHED_GAP * size)
+}
+
 fn analyze(runs: &[Run], lines: &[&Line]) -> Info {
     let n = lines.len();
     let mut ids = Vec::new();
@@ -600,11 +627,14 @@ fn analyze(runs: &[Run], lines: &[&Line]) -> Info {
     let block_right = lines.iter().map(|l| l.right).fold(f32::MIN, f32::max);
     let left_flush = n >= 2 && lines[1..].iter().all(|l| (l.left - body_left).abs() <= tol);
     let right_of_body = lines[..n - 1].iter().map(|l| l.right).fold(f32::MIN, f32::max);
+    let flush_right = lines[..n - 1]
+        .iter()
+        .filter(|l| (l.right - right_of_body).abs() <= tol || stretched(runs, l))
+        .count();
     let align = if n >= 3
         && left_flush
-        && lines[..n - 1]
-            .iter()
-            .all(|l| (l.right - right_of_body).abs() <= tol)
+        && flush_right >= 2
+        && flush_right as f32 >= JUSTIFY_FLUSH_SHARE * (n - 1) as f32
     {
         ParagraphAlign::Justify
     } else if n < 2 || left_flush {
@@ -779,11 +809,19 @@ pub fn probe(
 ) -> Result<Option<ParagraphProbe>, EngineError> {
     let generation = doc.generation;
     let mut scratch = ScratchPage::open(doc, page_index)?;
+    // SeePDF's own header / footer / watermark stamps are edited in their dialog; they never
+    // join a paragraph (a header 4 pt above the first line would fold into it and be deleted).
+    let stamps: HashSet<usize> = stamp::stamp_indices(doc.bindings(), &scratch.page, None)
+        .into_iter()
+        .collect();
     let (runs, obstacles) = {
         let text_page = scratch.page.text().ctx("load text page")?;
         let mut runs = Vec::new();
         let mut obstacles = Vec::new();
         for (index, object) in scratch.page.objects().iter().enumerate() {
+            if stamps.contains(&index) {
+                continue;
+            }
             match classify(index, &object, &text_page) {
                 Classified::Run(r) => runs.push(r),
                 Classified::Obstacle(o) => obstacles.push(o),
@@ -823,8 +861,19 @@ pub fn probe(
     let info = analyze(&runs, &para_lines);
     let dominant = &runs[info.dominant];
 
+    // The edit rewrites the content streams that hold the paragraph (see `run`): refuse up
+    // front, before anything is typed, when that would lose an inline image or a shading.
+    let own: Vec<usize> = info.ids.iter().map(|&i| i as usize).collect();
+    let unwritable = info.reason.is_none()
+        && raw::page::rewrite_set(doc.bindings(), doc.pdf(), page_index, &own)?.is_none();
     let (strategy, substitute_font, reason) = if let Some(reason) = info.reason {
         (TextEditStrategy::Refused, None, Some(reason))
+    } else if unwritable {
+        (
+            TextEditStrategy::Refused,
+            None,
+            Some(NotEditableReason::UnwritableContent),
+        )
     } else {
         let token = font_token_of(&scratch.page, dominant.index)?;
         let covered = measure_font(
@@ -989,7 +1038,11 @@ fn layout(text: &str, m: &Metrics, f: Frame) -> (Vec<Placed>, u32) {
         };
         let justify = f.align == ParagraphAlign::Justify && !last && words.len() > 1;
         if justify || per_word {
-            let gap = if justify { (avail - sum) / gaps } else { space };
+            let gap = if justify {
+                ((avail - sum) / gaps).min((JUSTIFY_MAX_GAP * size).max(space))
+            } else {
+                space
+            };
             let mut x = x0;
             for (word, w) in words {
                 placed.push(Placed {
@@ -1012,10 +1065,20 @@ fn layout(text: &str, m: &Metrics, f: Frame) -> (Vec<Placed>, u32) {
 }
 
 /// Reads the paragraph's runs back from explicit object ids (the probe's), checking each.
-fn runs_for(page: &PdfPage<'_>, ids: &[ObjectId]) -> Result<Vec<Run>, EngineError> {
+fn runs_for(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    ids: &[ObjectId],
+) -> Result<Vec<Run>, EngineError> {
     let text_page = page.text().ctx("load text page")?;
+    let stamps: HashSet<usize> = stamp::stamp_indices(bindings, page, None).into_iter().collect();
     let mut runs = Vec::with_capacity(ids.len());
     for &id in ids {
+        if stamps.contains(&(id as usize)) {
+            return Err(EngineError::invalid(format!(
+                "object {id} is a SeePDF stamp, not paragraph text"
+            )));
+        }
         let object = object_at(page, id)?;
         match classify(id as usize, &object, &text_page) {
             Classified::Run(r) => {
@@ -1043,8 +1106,82 @@ fn runs_for(page: &PdfPage<'_>, ids: &[ObjectId]) -> Result<Vec<Run>, EngineErro
     Ok(runs)
 }
 
+/// Nominal descent below the last baseline, × size. The flow compares **line grids**, not
+/// ink: a descender typed into (or deleted from) the last line must not nudge everything
+/// below by 2 pt, and an unchanged line count must mean "nothing moves".
+const NOMINAL_DESCENT: f32 = 0.25;
+/// `fit`: the smallest factor tried, the step, and how close to the original bottom counts
+/// as fitting (the grid arithmetic is exact, so this only absorbs float noise).
+const FIT_MIN: f32 = 0.7;
+const FIT_STEP: f32 = 0.02;
+const FIT_TOL: f32 = 0.05;
+
+/// What one edit did (or, for a dry run, would do).
+struct Outcome {
+    rect: Rect,
+    lines: u32,
+    overflow: f32,
+    shifted: f32,
+    moved_objects: u32,
+    moved_annotations: u32,
+    room: f32,
+    blocked: Option<FlowBlocked>,
+    fit_scale: Option<f32>,
+    past_bottom: f32,
+    moved_band: Option<Rect>,
+}
+
+impl Outcome {
+    fn into_result(self, objects: crate::ipc::types::PageObjectList) -> ParagraphEditResult {
+        ParagraphEditResult {
+            objects,
+            rect: self.rect,
+            lines: self.lines,
+            overflow_pt: round2(self.overflow.max(0.0)),
+            shifted_pt: round2(self.shifted),
+            moved_objects: self.moved_objects,
+            moved_annotations: self.moved_annotations,
+            room_pt: round2(self.room.max(0.0)),
+            blocked: self.blocked,
+            fit_scale: self.fit_scale,
+            past_bottom_pt: round2(self.past_bottom.max(0.0)),
+            moved_band: self.moved_band,
+        }
+    }
+}
+
+fn round2(v: f32) -> f32 {
+    let r = (v * 100.0).round() / 100.0;
+    if r == 0.0 {
+        0.0 // no "-0"
+    } else {
+        r
+    }
+}
+
 /// `edit_paragraph` — replaces the paragraph's objects with the new text, reflowed inside
-/// the paragraph's box. One `registry::mutate` = one undo step (`undo.paragraphEdit`).
+/// the paragraph's box, and applies the Stage 9 flow to what follows it (see
+/// [`super::flow`]): `push` (default) moves the content below by the growth, `overlap` moves
+/// nothing, `fit` shrinks font size and leading until the text fits its original height.
+/// One `registry::mutate` = one undo step (`undo.paragraphEdit`) for the text **and** every
+/// move.
+///
+/// `dryRun` runs the same layout and plan without mutating: no generation bump, no undo
+/// entry, nothing embedded (a substitute font is measured in a throwaway document), and the
+/// page's trial objects are dropped with a scratch page that is never regenerated. Its
+/// `objects` list is empty (the page is as it was).
+///
+/// An empty (or whitespace-only) `text` deletes the paragraph: nothing is laid out (`lines` 0,
+/// `rect` a zero-height box at the paragraph's top), and `push` pulls what follows up into its
+/// place — the top of the first thing below moves to the paragraph's top — so emptying a
+/// paragraph does not leave a hole. `overlap` and `fit` only delete.
+///
+/// Refused with `unsupported` / `unwritableContent` when rewriting the paragraph's content
+/// streams would lose an inline image or a shading object (see `raw::page::rewrite_set`):
+/// the dry run and the write rehearse the rewrite, and the write re-parses the page and rolls
+/// back. When only the streams of the content *below* cannot be rewritten, that content stays
+/// where it is and is treated as an obstacle (`blocked: obstacle`), so `overlap` and `fit`
+/// remain possible.
 pub fn edit(
     st: &mut EngineState<'_>,
     doc_id: &str,
@@ -1058,11 +1195,8 @@ pub fn edit(
         return Err(EngineError::invalid("objectIds is empty"));
     }
     let text = edit.text.replace("\r\n", "\n").replace('\r', "\n");
-    if text.trim().is_empty() {
-        return Err(EngineError::invalid(
-            "the text is empty; delete the objects instead",
-        ));
-    }
+    // No text at all: the paragraph is deleted (and, with `push`, what follows takes its place).
+    let text = if text.trim().is_empty() { String::new() } else { text };
     if let Some(size) = edit.font_size_pt {
         check_font_size(size)?;
     }
@@ -1074,122 +1208,428 @@ pub fn edit(
     let mut ids = edit.object_ids.clone();
     ids.sort_unstable();
     ids.dedup();
+    let flow = edit.flow.unwrap_or_default();
+    let pdfium = st.pdfium;
+    let job = Job {
+        page_index,
+        ids: &ids,
+        text: &text,
+        edit: &edit,
+        flow,
+        allow_font_substitution,
+    };
 
-    let (original, rect, lines) = registry::mutate(
-        st,
-        doc_id,
-        MutateOpts::new("undo.paragraphEdit", ChangeReason::Edit).page(page_index),
-        |doc| {
-            let mut scratch = ScratchPage::open(doc, page_index)?;
-            let runs = runs_for(&scratch.page, &ids)?;
-            let mut lines = build_lines(&runs, false);
-            lines.sort_by(|a, b| b.baseline.total_cmp(&a.baseline));
-            let line_refs: Vec<&Line> = lines.iter().collect();
-            let info = analyze(&runs, &line_refs);
-            let dominant = runs[info.dominant].clone();
+    let outcome = if edit.dry_run {
+        let doc = st.doc_mut(doc_id)?;
+        run(doc, pdfium, &job, false)?
+    } else {
+        registry::mutate(
+            st,
+            doc_id,
+            MutateOpts::new("undo.paragraphEdit", ChangeReason::Edit).page(page_index),
+            |doc| run(doc, pdfium, &job, true),
+        )?
+    };
+    // A dry run changed nothing: no need to list the page again (on a dense page the listing
+    // costs more than the plan).
+    let objects = if edit.dry_run {
+        crate::ipc::types::PageObjectList {
+            doc_generation: st.doc(doc_id)?.generation,
+            objects: Vec::new(),
+        }
+    } else {
+        relist(st, doc_id, page_index)?
+    };
+    Ok(outcome.into_result(objects))
+}
 
-            // Font: the paragraph's own when it draws every glyph, else the substitute.
-            let own = font_token_of(&scratch.page, dominant.index)?;
-            let (token, metrics) =
-                match measure_font(&mut scratch.page, doc.pdf(), own, &text)? {
-                    Some(m) => (own, m),
-                    None => {
-                        let pick = fonts::pick(&text);
-                        if !allow_font_substitution {
-                            return Err(EngineError::new(
-                                ErrorCode::FontCoverage,
-                                format!(
-                                    "the paragraph's font cannot draw this text; it would have \
-                                     to be replaced with {}",
-                                    pick.name()
-                                ),
-                            )
-                            .with_page(page_index));
-                        }
-                        doc.adopt_hangul_token(&scratch.page);
-                        let flat: String = text.replace('\n', " ");
-                        let (token, _) = doc.hangul_token_for(&flat)?;
-                        let m = measure_font(&mut scratch.page, doc.pdf(), token, &text)?
-                            .ok_or_else(|| {
-                                EngineError::new(
-                                    ErrorCode::FontCoverage,
-                                    format!("{} cannot draw this text either", pick.name()),
-                                )
-                                .with_page(page_index)
-                            })?;
-                        (token, m)
-                    }
-                };
+/// The arguments of one [`edit`], validated.
+struct Job<'a> {
+    page_index: PageIndex,
+    /// Sorted, deduplicated.
+    ids: &'a [ObjectId],
+    /// Line breaks normalised to `\n`.
+    text: &'a str,
+    edit: &'a ParagraphEdit,
+    flow: ParagraphFlow,
+    allow_font_substitution: bool,
+}
 
-            let size = edit.font_size_pt.unwrap_or(info.size);
-            let scale = if info.size > 0.0 { size / info.size } else { 1.0 };
-            let box_r = match edit.width {
-                Some(w) => info.rect.l + w,
-                None => info.rect.r,
+/// Layout, flow plan and — when `apply` — the page rewrite. The caller is inside
+/// `registry::mutate` exactly when `apply` is true.
+fn run<'p>(
+    doc: &mut OpenDoc<'p>,
+    pdfium: &'p Pdfium,
+    job: &Job<'_>,
+    apply: bool,
+) -> Result<Outcome, EngineError> {
+    let page_index = job.page_index;
+    let text = job.text;
+    let edit = job.edit;
+    let bindings = doc.bindings();
+    let crop = doc.geom(page_index)?.crop;
+    let mut scratch = ScratchPage::open(doc, page_index)?;
+    let runs = runs_for(bindings, &scratch.page, job.ids)?;
+    let mut lines = build_lines(&runs, false);
+    lines.sort_by(|a, b| b.baseline.total_cmp(&a.baseline));
+    let line_refs: Vec<&Line> = lines.iter().collect();
+    let info = analyze(&runs, &line_refs);
+    let last_baseline = lines.last().map_or(info.first_baseline, |l| l.baseline);
+    let dominant = runs[info.dominant].clone();
+
+    // Font: the paragraph's own when it draws every glyph, else the substitute.
+    let own = font_token_of(&scratch.page, dominant.index)?;
+    // Nothing to lay out: the paragraph is deleted (see `edit`).
+    let emptied = text.is_empty();
+    // A dry run measures the substitute in a throwaway document (see `edit`).
+    let mut measuring_doc: Option<PdfDocument<'p>> = None;
+    let measured = if emptied {
+        Some(Metrics {
+            widths: HashMap::new(),
+            space: None,
+        })
+    } else {
+        measure_font(&mut scratch.page, doc.pdf(), own, text)?
+    };
+    let (token, metrics) = match measured {
+        Some(m) => (own, m),
+        None => {
+            let pick = fonts::pick(text);
+            if !job.allow_font_substitution {
+                return Err(EngineError::new(
+                    ErrorCode::FontCoverage,
+                    format!(
+                        "the paragraph's font cannot draw this text; it would have to be \
+                         replaced with {}",
+                        pick.name()
+                    ),
+                )
+                .with_page(page_index));
+            }
+            let cannot = || {
+                EngineError::new(
+                    ErrorCode::FontCoverage,
+                    format!("{} cannot draw this text either", pick.name()),
+                )
+                .with_page(page_index)
             };
-            let frame = Frame {
-                size,
-                box_l: info.body_left,
-                box_r,
-                indent: info.indent,
-                align: edit.align.unwrap_or(info.align),
-                first_baseline: info.first_baseline,
-                line_height: info.line_height * scale,
-            };
-            let (placed, lines) = layout(&text, &metrics, frame);
-            let color = edit.color.unwrap_or(dominant.color);
-            let render_mode = dominant.render_mode;
+            let flat: String = text.replace('\n', " ");
+            if apply {
+                doc.adopt_hangul_token(&scratch.page);
+                let (token, _) = doc.hangul_token_for(&flat)?;
+                let m = measure_font(&mut scratch.page, doc.pdf(), token, text)?
+                    .ok_or_else(cannot)?;
+                (token, m)
+            } else {
+                let mut sub = pdfium.create_new_pdf().ctx("create measuring document")?;
+                let (token, _) = fonts::token_for(&mut sub, &flat, &mut None)?;
+                let mut page = sub
+                    .pages_mut()
+                    .create_page_at_end(PdfPagePaperSize::a4())
+                    .ctx("create measuring page")?;
+                let m = measure_font(&mut page, &sub, token, text)?.ok_or_else(cannot)?;
+                drop(page);
+                measuring_doc = Some(sub);
+                (token, m)
+            }
+        }
+    };
 
-            // Add first, remove afterwards: the new objects hold the font alive (an embedded
-            // font is only referenced by its text objects), and the old indices stay valid.
-            let document = doc.pdf();
-            let mut rect: Option<Rect> = None;
-            for p in &placed {
-                let mut object =
-                    PdfPageTextObject::new(document, &p.text, token, PdfPoints::new(size))
-                        .ctx("create text object")?;
-                object
-                    .set_fill_color(PdfColor::new(color[0], color[1], color[2], 255))
-                    .ctx("set_fill_color")?;
-                if !matches!(
-                    render_mode,
-                    PdfPageTextRenderMode::Unknown | PdfPageTextRenderMode::FilledUnstroked
-                ) {
-                    object.set_render_mode(render_mode).ctx("set_render_mode")?;
+    // Layout — for `fit`, the largest factor in [0.7, 1] whose grid fits the original height.
+    let base_size = edit.font_size_pt.unwrap_or(info.size);
+    let scale = if info.size > 0.0 { base_size / info.size } else { 1.0 };
+    let base_leading = info.line_height * scale;
+    let box_r = match edit.width {
+        Some(w) => info.rect.l + w,
+        None => info.rect.r,
+    };
+    let align = edit.align.unwrap_or(info.align);
+    let frame_at = |factor: f32| Frame {
+        size: base_size * factor,
+        box_l: info.body_left,
+        box_r,
+        indent: info.indent,
+        align,
+        first_baseline: info.first_baseline,
+        line_height: base_leading * factor,
+    };
+    let original_bottom = last_baseline - NOMINAL_DESCENT * info.size;
+    // > 0: the new grid ends lower than the old one.
+    let growth_of = |rows: u32, factor: f32| {
+        let last = info.first_baseline - rows.saturating_sub(1) as f32 * base_leading * factor;
+        original_bottom - (last - NOMINAL_DESCENT * base_size * factor)
+    };
+    let (placed, rows, factor) = match job.flow {
+        _ if emptied => (Vec::new(), 0, 1.0),
+        ParagraphFlow::Fit => {
+            let steps = ((1.0 - FIT_MIN) / FIT_STEP).round() as u32;
+            let mut chosen = None;
+            for k in 0..=steps {
+                let factor = (1.0 - k as f32 * FIT_STEP).max(FIT_MIN);
+                let (placed, rows) = layout(text, &metrics, frame_at(factor));
+                if growth_of(rows, factor) <= FIT_TOL || k == steps {
+                    chosen = Some((placed, rows, factor));
+                    break;
                 }
-                object
-                    .translate(PdfPoints::new(p.x), PdfPoints::new(p.baseline))
-                    .ctx("place text object")?;
-                let b = object.bounds().ctx("measure text object")?.to_rect();
-                let r = Rect::new(b.left().value, b.bottom().value, b.right().value, b.top().value);
-                rect = Some(rect.map_or(r, |acc| acc.union(&r)));
-                scratch
-                    .page
-                    .objects_mut()
-                    .add_text_object(object)
-                    .ctx("add text object")?;
             }
-            for &id in ids.iter().rev() {
-                scratch
-                    .page
-                    .objects_mut()
-                    .remove_object_at_index(id as usize)
-                    .ctx(&format!("remove object {id}"))?;
-            }
+            chosen.expect("the last step always chooses")
+        }
+        _ => {
+            let (placed, rows) = layout(text, &metrics, frame_at(1.0));
+            (placed, rows, 1.0)
+        }
+    };
+    let size = base_size * factor;
+    // An emptied paragraph's growth is known once the plan says what follows it (below).
+    let mut growth = if emptied { 0.0 } else { growth_of(rows, factor) };
+    let color = edit.color.unwrap_or(dominant.color);
+    let render_mode = dominant.render_mode;
+
+    // The new objects, measured before anything on the page changes.
+    let built = {
+        let document = measuring_doc.as_ref().unwrap_or_else(|| doc.pdf());
+        build_objects(document, token, size, color, render_mode, &placed)?
+    };
+    let new_rect = built
+        .iter()
+        .map(|(_, r)| *r)
+        .reduce(|a, b| a.union(&b))
+        // Deleted: a zero-height box at the paragraph's top (its column stays the column).
+        .unwrap_or(Rect::new(info.rect.l, info.rect.t, info.rect.r, info.rect.t));
+
+    // What follows the paragraph, from the page as it is (indices still the listed ones).
+    let own_ids: HashSet<usize> = job.ids.iter().map(|&i| i as usize).collect();
+    let (items, risky) = flow_items(bindings, &scratch.page, &own_ids);
+    let annots = flow::read_annots(bindings, &scratch.page);
+    let mut plan = flow::plan(
+        &items,
+        &annots,
+        &flow::Geometry {
+            crop,
+            original: info.rect,
+            new_rect,
+            size: info.size,
+            leading: info.line_height,
+            grid_bottom: original_bottom,
+        },
+    );
+    if emptied {
+        // What follows moves up into the paragraph's place: its top to the paragraph's top.
+        growth = plan.stack_top.map_or(0.0, |top| top - info.rect.t).min(0.0);
+    }
+    // How far the new ink reaches below the old grid bottom: a descender deeper than the
+    // nominal descent reaches further than the grid says.
+    let reach = if emptied { growth } else { growth.max(original_bottom - new_rect.b) };
+    let mut decision = flow::decide(&plan, job.flow, growth, reach);
+    let is_moving = |d: &flow::Decision, p: &flow::Plan| {
+        d.shift.abs() >= flow::MIN_SHIFT && !p.movable.is_empty()
+    };
+    // The content streams a write regenerates: those of the paragraph's objects (removed) and
+    // of the objects the flow moves; the new text goes into a new stream of its own. Rehearse
+    // it — the dry run and the write alike — and regenerate whatever else it would disturb.
+    let own: Vec<usize> = job.ids.iter().map(|&i| i as usize).collect();
+    let mut dirty = own.clone();
+    if is_moving(&decision, &plan) {
+        dirty.extend(plan.movable.iter().copied());
+    }
+    let extra = match raw::page::rewrite_set(bindings, doc.pdf(), page_index, &dirty)? {
+        Some(extra) => extra,
+        None if dirty.len() > own.len() => {
+            // What follows sits in a stream PDFium cannot rewrite (an inline image or a shading
+            // shares it): it stays where it is and is in the paragraph's way.
+            let Some(extra) = raw::page::rewrite_set(bindings, doc.pdf(), page_index, &own)? else {
+                return Err(unwritable(page_index));
+            };
+            plan = plan.frozen();
+            decision = flow::decide(&plan, job.flow, growth, reach);
+            extra
+        }
+        None => return Err(unwritable(page_index)),
+    };
+    let moving = is_moving(&decision, &plan);
+    let dy = -decision.shift;
+    let moved: &[usize] = if moving { &plan.movable } else { &[] };
+
+    let mut moved_annotations = if moving { plan.annots.len() as u32 } else { 0 };
+    if apply {
+        let count = scratch.page.objects().len();
+        // Moves first, while the listed indices are still valid; then add first, remove
+        // afterwards: the new objects hold the font alive (an embedded font is only
+        // referenced by its text objects), and the old indices stay valid.
+        for &index in moved {
+            raw::object::translate(bindings, &scratch.page, index, 0.0, dy)?;
+        }
+        // An identity transform marks an object dirty: its stream is regenerated with it whole.
+        for &index in &extra {
+            raw::object::translate(bindings, &scratch.page, index, 0.0, 0.0)?;
+        }
+        let added = built.len();
+        for (object, _) in built {
             scratch
                 .page
-                .regenerate_content()
-                .ctx("regenerate page content")?;
-            Ok((info.rect, rect.unwrap_or(Rect::ZERO), lines))
-        },
-    )?;
-    let objects = relist(st, doc_id, page_index)?;
-    Ok(ParagraphEditResult {
-        objects,
-        rect,
-        lines,
-        overflow_pt: (original.b - rect.b).max(0.0),
+                .objects_mut()
+                .add_text_object(object)
+                .ctx("add text object")?;
+        }
+        for &id in job.ids.iter().rev() {
+            scratch
+                .page
+                .objects_mut()
+                .remove_object_at_index(id as usize)
+                .ctx(&format!("remove object {id}"))?;
+        }
+        scratch
+            .page
+            .regenerate_content()
+            .ctx("regenerate page content")?;
+        if moving && !plan.annots.is_empty() {
+            moved_annotations = flow::move_annots(bindings, &scratch.page, &plan.annots, dy)?;
+            // Cleared markup appearances are regenerated by the pre-save render.
+            doc.touched.insert(page_index);
+        }
+        drop(scratch);
+        // PDFium's content generator skips an inline image or a shading object in a stream it
+        // rewrites (text, paths and forms are always written): re-parse, and refuse (the
+        // mutation rolls back) rather than lose it.
+        if !risky.is_empty() {
+            let expected = count - job.ids.len() + added;
+            let reparsed = ScratchPage::open(doc, page_index)?.page.objects().len();
+            if reparsed < expected {
+                return Err(unwritable(page_index).with_detail(format!(
+                    "unwritableContent: {} object(s) would be lost",
+                    expected - reparsed
+                )));
+            }
+        }
+    }
+    // A dry run drops `built` and the scratch page (never regenerated) here.
+    Ok(Outcome {
+        rect: new_rect,
+        lines: rows,
+        overflow: decision.overflow,
+        shifted: if moving { decision.shift } else { 0.0 },
+        moved_objects: if moving { plan.movable.len() as u32 } else { 0 },
+        moved_annotations,
+        room: plan.room,
+        blocked: decision.blocked,
+        fit_scale: (job.flow == ParagraphFlow::Fit).then(|| round2(factor)),
+        past_bottom: decision.past_bottom,
+        moved_band: if moving { plan.band } else { None },
     })
+}
+
+/// The refusal for a page PDFium cannot rewrite without losing something.
+fn unwritable(page_index: PageIndex) -> EngineError {
+    not_editable(NotEditableReason::UnwritableContent)
+        .with_page(page_index)
+        .with_detail("unwritableContent")
+}
+
+/// Every top-level object of `page` as the flow sees it, and the indices of its image and
+/// shading objects: only those can be lost for good when a content stream is rewritten, so a
+/// page without one needs no re-parse after the write (`raw::page::rewrite_set`).
+fn flow_items(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    own_ids: &HashSet<usize>,
+) -> (Vec<flow::Item>, Vec<usize>) {
+    let stamps: HashMap<usize, Option<StampRole>> =
+        stamp::stamp_roles(bindings, page).into_iter().collect();
+    let mut risky = Vec::new();
+    let items = page
+        .objects()
+        .iter()
+        .enumerate()
+        .map(|(index, object)| {
+            if matches!(
+                object.object_type(),
+                PdfPageObjectType::Image | PdfPageObjectType::Shading
+            ) {
+                risky.push(index);
+            }
+            let text = object.as_text_object();
+            // An invisible OCR layer belongs to the scan under it, not to the text flow.
+            let invisible = text.as_ref().is_some_and(|t| {
+                matches!(
+                    t.render_mode(),
+                    PdfPageTextRenderMode::Invisible | PdfPageTextRenderMode::InvisibleClipping
+                )
+            });
+            let kind = if own_ids.contains(&index) {
+                flow::ItemKind::Paragraph
+            } else if let Some(role) = stamps.get(&index) {
+                match role {
+                    Some(StampRole::Header | StampRole::Footer) => flow::ItemKind::Fixed,
+                    _ => flow::ItemKind::Stamp,
+                }
+            } else if invisible {
+                flow::ItemKind::Ignored
+            } else if matches!(
+                object.object_type(),
+                PdfPageObjectType::Text
+                    | PdfPageObjectType::Image
+                    | PdfPageObjectType::Path
+                    | PdfPageObjectType::Shading
+                    | PdfPageObjectType::XObjectForm
+            ) {
+                flow::ItemKind::Content
+            } else {
+                flow::ItemKind::Ignored
+            };
+            // Upright text: its baseline and rendered size (the page's line pitch).
+            let line = match (&text, object.matrix()) {
+                (Some(t), Ok(m))
+                    if !invisible && m.a() > 0.0 && m.d() > 0.0 && m.b().abs() <= 0.02 * m.a() =>
+                {
+                    let size = t.unscaled_font_size().value * m.d();
+                    (size > 0.0).then_some(flow::TextLine {
+                        baseline: m.f(),
+                        size,
+                    })
+                }
+                _ => None,
+            };
+            flow::Item {
+                index,
+                bounds: bounds_of(&object),
+                kind,
+                line,
+            }
+        })
+        .collect();
+    (items, risky)
+}
+
+/// The laid-out text as detached text objects, each with its bounds.
+fn build_objects<'p>(
+    document: &PdfDocument<'p>,
+    token: PdfFontToken,
+    size: f32,
+    color: Rgb,
+    render_mode: PdfPageTextRenderMode,
+    placed: &[Placed],
+) -> Result<Vec<(PdfPageTextObject<'p>, Rect)>, EngineError> {
+    let mut out = Vec::with_capacity(placed.len());
+    for p in placed {
+        let mut object = PdfPageTextObject::new(document, &p.text, token, PdfPoints::new(size))
+            .ctx("create text object")?;
+        object
+            .set_fill_color(PdfColor::new(color[0], color[1], color[2], 255))
+            .ctx("set_fill_color")?;
+        if !matches!(
+            render_mode,
+            PdfPageTextRenderMode::Unknown | PdfPageTextRenderMode::FilledUnstroked
+        ) {
+            object.set_render_mode(render_mode).ctx("set_render_mode")?;
+        }
+        object
+            .translate(PdfPoints::new(p.x), PdfPoints::new(p.baseline))
+            .ctx("place text object")?;
+        let b = object.bounds().ctx("measure text object")?.to_rect();
+        let r = Rect::new(b.left().value, b.bottom().value, b.right().value, b.top().value);
+        out.push((object, r));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1254,6 +1694,27 @@ mod tests {
         assert!((first[3].x + 20.0 - 200.0).abs() < 1e-3);
         // Last line left-aligned.
         assert_eq!(placed.last().unwrap().x, 100.0);
+    }
+
+    /// A justified line whose next word did not fit is not stretched past the probe's split
+    /// gap: it has to read back as one line (the verifier's Hangul re-probe).
+    #[test]
+    fn justified_gaps_are_capped_below_the_probe_split() {
+        let m = metrics(Some(0.3));
+        // "aa bb" (20 px) then an 18-char word (90 px) that does not fit: one 80 px gap
+        // unless capped at 0.75 × 10.
+        let (placed, lines) =
+            layout("aa bb cccccccccccccccccc dd", &m, frame(ParagraphAlign::Justify));
+        assert_eq!(lines, 3);
+        let first: Vec<&Placed> = placed.iter().filter(|p| p.baseline == 700.0).collect();
+        assert_eq!(first.len(), 2);
+        let gap = first[1].x - (first[0].x + 10.0);
+        assert!((gap - 7.5).abs() < 1e-3, "{gap}");
+        assert!(gap < SPLIT_GAP * 10.0);
+        // An ordinary line is still flush right.
+        let (placed, _) = layout("aaaa bbbb cccc dddd eeee", &m, frame(ParagraphAlign::Justify));
+        let last_on_first = placed.iter().filter(|p| p.baseline == 700.0).last().unwrap();
+        assert!((last_on_first.x + 20.0 - 200.0).abs() < 1e-3);
     }
 
     #[test]

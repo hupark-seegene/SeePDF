@@ -16,7 +16,8 @@ use seepdf_lib::engine::objects;
 use seepdf_lib::engine::registry::{self, MutateOpts};
 use seepdf_lib::engine::Lane;
 use seepdf_lib::ipc::types::{
-    ChangeReason, CompressOptions, CompressReport, DocInfo, JobEvent, Rect, TextAlign,
+    ChangeReason, CompressOptions, CompressReport, DocGeneration, DocInfo, JobEvent, Rect,
+    TextAlign,
 };
 use seepdf_lib::ipc::{EngineError, ErrorCode};
 use std::path::PathBuf;
@@ -312,6 +313,67 @@ fn compress_discard_and_stale_apply() {
     })
     .unwrap();
     assert_eq!(apply(&doc.doc_id, report.token).unwrap_err().code, ErrorCode::Stale);
+}
+
+/// `(generation, dirty, undo label, bytes)` of the open document.
+fn state_of(doc_id: &str) -> (DocGeneration, bool, Option<String>, Vec<u8>) {
+    with_doc(doc_id, |d| {
+        let info = d.info();
+        Ok((info.doc_generation, info.dirty, info.undo_label, d.bytes.to_vec()))
+    })
+    .unwrap()
+}
+
+fn has_pending(doc_id: &str) -> bool {
+    with_doc(doc_id, |d| Ok(d.compress_pending.is_some())).unwrap()
+}
+
+/// A result that saves nothing — no image downsampled, or no smaller file — is spent without
+/// touching the document: no undo step, no dirty flag, no new generation. The dialog disables
+/// 적용 for the same reports (`applyBlock` in `src/dialogs/compress.ts`).
+#[test]
+fn compress_apply_of_a_result_that_saves_nothing_is_a_no_op() {
+    // Nothing to downsample: tracemonkey's own images are all below every preset.
+    let doc = open("tracemonkey.pdf");
+    let before = state_of(&doc.doc_id);
+    let report = report_of(&estimate(&doc.doc_id, opts(96)).unwrap());
+    assert_eq!(report.images_downsampled, 0);
+    let info = apply(&doc.doc_id, report.token).expect("apply");
+    assert_eq!(
+        (info.doc_generation, info.dirty, info.undo_label.clone()),
+        (before.0, before.1, before.2.clone()),
+        "the DocInfo comes back unchanged"
+    );
+    assert_eq!(state_of(&doc.doc_id), before, "the document was not replaced");
+    assert!(!has_pending(&doc.doc_id), "the pending entry is dropped");
+    assert_eq!(apply(&doc.doc_id, report.token).unwrap_err().code, ErrorCode::NotFound);
+
+    // An image was downsampled but the file did not get smaller (PDFium's Flate can come out
+    // larger). A fixture that grows is hard to come by, so the pending entry's `beforeBytes` is
+    // brought down to the result's size.
+    add_png(&doc.doc_id);
+    let before = state_of(&doc.doc_id);
+    let report = report_of(&estimate(&doc.doc_id, opts(96)).unwrap());
+    assert_eq!(report.images_downsampled, 1);
+    with_doc(&doc.doc_id, |d| {
+        let pending = d.compress_pending.as_mut().expect("a pending result");
+        pending.before_bytes = pending.bytes.len() as u64;
+        Ok(())
+    })
+    .unwrap();
+    let info = apply(&doc.doc_id, report.token).expect("apply");
+    assert_eq!(info.doc_generation, before.0);
+    assert_eq!(info.undo_label, before.2, "no `undo.compress` step");
+    assert_eq!(state_of(&doc.doc_id), before, "the document was not replaced");
+    assert_eq!(images(&doc.doc_id, 0)[0].0, 1200, "the original image stays");
+    assert!(!has_pending(&doc.doc_id));
+
+    // The control: the same estimate, untouched, applies.
+    let report = report_of(&estimate(&doc.doc_id, opts(96)).unwrap());
+    let info = apply(&doc.doc_id, report.token).expect("apply");
+    assert_eq!(info.doc_generation, before.0 + 1);
+    assert_eq!(info.undo_label.as_deref(), Some("undo.compress"));
+    assert!((images(&doc.doc_id, 0)[0].0 - 192).abs() <= 1);
 }
 
 #[test]
