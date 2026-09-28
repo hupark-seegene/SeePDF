@@ -194,6 +194,18 @@ function currentPage(): PageIndex {
   return useViewStore.getState().currentPage;
 }
 
+/**
+ * The letter of a ⌘/Ctrl + letter chord, or "". With the Korean input source on, `e.key` is the
+ * jamo (ㅇ for D), so a non-Latin key falls back to the physical key — as 편집 mode's
+ * `shortcutLetter` does.
+ */
+function chordLetter(e: KeyboardEvent): string {
+  if (!(e.metaKey || e.ctrlKey)) return "";
+  const key = e.key.toLowerCase();
+  if (/^[a-z]$/.test(key)) return key;
+  return e.code?.startsWith("Key") ? e.code.slice(3).toLowerCase() : "";
+}
+
 function onKeyDownCapture(e: KeyboardEvent): void {
   const app = useAppStore.getState();
   if (app.mode !== "annotate") return;
@@ -226,7 +238,7 @@ function onKeyDownCapture(e: KeyboardEvent): void {
     }
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") {
+  if (chordLetter(e) === "d") {
     if (duplicateSelection()) {
       e.preventDefault();
       e.stopPropagation();

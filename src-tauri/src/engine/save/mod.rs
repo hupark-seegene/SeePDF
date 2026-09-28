@@ -174,6 +174,14 @@ pub fn verify_bytes(
 ///
 /// Checked up front so the UI can fall through to Save As with an explanation instead of
 /// discovering it after a 5 ms/MB serialisation.
+///
+/// For a new file the directory is **probed** — a throw-away file is created and removed,
+/// which is exactly what [`write_atomic`] is about to do — instead of trusting
+/// `Permissions::readonly()`. On Windows that is only `FILE_ATTRIBUTE_READONLY`, which the
+/// shell sets on Documents, Desktop, Pictures (the `desktop.ini` customisation marker) and
+/// which says nothing about creating files there: Save As into those folders was refused.
+/// On Unix the mode bits missed other users' directories and read-only mounts, which the
+/// probe also catches. An existing file keeps the attribute check: for a file it is real.
 fn check_writable(path: &Path) -> Result<(), EngineError> {
     if path.exists() {
         let meta = std::fs::metadata(path).map_err(EngineError::from)?;
@@ -187,18 +195,39 @@ fn check_writable(path: &Path) -> Result<(), EngineError> {
     }
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
     match dir {
-        Some(dir) if dir.is_dir() => {
-            let meta = std::fs::metadata(dir).map_err(EngineError::from)?;
-            if meta.permissions().readonly() {
-                return Err(EngineError::new(
-                    ErrorCode::ReadOnly,
-                    format!("{} is not writable", dir.display()),
-                ));
-            }
-            Ok(())
-        }
+        Some(dir) if dir.is_dir() => probe_directory(dir),
         Some(dir) => Err(EngineError::not_found(format!("{}", dir.display()))),
         None => Ok(()),
+    }
+}
+
+/// Creates and removes `.seepdf-probe-<pid>.tmp` in `dir`; `readOnly` when that is refused.
+fn probe_directory(dir: &Path) -> Result<(), EngineError> {
+    let probe = dir.join(format!(".seepdf-probe-{}.tmp", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&probe)
+    {
+        Ok(file) => {
+            drop(file);
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(e) => {
+            let code = match e.kind() {
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+                    ErrorCode::ReadOnly
+                }
+                std::io::ErrorKind::NotFound => ErrorCode::NotFound,
+                _ => ErrorCode::Io,
+            };
+            Err(EngineError::new(
+                code,
+                format!("{} is not writable: {e}", dir.display()),
+            ))
+        }
     }
 }
 

@@ -7,10 +7,63 @@
 
 use crate::ipc::EngineError;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// RAM budget across the whole history stack before snapshots spill to disk.
+/// RAM budget for the snapshots of **every open document together** before they spill to
+/// disk (`EngineState::history_budget`).
 pub const DEFAULT_RAM_BUDGET: usize = 256 * 1024 * 1024;
+
+/// The undo RAM budget one engine shares between all of its documents' [`History`]s.
+///
+/// Each `History` used to get its own copy of the limit, so three open 40 MB documents could
+/// keep 3 × 256 MiB of snapshots resident. Now every RAM snapshot reserves its bytes here and
+/// gives them back when it is dropped, popped or spilled, so the limit is global.
+#[derive(Debug)]
+pub struct RamBudget {
+    limit: AtomicUsize,
+    used: AtomicUsize,
+}
+
+impl RamBudget {
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit: AtomicUsize::new(limit),
+            used: AtomicUsize::new(0),
+        })
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit.load(Ordering::Relaxed)
+    }
+
+    /// Changes the limit; snapshots already resident stay where they are.
+    pub fn set_limit(&self, limit: usize) {
+        self.limit.store(limit, Ordering::Relaxed);
+    }
+
+    /// Bytes of RAM snapshots currently resident, across all documents.
+    pub fn used(&self) -> usize {
+        self.used.load(Ordering::Relaxed)
+    }
+
+    fn try_reserve(&self, len: usize) -> bool {
+        let limit = self.limit();
+        self.used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(len).filter(|&total| total <= limit)
+            })
+            .is_ok()
+    }
+
+    fn release(&self, len: usize) {
+        let _ = self
+            .used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                Some(used.saturating_sub(len))
+            });
+    }
+}
 /// Maximum undo depth for normal documents.
 pub const DEFAULT_DEPTH: usize = 50;
 /// Documents larger than this get depth 3 and go straight to disk.
@@ -62,6 +115,31 @@ impl Drop for Snapshot {
 /// document bytes to restore.
 pub type Popped = (String, Arc<[u8]>);
 
+/// An undo / redo step that has been **prepared** but not applied: the bytes to restore are
+/// loaded and the current state is already stored, yet neither stack has moved.
+///
+/// `registry::undo` replaces the document with [`Step::bytes`] and only then calls
+/// [`History::commit`]; if the snapshot could not be loaded (a spilled file that is gone) or
+/// the replace fails, the stacks are exactly as they were and [`History::abandon`] throws the
+/// stored current state away.
+#[derive(Debug)]
+pub struct Step {
+    redo: bool,
+    label: String,
+    bytes: Arc<[u8]>,
+    current: Snapshot,
+}
+
+impl Step {
+    pub fn bytes(&self) -> Arc<[u8]> {
+        self.bytes.clone()
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+}
+
 #[derive(Debug)]
 pub struct Entry {
     /// i18n key, e.g. `"undo.annotCreate"`.
@@ -75,15 +153,22 @@ pub struct Entry {
 pub struct History {
     undo: Vec<Entry>,
     redo: Vec<Entry>,
+    /// This document's share of `budget.used()`.
     ram_bytes: usize,
-    budget: usize,
+    budget: Arc<RamBudget>,
     depth: usize,
     spill_dir: PathBuf,
     next_spill: u64,
 }
 
 impl History {
+    /// A history with a budget of its own (tests, tools). Open documents use
+    /// [`History::shared`] with the engine's one [`RamBudget`].
     pub fn new(spill_dir: PathBuf, doc_bytes: usize, budget: usize) -> Self {
+        Self::shared(spill_dir, doc_bytes, RamBudget::new(budget))
+    }
+
+    pub fn shared(spill_dir: PathBuf, doc_bytes: usize, budget: Arc<RamBudget>) -> Self {
         let depth = if doc_bytes > LARGE_DOC_BYTES {
             LARGE_DOC_DEPTH
         } else {
@@ -144,7 +229,7 @@ impl History {
     ) -> Result<bool, EngineError> {
         let label = label.into();
         let now = now_ms();
-        self.redo.clear();
+        self.clear_redo();
         if coalesce {
             if let Some(last) = self.undo.last() {
                 if last.label == label && now.saturating_sub(last.at_ms) <= COALESCE_MS {
@@ -176,54 +261,93 @@ impl History {
         }
     }
 
-    /// Pops the newest undo entry; the caller pushes `current` onto the redo stack.
-    pub fn take_undo(&mut self, current: Arc<[u8]>) -> Result<Option<Popped>, EngineError> {
-        let Some(entry) = self.undo.pop() else {
+    /// Loads the newest undo (`redo == false`) or redo entry and stores `current`, **without
+    /// moving either stack** — see [`Step`]. `None` when there is nothing to undo / redo; an
+    /// error (snapshot unreadable, spill failed) leaves everything as it was.
+    pub fn prepare(&mut self, redo: bool, current: Arc<[u8]>) -> Result<Option<Step>, EngineError> {
+        let stack = if redo { &self.redo } else { &self.undo };
+        let Some(entry) = stack.last() else {
             return Ok(None);
         };
-        self.release(&entry.snapshot);
+        let label = entry.label.clone();
         let bytes = entry.snapshot.load()?;
-        let snapshot = self.store(current)?;
-        self.redo.push(Entry {
-            label: entry.label.clone(),
-            snapshot,
+        let current = self.store(current)?;
+        Ok(Some(Step {
+            redo,
+            label,
+            bytes,
+            current,
+        }))
+    }
+
+    /// Applies a prepared step once the document shows its bytes: the entry leaves its stack
+    /// and the stored current state goes onto the other one. Returns the step's label.
+    pub fn commit(&mut self, step: Step) -> String {
+        let (from, to) = if step.redo {
+            (&mut self.redo, &mut self.undo)
+        } else {
+            (&mut self.undo, &mut self.redo)
+        };
+        let popped = from.pop();
+        to.push(Entry {
+            label: step.label.clone(),
+            snapshot: step.current,
             at_ms: now_ms(),
         });
-        Ok(Some((entry.label, bytes)))
+        if let Some(entry) = popped {
+            self.release(&entry.snapshot);
+        }
+        step.label
+    }
+
+    /// Drops a prepared step that could not be applied; the stacks never moved.
+    pub fn abandon(&mut self, step: Step) {
+        self.release(&step.current);
+    }
+
+    /// Pops the newest undo entry; the caller pushes `current` onto the redo stack.
+    pub fn take_undo(&mut self, current: Arc<[u8]>) -> Result<Option<Popped>, EngineError> {
+        self.take(false, current)
     }
 
     /// Pops the newest redo entry; the caller pushes `current` onto the undo stack.
     pub fn take_redo(&mut self, current: Arc<[u8]>) -> Result<Option<Popped>, EngineError> {
-        let Some(entry) = self.redo.pop() else {
+        self.take(true, current)
+    }
+
+    fn take(&mut self, redo: bool, current: Arc<[u8]>) -> Result<Option<Popped>, EngineError> {
+        let Some(step) = self.prepare(redo, current)? else {
             return Ok(None);
         };
-        self.release(&entry.snapshot);
-        let bytes = entry.snapshot.load()?;
-        let snapshot = self.store(current)?;
-        self.undo.push(Entry {
-            label: entry.label.clone(),
-            snapshot,
-            at_ms: now_ms(),
-        });
-        Ok(Some((entry.label, bytes)))
+        let bytes = step.bytes();
+        Ok(Some((self.commit(step), bytes)))
     }
 
     /// Drops both stacks (document closed, or replaced by a Save As).
     pub fn clear(&mut self) {
         self.undo.clear();
-        self.redo.clear();
+        self.clear_redo();
+        self.budget.release(self.ram_bytes);
         self.ram_bytes = 0;
+    }
+
+    fn clear_redo(&mut self) {
+        for entry in std::mem::take(&mut self.redo) {
+            self.release(&entry.snapshot);
+        }
     }
 
     fn release(&mut self, snapshot: &Snapshot) {
         if let Snapshot::Ram(b) = snapshot {
-            self.ram_bytes = self.ram_bytes.saturating_sub(b.len());
+            let len = b.len().min(self.ram_bytes);
+            self.ram_bytes -= len;
+            self.budget.release(len);
         }
     }
 
     fn store(&mut self, bytes: Arc<[u8]>) -> Result<Snapshot, EngineError> {
         let len = bytes.len();
-        if self.ram_bytes + len <= self.budget && len <= LARGE_DOC_BYTES {
+        if len <= LARGE_DOC_BYTES && self.budget.try_reserve(len) {
             self.ram_bytes += len;
             return Ok(Snapshot::Ram(bytes));
         }
@@ -252,6 +376,14 @@ impl History {
 
     pub fn spill_dir(&self) -> &Path {
         &self.spill_dir
+    }
+}
+
+impl Drop for History {
+    fn drop(&mut self) {
+        // A document dropped without `close` (engine shutdown, a replaced `History`) must not
+        // keep its share of the engine-wide budget.
+        self.budget.release(self.ram_bytes);
     }
 }
 

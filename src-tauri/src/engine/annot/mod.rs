@@ -259,7 +259,9 @@ pub fn index_of(
     id: &str,
 ) -> Result<usize, EngineError> {
     for i in 0..raw::annot::count(bindings, page) {
-        let annot = raw::annot::get(bindings, page, i)?;
+        let Some(annot) = raw::annot::slot(bindings, page, i) else {
+            continue;
+        };
         if annot.string("NM").as_deref() == Some(id) {
             return Ok(i);
         }
@@ -299,7 +301,9 @@ pub fn delete(
     let mut victims: Vec<usize> = Vec::new();
     let mut found: Vec<&str> = Vec::new();
     for i in 0..count {
-        let annot = raw::annot::get(bindings, page, i)?;
+        let Some(annot) = raw::annot::slot(bindings, page, i) else {
+            continue;
+        };
         let name = annot.string("NM");
         let is_target = name
             .as_deref()
@@ -365,7 +369,9 @@ pub fn set_hidden(
     let page = &scratch.page;
     let mut changed = 0usize;
     for i in 0..raw::annot::count(bindings, page) {
-        let mut annot = raw::annot::get(bindings, page, i)?;
+        let Some(mut annot) = raw::annot::slot(bindings, page, i) else {
+            continue;
+        };
         let Some(name) = annot.string("NM") else {
             continue;
         };

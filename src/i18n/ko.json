@@ -694,6 +694,7 @@
   "compress.needEstimate": "먼저 예상을 실행하세요. 적용 전에 결과 크기를 확인할 수 있습니다.",
   "compress.done": "압축했습니다: {{before}} → {{after}}",
   "compress.failed": "압축하지 못했습니다",
+  "compress.stale": "예상한 뒤 문서가 바뀌어 다시 예상합니다",
   "dialog.docInfo.encryption.none": "없음",
   "dialog.docInfo.encryption.r2": "RC4 40비트 (R2)",
   "dialog.docInfo.encryption.r3": "RC4 128비트 (R3)",

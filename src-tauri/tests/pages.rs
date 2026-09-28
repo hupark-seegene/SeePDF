@@ -451,3 +451,57 @@ fn pages_insert_blank_sizes() {
         "sameAs -> letter"
     );
 }
+
+/// Bug hunt: a merge has never been saved, so it opens **dirty** — otherwise closing the
+/// window, quitting or opening another file discards it without the 저장 / 저장 안 함 / 취소
+/// prompt, and autosave (which only writes dirty documents) never protects it either.
+#[test]
+fn pages_merge_result_is_dirty() {
+    let merged = with_state(move |st| {
+        pages::merge(
+            st,
+            &[
+                MergeInput {
+                    path: fixture("rotation.pdf").display().to_string(),
+                    range: None,
+                    password: None,
+                },
+                MergeInput {
+                    path: fixture("tracemonkey.pdf").display().to_string(),
+                    range: Some("1".into()),
+                    password: None,
+                },
+            ],
+        )
+    })
+    .expect("merge_documents");
+    let doc = TestDoc {
+        doc_id: merged.info.doc_id.clone(),
+        info: merged.info.clone(),
+    };
+    assert!(doc.info.path.is_none());
+    assert!(doc.info.dirty, "an untitled merge is unsaved work");
+
+    // An edit keeps it dirty; Save As is what makes it clean.
+    let edited = ops(
+        &doc.doc_id,
+        vec![PageOp::Rotate {
+            pages: vec![0],
+            delta: 90,
+        }],
+    );
+    assert!(edited.dirty);
+    let target = out_dir().join("merged-dirty.pdf");
+    let _ = std::fs::remove_file(&target);
+    let saved = with_state({
+        let doc_id = doc.doc_id.clone();
+        let target = target.display().to_string();
+        move |st| {
+            seepdf_lib::engine::save::save(st, &doc_id, Some(&target), false)?;
+            Ok(st.doc(&doc_id)?.info())
+        }
+    })
+    .expect("save as");
+    assert!(!saved.dirty, "Save As makes the merge clean");
+    let _ = std::fs::remove_file(&target);
+}

@@ -58,7 +58,7 @@ const jobs = new Map<JobId, { cancel: () => void }>();
 /** 압축 예상 results waiting for 적용 / 취소: at most one per document, like the engine. */
 const pendingCompress = new Map<
   DocId,
-  { token: number; beforeBytes: number; afterBytes: number; imagesDownsampled: number }
+  { token: number; beforeBytes: number; afterBytes: number; imagesDownsampled: number; baseGeneration: DocGeneration }
 >();
 let nextCompressToken = 1;
 /** Recovery copies (P1-8): what `$APPDATA/SeePDF/recovery` would hold, and each open doc's id. */
@@ -71,9 +71,7 @@ let nextAnnot = 1;
 /** Files the mock "wrote" (Save As): `path_exists` answers true for them (여러 파일 OCR). */
 const writtenFiles = new Set<string>();
 let recents: RecentEntry[] = structuredClone(recentsFixture) as unknown as RecentEntry[];
-// `night` (Stage 8) defaults like the engine's serde default for a file written before it
-const settingsSeed = structuredClone(settingsFixture) as unknown as Partial<Settings>;
-let settings = { ...settingsSeed, night: settingsSeed.night ?? "off" } as Settings;
+let settings = seedSettings();
 /**
  * Stamps `add_stamp` put on each document (Stage 8 `remove_stamps`), one entry per page. Not part
  * of the undo snapshot: the mock only needs the counts to be plausible.
@@ -83,6 +81,55 @@ const pendingOpens: { path: string; source: "argv" | "macos-opened" | "drop" | "
 
 function err(code: EngineError["code"], message: string, extra: Partial<EngineError> = {}): EngineError {
   return { code, message, ...extra };
+}
+
+/**
+ * The fixture settings with the engine's serde defaults for the fields a settings file written before
+ * them lacks (`types.rs` `Settings`): what `get_settings` answers at launch — and after `resetMock()`.
+ */
+function seedSettings(): Settings {
+  const seed = structuredClone(settingsFixture) as unknown as Partial<Settings>;
+  return {
+    ...seed,
+    recentsCount: seed.recentsCount ?? 20,
+    autosaveSec: seed.autosaveSec ?? 60,
+    signatures: seed.signatures ?? [],
+    night: lenientNight(seed.night),
+    checkUpdates: seed.checkUpdates ?? true,
+  } as Settings;
+}
+
+/** `lenient_night`: an unknown 야간 모드 reads as `off` instead of failing the whole file. */
+function lenientNight(value: unknown): Settings["night"] {
+  return value === "dark" || value === "sepia" ? value : "off";
+}
+
+const SETTINGS_ENUMS: Partial<Record<keyof Settings, readonly unknown[]>> = {
+  locale: ["ko", "en"],
+  theme: ["system", "light", "dark"],
+  defaultLayout: ["single", "continuous", "two"],
+  renderQuality: ["balanced", "high"],
+  ocrDpi: ["auto", 200, 300, 400],
+};
+const SETTINGS_COUNTS: (keyof Settings)[] = ["tileCacheMb", "recentsCount", "autosaveSec"];
+const SETTINGS_FLAGS: (keyof Settings)[] = ["restorePosition", "backupsEnabled", "checkUpdates"];
+
+/**
+ * `set_settings` deserialises the merged value into `Settings` and answers `invalidArgument` (saving
+ * nothing) when a field does not fit its type; `night` alone is lenient.
+ */
+function checkSettingsPatch(patch: Partial<Settings>): void {
+  const bad = (key: string) => err("invalidArgument", `settings patch: invalid ${key}`);
+  for (const [key, value] of Object.entries(patch) as [keyof Settings, unknown][]) {
+    const allowed = SETTINGS_ENUMS[key];
+    if (allowed && !allowed.includes(value)) throw bad(key);
+    if (SETTINGS_COUNTS.includes(key) && !(Number.isInteger(value) && (value as number) >= 0)) throw bad(key);
+    if (SETTINGS_FLAGS.includes(key) && typeof value !== "boolean") throw bad(key);
+    if (key === "defaultZoom" && !(typeof value === "number" || ["fit-width", "fit-page", "actual"].includes(value as string))) {
+      throw bad(key);
+    }
+    if (key === "author" && typeof value !== "string") throw bad(key);
+  }
 }
 
 function docsByPath(path: string): boolean {
@@ -116,7 +163,7 @@ function restore(d: MockDoc, s: Snapshot): void {
   d.objects = new Map(s.objects.map(([p, o]) => [p, structuredClone(o)]));
 }
 
-type ChangeReason = "edit" | "undo" | "redo" | "save" | "pages" | "ocr" | "redact";
+type ChangeReason = "edit" | "undo" | "redo" | "pages" | "ocr" | "redact";
 
 /** One mutation = one generation = one undo step (IPC_CONTRACT §3). */
 function mutate<T>(
@@ -158,9 +205,11 @@ function baseName(path: string): string {
 }
 
 function dirName(path: string): string {
-  const parts = path.split(/[\\/]/);
-  parts.pop();
-  return parts.join("/") || "/";
+  // like `flows.dirName`: the path's own separator, and a drive root keeps its separator
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (cut < 0) return ".";
+  const dir = path.slice(0, cut);
+  return dir === "" || /^[A-Za-z]:$/.test(dir) ? dir + path[cut] : dir;
 }
 
 function makePages(count: number): PageGeom[] {
@@ -585,7 +634,7 @@ export const mock = {
     if (idx < 0) throw err("notFound", `annotation ${a.id}`);
     const previous = structuredClone(list[idx]);
     return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.annotEdit" }, () => {
-      const next: Annot = { ...list[idx], ...a.patch, modified: new Date().toISOString() } as Annot;
+      const next: Annot = { ...patchedAnnot(list[idx], a.patch), modified: new Date().toISOString() };
       list[idx] = next;
       d.annots.set(a.page, list);
       return { list: listOf(d, a.page), annot: structuredClone(next), previous };
@@ -593,6 +642,12 @@ export const mock = {
   },
   async deleteAnnotations(a: { docId: DocId; page: PageIndex; ids: string[] }): Promise<AnnotResult> {
     const d = doc(a.docId);
+    // like `annot::delete`: every id must be on the page, or nothing is deleted
+    const onPage = new Set((d.annots.get(a.page) ?? []).map((x) => x.id));
+    const missing = a.ids.filter((id) => !onPage.has(id));
+    if (missing.length) {
+      throw err("notFound", `annotation(s) ${JSON.stringify(missing)} are not on page ${a.page}`, { page: a.page });
+    }
     return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.annotDelete" }, () => {
       const kept = (d.annots.get(a.page) ?? []).filter((x) => !a.ids.includes(x.id));
       d.annots.set(a.page, kept);
@@ -967,6 +1022,7 @@ export const mock = {
     const pages = a.options.pages?.length ? a.options.pages : d.info.pages.map((p) => p.index);
     pendingCompress.delete(a.docId);
     const before = d.info.bytes;
+    const baseGeneration = d.info.docGeneration;
     // 300 DPI: nothing in the fixture is above it, so the rewrite comes out slightly bigger
     const ratio = a.options.targetDpi === 300 ? 1.002 : a.options.targetDpi === 150 ? 0.58 : 0.41;
     const imagesTotal = pages.length * 2;
@@ -976,7 +1032,7 @@ export const mock = {
         const token = nextCompressToken++;
         const afterBytes = Math.round(before * ratio);
         const imagesDownsampled = a.options.targetDpi === 300 ? 0 : imagesTotal - 1;
-        pendingCompress.set(a.docId, { token, beforeBytes: before, afterBytes, imagesDownsampled });
+        pendingCompress.set(a.docId, { token, beforeBytes: before, afterBytes, imagesDownsampled, baseGeneration });
         return { token, beforeBytes: before, afterBytes, imagesTotal, imagesDownsampled, elapsedMs };
       },
     });
@@ -988,6 +1044,10 @@ export const mock = {
     pendingCompress.delete(a.docId);
     // like the engine: a result that saves nothing is spent without touching the document
     if (pending.imagesDownsampled === 0 || pending.afterBytes >= pending.beforeBytes) return structuredClone(d.info);
+    // …and one estimated before the latest edit is `stale` (the token is spent either way)
+    if (d.info.docGeneration !== pending.baseGeneration) {
+      throw err("stale", "the document changed after the estimate; estimate again");
+    }
     mutate(d, { reason: "edit", pages: "all", structure: true, undoLabel: "undo.compress" }, () => {
       d.info.bytes = pending.afterBytes;
     });
@@ -1058,13 +1118,9 @@ export const mock = {
     writtenFiles.add(a.path);
     d.info.name = baseName(a.path);
     d.info.dirty = false;
-    d.info.docGeneration += 1;
-    onProgress({ type: "done", jobId, elapsedMs: 120 });
-    mockEvents.emit("doc-changed", {
-      docId: d.info.docId, docGeneration: d.info.docGeneration, changedPages: "all",
-      structure: false, dirty: false, reason: "save",
-      canUndo: d.info.canUndo, canRedo: d.info.canRedo,
-    });
+    // Like the engine (IPC_CONTRACT §8): a save changes nothing a cache is keyed on, so the
+    // generation stays and only `doc-saved` is broadcast — never `doc-changed`.
+    onProgress({ type: "done", jobId, elapsedMs: 120, outputs: [a.path] });
     mockEvents.emit("doc-saved", { docId: d.info.docId, path: a.path, docGeneration: d.info.docGeneration });
     return { docId: d.info.docId, path: a.path, bytes: d.info.bytes, docGeneration: d.info.docGeneration, elapsedMs: 120 };
   },
@@ -1214,7 +1270,9 @@ export const mock = {
     return structuredClone(settings);
   },
   async setSettings(a: { patch: Partial<Settings> }): Promise<Settings> {
+    checkSettingsPatch(a.patch);
     settings = { ...settings, ...a.patch };
+    settings.night = lenientNight(settings.night);
     return structuredClone(settings);
   },
   /** P1-9: the path is content-addressed like the real one, so the same PNG gives the same path. */
@@ -1332,8 +1390,12 @@ function applyPageOp(d: MockDoc, op: PageOp): void {
       break;
     }
     case "duplicate": {
-      const copies = op.pages.map((i) => structuredClone(pages[i])).filter(Boolean);
-      d.info.pages = [...pages, ...copies];
+      // like the engine: each copy lands right after its source (import at `index + 1`, highest
+      // index first), and a repeated index is copied once (`check_pages` dedups)
+      const next = [...pages];
+      const sources = [...new Set(op.pages)].filter((i) => i >= 0 && i < pages.length).sort((x, y) => y - x);
+      for (const i of sources) next.splice(i + 1, 0, structuredClone(pages[i]));
+      d.info.pages = next;
       break;
     }
     case "insertFrom": {
@@ -1404,6 +1466,58 @@ function annotFromSpec(page: PageIndex, spec: AnnotSpec, id: string, author: str
         subtype: "Stamp", rect: spec.rect, stampKind: "builtin" in spec.image ? spec.image.builtin : "image",
       };
   }
+}
+
+/**
+ * `update_annotation`'s patch applied the way the engine applies it (`annot/update.rs`): geometry
+ * is rebuilt — `rects` become the markup's quads and their union its rect, `paths` the ink strokes
+ * and their padded bounds, `p1`/`p2` the line — and only contract fields are written, never the
+ * patch's own keys (`rects`, `paths`, `p1`, `p2` are not `Annot` fields).
+ */
+function patchedAnnot(annot: Annot, patch: AnnotPatch): Annot {
+  const next: Annot = structuredClone(annot);
+  const width = patch.borderWidth ?? annot.borderWidth;
+  if (patch.color) next.color = patch.color;
+  if (patch.fillColor !== undefined) next.fillColor = patch.fillColor;
+  if (patch.opacity !== undefined) next.opacity = Math.min(1, Math.max(0, patch.opacity));
+  if (patch.borderWidth !== undefined) next.borderWidth = patch.borderWidth;
+  if (patch.rects) {
+    next.quads = structuredClone(patch.rects);
+    next.rect = patch.rects.reduce(
+      (acc, r) => ({ l: Math.min(acc.l, r.l), b: Math.min(acc.b, r.b), r: Math.max(acc.r, r.r), t: Math.max(acc.t, r.t) }),
+      patch.rects[0] ?? annot.rect,
+    );
+  }
+  if (patch.paths) {
+    next.inkPaths = structuredClone(patch.paths);
+    next.rect = paddedBounds(patch.paths, width);
+  }
+  if ((annot.kind === "line" || annot.kind === "arrow") && (patch.p1 || patch.p2)) {
+    const [x1, y1, x2, y2] = annot.linePoints ?? [0, 0, 0, 0];
+    const p1 = patch.p1 ?? [x1, y1];
+    const p2 = patch.p2 ?? [x2, y2];
+    next.linePoints = [p1[0], p1[1], p2[0], p2[1]];
+    next.inkPaths = [[p1[0], p1[1], p2[0], p2[1]]];
+    next.rect = paddedBounds(next.inkPaths, width);
+  }
+  if (patch.rect) next.rect = structuredClone(patch.rect);
+  if (patch.contents !== undefined) next.contents = patch.contents;
+  if (patch.author !== undefined) next.author = patch.author;
+  if (patch.fontSize !== undefined) next.fontSize = patch.fontSize;
+  if (patch.text !== undefined) {
+    next.text = patch.text;
+    // a text box is rebuilt from its text, which is also its /Contents
+    if (annot.kind === "textbox" && patch.contents === undefined) next.contents = patch.text;
+  }
+  if (patch.locked !== undefined) next.locked = patch.locked;
+  return next;
+}
+
+/** `ink_bounds`: the points' bounds grown by half the stroke width (at least 1 pt). */
+function paddedBounds(paths: number[][], width: number): Rect {
+  const r = boundsOfPaths(paths);
+  const pad = Math.max(width / 2, 1);
+  return { l: r.l - pad, b: r.b - pad, r: r.r + pad, t: r.t + pad };
 }
 
 function boundsOfPaths(paths: number[][]): Rect {
@@ -1912,7 +2026,7 @@ export function resetMock(): void {
   nextJob = 1;
   nextAnnot = 1;
   recents = structuredClone(recentsFixture) as unknown as RecentEntry[];
-  settings = structuredClone(settingsFixture) as unknown as Settings;
+  settings = seedSettings();
 }
 
 /** Test helper: queue an OS-level open so `take_pending_opens` returns something. */

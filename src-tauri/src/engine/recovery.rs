@@ -92,6 +92,42 @@ fn sidecar_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.json"))
 }
 
+/// `fs::canonicalize`, minus the Windows verbatim prefix.
+///
+/// On Windows `canonicalize` answers `\\?\C:\Users\…`. The recovery path is handed to
+/// `open_document` and becomes `DocInfo.path`, so the prefix leaked into the UI and into
+/// `explorer /select,`, which does not accept it. A plain drive (or UNC) path short enough
+/// not to need the verbatim form gets it stripped — what the `dunce` crate does, without the
+/// dependency.
+fn canonical(path: PathBuf) -> PathBuf {
+    let resolved = std::fs::canonicalize(&path).unwrap_or(path);
+    match strip_verbatim(&resolved.to_string_lossy()) {
+        Some(plain) => PathBuf::from(plain),
+        None => resolved,
+    }
+}
+
+/// `\\?\C:\a\b` → `C:\a\b`, `\\?\UNC\server\share\a` → `\\server\share\a`; `None`
+/// for anything else, and for a path that needs the verbatim form (≥ 260 characters).
+fn strip_verbatim(path: &str) -> Option<String> {
+    const MAX_PATH: usize = 260;
+    let rest = path.strip_prefix(r"\\?\")?;
+    let plain = if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        let bytes = rest.as_bytes();
+        let drive = bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\';
+        if !drive {
+            return None;
+        }
+        rest.to_string()
+    };
+    (plain.len() < MAX_PATH).then_some(plain)
+}
+
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -103,7 +139,7 @@ pub fn write(dir: &Path, snap: Snapshot) -> Result<RecoveryEntry, EngineError> {
     std::fs::create_dir_all(dir).map_err(EngineError::from)?;
     let pdf = pdf_path(dir, &snap.id);
     let bytes = write_atomic(&pdf, &snap.bytes)?;
-    let recovery_path = std::fs::canonicalize(&pdf).unwrap_or(pdf);
+    let recovery_path = canonical(pdf);
     let entry = RecoveryEntry {
         id: snap.id,
         original_path: snap.original_path,
@@ -167,13 +203,36 @@ pub fn list(dir: &Path) -> Result<Vec<RecoveryEntry>, EngineError> {
             continue;
         };
         // The directory is the source of truth for where the copy is now.
-        entry.recovery_path = std::fs::canonicalize(&pdf)
-            .unwrap_or(pdf)
-            .display()
-            .to_string();
+        entry.recovery_path = canonical(pdf).display().to_string();
         let at = chrono::DateTime::parse_from_rfc3339(&entry.saved_at).ok();
         out.push((at, entry));
     }
     out.sort_by(|(ta, a), (tb, b)| tb.cmp(ta).then_with(|| b.saved_at.cmp(&a.saved_at)));
     Ok(out.into_iter().map(|(_, e)| e).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_verbatim;
+
+    #[test]
+    fn verbatim_prefix_is_stripped_from_plain_paths() {
+        assert_eq!(
+            strip_verbatim(r"\\?\C:\Users\u\AppData\Roaming\SeePDF\recovery\a.pdf").as_deref(),
+            Some(r"C:\Users\u\AppData\Roaming\SeePDF\recovery\a.pdf")
+        );
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\server\share\a.pdf").as_deref(),
+            Some(r"\\server\share\a.pdf")
+        );
+        assert_eq!(strip_verbatim(r"C:\a.pdf"), None, "already plain");
+        assert_eq!(strip_verbatim("/Users/u/a.pdf"), None);
+        assert_eq!(
+            strip_verbatim(r"\\?\Volume{0}\a.pdf"),
+            None,
+            "not a drive path"
+        );
+        let long = format!(r"\\?\C:\{}.pdf", "a".repeat(300));
+        assert_eq!(strip_verbatim(&long), None, "too long for the plain form");
+    }
 }

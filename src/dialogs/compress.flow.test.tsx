@@ -127,4 +127,24 @@ describe("dialogs.compress.flow", () => {
     await waitFor(() => expect(discard).toHaveBeenCalledWith({ docId: "d1", token: 1 }));
     expect(useDocStore.getState().info?.canUndo).toBe(false);
   });
+
+  it("a document edited after the estimate answers `stale` on 적용: the dialog estimates again", async () => {
+    const estimate = vi.spyOn(mock, "compressEstimate");
+    const run = await openCompress();
+    fireEvent.click(run);
+    await screen.findByText("현재 크기", {}, { timeout: 2000 });
+    // an edit lands while the sheet is open (another job finishing, say)
+    await act(() => mock.pageOps({ docId: "d1", ops: [{ kind: "rotate", pages: [0], delta: 90 }] }));
+
+    fireEvent.click(screen.getByRole("button", { name: "적용" }));
+    await waitFor(() => expect(useToastStore.getState().toasts.at(-1)?.messageKey).toBe("compress.stale"));
+    await waitFor(() => expect(estimate).toHaveBeenCalledTimes(2));
+    await screen.findByText("현재 크기", {}, { timeout: 2000 });
+    expect(useDialogStore.getState().stack).toHaveLength(1);
+
+    // the fresh estimate applies
+    fireEvent.click(screen.getByRole("button", { name: "적용" }));
+    await waitFor(() => expect(useDialogStore.getState().stack).toHaveLength(0));
+    expect(useToastStore.getState().toasts.at(-1)?.messageKey).toBe("compress.done");
+  });
 });

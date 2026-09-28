@@ -250,10 +250,15 @@ pub fn export_text(
 
 /// Flattens a **copy** of the document and returns its bytes.
 ///
-/// `annotations` and `forms` select what is merged into the content stream; with both false
-/// there is nothing to do and the document is returned as-is. `pages` restricts the flattening
-/// to a subset (the others are copied untouched) — the print path uses that for "print the
-/// current page".
+/// `annotations` (every non-widget annotation) and `forms` (AcroForm widgets) select what is
+/// merged into the content stream; with both false there is nothing to do and the document is
+/// returned as-is. `pages` restricts the flattening to a subset (the others are copied
+/// untouched) — the print path uses that for "print the current page".
+///
+/// Only one of the two is the hard case: `FPDFPage_Flatten` bakes *every* visible annotation
+/// and then deletes the page's whole `/Annots` array, so it cannot be told to leave the fields
+/// (or the comments) alone. On a page with both kinds the ones to keep are parked outside
+/// `/Annots` for the flatten and put back afterwards — see [`KeepPlan`].
 pub fn flatten_bytes(
     st: &mut EngineState<'_>,
     doc_id: &str,
@@ -267,18 +272,26 @@ pub fn flatten_bytes(
     }
     let password = st.doc(doc_id)?.password.clone();
     let bindings = st.doc(doc_id)?.bindings();
-    let scratch = st
-        .pdfium
-        .load_pdf_from_byte_vec(source, password.as_deref())
-        .map_err(|e| EngineError::pdfium("reopen for flatten", e))?;
-    // `FPDFPage_Flatten` only merges form fields when the form-fill environment exists.
-    let _form = if forms { scratch.form() } else { None };
-    let total = raw::page::page_count(bindings, &scratch);
+    let total = st.doc(doc_id)?.page_count();
     let wanted: Vec<u16> = match pages {
         Some(list) => list.iter().copied().filter(|&p| p < total).collect(),
         None => (0..total).collect(),
     };
+    // Partial: `forms` alone bakes the widgets, `annotations` alone everything else.
+    let (plan, source) = if annotations != forms {
+        KeepPlan::park(source, password.as_deref(), &wanted, forms)?
+    } else {
+        (KeepPlan::default(), source)
+    };
+    let scratch = st
+        .pdfium
+        .load_pdf_from_byte_vec(source, password.as_deref())
+        .map_err(|e| EngineError::pdfium("reopen for flatten", e))?;
     for index in wanted {
+        if plan.untouched.contains(&index) {
+            // Nothing of the selected kind on this page: it stays as it is.
+            continue;
+        }
         let page = scratch
             .pages()
             .get(index as i32)
@@ -288,7 +301,155 @@ pub fn flatten_bytes(
         // The FPDF_PAGE is invalid after a flatten; dropping it here is the reload.
         drop(page);
     }
-    raw::save::save_as_copy(bindings, &scratch, raw::save::SaveFlags::NoIncremental)
+    let flattened =
+        raw::save::save_as_copy(bindings, &scratch, raw::save::SaveFlags::NoIncremental)?;
+    drop(scratch);
+    plan.restore(flattened, password.as_deref())
+}
+
+/// The page key a partial flatten parks the annotations it keeps under.
+const PARKED_ANNOTS: &[u8] = b"SeePDFKeptAnnots";
+
+/// The annotations a partial flatten keeps.
+///
+/// `FPDFPage_Flatten` drops the page's `/Annots` wholesale, PDFium has no call that puts an
+/// existing annotation dictionary back on a page, and `FPDF_SaveAsCopy` only writes objects
+/// that are still referenced. So, with `lopdf`, each page's entries to keep (references, or
+/// the inline dictionary itself) move from `/Annots` to a private page key before PDFium
+/// loads the bytes — `/Annots` then holds only what is baked, and the kept dictionaries stay
+/// referenced, keep their object numbers and are written — and move back into `/Annots`
+/// afterwards. Both moves are incremental updates, so nothing is copied twice and an
+/// encrypted file stays encrypted (lopdf encrypts the rewritten page dictionaries with the
+/// document's own key). The kept annotations stay live: fields fillable, comments editable.
+#[derive(Default)]
+struct KeepPlan {
+    /// Pages whose kept annotations are parked.
+    parked: Vec<u16>,
+    /// Pages with nothing to bake (only kept annotations, or none at all).
+    untouched: std::collections::HashSet<u16>,
+}
+
+impl KeepPlan {
+    /// Parks the kept annotations of every page in `wanted` that has both kinds. `widgets`:
+    /// the widgets are baked (and everything else kept) — or the reverse.
+    fn park(
+        bytes: Vec<u8>,
+        password: Option<&str>,
+        wanted: &[u16],
+        widgets: bool,
+    ) -> Result<(Self, Vec<u8>), EngineError> {
+        use lopdf::Object;
+        let doc = load_lopdf(&bytes, password)?;
+        let page_ids = doc.get_pages();
+        let mut plan = KeepPlan::default();
+        let mut moves: Vec<(lopdf::ObjectId, Vec<Object>, Vec<Object>)> = Vec::new();
+        for &index in wanted {
+            let Some(&page_id) = page_ids.get(&(u32::from(index) + 1)) else {
+                continue;
+            };
+            let page = doc
+                .get_dictionary(page_id)
+                .map_err(|e| save::lopdf_error("page", e))?;
+            let entries: Vec<Object> = match page.get(b"Annots") {
+                Ok(Object::Reference(id)) => doc
+                    .get_object(*id)
+                    .and_then(Object::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+                Ok(Object::Array(array)) => array.clone(),
+                _ => Vec::new(),
+            };
+            let (mut bake, mut keep) = (Vec::new(), Vec::new());
+            for entry in entries {
+                let dict = match &entry {
+                    Object::Reference(id) => doc.get_dictionary(*id).ok(),
+                    Object::Dictionary(d) => Some(d),
+                    _ => None,
+                };
+                // A slot that holds no annotation (null, dangling) is neither: the flatten
+                // ignores it and it does not come back.
+                let Some(dict) = dict else { continue };
+                let is_widget = dict
+                    .get(b"Subtype")
+                    .and_then(Object::as_name)
+                    .map(|n| n == b"Widget")
+                    .unwrap_or(false);
+                if is_widget == widgets {
+                    bake.push(entry);
+                } else {
+                    keep.push(entry);
+                }
+            }
+            if bake.is_empty() {
+                plan.untouched.insert(index);
+            } else if !keep.is_empty() {
+                plan.parked.push(index);
+                moves.push((page_id, bake, keep));
+            }
+        }
+        if moves.is_empty() {
+            return Ok((plan, bytes));
+        }
+        let mut update = lopdf::IncrementalDocument::create_from(bytes, doc);
+        for (page_id, bake, keep) in moves {
+            update
+                .opt_clone_object_to_new_document(page_id)
+                .map_err(|e| save::lopdf_error("page", e))?;
+            let page = update
+                .new_document
+                .get_dictionary_mut(page_id)
+                .map_err(|e| save::lopdf_error("page", e))?;
+            page.set("Annots", Object::Array(bake));
+            page.set(PARKED_ANNOTS, Object::Array(keep));
+        }
+        Ok((plan, save_update(update)?))
+    }
+
+    /// Moves the parked entries back into each page's `/Annots`.
+    fn restore(self, flattened: Vec<u8>, password: Option<&str>) -> Result<Vec<u8>, EngineError> {
+        if self.parked.is_empty() {
+            return Ok(flattened);
+        }
+        let prev = load_lopdf(&flattened, password)?;
+        let page_ids = prev.get_pages();
+        let mut update = lopdf::IncrementalDocument::create_from(flattened, prev);
+        for index in self.parked {
+            let page_id = *page_ids.get(&(u32::from(index) + 1)).ok_or_else(|| {
+                EngineError::new(ErrorCode::Pdfium, format!("page {index} vanished"))
+            })?;
+            update
+                .opt_clone_object_to_new_document(page_id)
+                .map_err(|e| save::lopdf_error("page", e))?;
+            let page = update
+                .new_document
+                .get_dictionary_mut(page_id)
+                .map_err(|e| save::lopdf_error("page", e))?;
+            let kept = page.remove(PARKED_ANNOTS).ok_or_else(|| {
+                EngineError::new(
+                    ErrorCode::Pdfium,
+                    format!("page {index} lost its parked annotations"),
+                )
+            })?;
+            page.set("Annots", kept);
+        }
+        save_update(update)
+    }
+}
+
+/// `lopdf` over bytes PDFium wrote, decrypted with the document's password when it has one
+/// (an owner-restricted file opens with the empty user password).
+fn load_lopdf(bytes: &[u8], password: Option<&str>) -> Result<lopdf::Document, EngineError> {
+    let options = lopdf::LoadOptions::with_password(password.unwrap_or(""));
+    lopdf::Document::load_mem_with_options(bytes, options)
+        .map_err(|e| save::lopdf_error("parse", e))
+}
+
+fn save_update(mut update: lopdf::IncrementalDocument) -> Result<Vec<u8>, EngineError> {
+    let mut out = Vec::new();
+    update
+        .save_to(&mut out)
+        .map_err(|e| save::lopdf_error("write", e))?;
+    Ok(out)
 }
 
 /// `export_flattened` — [`flatten_bytes`] written atomically to `out_path`.

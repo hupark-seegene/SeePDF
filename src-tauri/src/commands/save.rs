@@ -55,15 +55,15 @@ async fn run_save(
     path: Option<String>,
     on_progress: Channel<JobEvent>,
 ) -> Result<SaveResult, EngineError> {
-    let token = engine.jobs.create();
-    let job_id = token.id;
+    // Progress only: a save is one atomic rewrite and cannot stop half-way, so its id is not
+    // registered for `cancel_job` (which answers `false` for it).
+    let job_id = engine.jobs.progress_only();
     let _ = on_progress.send(JobEvent::Started { job_id, total: 1 });
     let result = engine
         .call(Lane::Edit, "save_document", move |st| {
             save::save(st, &doc_id, path.as_deref(), true)
         })
         .await;
-    engine.jobs.finish(job_id);
     match &result {
         Ok(saved) => {
             let _ = on_progress.send(JobEvent::Done {

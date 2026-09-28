@@ -519,8 +519,8 @@ pub fn output_stem(doc: &OpenDoc<'_>) -> String {
 /// There is no original to copy pages out of, so `FPDF_ImportPages` is unavoidable and the
 /// losses it causes are reported rather than hidden: a source with an AcroForm yields
 /// `formsDropped`, one with bookmarks `outlineDropped`, one with `/Info` entries
-/// `metadataDropped`. The merged document is opened untitled (`path: None`), so the first
-/// ⌘S goes through Save As.
+/// `metadataDropped`. The merged document is opened untitled (`path: None`) and dirty, so the
+/// first ⌘S goes through Save As and nothing discards it unasked.
 pub fn merge(st: &mut EngineState<'_>, inputs: &[MergeInput]) -> Result<MergeResult, EngineError> {
     if inputs.is_empty() {
         return Err(EngineError::invalid("merge needs at least one input"));
@@ -556,10 +556,20 @@ pub fn merge(st: &mut EngineState<'_>, inputs: &[MergeInput]) -> Result<MergeRes
                 warn(MergeWarning::MetadataDropped, &mut warnings);
             }
             let spec = range_string(&selected);
+            // Page indices are u16: a merge past 65,535 pages is refused, never wrapped.
+            let next = u16::try_from(at as usize + selected.len()).map_err(|_| {
+                EngineError::new(
+                    crate::ipc::ErrorCode::Unsupported,
+                    format!(
+                        "the merge would have more than {} pages",
+                        registry::MAX_PAGES
+                    ),
+                )
+            })?;
             out.pages_mut()
                 .copy_pages_from_document(&source, &spec, at as i32)
                 .ctx(&format!("merge {} pages {spec}", input.path))?;
-            at += selected.len() as u16;
+            at = next;
         }
         if at == 0 {
             return Err(EngineError::invalid("the merge selected no page"));
@@ -571,6 +581,11 @@ pub fn merge(st: &mut EngineState<'_>, inputs: &[MergeInput]) -> Result<MergeRes
         )?
     };
     let info = registry::open(st, None, bytes, None)?;
+    // The merge has never been saved: it opens **dirty**, so closing the window, quitting or
+    // opening another file asks first, and autosave keeps a recovery copy of it.
+    let doc = st.doc_mut(&info.doc_id)?;
+    doc.saved_generation = 0;
+    let info = doc.info();
     Ok(MergeResult { info, warnings })
 }
 
@@ -624,7 +639,9 @@ pub fn rename_with_retry(from: &Path, to: &Path) -> Result<(), EngineError> {
     }
     let e = last.expect("at least one attempt");
     let code = match e.kind() {
-        std::io::ErrorKind::PermissionDenied => ErrorCode::ReadOnly,
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+            ErrorCode::ReadOnly
+        }
         _ => ErrorCode::Io,
     };
     Err(EngineError::new(

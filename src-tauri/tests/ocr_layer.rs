@@ -718,3 +718,56 @@ fn ocr_layer_rejects_bad_input() {
     let after = with_doc(&doc.doc_id, |d| Ok(d.generation)).expect("generation");
     assert_eq!(after, generation, "a refused apply changes nothing");
 }
+
+/// Bug hunt: `ocr_apply` handed out a job id that `cancel_job` could not stop — the batch ran
+/// to the end while `cancel_job` answered `true`. The command now polls its token between
+/// pages; a cancelled batch is `cancelled` and, being one `mutate`, is rolled back whole.
+#[test]
+fn ocr_layer_apply_is_cancellable() {
+    let doc = open("tracemonkey.pdf");
+    let doc_id = doc.doc_id.clone();
+    let pages: Vec<OcrPage> = [0u16, 1, 2]
+        .iter()
+        .map(|&page| {
+            let (width_px, height_px) = image_size(&doc_id, page);
+            let marker = format!("SeePDFcancel{page}");
+            OcrPage {
+                page,
+                dpi: DPI,
+                width_px,
+                height_px,
+                rotation: 0,
+                lines: vec![line(
+                    &marker,
+                    [300.0, 300.0, 1100.0, 360.0],
+                    vec![word(&marker, [300.0, 300.0, 1100.0, 360.0])],
+                )],
+            }
+        })
+        .collect();
+    let before = with_doc(&doc_id, |d| Ok((d.generation, d.history.undo_depth()))).unwrap();
+
+    let result = with_state({
+        let doc_id = doc_id.clone();
+        move |st| {
+            let applied = std::cell::Cell::new(0usize);
+            let mut progress = |done: usize, _page: u16| applied.set(done);
+            // Cancelled once the first page is in.
+            let cancelled = || applied.get() >= 1;
+            let out = ocr::apply_cancellable(st, &doc_id, &pages, false, &mut progress, &cancelled);
+            Ok((out.map(|_| ()), applied.get()))
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        result.0.map_err(|e| e.code),
+        Err(seepdf_lib::ipc::ErrorCode::Cancelled)
+    );
+    assert_eq!(result.1, 1, "it stopped after the first page");
+    let after = with_doc(&doc_id, |d| Ok((d.generation, d.history.undo_depth()))).unwrap();
+    assert_eq!(after, before, "no new generation, no undo step");
+    assert!(
+        !page_text(&doc_id, 0).contains("SeePDFcancel0"),
+        "the page applied before the cancel was rolled back too"
+    );
+}

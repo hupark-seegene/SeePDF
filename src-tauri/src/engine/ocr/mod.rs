@@ -269,6 +269,20 @@ pub fn apply(
     replace_existing: bool,
     progress: &mut dyn FnMut(usize, PageIndex),
 ) -> Result<DocInfo, EngineError> {
+    apply_cancellable(st, doc_id, pages, replace_existing, progress, &|| false)
+}
+
+/// [`apply`] that polls `cancelled` before every page: the `ocr_apply` command passes its job
+/// token, so `cancel_job` stops a long batch. A cancelled batch is `cancelled` and — being one
+/// `mutate` — rolled back whole: no page of it stays applied, no undo step, no new generation.
+pub fn apply_cancellable(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    pages: &[OcrPage],
+    replace_existing: bool,
+    progress: &mut dyn FnMut(usize, PageIndex),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DocInfo, EngineError> {
     if pages.is_empty() {
         return Err(EngineError::invalid("ocr_apply was given no page"));
     }
@@ -322,6 +336,12 @@ pub fn apply(
             }
             let helvetica = doc.pdf_mut().fonts_mut().helvetica();
             for (done, page) in pages.iter().enumerate() {
+                if cancelled() {
+                    return Err(EngineError::cancelled(format!(
+                        "ocr_apply cancelled after {done} of {} pages",
+                        pages.len()
+                    )));
+                }
                 apply_page(doc, page, replace_existing, helvetica, hangul)?;
                 progress(done + 1, page.page);
             }

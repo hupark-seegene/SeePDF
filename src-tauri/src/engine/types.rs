@@ -234,8 +234,9 @@ pub struct EngineState<'p> {
     pub next_doc_id: u32,
     /// `$TEMP/seepdf-history/` — undo snapshots spill here.
     pub spill_dir: PathBuf,
-    /// RAM budget for undo snapshots across all documents (256 MiB by default).
-    pub history_budget: usize,
+    /// RAM budget for undo snapshots across all documents (256 MiB by default): one shared
+    /// counter that every document's `History` reserves from.
+    pub history_budget: std::sync::Arc<crate::engine::history::RamBudget>,
 }
 
 impl<'p> EngineState<'p> {

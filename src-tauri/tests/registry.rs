@@ -500,3 +500,73 @@ fn display_name_replaces_the_file_name() {
         "0f8fad5b-d9cb-469f-a165-70867728950e.pdf"
     );
 }
+
+/// Bug hunt: page indices are `u16`, and a document with more than 65,535 pages used to open
+/// with its count truncated (`len() as u16`: 65,536 pages became 0) and wrapped indices. It is
+/// refused with `unsupported`; an edit that would cross the limit is refused and rolled back.
+#[test]
+fn registry_refuses_more_than_65535_pages() {
+    use seepdf_lib::engine::{pages, raw};
+    use seepdf_lib::ipc::types::PageOp;
+    use seepdf_lib::ipc::{EngineError, ErrorCode};
+    use std::os::raw::c_int;
+
+    let (at_limit, over) = with_state(|st| {
+        let bindings = raw::bindings(st.pdfium);
+        let doc = st
+            .pdfium
+            .create_new_pdf()
+            .map_err(|e| EngineError::pdfium("create", e))?;
+        let add = |count: usize| {
+            for _ in 0..count {
+                // SAFETY: a live document on the engine thread; the page is closed at once.
+                unsafe {
+                    let page = bindings.FPDFPage_New(doc.raw_handle(), c_int::MAX, 100.0, 100.0);
+                    bindings.FPDF_ClosePage(page);
+                }
+            }
+        };
+        add(u16::MAX as usize);
+        let at_limit =
+            raw::save::save_as_copy(bindings, &doc, raw::save::SaveFlags::NoIncremental)?;
+        add(1);
+        let over = raw::save::save_as_copy(bindings, &doc, raw::save::SaveFlags::NoIncremental)?;
+        Ok((at_limit, over))
+    })
+    .expect("build the documents");
+
+    let refused = with_state(move |st| registry::open(st, None, over, None).map(|i| i.page_count));
+    assert_eq!(
+        refused.map_err(|e| e.code),
+        Err(ErrorCode::Unsupported),
+        "65,536 pages are refused, not truncated"
+    );
+
+    let info =
+        with_state(move |st| registry::open(st, None, at_limit, None)).expect("65,535 pages");
+    let doc = TestDoc {
+        doc_id: info.doc_id.clone(),
+        info,
+    };
+    assert_eq!(doc.info.page_count, u16::MAX);
+    assert_eq!(doc.info.pages.len(), u16::MAX as usize);
+    let before = with_doc(&doc.doc_id, |d| Ok((d.generation, d.history.undo_depth()))).unwrap();
+
+    let grown = with_state({
+        let doc_id = doc.doc_id.clone();
+        move |st| {
+            pages::apply_ops(st, &doc_id, vec![PageOp::Duplicate { pages: vec![0] }])
+                .map(|i| i.page_count)
+        }
+    });
+    assert_eq!(grown.map_err(|e| e.code), Err(ErrorCode::Unsupported));
+    let after = with_doc(&doc.doc_id, |d| {
+        Ok((d.page_count(), d.generation, d.history.undo_depth()))
+    })
+    .unwrap();
+    assert_eq!(
+        after,
+        (u16::MAX, before.0, before.1),
+        "the refused edit was rolled back"
+    );
+}

@@ -133,9 +133,11 @@ export default function App() {
         return win.onCloseRequested(async (event) => {
           const current = useDocStore.getState().info;
           const flows = await import("./dialogs/flows");
-          if (current?.dirty) {
+          // pending 편집 marks (F-22), then 저장 / 저장 안 함 / 취소 — like closing the document
+          const gate = await flows.windowCloseGate();
+          if (gate !== "close") {
             event.preventDefault();
-            if (await flows.confirmUnsaved()) {
+            if (gate === "confirmed") {
               if (current) await flows.touchRecent(useDocStore.getState().info ?? current).catch(() => undefined);
               // 저장 or 저장 안 함: a clean close, the recovery copy goes (P1-8)
               if (current) await autosave.clear(current.docId);
