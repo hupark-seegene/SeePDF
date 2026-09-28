@@ -12,7 +12,7 @@
 import * as api from "../ipc/api";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
-import { useViewStore } from "../store/viewStore";
+import { paneView, useViewStore } from "../store/viewStore";
 import { useAnnotStore } from "../store/annotStore";
 import { usePagesStore } from "../store/pagesStore";
 import { useJobStore } from "../store/jobStore";
@@ -382,12 +382,133 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
       if (cmd.clear) consoleLog.length = 0;
       return { count: out.length, entries: out.slice(-Number(cmd.limit ?? 50)) };
     }
+    /**
+     * P2 QA: both panes as the store and the DOM see them — the store's current page per pane, and
+     * the page actually at the top of each `.viewer[data-pane]` scroller (what the user sees).
+     */
+    case "panes":
+      return panesSnapshot();
+    /**
+     * P2 QA: scroll a pane the way a wheel would (its `scrollTop`, no `scrollRequest`), so the page
+     * it lands on is not a navigation the scroller could replay.
+     */
+    case "domScroll": {
+      const el = scrollerOf(String(cmd.pane ?? "main"));
+      const target = Number(cmd.page);
+      // pages are virtualised: step by the height of a laid-out page until the target is in the DOM
+      for (let i = 0; i < 40; i++) {
+        const shell = el.querySelector<HTMLElement>(`.page-shell[data-page="${target}"]`);
+        if (shell) {
+          el.scrollTop += shell.getBoundingClientRect().top - el.getBoundingClientRect().top + Number(cmd.offsetPx ?? 20);
+          break;
+        }
+        const any = [...el.querySelectorAll<HTMLElement>(".page-shell[data-page]")];
+        if (!any.length) throw new Error("no page laid out");
+        const ref = any[0];
+        const h = ref.getBoundingClientRect().height + 8;
+        el.scrollTop += (target - Number(ref.dataset.page)) * h * 0.9;
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 500)));
+      return panesSnapshot();
+    }
+    /** P2 QA: type into the status bar's page box and press Enter (its form's submit). */
+    case "pageBox": {
+      const input = document.querySelector<HTMLInputElement>(".statusbar .page-input");
+      if (!input) throw new Error("no page box");
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, String(cmd.value));
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 50));
+      input.form?.requestSubmit();
+      await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 600)));
+      return { box: input.value, panes: panesSnapshot() };
+    }
+    /**
+     * P2 QA: 여러 파일에서 검색 end to end through `multisearch/flow` — list `paths`, search
+     * `query`, answer each 암호 입력 with `password` (or dismiss it like Esc when absent), and report
+     * the per-file outcome plus the engine's open-document count before and after.
+     */
+    case "multiSearch": {
+      const m = await import("../multisearch/flow");
+      const before = await api.engineStats();
+      m.resetMultiSearch();
+      m.addFiles((cmd.paths as string[]) ?? []);
+      m.setQuery(String(cmd.query));
+      const prompts: unknown[] = [];
+      let settled = false;
+      const run = m.startSearch().finally(() => {
+        settled = true;
+      });
+      while (!settled) {
+        const top = useDialogStore.getState().stack.at(-1);
+        if (top?.name === "password") {
+          prompts.push({ fileName: top.props.fileName, wrong: top.props.wrong });
+          if (cmd.password !== undefined && prompts.length === 1) {
+            (top.props.resolve as (v: string | null) => void)(String(cmd.password));
+          } else {
+            useDialogStore.getState().close("password");
+          }
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      await run;
+      await new Promise((r) => setTimeout(r, 300));
+      const after = await api.engineStats();
+      const s = m.useMultiSearch.getState();
+      return {
+        phase: s.phase,
+        prompts,
+        files: s.files.map((f) => ({
+          name: f.name, status: f.status, hits: f.hits.length, reasonKey: f.reasonKey, detail: f.detail,
+          pages: [...new Set(f.hits.map((h) => h.page))].slice(0, 12),
+          first: f.hits[0]?.context,
+        })),
+        summary: m.summarize(s.files),
+        engineDocsBefore: before.docs,
+        engineDocsAfter: after.docs,
+        toasts: renderedToasts(0).slice(-3),
+      };
+    }
+    case "closeDialogs":
+      useDialogStore.getState().closeAll();
+      return snapshot();
     case "sleep":
       await new Promise((r) => setTimeout(r, Number(cmd.ms ?? 500)));
       return { slept: cmd.ms ?? 500 };
     default:
       throw new Error(`unknown op ${cmd.op}`);
   }
+}
+
+function scrollerOf(pane: string): HTMLElement {
+  const el = document.querySelector<HTMLElement>(`.viewer[data-pane="${pane}"]`);
+  if (!el) throw new Error(`no pane ${pane}`);
+  return el;
+}
+
+/** The page whose box covers the scroller's top edge (+ a few pixels), per pane in the DOM. */
+function panesSnapshot(): unknown {
+  const v = useViewStore.getState();
+  const dom = [...document.querySelectorAll<HTMLElement>(".viewer[data-pane]")].map((el) => {
+    const top = el.getBoundingClientRect().top + 40;
+    let atTop: number | null = null;
+    for (const shell of el.querySelectorAll<HTMLElement>(".page-shell[data-page]")) {
+      const r = shell.getBoundingClientRect();
+      if (r.top <= top && r.bottom > top) {
+        atTop = Number(shell.dataset.page);
+        break;
+      }
+    }
+    return { pane: el.dataset.pane, focused: el.dataset.focused !== undefined, scrollTop: Math.round(el.scrollTop), pageAtTop: atTop };
+  });
+  return {
+    split: v.split,
+    focusedPane: v.focusedPane,
+    main: paneView(v, "main").currentPage,
+    second: v.split ? paneView(v, "second").currentPage : null,
+    dom,
+  };
 }
 
 let started = false;

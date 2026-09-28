@@ -377,8 +377,12 @@ export function Scroller({
         previous.mode !== layout.mode)
     ) {
       // At the very top there is nothing to preserve — staying there is what 너비 맞춤 resolving
-      // on mount (100 % → the fit percentage) and a zoom step at page 1 both want.
-      if (el.scrollTop === 0 && el.scrollLeft === 0) return;
+      // on mount (100 % → the fit percentage) and a zoom step at page 1 both want. "The top" is
+      // where 이동 to the first page lands (its padding above the page, not 0): a document opened
+      // into a new viewer is scrolled there before the fit resolves.
+      const first = previous.items[0];
+      const top = first ? scrollTopForPage(previous, first.page) : 0;
+      if (el.scrollTop <= top && el.scrollLeft === 0) return;
       const vp = viewportRef.current;
       const cursor = { x: vp.w / 2, y: vp.h / 2 };
       const anchor = anchorAt(previous, { x: el.scrollLeft, y: el.scrollTop }, cursor);

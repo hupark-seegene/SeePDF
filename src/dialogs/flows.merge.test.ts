@@ -4,6 +4,7 @@ import { mergePaths, openPath } from "./flows";
 import { useDialogStore } from "./dialogState";
 import type { UnsavedAnswer } from "./dialogState";
 import { useDocStore } from "../store/docStore";
+import { useViewStore } from "../store/viewStore";
 import { useToastStore } from "../app/toastStore";
 import { mock } from "../ipc/mock";
 
@@ -46,6 +47,18 @@ describe("dialogs.flows.merge — the merged document replaces the window's like
     expect(merged).not.toBeNull();
     expect(close).not.toHaveBeenCalled();
     expect(useDocStore.getState().docId).toBe(merged.docId);
+  });
+
+  it("the merged document starts at its first page with no 뒤로 into the replaced one", async () => {
+    await openPath(A);
+    useViewStore.getState().goToPage(5);
+    expect(useViewStore.getState().backStack.length).toBeGreaterThan(0);
+    await mergePaths(INPUTS);
+    const view = useViewStore.getState();
+    expect(view.currentPage).toBe(0);
+    expect(view.scrollRequest?.page).toBe(0);
+    expect(view.backStack).toEqual([]);
+    expect(view.forwardStack).toEqual([]);
   });
 
   it("merging over A closes A in the engine, once", async () => {

@@ -10,6 +10,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { Scroller } from "./Scroller";
 import { TileManager } from "./TileManager";
 import { resetPanes } from "./panes";
+import { PAD_Y } from "./layout";
 import { useViewStore } from "../store/viewStore";
 import { useSearchStore } from "./search/SearchController";
 import { setMockAssetResolver } from "../ipc/protocol";
@@ -128,6 +129,18 @@ describe("Scroller — 너비 맞춤 with mixed page sizes", () => {
     // every page fits: the widest page decides
     const fitted = useViewStore.getState().zoomPercent;
     expect((842 * fitted) / 100).toBeLessThanOrEqual(900 - 32);
+  });
+
+  it("a document opened into a new viewer stays on the top of page 1 when 너비 맞춤 resolves", () => {
+    // real-app QA: afterOpen's goToPage(0) lands at the page's top (the padding above it, not 0),
+    // then the fit moves 100 % → the fit percentage; that must not re-anchor on the viewport's
+    // middle and open the document part-way down its first page
+    useViewStore.setState({ zoomMode: "fit-width", zoomPercent: 100 });
+    act(() => useViewStore.getState().goToPage(0));
+    const { container } = render(<Scroller info={doc(portrait(14))} />);
+    const el = canvas(container);
+    expect(useViewStore.getState().zoomPercent).not.toBe(100);
+    expect(el.scrollTop).toBeLessThanOrEqual(PAD_Y);
   });
 
   it("단일 still fits the page it shows", () => {

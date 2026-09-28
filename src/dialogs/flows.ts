@@ -184,6 +184,11 @@ export async function mergePaths(
   const { info, warnings } = merged;
   usePagesStore.getState().reset();
   useDocStore.getState().adopt(info);
+  // like `afterOpen`: a new document starts at its first page, and 뒤로 must not lead back into
+  // the replaced document's pages (real-app QA: the merge kept the previous document's page)
+  const view = useViewStore.getState();
+  view.goToPage(0);
+  view.resetHistory();
   if (previous && previous.docId !== info.docId) await releaseReplaced(previous);
   for (const w of warnings) {
     if (w === "formsDropped") toast("pages.merge.formWarning", undefined, { tone: "info" });
