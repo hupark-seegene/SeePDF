@@ -780,6 +780,8 @@ pub enum NotEditableReason {
     Invisible,
     Permissions,
     GlyphsMissing,
+    /// Stage 7 `probe_paragraph`: the text is rotated relative to the page.
+    RotatedText,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -840,6 +842,75 @@ pub struct TextObjectPatch {
     pub font_size_pt: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub color: Option<Rgb>,
+}
+
+// Stage 7 — paragraph probe + reflowing edit (`IPC_CONTRACT.md` §7.4b)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParagraphAlign {
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
+/// `probe_paragraph` — the paragraph under a point, as the reflowing editor sees it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParagraphProbe {
+    /// Every text object of the paragraph, in reading order.
+    pub object_ids: Vec<ObjectId>,
+    /// Union of their bounds.
+    pub rect: Rect,
+    /// Soft wraps joined with `' '`; a trailing `-` + lowercase continuation is de-hyphenated.
+    pub text: String,
+    pub font_name: String,
+    /// The rendered size (font size × the object matrix' vertical scale).
+    pub font_size_pt: f32,
+    pub color: Rgb,
+    pub mixed_styles: bool,
+    /// Baseline to baseline; `fontSize × 1.2` for a single line.
+    pub line_height_pt: f32,
+    pub align: ParagraphAlign,
+    pub first_line_indent_pt: f32,
+    pub lines: u32,
+    pub strategy: TextEditStrategy,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub substitute_font: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reason: Option<NotEditableReason>,
+    /// Additive to the Stage 7 contract: the generation the `objectIds` belong to.
+    pub doc_generation: DocGeneration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParagraphEdit {
+    pub object_ids: Vec<ObjectId>,
+    /// `'\n'` = hard line break.
+    pub text: String,
+    /// New box width in pt (default: the probe rect's width).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub font_size_pt: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub color: Option<Rgb>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub align: Option<ParagraphAlign>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParagraphEditResult {
+    /// The page objects after the edit (`{ docGeneration, objects }`).
+    pub objects: PageObjectList,
+    /// The box the new text actually occupies.
+    pub rect: Rect,
+    pub lines: u32,
+    /// How far the new text extends below the original rect's bottom (0 if it does not).
+    pub overflow_pt: f32,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1749,6 +1820,73 @@ mod tests {
 
         assert_eq!(serde_json::to_value(SecurityRevision::R5).unwrap(), json!("r5"));
         assert_eq!(serde_json::to_value(SecurityRevision::R6).unwrap(), json!("r6"));
+    }
+
+    #[test]
+    fn stage7_paragraph_shapes() {
+        let probe = ParagraphProbe {
+            object_ids: vec![3, 4],
+            rect: Rect::new(72.0, 640.0, 540.0, 712.0),
+            text: "Hello world".into(),
+            font_name: "Helvetica".into(),
+            font_size_pt: 12.0,
+            color: [0, 0, 0],
+            mixed_styles: false,
+            line_height_pt: 14.4,
+            align: ParagraphAlign::Justify,
+            first_line_indent_pt: -3.0,
+            lines: 2,
+            strategy: TextEditStrategy::Refused,
+            substitute_font: None,
+            reason: Some(NotEditableReason::RotatedText),
+            doc_generation: 7,
+        };
+        let v = serde_json::to_value(&probe).unwrap();
+        assert_eq!(v["objectIds"], json!([3, 4]));
+        assert_eq!(v["rect"], json!({ "l": 72.0, "b": 640.0, "r": 540.0, "t": 712.0 }));
+        assert_eq!(v["fontName"], json!("Helvetica"));
+        assert_eq!(v["fontSizePt"], json!(12.0));
+        assert_eq!(v["mixedStyles"], json!(false));
+        assert!(v["lineHeightPt"].is_number());
+        assert_eq!(v["align"], json!("justify"));
+        assert_eq!(v["firstLineIndentPt"], json!(-3.0));
+        assert_eq!(v["lines"], json!(2));
+        assert_eq!(v["strategy"], json!("refused"));
+        assert_eq!(v["reason"], json!("rotatedText"));
+        assert_eq!(v["docGeneration"], json!(7));
+        assert!(v.get("substituteFont").is_none());
+
+        let edit: ParagraphEdit = serde_json::from_value(json!({
+            "objectIds": [3, 4], "text": "a\nb", "align": "center", "fontSizePt": 10.5,
+            "color": [255, 0, 0], "width": 300
+        }))
+        .unwrap();
+        assert_eq!(edit.object_ids, vec![3, 4]);
+        assert_eq!(edit.text, "a\nb");
+        assert_eq!(edit.align, Some(ParagraphAlign::Center));
+        assert_eq!(edit.width, Some(300.0));
+        let minimal: ParagraphEdit =
+            serde_json::from_value(json!({ "objectIds": [], "text": "x" })).unwrap();
+        assert!(minimal.width.is_none() && minimal.align.is_none() && minimal.color.is_none());
+
+        let result = ParagraphEditResult {
+            objects: PageObjectList {
+                doc_generation: 8,
+                objects: vec![],
+            },
+            rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+            lines: 3,
+            overflow_pt: 12.5,
+        };
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            json!({
+                "objects": { "docGeneration": 8, "objects": [] },
+                "rect": { "l": 1.0, "b": 2.0, "r": 3.0, "t": 4.0 },
+                "lines": 3,
+                "overflowPt": 12.5
+            })
+        );
     }
 
     #[test]

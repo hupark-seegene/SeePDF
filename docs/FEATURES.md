@@ -229,9 +229,25 @@ Details in `docs/STAGE6B_NOTES.md`.
 | P1-9 | ✅ | 서명 만들기 has 그리기 · 입력 · 이미지 tabs. 입력: a name in 필기체 / 손글씨 / 정자체 (system-font stacks, nothing downloaded) → transparent PNG → `write_signature_image` (`$APPDATA/SeePDF/signatures/sig-<hash>.png`) → placed through the existing `stamp { image: { path } }` at its own aspect. 저장된 서명: 이 서명 저장 keeps drawn strokes / typed text + style in `Settings.signatures` (≤ 10, never evicts, duplicates ignored, lenient serde), one click places, × deletes. `signature.flow.test.tsx`, `signatureLibrary.test.ts`, `stampPicker.flow.test.tsx`, `app::signatures` lib tests (3), `ipc::types` serde test, `cargo test --test annot annot_stamp_png_keeps_transparency`. ⚠️ Hangul names fall back to the system Korean font (only 정자체 looks designed for it); a typed/image signature is a Stamp, not tagged `SeePDF:Signature` |
 | P1-12 | ✅ | **도장 선택** (arming 도장, or 도장 변경… in the panel): 결재 / 승인 / 기밀 (인주 red, heavier border, Hangul label from the bundled subset via the document-level token — one embed per document, coverage-checked) + APPROVED / FINAL / DRAFT / CONFIDENTIAL; the ghost shows the label; `/Subj` = the id (`cargo test --test annot annot_stamp_korean_builtin`). **도구별 기본 스타일**: each tool has a built-in style, a panel edit with nothing selected becomes that tool's default in `Settings.toolDefaults` (partial, debounced), 이 스타일을 기본값으로 on a selection sets the drawing tool's, 기본값으로 재설정 (`toolStyles.test.ts`, `Inspector/defaults.test.tsx`). **읽기 모드** (⌃⌘R / F8 / `view.readingMode`) hides title bar, sidebar, tool strip, inspector, status bar; Esc leaves it; **전체 화면** (⌃⌘F / F11 / `view.fullScreen`) = `Window.setFullscreen`, combines, Esc leaves both (`readingMode.test.tsx`). **Hide while dragging**: a 선택-tool move/resize hides the annotation (`set_annotations_hidden` + per-page `vn` in the bitmap URLs), paints it in the overlay, holds the patches, and on drop / cancel / tool switch / unmount unhides **before** the single `update_annotation` (`dragHide.test.ts`, 8 cases incl. failures). ⚠️ image stamps and foreign stamps are not hidden (the overlay cannot repaint them); no real-app smoke |
 
+### Stage 7 — 편집 mode UI and paragraph editing
+
+Until Stage 7 the page-object commands behind F-17 / F-18 / F-19 were verified through IPC only: the 편집
+tool strip was not wired, so none of them was reachable from the app. Stage 7 wires them and pulls
+paragraph reflow forward from P2. Contract: `IPC_CONTRACT.md` §7.4b; UI: `UI_SPEC.md` §6–7.
+
+| item | status | evidence |
+|---|---|---|
+| 편집 → 선택 | ✅ | hover outline, click / shift-click, drag = one `transform_object` on drop, corner scale, ⌫ delete, arrow nudge; read-only objects show the reason badge and refuse; `edit.flow.test.tsx` (mock) |
+| 편집 → 텍스트 수정 = paragraph edit | ✅ | `probe_paragraph` groups text objects into lines and lines into a paragraph (size ±8 %, leading ±20 %, short-line end, de-hyphenation, justify ≥ 3 lines); `edit_paragraph` re-flows into the box (break at spaces, char-break on overflow, first-line indent, left / center / right / justify), keeps the paragraph font when it covers every glyph, else the bundled Hangul font after consent; one undo step `undo.paragraphEdit`; stale check; `cargo test --test paragraph` (6) + 3 line-break unit tests, tracemonkey's justified body (10 lines) detected. ⚠️ mixed styles collapse to the dominant one (UI warns); kerning / horizontal scale / synthetic italic not kept; a longer paragraph can overlap the text below (UI toasts); rotated text refused |
+| 편집 → 텍스트 추가 / 이미지 추가 | ✅ | same editing box → `add_text_object`; drag or click → PNG/JPEG picker → `add_image_object` (a click places a 240 pt box) |
+| 편집 → 영역 표시 (F-22 redaction) | ❌ | still not wired in the UI; engine commands `redact_preview` / `apply_redactions` are tested |
+
+Gates: cargo test 198/0, vitest 434/434, i18n ko/en 672, critical path 112.4 kB gz of 120; the 편집 code is
+a lazy chunk (4.2 kB gz). Not yet exercised in the real app.
+
 ## P2 — after v1
 
-Paragraph reflow when editing text · document tabs in one window · link creation and go-to-page
+document tabs in one window · link creation and go-to-page
 destinations (needs `lopdf`) · outline/bookmark editing (needs `lopdf`) · page labels · crop and resize
 pages · form field authoring · word-level redaction (re-creating surviving glyphs) and the raster
 fallback for XObject text · glyphless CID OCR font (`FPDFText_LoadCidType2Font`) instead of the bundled

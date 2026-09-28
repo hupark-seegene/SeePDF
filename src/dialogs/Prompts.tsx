@@ -53,6 +53,33 @@ export function PasswordDialog({
   );
 }
 
+/** A generic 확인 prompt (`askConfirm`) — 취소 / Esc resolves `false`. */
+export function ConfirmDialog({
+  titleKey,
+  bodyKey,
+  bodyParams,
+  confirmKey,
+  resolve,
+}: {
+  titleKey: string;
+  bodyKey: string;
+  bodyParams?: Record<string, string | number>;
+  confirmKey?: string;
+  resolve(value: boolean): void;
+}) {
+  const t = useT();
+  return (
+    <Dialog
+      titleKey={titleKey}
+      size="sm"
+      onClose={() => resolve(false)}
+      primary={{ labelKey: confirmKey ?? "common.ok", onSelect: () => resolve(true) }}
+    >
+      <p className="text-base">{t(bodyKey, bodyParams)}</p>
+    </Dialog>
+  );
+}
+
 /** 저장 / 저장 안 함 / 취소 (F-23). */
 export function UnsavedDialog({ name, resolve }: { name: string; resolve(value: UnsavedAnswer): void }) {
   const t = useT();

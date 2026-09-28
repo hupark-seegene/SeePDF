@@ -13,7 +13,7 @@ import { parseRawPage, parseTextLayer, type RawPage, type TextLayerView } from "
 import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, CompareOptions, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
   EngineError, EngineStats, ErrorCode, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, ObjectId,
-  ObjectsResult, OcrEngine, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
+  ObjectsResult, OcrEngine, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
   RedactPreview, Rgb, SaveResult, SearchEvent, Settings, StampResult, StampSpec, TextEditProbe, ViewportHint,
 } from "./types";
 
@@ -316,6 +316,18 @@ export function deleteObjects(
   a: { docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration },
 ): Promise<ObjectsResult> {
   return call("delete_objects", a, (mock) => mock.deleteObjects(a));
+}
+
+/** Stage 7: the paragraph under `at` (PDF points on the page), or `null` when there is no text there. */
+export function probeParagraph(a: { docId: DocId; page: PageIndex; at: Point }): Promise<ParagraphProbe | null> {
+  return call("probe_paragraph", a, (mock) => mock.probeParagraph(a));
+}
+
+/** Stage 7: rewrite a paragraph with reflow — one undo step (`undo.paragraphEdit`). */
+export function editParagraph(a: {
+  docId: DocId; page: PageIndex; expectGeneration: DocGeneration; edit: ParagraphEdit; allowFontSubstitution: boolean;
+}): Promise<ParagraphEditResult> {
+  return call("edit_paragraph", a, (mock) => mock.editParagraph(a));
 }
 
 // ---------------------------------------------------------------------------

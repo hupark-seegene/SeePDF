@@ -209,6 +209,36 @@ export interface TextEditProbe {
 }
 export interface ObjectsResult { objects: PageObject[]; docGeneration: DocGeneration }
 
+/** Stage 7 — paragraph editing with reflow (`probe_paragraph` / `edit_paragraph`). */
+export type ParagraphAlign = 'left' | 'center' | 'right' | 'justify';
+export interface ParagraphProbe {
+  objectIds: ObjectId[];          // every text object of the paragraph, reading order
+  rect: Rect;                     // union of their bounds
+  text: string;                   // soft wraps joined with ' '; '\n' only for a hard break the detector kept
+  fontName: string; fontSizePt: number; color: Rgb;       // the dominant style (most characters)
+  mixedStyles: boolean;           // more than one font / size / colour inside → the UI warns the styles merge
+  lineHeightPt: number;           // baseline-to-baseline; for a single line = fontSize × 1.2
+  align: ParagraphAlign;
+  firstLineIndentPt: number;      // may be negative (hanging)
+  lines: number;
+  strategy: 'inPlace' | 'replaceFont' | 'refused';        // for the CURRENT text, as TextEditProbe
+  substituteFont?: string;
+  reason?: PageObject['reason'] | 'glyphsMissing' | 'rotatedText';
+  docGeneration?: DocGeneration;  // the generation `objectIds` belong to (the engine sends it; optional here)
+}
+export interface ParagraphEdit {
+  objectIds: ObjectId[];          // from the probe
+  text: string;                   // '\n' = hard line break inside the paragraph
+  width?: number;                 // new box width in pt (default: probe rect width)
+  fontSizePt?: number; color?: Rgb; align?: ParagraphAlign;
+}
+export interface ParagraphEditResult {
+  objects: ObjectsResult;         // page objects after the edit
+  rect: Rect;                     // box actually occupied by the new text
+  lines: number;
+  overflowPt: number;             // how far the new text extends below the original rect bottom (0 if not)
+}
+
 // ---------------------------------------------------------------------------
 // 7.5 Redaction and security
 // ---------------------------------------------------------------------------

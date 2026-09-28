@@ -213,6 +213,8 @@ pub fn run() {
             commands::objects::replace_image,
             commands::objects::transform_object,
             commands::objects::delete_objects,
+            commands::objects::probe_paragraph,
+            commands::objects::edit_paragraph,
             // --- save (Stage 1b) ---
             commands::save::save_document,
             commands::save::save_document_as,

@@ -1,0 +1,135 @@
+/* 편집 mode surface (Stage 7). Tokens only; everything here sits on paper (see annot.css). */
+
+.edit-surface {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  cursor: default;
+}
+
+.edit-surface[data-tool="editText"] { cursor: default; }
+.edit-surface[data-tool="editText"][data-hover="text"] { cursor: text; }
+.edit-surface[data-tool="addText"],
+.edit-surface[data-tool="addImage"] { cursor: crosshair; }
+.edit-surface[data-tool="select"][data-hover] { cursor: move; }
+
+.edit-outline {
+  position: absolute;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  border-radius: 1px;
+  opacity: 0.8;
+}
+
+.edit-outline[data-state="selected"] {
+  border-style: solid;
+  border-width: 1.5px;
+  opacity: 1;
+}
+
+.edit-outline[data-state="draft"] {
+  background: var(--accent-subtle);
+}
+
+.edit-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--accent);
+  border-radius: 2px;
+  background: var(--page-paper);
+  z-index: 2;
+}
+
+.edit-handle[data-corner="lt"],
+.edit-handle[data-corner="rb"] { cursor: nwse-resize; }
+.edit-handle[data-corner="rt"],
+.edit-handle[data-corner="lb"] { cursor: nesw-resize; }
+
+.edit-badge {
+  position: absolute;
+  z-index: 2;
+  max-width: 320px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  box-shadow: var(--elevation-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------ editing box */
+
+.edit-session { position: absolute; inset: 0; pointer-events: none; }
+.edit-session > * { pointer-events: auto; }
+
+/* Hides the original paragraph in the bitmap: the page's own paper, re-scoped in night mode. */
+.edit-mask {
+  position: absolute;
+  background: var(--page-paper);
+}
+
+.edit-text {
+  position: absolute;
+  z-index: 3;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+  /* paper, not transparent: text that grows past the original box stays legible while typing
+     (the overflow toast warns after the commit) */
+  background: var(--page-paper);
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: keep-all;
+}
+
+.edit-width-handle {
+  position: absolute;
+  z-index: 4;
+  width: 6px;
+  cursor: ew-resize;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+.edit-width-handle:hover { opacity: 1; }
+
+.edit-bar {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  max-width: calc(100% - 8px);
+  flex-wrap: wrap;
+  padding: 0 6px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: var(--elevation-2);
+  white-space: nowrap;
+}
+
+.edit-bar .swatches { flex-wrap: nowrap; }
+.edit-bar-size input { width: 56px; height: 26px; }
+.edit-bar-align { display: flex; gap: 2px; }
+
+.edit-notice {
+  position: absolute;
+  z-index: 5;
+  margin: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  box-shadow: var(--elevation-1);
+}

@@ -406,6 +406,63 @@ then revert). `edit_text_object` with `allowFontSubstitution: false` returns `fo
 silently substituting. Every command here regenerates the page content once. Owner (b).
 Features F-17, F-18, F-19.
 
+### 7.4b Paragraph probe + reflowing edit (Stage 7)
+
+```ts
+export interface ParagraphProbe {
+  objectIds: ObjectId[];          // every text object of the paragraph, reading order
+  rect: Rect;                     // union of their bounds
+  text: string;                   // soft wraps joined with ' ' (line-end '-' + lowercase continuation de-hyphenated); no '\n'
+  fontName: string; fontSizePt: number; color: Rgb;       // dominant style (most characters); size = rendered size
+  mixedStyles: boolean;           // >1 font / size / colour inside → the edit merges them into the dominant one
+  lineHeightPt: number;           // baseline-to-baseline; single line = fontSize × 1.2
+  align: 'left' | 'center' | 'right' | 'justify';
+  firstLineIndentPt: number;
+  lines: number;
+  strategy: 'inPlace' | 'replaceFont' | 'refused';        // for the CURRENT text, as TextEditProbe
+  substituteFont?: string;
+  reason?: PageObject['reason'] | 'glyphsMissing' | 'rotatedText';
+  docGeneration: DocGeneration;   // additive: the generation objectIds belong to (use as expectGeneration)
+}
+probe_paragraph(a: { docId: DocId; page: PageIndex; at: Point }): Promise<ParagraphProbe | null>   // null = no text there
+
+export interface ParagraphEdit {
+  objectIds: ObjectId[];          // from the probe
+  text: string;                   // '\n' = hard line break
+  width?: number;                 // box width in pt, measured from rect.l (default: rect width)
+  fontSizePt?: number; color?: Rgb; align?: ParagraphProbe['align'];
+}
+export interface ParagraphEditResult {
+  objects: { objects: PageObject[]; docGeneration: DocGeneration };
+  rect: Rect;                     // box the new text occupies (union of the new objects' bounds)
+  lines: number;                  // blank lines (from '\n\n') included
+  overflowPt: number;             // how far below the original rect's bottom the new text reaches (0 if not)
+}
+edit_paragraph(a: { docId: DocId; page: PageIndex; expectGeneration: DocGeneration; edit: ParagraphEdit;
+  allowFontSubstitution: boolean }): Promise<ParagraphEditResult>
+```
+
+Engine: `engine/objects/paragraph.rs`. Detection: upright visible text objects (matrix `b ≈ 0`, `a, d > 0`)
+→ lines (baseline ± 0.25·size, split at gaps > 1·size; superscript/subscript bands fold into their line)
+→ paragraph around the hit: same size ± 8 %, leading ≤ 2.2·size and ± 20 % of the first leading, overlapping
+x-range; a short left-flush line whose successor's first word would have fitted ends it; a line indented
+by > 0.5·size starts a new one (not when centred, or flush right with an inset > 3·size). Alignment from edge
+variance (justify needs ≥ 3 lines). A click on rotated text → `refused/rotatedText`, on a Form XObject with
+text → `refused/insideXObject`, on the invisible OCR layer → `refused/invisible`; a `noUnicode` run refuses
+the paragraph. Coverage + advance widths come from one **trial object** in the candidate font (every distinct
+glyph, read back through a fresh text page, placed off-page — PDFium's fake-bold filter drops a repeated
+glyph near the same position) on a scratch page that is never regenerated, so the probe does not mutate.
+A font without a usable space glyph (LaTeX subsets) stays `inPlace`: words become separate objects with a
+0.3 em space. Edit: `stale` on generation mismatch; `fontCoverage` when the paragraph's font cannot draw the
+new text and `allowFontSubstitution` is false (substitute: Helvetica for Latin-1, else SeePDF Hangul);
+greedy breaking at spaces, by character only for a word wider than the box; first line honours the indent;
+justify = one object per word (last line left), otherwise one object per line. New objects are appended,
+the old ones removed, nothing else moves; one `registry::mutate` = one undo step `undo.paragraphEdit`.
+`fontSizePt` scales the line height proportionally. Known gaps: hanging indents / bulleted lists detect
+line by line; kerning, horizontal scaling, shear (synthetic italic), stroke colour and per-run styles are
+not preserved (mixedStyles merges to the dominant style); right-aligned paragraphs with small ragged-left
+insets may split.
+
 ### 7.4a Page stamps — watermark, header, footer (P1-4, Stage 4)
 
 ```ts
@@ -860,6 +917,7 @@ paths to the fs scope automatically.
 | `redact_preview`, `apply_redactions` | (a) backend redaction | F-22 |
 | `page_ops`, `extract_pages`, `split_document`, `merge_documents` | (b) backend pages | F-16 |
 | `list_page_objects`, `probe_text_edit`, `edit_text_object`, `add_text_object`, `add_image_object`, `transform_object`, `delete_objects` | (b) backend objects | F-17, F-18, F-19 |
+| `probe_paragraph`, `edit_paragraph` | Stage 7, `engine/objects/paragraph.rs` | F-17 |
 | `save_document`, `save_document_as` | (b) backend save | F-23 |
 | `path_exists` | Stage 6a, `commands/save.rs` | P1-7 |
 | `export_images`, `export_text`, `export_flattened`, `estimate_export`, `print_prepare` | (b) backend export | F-24, F-25, F-26 |

@@ -25,7 +25,15 @@ export function setAnnotCommandHandler(fn: AnnotCommandHandler | null): void {
   handler = fn;
 }
 
-/** `true` when the annotation module handled it; `false` means "not mine". */
+/** The 편집 mode host (Stage 7, lazy `src/edit/`) claims the same ids while 편집 is active. */
+let editHandler: AnnotCommandHandler | null = null;
+
+export function setEditCommandHandler(fn: AnnotCommandHandler | null): void {
+  editHandler = fn;
+}
+
+/** `true` when the annotation (or 편집) module handled it; `false` means "not mine". */
 export function runAnnotCommand(id: string, arg?: unknown): boolean {
-  return handler ? handler(id, arg) : false;
+  if (handler?.(id, arg)) return true;
+  return editHandler ? editHandler(id, arg) : false;
 }

@@ -110,10 +110,10 @@ Sidebar open/closed, active tab and width persist per app (not per document) in 
 | 주석 | 선 / 화살표 | `crosshair` | drag; ⇧ snaps to 15° | 선택 |
 | 주석 | 텍스트 상자 | `crosshair` | drag a box or click for auto-size, then edit inline | 선택 |
 | 주석 | 도장 / 서명 | ghost preview follows the cursor (a built-in 도장 shows its label) | click places, drag sizes; first use opens 도장 선택 (결재 · 승인 · 기밀, APPROVED · FINAL · DRAFT · CONFIDENTIAL, 이미지 선택…) / 서명 만들기 (그리기 · 입력 · 이미지 + 저장된 서명); the panel's 도장 변경… / 서명 변경… reopens it | 선택 |
-| 편집 | 선택 | arrow | click selects an object, drag moves, handles resize | — |
-| 편집 | 텍스트 수정 | `text` over an editable run | double-click a run → inline caret; a non-editable run shows its badge and reason | 선택 |
-| 편집 | 텍스트 추가 | `crosshair` | click → new text object with a caret | 선택 |
-| 편집 | 이미지 추가 | `crosshair` | click or drag → file picker → place | 선택 |
+| 편집 | 선택 | arrow (`move` over an object) | hover outlines the object under the pointer (the smallest one); click selects, ⇧click adds/removes; drag moves (one `transform_object` on drop); corner handles scale (⇧ or an image keeps the aspect); double-click on text opens 문단 편집; ⌫/⌦ deletes, arrows nudge 1 pt (⇧ 10); a 읽기 전용 / 이동만 가능 object shows its badge + reason and refuses the gesture | 선택 해제 |
+| 편집 | 텍스트 수정 | `text` over text | click → 문단 편집 (Stage 7): the whole paragraph (`probe_paragraph`) opens in an editing box over its own area — the original masked with the page paper, the text at the paragraph's size × zoom, leading, alignment, colour and an approximate font family; a right-edge handle sets the width; a floating bar has 크기 · 색상 · 정렬 (왼쪽/가운데/오른쪽/양쪽 맞춤) · 취소 · 완료. Mixed styles show 서식이 하나로 통일됩니다. 완료 / ⌘↵ / a click outside commits with reflow (`edit_paragraph`, one undo step 문단 편집), Esc cancels. Characters the paragraph's font lacks ask once to switch to the SeePDF 한글 글꼴; a paragraph that grows past its area toasts that it may overlap the text below. A refused paragraph toasts its reason | 선택 |
+| 편집 | 텍스트 추가 | `crosshair` | click → the same editing box, empty, in the tool default (12 pt black unless `toolDefaults.addText`); 완료 writes `add_text_object` sized to the typed text | 선택 |
+| 편집 | 이미지 추가 | `crosshair` | drag a box, or click for a 240 pt box at the click (kept on the page) → PNG/JPEG picker → placed inside the box with its aspect kept | 선택 |
 | 편집 | 영역 표시 | `crosshair` | drag marks a region; dragging over text marks those runs | 선택 |
 | 페이지 | — | arrow | grid: click selects, drag reorders, double-click opens that page in 읽기 | — |
 | 양식 | 채우기 | arrow / `text` over text fields / `pointer` over buttons | click focuses the field (HTML overlay input) | — |
@@ -132,7 +132,7 @@ tapping a tool key latches it, holding it switches momentarily and reverts on re
 | 펜 / 지우개 | 색상, 굵기 (1/2/4/8/12), 불투명도, 지우개 크기 |
 | 도형 | 선 색상, 채우기 색상 (+ 채우기 없음), 굵기, 시작/끝 화살표 (line only), 불투명도 |
 | 텍스트 상자 / 도장 | 글꼴 (bundled Hangul / Helvetica), 크기, 색상, 정렬, 채우기, 불투명도 |
-| 텍스트 객체 (편집) | 글꼴 (read-only when not substitutable) + editability badge and reason, 크기, 색상, 위치 |
+| 텍스트 객체 (편집) | 글꼴 (read-only) + editability badge and reason, 크기 chips and 색상 swatches (`edit_text_object`, editable objects only), 위치 / 크기 read-outs, 삭제; several objects: count + 삭제 |
 | 이미지 객체 | 위치 X/Y, 크기 W/H (비율 고정), 삭제 |
 | 페이지 선택 (페이지 mode) | 페이지 크기, 회전, 회전/삭제/추출/복제 buttons |
 | 양식 필드 focused | 필드 이름 (read-only), 유형, 값, 필수 여부, 값 지우기 |

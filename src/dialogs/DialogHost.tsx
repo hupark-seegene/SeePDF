@@ -13,7 +13,7 @@ import { SplitDialog } from "./SplitDialog";
 import { PrintDialog } from "./PrintDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import { DocInfoDialog } from "./DocInfoDialog";
-import { ExtractDialog, InsertFromDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
+import { ConfirmDialog, ExtractDialog, InsertFromDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
 import type { MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
 import type { PageIndex, RecoveryEntry, StampRole } from "../ipc/types";
 import type { DrawnSignature, ImageSignature } from "./SignatureDialog";
@@ -77,6 +77,16 @@ function Current({ entry }: { entry: DialogEntry }) {
           fileName={p.fileName as string}
           wrong={Boolean(p.wrong)}
           resolve={p.resolve as (v: string | null) => void}
+        />
+      );
+    case "confirm":
+      return (
+        <ConfirmDialog
+          titleKey={p.titleKey as string}
+          bodyKey={p.bodyKey as string}
+          bodyParams={p.bodyParams as Record<string, string | number> | undefined}
+          confirmKey={p.confirmKey as string | undefined}
+          resolve={p.resolve as (v: boolean) => void}
         />
       );
     case "unsaved":

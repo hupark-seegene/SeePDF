@@ -18,7 +18,9 @@ export type DialogName =
   // 여러 파일 OCR (P1-7)
   | "batchOcr"
   // 도장 선택 (P1-12)
-  | "stampPicker";
+  | "stampPicker"
+  // generic 확인 prompt (Stage 7: 글꼴 바꾸기)
+  | "confirm";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";
@@ -97,4 +99,16 @@ export function askMultipleFiles(paths: string[]): Promise<MultipleFilesAnswer> 
 /** 페이지 추출: resolves with the chosen path + 원본에서 삭제, or `null`. */
 export function askExtract(pages: PageIndex[], info: DocInfo): Promise<{ removeAfter: boolean } | null> {
   return ask<{ removeAfter: boolean } | null>("extract", { pages, info });
+}
+
+/** A generic yes / no prompt: resolves `true` on the primary button, `false` on cancel / Esc. */
+export interface ConfirmRequest {
+  titleKey: string;
+  bodyKey: string;
+  bodyParams?: Record<string, string | number>;
+  confirmKey?: string;
+}
+
+export function askConfirm(req: ConfirmRequest): Promise<boolean> {
+  return ask<boolean>("confirm", { ...req });
 }

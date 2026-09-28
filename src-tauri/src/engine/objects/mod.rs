@@ -38,6 +38,8 @@ use crate::ipc::types::{
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
 
+pub mod paragraph;
+
 /// Line spacing of a multi-line `add_text_object`, as a multiple of the font size.
 const LINE_HEIGHT: f32 = 1.2;
 
@@ -189,6 +191,12 @@ fn text_editability(
 /// A run is usable when its characters are real text, not raw glyph indices leaking through a
 /// missing `/ToUnicode`.
 fn has_usable_unicode(text: &str) -> bool {
+    // PDFium reports a hyphen at the end of a line as U+0002: a word fragment `re\u{2}` is
+    // real text, not a raw char code.
+    let text = match text.trim_end().strip_suffix('\u{2}') {
+        Some(head) if head.chars().last().is_some_and(char::is_alphabetic) => head,
+        _ => text,
+    };
     let mut total = 0usize;
     let mut junk = 0usize;
     for ch in text.chars() {
@@ -477,6 +485,9 @@ fn not_editable(reason: NotEditableReason) -> EngineError {
         }
         NotEditableReason::Permissions => "the document's permission bits forbid modification",
         NotEditableReason::GlyphsMissing => "the font does not have glyphs for this text",
+        NotEditableReason::RotatedText => {
+            "this text is rotated relative to the page and cannot be reflowed"
+        }
     };
     EngineError::new(ErrorCode::Unsupported, message)
 }

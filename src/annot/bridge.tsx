@@ -34,6 +34,35 @@ function snapshot(): Host | null {
   return host;
 }
 
+/**
+ * 편집 mode (Stage 7) is its own lazy chunk (`src/edit/`), fetched the first time the mode is
+ * entered; while 편집 is active its layer owns every page's `surface` slot.
+ */
+interface EditHost {
+  renderSurface(ctx: PageLayerContext): PageLayers["surface"];
+  start(): () => void;
+}
+
+let editHost: EditHost | null = null;
+let editLoading = false;
+
+function editSnapshot(): EditHost | null {
+  return editHost;
+}
+
+function loadEdit(): void {
+  if (editHost || editLoading) return;
+  editLoading = true;
+  void import("../edit")
+    .then((m) => {
+      editHost = m.editHost;
+      for (const l of listeners) l();
+    })
+    .catch(() => {
+      editLoading = false;
+    });
+}
+
 function load(): void {
   if (host || loading) return;
   loading = true;
@@ -63,9 +92,25 @@ export function AnnotatedCanvas() {
     return stop;
   }, [ready]);
 
+  const editMode = useAppStore((s) => s.mode) === "edit";
+  const edit = useSyncExternalStore(subscribe, editSnapshot, editSnapshot);
+
+  useEffect(() => {
+    if (editMode) loadEdit();
+  }, [editMode]);
+
+  useEffect(() => {
+    if (!editMode || !edit) return;
+    return edit.start();
+  }, [editMode, edit]);
+
   const layers = useCallback(
-    (ctx: PageLayerContext): PageLayers | null => (host ? host.renderLayers(ctx) : null),
-    [ready],
+    (ctx: PageLayerContext): PageLayers | null => {
+      const base = host ? host.renderLayers(ctx) : null;
+      if (!editMode || !edit) return base;
+      return { ...base, surface: edit.renderSurface(ctx) };
+    },
+    [ready, editMode, edit],
   );
 
   // 필드 강조 표시: the engine tints the widgets in the bitmap (`hl=1`, IPC_CONTRACT §9) while

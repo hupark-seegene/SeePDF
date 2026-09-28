@@ -7,8 +7,8 @@
 use crate::engine::objects;
 use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
-    DocGeneration, ObjectId, PageIndex, PageObjectList, Point, Rect, Rgb, TextAlign,
-    TextEditProbe, TextObjectPatch,
+    DocGeneration, ObjectId, PageIndex, PageObjectList, ParagraphEdit, ParagraphEditResult,
+    ParagraphProbe, Point, Rect, Rgb, TextAlign, TextEditProbe, TextObjectPatch,
 };
 use crate::ipc::EngineError;
 use tauri::State;
@@ -161,6 +161,46 @@ pub async fn delete_objects(
     engine
         .call(Lane::Edit, "delete_objects", move |st| {
             objects::delete(st, &doc_id, page, &object_ids, expect_generation)
+        })
+        .await
+}
+
+/// Stage 7: the paragraph under `at` (PDF points on the page); `null` when there is no text.
+#[tauri::command]
+pub async fn probe_paragraph(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    at: Point,
+) -> Result<Option<ParagraphProbe>, EngineError> {
+    engine
+        .call(Lane::Interactive, "probe_paragraph", move |st| {
+            let doc = st.doc_mut(&doc_id)?;
+            objects::paragraph::probe(doc, page, at)
+        })
+        .await
+}
+
+/// Stage 7: replace a paragraph's objects with reflowed text — one undo step.
+#[tauri::command]
+pub async fn edit_paragraph(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    expect_generation: DocGeneration,
+    edit: ParagraphEdit,
+    allow_font_substitution: bool,
+) -> Result<ParagraphEditResult, EngineError> {
+    engine
+        .call(Lane::Edit, "edit_paragraph", move |st| {
+            objects::paragraph::edit(
+                st,
+                &doc_id,
+                page,
+                expect_generation,
+                edit,
+                allow_font_substitution,
+            )
         })
         .await
 }

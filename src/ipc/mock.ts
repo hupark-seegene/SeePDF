@@ -17,6 +17,7 @@ import type {
   EngineStats, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, Mat6, MergeWarning, OcrPage, OutlineNode,
   PageGeom, PageIndex, Permissions, PageObject, PageOp, RecentEntry, Rect, RedactPreview, SaveResult, SearchEvent, SearchHit,
   Settings, StampResult, StampSpec, TextEditProbe, ViewportHint, CompressOptions, CompressReport,
+  ObjectId, ObjectsResult, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, Rgb,
   CompareOptions, CompareReport, ComparePage, DiffOp, RecoveryEntry,
 } from "./types";
 
@@ -35,13 +36,18 @@ export const mockEvents = appBus;
 // State
 // ---------------------------------------------------------------------------
 
-interface Snapshot { info: DocInfo; annots: [PageIndex, Annot[]][]; fields: FormField[] }
+/** A page object without its id: ids are array positions, renumbered on every list (like PDFium). */
+type MockObj = Omit<PageObject, "objectId">;
+
+interface Snapshot { info: DocInfo; annots: [PageIndex, Annot[]][]; fields: FormField[]; objects: [PageIndex, MockObj[]][] }
 
 interface MockDoc {
   info: DocInfo;
   outline: OutlineNode[];
   annots: Map<PageIndex, Annot[]>;
   fields: FormField[];
+  /** page objects (편집 mode), seeded lazily from the fake text layer on first list */
+  objects: Map<PageIndex, MockObj[]>;
   undo: Snapshot[];
   redo: Snapshot[];
 }
@@ -88,6 +94,7 @@ function snapshot(d: MockDoc): Snapshot {
     info: structuredClone(d.info),
     annots: [...d.annots.entries()].map(([p, a]) => [p, structuredClone(a)] as [PageIndex, Annot[]]),
     fields: structuredClone(d.fields),
+    objects: [...d.objects.entries()].map(([p, o]) => [p, structuredClone(o)] as [PageIndex, MockObj[]]),
   };
 }
 
@@ -95,6 +102,7 @@ function restore(d: MockDoc, s: Snapshot): void {
   d.info = structuredClone(s.info);
   d.annots = new Map(s.annots.map(([p, a]) => [p, structuredClone(a)]));
   d.fields = structuredClone(s.fields);
+  d.objects = new Map(s.objects.map(([p, o]) => [p, structuredClone(o)]));
 }
 
 type ChangeReason = "edit" | "undo" | "redo" | "save" | "pages" | "ocr" | "redact";
@@ -175,6 +183,7 @@ function makeDoc(path: string, pageCount = BASE_DOC.pageCount): MockDoc {
     outline: structuredClone(outlineFixture) as unknown as OutlineNode[],
     annots,
     fields: (structuredClone(fieldsFixture) as unknown as FormField[]).filter((f) => f.page < pageCount),
+    objects: new Map(),
     undo: [],
     redo: [],
   };
@@ -648,54 +657,154 @@ export const mock = {
   },
 
   // 7.4 page objects ---------------------------------------------------------
-  async listPageObjects(a: { docId: DocId; page: PageIndex }) {
+  // Stateful (Stage 7): moves, deletes, additions and paragraph edits change the list, and undo
+  // restores it — enough for the 편집 flow tests. Pixels and the text layer stay fixture-based.
+  async listPageObjects(a: { docId: DocId; page: PageIndex }): Promise<ObjectsResult> {
     const d = doc(a.docId);
-    const tp = textPage(d, a.page);
-    const objects: PageObject[] = tp.lines.map((l, i) => ({
-      objectId: i,
-      type: "text",
-      rect: l.box,
-      matrix: [1, 0, 0, 1, l.box.l, l.baselineY] as Mat6,
-      ours: false,
-      text: sliceLineText(tp, i),
-      fontName: "Pretendard",
-      fontSizePt: 11,
-      color: [26, 28, 31],
-      editable: i === 0 ? "readOnly" : "full",
-      reason: i === 0 ? "insideXObject" : undefined,
-    }));
-    return { docGeneration: d.info.docGeneration, objects };
+    return listObjects(d, a.page);
   },
   async probeTextEdit(a: { docId: DocId; page: PageIndex; objectId: number; text: string }): Promise<TextEditProbe> {
-    if (a.objectId === 0) return { strategy: "refused", reason: "insideXObject" };
-    return /[ᄀ-힯]/.test(a.text)
+    const o = pageObjects(doc(a.docId), a.page)[a.objectId];
+    if (!o) throw err("notFound", `no object ${a.objectId}`);
+    if (o.editable === "readOnly") return { strategy: "refused", reason: o.reason };
+    return needsHangulFont(o.fontName ?? "", a.text, o.text)
       ? { strategy: "replaceFont", substituteFont: "SeePDF Hangul" }
       : { strategy: "inPlace" };
   },
   async editTextObject(a: { docId: DocId; page: PageIndex; objectId: number; expectGeneration: DocGeneration;
-    patch: { text?: string }; allowFontSubstitution: boolean }) {
+    patch: { text?: string; fontSizePt?: number; color?: Rgb }; allowFontSubstitution: boolean }) {
     const d = doc(a.docId);
-    if (a.expectGeneration !== d.info.docGeneration) throw err("stale", "generation moved on");
-    if (!a.allowFontSubstitution && /[ᄀ-힯]/.test(a.patch.text ?? "")) {
+    checkGeneration(d, a.expectGeneration);
+    const o = pageObjects(d, a.page)[a.objectId];
+    if (!o || o.type !== "text") throw err("notFound", `no text object ${a.objectId}`);
+    if (o.editable !== "full") throw err("unsupported", "object is not editable");
+    if (!a.allowFontSubstitution && needsHangulFont(o.fontName ?? "", a.patch.text ?? "", o.text)) {
       throw err("fontCoverage", "embedded font cannot render the requested text");
     }
-    return mutate(d, { reason: "edit", pages: [a.page] }, async () => mock.listPageObjects(a));
+    return mutate(d, { reason: "edit", pages: [a.page] }, () => {
+      const target = pageObjects(d, a.page)[a.objectId];
+      if (a.patch.text !== undefined) target.text = a.patch.text;
+      if (a.patch.fontSizePt !== undefined) target.fontSizePt = a.patch.fontSizePt;
+      if (a.patch.color !== undefined) target.color = a.patch.color;
+      return () => listObjects(d, a.page);
+    })();
   },
-  async addTextObject(a: { docId: DocId; page: PageIndex }) {
+  async addTextObject(a: { docId: DocId; page: PageIndex; rect: Rect; text: string; fontSizePt: number; color: Rgb;
+    align: "left" | "center" | "right" }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectAdd" }, () => mock.listPageObjects(a));
+    if (!a.text.trim()) throw err("invalidArgument", "empty text");
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectAdd" }, () => {
+      const lines = a.text.split("\n");
+      let baseline = a.rect.t - a.fontSizePt * 0.8;
+      for (const line of lines) {
+        if (line) {
+          const w = measure(line, a.fontSizePt);
+          pageObjects(d, a.page).push(textObj(line, a.rect.l, baseline, w, a.fontSizePt, a.color, "SeePDF Hangul", true));
+        }
+        baseline -= a.fontSizePt * 1.2;
+      }
+      return () => listObjects(d, a.page);
+    })();
   },
-  async addImageObject(a: { docId: DocId; page: PageIndex }) {
+  async addImageObject(a: { docId: DocId; page: PageIndex; rect: Rect; path: string; keepAspect: boolean }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectAdd" }, () => mock.listPageObjects(a));
+    if (!/\.(png|jpe?g)$/i.test(a.path)) throw err("unsupported", "not a PNG / JPEG");
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectAdd" }, () => {
+      // the fake image is 4:3; keepAspect centres it inside the rect like the engine
+      let r = { ...a.rect };
+      if (a.keepAspect) {
+        const w = r.r - r.l;
+        const h = r.t - r.b;
+        const s = Math.min(w / 400, h / 300);
+        const cx = (r.l + r.r) / 2;
+        const cy = (r.b + r.t) / 2;
+        r = { l: cx - 200 * s, r: cx + 200 * s, b: cy - 150 * s, t: cy + 150 * s };
+      }
+      pageObjects(d, a.page).push({
+        type: "image", rect: r, matrix: [r.r - r.l, 0, 0, r.t - r.b, r.l, r.b], ours: true, editable: "full",
+      });
+      return () => listObjects(d, a.page);
+    })();
   },
-  async transformObject(a: { docId: DocId; page: PageIndex }) {
+  async transformObject(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration;
+    translate?: [number, number]; scale?: [number, number]; rotateDeg?: number }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectTransform" }, () => mock.listPageObjects(a));
+    checkGeneration(d, a.expectGeneration);
+    const o = pageObjects(d, a.page)[a.objectId];
+    if (!o) throw err("notFound", `no object ${a.objectId}`);
+    if (o.editable === "readOnly") throw err("unsupported", "object is read-only");
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectTransform" }, () => {
+      const t = pageObjects(d, a.page)[a.objectId];
+      const { l, b } = t.rect;
+      if (a.scale) {
+        const [sx, sy] = a.scale;
+        t.rect = { l, b, r: l + (t.rect.r - l) * sx, t: b + (t.rect.t - b) * sy };
+        t.matrix = [t.matrix[0] * sx, t.matrix[1], t.matrix[2], t.matrix[3] * sy, t.matrix[4], t.matrix[5]];
+        if (t.fontSizePt) t.fontSizePt = Math.round(t.fontSizePt * sy * 100) / 100;
+      }
+      if (a.translate) {
+        const [dx, dy] = a.translate;
+        t.rect = { l: t.rect.l + dx, b: t.rect.b + dy, r: t.rect.r + dx, t: t.rect.t + dy };
+        t.matrix = [t.matrix[0], t.matrix[1], t.matrix[2], t.matrix[3], t.matrix[4] + dx, t.matrix[5] + dy];
+      }
+      return () => listObjects(d, a.page);
+    })();
   },
-  async deleteObjects(a: { docId: DocId; page: PageIndex }) {
+  async deleteObjects(a: { docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration }) {
     const d = doc(a.docId);
-    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectDelete" }, () => mock.listPageObjects(a));
+    checkGeneration(d, a.expectGeneration);
+    const list = pageObjects(d, a.page);
+    for (const id of a.objectIds) {
+      if (!list[id]) throw err("notFound", `no object ${id}`);
+      if (list[id].editable === "readOnly") throw err("unsupported", "object is read-only");
+    }
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectDelete" }, () => {
+      const drop = new Set(a.objectIds);
+      d.objects.set(a.page, list.filter((_, i) => !drop.has(i)));
+      return () => listObjects(d, a.page);
+    })();
+  },
+  async probeParagraph(a: { docId: DocId; page: PageIndex; at: Point }): Promise<ParagraphProbe | null> {
+    return mockParagraph(doc(a.docId), a.page, a.at);
+  },
+  async editParagraph(a: { docId: DocId; page: PageIndex; expectGeneration: DocGeneration; edit: ParagraphEdit;
+    allowFontSubstitution: boolean }): Promise<ParagraphEditResult> {
+    const d = doc(a.docId);
+    checkGeneration(d, a.expectGeneration);
+    const list = pageObjects(d, a.page);
+    const members = a.edit.objectIds.map((id) => list[id]);
+    if (members.length === 0 || members.some((o) => !o || o.type !== "text")) throw err("notFound", "paragraph objects moved on");
+    if (members.some((o) => o.editable !== "full")) throw err("unsupported", "paragraph is not editable");
+    const first = members[0];
+    const fontName = first.fontName ?? "Helvetica";
+    const hangul = needsHangulFont(fontName, a.edit.text, members.map((o) => o.text ?? "").join(""));
+    if (hangul && !a.allowFontSubstitution) throw err("fontCoverage", "the paragraph font cannot render the new text");
+    const rect = members.reduce((u, o) => unionR(u, o.rect), members[0].rect);
+    const size = a.edit.fontSizePt ?? first.fontSizePt ?? 11;
+    const color = a.edit.color ?? first.color ?? [0, 0, 0];
+    const width = a.edit.width ?? rect.r - rect.l;
+    const leading = members.length > 1 ? Math.abs(members[0].matrix[5] - members[1].matrix[5]) : size * 1.2;
+    const wrapped = wrapText(a.edit.text, width, size);
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.paragraphEdit" }, () => {
+      const drop = new Set(a.edit.objectIds);
+      const kept = list.filter((_, i) => !drop.has(i));
+      const top = first.matrix[5];
+      let used: Rect | null = null;
+      wrapped.forEach((line, i) => {
+        if (!line) return;
+        const o = textObj(line, rect.l, top - i * leading, measure(line, size), size, color, hangul ? "SeePDF Hangul" : fontName, first.ours);
+        used = used ? unionR(used, o.rect) : o.rect;
+        kept.push(o);
+      });
+      d.objects.set(a.page, kept);
+      const box: Rect = used ?? { l: rect.l, b: rect.t, r: rect.l, t: rect.t };
+      return () => ({
+        objects: listObjects(d, a.page),
+        rect: box,
+        lines: wrapped.length,
+        overflowPt: Math.max(0, Math.round((rect.b - box.b) * 100) / 100),
+      });
+    })();
   },
 
   // 7.5 redaction / security -------------------------------------------------
@@ -1301,6 +1410,160 @@ function mockCompare(
   return {
     docA: dA.info.docId, docB: dB.info.docId, pages,
     changedPages: pages.filter((p) => p.changed).length, inserted, deleted, elapsedMs,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Page objects (편집 mode, Stage 7)
+// ---------------------------------------------------------------------------
+
+function checkGeneration(d: MockDoc, expect: DocGeneration): void {
+  if (expect !== d.info.docGeneration) throw err("stale", "generation moved on");
+}
+
+const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/;
+
+/**
+ * A Latin font cannot draw Hangul it has not drawn before: the fake Korean fonts cover every
+ * syllable, a Latin (subset) font only the Hangul already present in the text it drew (`have`).
+ */
+function needsHangulFont(fontName: string, text: string, have = ""): boolean {
+  if (/hangul|kr|gothic|pretendard/i.test(fontName)) return false;
+  for (const ch of text) if (HANGUL.test(ch) && !have.includes(ch)) return true;
+  return false;
+}
+
+/** Width of a run in points — the same advances as the fake text layer. */
+function measure(text: string, size: number): number {
+  let w = 0;
+  for (const ch of text) w += size * (ch === " " ? 0.32 : isWide(ch) ? 1 : 0.52);
+  return w;
+}
+
+/** Break at spaces, a word wider than the box by character; `\n` is a hard break. */
+function wrapText(text: string, width: number, size: number): string[] {
+  const out: string[] = [];
+  for (const para of text.split("\n")) {
+    let line = "";
+    for (const word of para.split(" ")) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (measure(candidate, size) <= width || !line) {
+        line = candidate;
+      } else {
+        out.push(line);
+        line = word;
+      }
+      while (measure(line, size) > width && line.length > 1) {
+        let cut = line.length - 1;
+        while (cut > 1 && measure(line.slice(0, cut), size) > width) cut -= 1;
+        out.push(line.slice(0, cut));
+        line = line.slice(cut);
+      }
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function unionR(a: Rect, b: Rect): Rect {
+  return { l: Math.min(a.l, b.l), b: Math.min(a.b, b.b), r: Math.max(a.r, b.r), t: Math.max(a.t, b.t) };
+}
+
+function textObj(text: string, x: number, baseline: number, width: number, size: number, color: Rgb, fontName: string, ours: boolean): MockObj {
+  return {
+    type: "text",
+    rect: { l: x, b: baseline - size * 0.24, r: x + width, t: baseline + size * 0.78 },
+    matrix: [1, 0, 0, 1, x, baseline],
+    ours,
+    text,
+    fontName,
+    fontSizePt: size,
+    color,
+    editable: "full",
+  };
+}
+
+/** The live object list of a page, seeded from the fake text layer (one text object per line). */
+function pageObjects(d: MockDoc, page: PageIndex): MockObj[] {
+  let list = d.objects.get(page);
+  if (!list) {
+    const tp = textPage(d, page);
+    list = tp.lines.map((l, i): MockObj => {
+      const text = sliceLineText(tp, i);
+      return {
+        type: "text",
+        rect: l.box,
+        matrix: [1, 0, 0, 1, l.box.l, l.baselineY] as Mat6,
+        ours: false,
+        text,
+        fontName: [...text].filter((ch) => HANGUL.test(ch)).length * 2 > text.length ? "NotoSansKR" : "Helvetica",
+        fontSizePt: tp.chars[l.firstChar]?.fontSizePt ?? 11,
+        color: [26, 28, 31],
+        // the title sits inside a Form XObject, so one run always shows the read-only badge
+        editable: i === 0 ? "readOnly" : "full",
+        reason: i === 0 ? "insideXObject" : undefined,
+      };
+    });
+    d.objects.set(page, list);
+  }
+  return list;
+}
+
+function listObjects(d: MockDoc, page: PageIndex): ObjectsResult {
+  return {
+    docGeneration: d.info.docGeneration,
+    objects: pageObjects(d, page).map((o, objectId) => ({ ...structuredClone(o), objectId })),
+  };
+}
+
+/**
+ * The fake paragraph detector: text objects are lines (baseline = matrix f); the paragraph is the
+ * hit line plus its neighbours with the same size and a steady leading ≤ 2.2 × size.
+ */
+function mockParagraph(d: MockDoc, page: PageIndex, [x, y]: Point): ParagraphProbe | null {
+  const all = pageObjects(d, page).map((o, id) => ({ o, id })).filter((e) => e.o.type === "text");
+  const lines = all.sort((a, b) => b.o.matrix[5] - a.o.matrix[5]);
+  const hit = lines.findIndex((e) => x >= e.o.rect.l - 1 && x <= e.o.rect.r + 1 && y >= e.o.rect.b - 1 && y <= e.o.rect.t + 1);
+  if (hit < 0) return null;
+  const size = lines[hit].o.fontSizePt ?? 11;
+  const joins = (upper: MockObj, lower: MockObj, leading: number | null) => {
+    const gap = upper.matrix[5] - lower.matrix[5];
+    return (lower.fontSizePt ?? 0) === size && gap > 0 && gap <= 2.2 * size && (leading === null || Math.abs(gap - leading) <= leading * 0.2);
+  };
+  let from = hit;
+  let to = hit;
+  let leading: number | null = null;
+  while (from > 0 && joins(lines[from - 1].o, lines[from].o, leading)) {
+    leading ??= lines[from - 1].o.matrix[5] - lines[from].o.matrix[5];
+    from -= 1;
+  }
+  while (to < lines.length - 1 && joins(lines[to].o, lines[to + 1].o, leading)) {
+    leading ??= lines[to].o.matrix[5] - lines[to + 1].o.matrix[5];
+    to += 1;
+  }
+  const members = lines.slice(from, to + 1);
+  const first = members[0].o;
+  const rect = members.reduce((u, e) => unionR(u, e.o.rect), first.rect);
+  const text = members.map((e) => e.o.text ?? "").join(" ");
+  const refused = members.find((e) => e.o.editable !== "full");
+  const fontName = first.fontName ?? "Helvetica";
+  const align: ParagraphAlign = "left";
+  return {
+    objectIds: members.map((e) => e.id),
+    rect,
+    text,
+    fontName,
+    fontSizePt: size,
+    color: first.color ?? [0, 0, 0],
+    mixedStyles: members.some((e) => e.o.fontName !== fontName),
+    lineHeightPt: leading ?? size * 1.2,
+    align,
+    firstLineIndentPt: 0,
+    lines: members.length,
+    // the paragraph's own font drew the current text, so it covers it
+    strategy: refused ? "refused" : "inPlace",
+    ...(refused ? { reason: refused.o.reason } : {}),
+    docGeneration: d.info.docGeneration,
   };
 }
 

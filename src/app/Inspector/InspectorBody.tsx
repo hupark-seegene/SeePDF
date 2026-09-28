@@ -16,6 +16,7 @@ import { commitField, useFormStore } from "../../forms/formStore";
 import { isStyledTool, toolOfKind } from "../../store/toolStyles";
 import { reopenStampPicker } from "../../tools/stamp";
 import { makeApply } from "./apply";
+import { EditPanel } from "./EditPanel";
 import { Swatches } from "../Swatches";
 import type { PropertyId } from "./patch";
 
@@ -134,6 +135,7 @@ export function InspectorBody() {
   const apply = useApply();
 
   if (mode === "form") return <FormPanel />;
+  if (mode === "edit") return <EditPanel />;
   if (mode !== "annotate") return <p className="empty">{t("prop.empty")}</p>;
 
   const one = selection.length === 1 ? selection[0] : null;
