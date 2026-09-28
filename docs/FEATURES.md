@@ -257,6 +257,19 @@ subset · incremental save · Windows.Media.Ocr opportunistic path · export to 
 engine, licence review first) · annotation replies/threads and summary export · multi-file search ·
 split view · TTS · auto-update.
 
+### P2 status — crop / resize, Bates, annotation summary, read aloud
+
+✅ verified by tests against real PDFium (and the real `say` on macOS) · ⚠️ partial, with the gap named.
+Contract: `IPC_CONTRACT.md` §7.3a, §7.4a, §7.7a, §11a; UI: `UI_SPEC.md` §8–10, §12, §15.20b.
+
+| item | status | evidence |
+|---|---|---|
+| **Crop pages** | ✅ | 페이지 mode 자르기… (rail, cell / thumbnail menu): drag a box with 8 handles / move / redraw, 여백 (pt) fields, 남는 크기 in mm, 여백 자동 감지 (render ≤ 900 px → non-paper bounds + 6 pt), 선택한 페이지 / 모든 페이지 with the same margins relative to each page's crop box, 원래대로 (`crop: null` → crop = media); `set_page_boxes` = one undo step `undo.pageCrop`, `DocInfo` geometry exact for every changed page; rotated pages take margins as seen. `cargo test --test page_boxes` crop cases (save → reopen crop box equals, render is 468 × 600 with ink inside, rotated margins, reset, media clips crop, refusals roll back), `boxes` lib tests, `crop.test.ts`, `crop.flow.test.tsx`. ⚠️ the preview shows the current crop, so enlarging past it needs 원래대로 first; a page inheriting both boxes from the page tree resets to PDFium's page box |
+| **Resize pages** | ✅ ⚠️ | 페이지 크기 변경…: A4 / 레터 / A3 (page orientation kept) or mm, 확대/축소 (uniform, centred) or 가운데 배치; `resize_pages` = one undo step `undo.pageResize`; content via `FPDFPage_TransFormWithClip` (objects stay editable — Form XObject wrapping rejected), annotations follow (`FPDFPage_TransformAnnots` + quads / ink / popups by hand). `cargo test --test page_boxes` resize cases (A4 → Letter: rect scaled by 0.9407 and centred, aspect kept, save → reopen, undo; centre mode offsets only; highlight quad + ink points mapped; `/Rotate 90` keeps landscape; resize then stamp survives save → reopen). Found and worked around a pdfium-render 0.9 use-after-free: `reload_in_place()` leaves the page's boundaries / objects / annotations collections on the closed handle, so the page is reopened. ⚠️ a shading pattern shared by several resized pages is transformed once per page; `/L`, `/Vertices`, `/CL` of third-party annotations keep old values (their appearance moves) |
+| **Bates numbering** | ✅ | `{{bates}}` token + `batesStart` / `batesDigits` / `batesPrefix` / `batesSuffix` on `StampSpec` (serde defaults, not serialised at default), one-pass token expansion, numbers count the stamped pages; 워터마크 / 머리글·바닥글 dialog: Bates 번호 매기기 preset (footer / 오른쪽 아래, or header / 오른쪽 위), token chip, 시작 번호 / 자릿수 / 접두어 / 접미어, sample over the range, preview; `remove_stamps` by role unchanged. `cargo test --test stamp stamp_bates_numbers_every_page_and_is_extractable` (14 pages ABC000101…ABC000114, one per page, extractable after save → reopen, range 3–5 → 000001-K…000003-K, footer removal, bad digits / prefix refused), `stamp` lib tests, `bates.test.tsx` |
+| **Annotation summary export** | ✅ | `export_annotation_summary` TXT / CSV / Markdown: page, label, kind (i18n), author, created / modified (local time), colour, contents, quoted text of markups from the cached text layer; CSV RFC 4180 + UTF-8 BOM + formula guard; 주석 sidebar 내보내기… and 내보내기 ▸ 주석 목록 (range, format, `<name>-주석 목록.<ext>`). `cargo test --test annot_summary` (5 annotations created out of order → 5 rows in page order, `Trace-based` quoted, Korean note with comma / quotes / line break round-trips, BOM, page filter, third-party highlight), `summary` lib tests, `annotSummary.flow.test.tsx` |
+| **Read aloud (TTS)** | ✅ ⚠️ | `tts_speak` / `tts_stop` / `tts_status`: macOS `say` (stdin, Yuna for Korean, `-r`), Windows PowerShell `System.Speech` (UTF-8 stdin, culture voice, no window), `unsupported` elsewhere; one utterance app-wide, killed on stop, on a new speak, on window close and on `RunEvent::Exit`. UI: 읽어 주기 in the text-selection menu, 이 페이지 읽어 주기 (canvas menu, 보기 menu, ⋯), floating bar 속도 (restarts) / 정지, status-bar indicator, polling ends it. `cargo test --test tts` (fake speaker: speak / replace / stop / finish / drop / unsupported; macOS: `say -v ?` lists a Korean voice, a long text speaks and stops, a short one renders audio to a file — silent), `tts` lib tests, `tts.flow.test.tsx`. ⚠️ the Windows path is compiled and unit-tested (script, base64, rate) but not run on Windows yet; no word highlighting; 속도 restarts from the beginning |
+
 ---
 
 ## Explicit non-goals for v1
@@ -266,7 +279,7 @@ split view · TTS · auto-update.
 | Office / hwp import and export | needs a third-party conversion engine; licensing must be settled first |
 | Digital signature certificates (공인전자서명), PKI validation | a separate compliance workstream (see open question 3 of the UX research) |
 | XFA forms | not built into this pdfium; documents are opened read-only with a banner |
-| PDF/A, preflight, Bates numbering | Acrobat-tier features our users did not ask for |
+| PDF/A, preflight | Acrobat-tier features our users did not ask for (Bates numbering landed in P2) |
 | Form field authoring, JavaScript actions, field calculation | pdfium exposes no authoring API and no JS engine is shipped |
 | Document tabs | one window per document has the same capability and no tab-state code |
 | Cloud sync, accounts, telemetry, AI features | the product promise is a local, offline, quiet tool |

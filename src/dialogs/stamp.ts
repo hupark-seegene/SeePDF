@@ -4,7 +4,7 @@
  */
 import type { PageGeom, PageIndex, Rgb, StampAnchor, StampRole, StampSpec } from "../ipc/types";
 
-export const STAMP_TOKENS = ["page", "total", "date", "filename"] as const;
+export const STAMP_TOKENS = ["page", "total", "date", "filename", "bates"] as const;
 export type StampToken = (typeof STAMP_TOKENS)[number];
 
 export const ANCHORS: StampAnchor[] = ["tl", "tc", "tr", "ml", "mc", "mr", "bl", "bc", "br"];
@@ -22,7 +22,16 @@ export interface StampForm {
   rotateDeg: number;
   anchor: StampAnchor;
   marginPt: number;
+  /** P2 Bates numbering — used when the text has `{{bates}}` */
+  batesStart: number;
+  batesDigits: number;
+  batesPrefix: string;
+  batesSuffix: string;
 }
+
+/** Bates limits, the engine's (`stamp::BATES_MAX_DIGITS`, `BATES_MAX_AFFIX`). */
+export const BATES_MAX_DIGITS = 12;
+export const BATES_MAX_AFFIX = 64;
 
 /** What changes with the role. The text is only swapped while the user has not edited it. */
 export interface RoleDefaults {
@@ -54,7 +63,53 @@ export function initialStampForm(role: StampRole, watermarkText: string): StampF
     imagePath: null,
     imageWidthPt: 144,
     marginPt: 36,
+    batesStart: 1,
+    batesDigits: 6,
+    batesPrefix: "",
+    batesSuffix: "",
   };
+}
+
+/** The text asks for a Bates number. */
+export function usesBates(text: string): boolean {
+  return text.includes("{{bates}}");
+}
+
+/**
+ * Bates 번호 매기기: a footer at the bottom right holding just `{{bates}}` in black 10 pt — what
+ * legal document productions look like. A header stays a header (the role is the user's call).
+ */
+export function batesPreset(form: StampForm): StampForm {
+  return {
+    ...form,
+    role: form.role === "header" ? "header" : "footer",
+    source: "text",
+    text: "{{bates}}",
+    fontSizePt: 10,
+    color: [0, 0, 0],
+    opacityPct: 100,
+    rotateDeg: 0,
+    anchor: form.role === "header" ? "tr" : "br",
+    marginPt: 24,
+  };
+}
+
+/** The Bates options as the engine will use them (`stamp::validate` limits). */
+export function batesOptions(form: StampForm): { start: number; digits: number; prefix: string; suffix: string } {
+  const start = Number.isFinite(form.batesStart) ? Math.max(0, Math.floor(form.batesStart)) : 1;
+  const digits = Number.isFinite(form.batesDigits) ? Math.min(BATES_MAX_DIGITS, Math.max(1, Math.round(form.batesDigits))) : 6;
+  return {
+    start,
+    digits,
+    prefix: [...form.batesPrefix].slice(0, BATES_MAX_AFFIX).join(""),
+    suffix: [...form.batesSuffix].slice(0, BATES_MAX_AFFIX).join(""),
+  };
+}
+
+/** The `n`-th stamped page's number (0-based), like `stamp::bates_label`: never cut, only padded. */
+export function batesLabel(form: StampForm, n: number): string {
+  const o = batesOptions(form);
+  return `${o.prefix}${String(o.start + n).padStart(o.digits, "0")}${o.suffix}`;
 }
 
 /**
@@ -87,6 +142,7 @@ export interface TokenContext {
   total: number;
   date: string;      // YYYY-MM-DD
   filename: string;  // without extension
+  bates?: string;    // this page's Bates number (P2)
 }
 
 /** Same substitution as the engine: known tokens are replaced, unknown `{{x}}` stays literal. */
@@ -101,6 +157,8 @@ export function expandTokens(text: string, ctx: TokenContext): string {
         return ctx.date;
       case "filename":
         return ctx.filename;
+      case "bates":
+        return ctx.bates ?? whole;
       default:
         return whole;
     }
@@ -131,7 +189,14 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, N
 
 /** The `add_stamp` spec. `allPages` sends `'all'` so the engine need not receive a long list. */
 export function buildStampSpec(form: StampForm, pages: PageIndex[], allPages: boolean): StampSpec {
+  const bates =
+    form.source === "text" && usesBates(form.text)
+      ? (({ start, digits, prefix, suffix }) => ({
+          batesStart: start, batesDigits: digits, batesPrefix: prefix, batesSuffix: suffix,
+        }))(batesOptions(form))
+      : {};
   return {
+    ...bates,
     role: form.role,
     source:
       form.source === "text"

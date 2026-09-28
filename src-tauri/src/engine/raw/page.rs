@@ -200,6 +200,30 @@ pub fn flatten(
     }
 }
 
+/// `FPDFPage_TransformAnnots` — maps the `/Rect` of every annotation on `page` through `m`
+/// (`[a, b, c, d, e, f]`). P2 page resize.
+///
+/// Only `/Rect` changes, written straight into the dictionary: unlike `FPDFAnnot_SetRect` it
+/// never rewrites an appearance `BBox`, so an existing appearance is fitted into the mapped rect
+/// and scales with it. `/QuadPoints` and `/InkList` are the caller's job (they are not touched),
+/// and `/Popup` annotations are skipped by PDFium's annotation list. Building that list also
+/// generates an appearance for any annotation that has none.
+pub fn transform_annots(bindings: &dyn PdfiumLibraryBindings, page: &PdfPage<'_>, m: [f32; 6]) {
+    // SAFETY: `page` is live for this borrow and owned by this thread; the call only reads and
+    // writes that page's annotation dictionaries.
+    unsafe {
+        bindings.FPDFPage_TransformAnnots(
+            page.raw_handle(),
+            m[0] as f64,
+            m[1] as f64,
+            m[2] as f64,
+            m[3] as f64,
+            m[4] as f64,
+            m[5] as f64,
+        )
+    }
+}
+
 /// `FPDF_GetPageCount` without going through `PdfPages` (which builds an index cache).
 pub fn page_count(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>) -> u16 {
     // SAFETY: `doc` is live for this borrow.

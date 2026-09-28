@@ -71,7 +71,7 @@ dimmer weight. The active tool has an `--accent-subtle` background and a 1 px ac
 |---|---|---|---|
 | 축소판 | `rectangle-vertical` | 1–2 column thumbnail list, page number under each, current page with a 2 px accent ring, drag to reorder, ⌘/⇧ multi-select, context menu | — |
 | 목차 | `list-tree` | outline tree with disclosure triangles, current section highlighted on scroll | `sidebar.outline.empty` |
-| 주석 | `message-square` | flat list grouped by page: type icon, author, excerpt, timestamp; click scrolls and selects; filter chips by type | `sidebar.annotations.empty` |
+| 주석 | `message-square` | flat list grouped by page: type icon, author, excerpt, timestamp; click scrolls and selects; filter chips by type; a header with the count and **내보내기…** (P2: opens 내보내기 on its 주석 목록 format) | `sidebar.annotations.empty` |
 | 검색 | `search` | query field, 대소문자 구분 / 단어 단위 toggles, result count, results with ±40 characters of context and the match in bold, grouped by page, streaming in as they arrive | `sidebar.search.empty` |
 
 Sidebar open/closed, active tab and width persist per app (not per document) in `settings.json`.
@@ -150,7 +150,8 @@ outside click, or a scroll of more than 40 px; opening the panel closes the popo
 `◀ [page input] / [total] ▶` · view layout segmented (단일 / 연속 / 두 쪽) · 왼쪽/오른쪽 회전 ·
 야간 모드 `moon` (cycles, pressed while on) · zoom `− [slider] +` with a numeric combo (25/50/75/100/125/150/200/400 %, 페이지 맞춤, 너비 맞춤,
 실제 크기) · right side: save state (저장됨 / 저장되지 않은 변경 사항 / 저장 중…) and a progress slot used
-by OCR, export, search and save (label + determinate bar + cancel ×).
+by OCR, export, search and save (label + determinate bar + cancel ×). P2: while the system voice reads
+(읽어 주기), a pressed `audio-lines` button at the start of the right side — `읽는 중… — 정지`; a click stops it.
 
 ---
 
@@ -164,7 +165,8 @@ by OCR, export, search and save (label + determinate bar + cancel ×).
 * Selection: click, ⇧click range, ⌘click toggle, marquee on empty space, ⌘A.
 * Drag: a 2 px vertical insertion caret between cells; a multi-selection drags as a stacked ghost with a
   count badge. Dropping a PDF or an image from the OS inserts at the caret.
-* Right-side action list: 회전 · 삭제 · 추출… · 복제 · 빈 페이지 삽입 · 파일에서 삽입… · 순서 뒤집기 · 분할…
+* Right-side action list: 회전 · 삭제 · 추출… · 복제 · 빈 페이지 삽입 · 파일에서 삽입… · 순서 뒤집기 · 분할… ·
+  자르기… · 페이지 크기 변경… (P2; both act on the selection, or offer every page when nothing is selected)
 * Everything is undoable and lives in the in-memory document until save. The status bar shows
   `변경됨 · 페이지 148 → 143`.
 
@@ -190,9 +192,19 @@ copy. While running: `파일 2/5 · name` + progress + 취소 (stops the current
 시작 resumes). 닫기 only hides the sheet — the batch continues in the status bar (× cancels) and ends with a toast.
 When done: 완료 N · 건너뜀 N · 실패 N and Finder에서 보기 (the first copy).
 
-**내보내기** (non-modal sheet): format list on the left (PDF 평면화 / PNG / JPEG / 텍스트), options on the
-right (페이지 범위, DPI 72–600 default 150, 품질, 투명 배경, 페이지마다 파일 하나), an estimated size, then
-progress in the status bar and a completion toast with Finder에서 보기 / 폴더 열기.
+**내보내기** (non-modal sheet): format list on the left (PDF 평면화 / PNG / JPEG / 텍스트 / 주석 목록), options on
+the right (페이지 범위, DPI 72–600 default 150, 품질, 투명 배경, 페이지마다 파일 하나), an estimated size, then
+progress in the status bar and a completion toast with Finder에서 보기 / 폴더 열기. P2 **주석 목록**: 파일 형식
+CSV — Excel (default) / 텍스트 / Markdown and a one-line description of the columns; the save panel suggests
+`<name>-주석 목록.<ext>` with that type's filter; the toast says `주석 N개를 내보냈습니다` (Finder에서 보기) or, for
+none, 내보낼 주석이 없습니다 (빈 목록을 저장했습니다). The 주석 sidebar's 내보내기… opens the dialog on this format.
+
+**읽어 주기** (P2): not a dialog but a floating bar, bottom centre above the status bar (left of the toasts),
+`--bg-panel`, radius-lg, elevation 2: `audio-lines` in accent · 읽는 중… · what (선택한 텍스트 → 읽어 주기, a page →
+N쪽) · 음성 <name> when one was picked · 속도 0.75× / 1× / 1.25× / 1.5× / 2× (a change restarts the text at the new
+speed — system voices cannot change speed mid-sentence) · 정지. It disappears when the voice ends. Reached from the
+text-selection menu (읽어 주기), the canvas menu and 보기 ▸ 이 페이지 읽어 주기 (native menu; ⋯ on Windows). No text →
+이 페이지에는 읽을 텍스트가 없습니다; no system voice → 이 컴퓨터에서는 읽어 주기를 사용할 수 없습니다 (info toasts).
 
 **워터마크 / 머리글·바닥글** (P1-4, 760 px, ⋯ menu or ⌥⌘W / Ctrl+Alt+W): 종류 segmented (워터마크 | 머리글 |
 바닥글) — the role picks the defaults (워터마크: 가운데, 45°, 60 pt, 25 %; 머리글: 위 가운데 `{{filename}}`;
@@ -207,6 +219,28 @@ toast with 실행 취소. **기존 항목 제거** (Stage 8): 워터마크 제�
 모두 제거 (every SeePDF stamp, including ones from before roles were recorded) over the same 페이지 범위 →
 `remove_stamps`, one undo step `undo.removeStamps`, a toast `N개 항목을 제거했습니다` with 실행 취소 or 제거할 항목이
 없습니다 (info); the dialog stays open.
+
+**Bates 번호** (P2, in the same dialog): a quiet **Bates 번호 매기기** button under 종류 turns the form into
+a Bates footer (바닥글 — a 머리글 stays a 머리글 at 오른쪽 위 — 오른쪽 아래, `{{bates}}`, 10 pt black, 100 %, 24 pt
+margin) and a **Bates 번호** token chip inserts `{{bates}}` anywhere. While the text holds `{{bates}}` a
+Bates 번호 row shows 시작 번호 · 자릿수 (1–12) · 접두어 · 접미어 (≤ 64 characters) in a 2 × 2 grid, a sample
+`ABC000101 … ABC000114` over the page range, and 번호는 적용할 페이지 순서대로 매겨집니다; the preview shows the
+first number. The numbers count the stamped pages of the 페이지 범위; 기존 항목 제거 removes them by role.
+
+**자르기** (P2, 760 px, 페이지 mode: the rail, a cell's menu or the thumbnail menu): the first target page as it is
+seen (its current crop box, `/Rotate` applied), ≤ 380 × 440 px, with the area to keep outlined in accent and the
+rest dimmed; 8 handles resize it, dragging inside moves it, dragging outside draws a new one (never below 18 pt);
+여백 (pt) 위 / 아래 / 왼쪽 / 오른쪽 fields stay in sync, with 남는 크기 W × H mm under them; **여백 자동 감지** renders
+the page (≤ 900 px) and fits the box to everything that is not paper, plus 6 pt (a blank page toasts 이 페이지에서
+내용을 찾지 못했습니다); 적용 대상 선택한 페이지 (N쪽) | 모든 페이지 (the default when nothing was selected). 적용 (disabled
+while the box is the whole page) crops every target page by the same margins, each relative to its own crop box —
+one undo step 페이지 자르기, a toast `N쪽을 잘랐습니다` with 실행 취소. **원래대로** (footer, left) gives the target
+pages their whole media box back as its own undo step, toasts, and leaves the dialog open on the full page.
+
+**페이지 크기 변경** (P2, 480 px, same places): 크기 A4 (210 × 297 mm) / 레터 (216 × 279 mm) / A3 (297 × 420 mm) /
+직접 입력 (너비 × 높이 mm, 1–5080, a red note when invalid) with 현재 W × H mm of the first target page and, for the
+named sizes, A4·레터·A3는 각 페이지의 가로/세로 방향을 따릅니다; 내용 새 크기에 맞게 확대/축소 (default; uniform, centred)
+| 원래 크기로 가운데 배치; 적용 대상 as in 자르기. 적용 → one undo step 페이지 크기 변경, toast with 실행 취소.
 
 **압축** (P1-5, 640 px, 도구 ▸ 압축… or ⋯): 이미지 품질 radio 인쇄 품질 · 300 DPI / 화면용 · 150 DPI (default) /
 최소 크기 · 96 DPI · 페이지 범위 · 예상 runs `compress_estimate` on a scratch copy with an inline progress bar and
@@ -281,15 +315,15 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 
 ## 12. Context menus (all rendered in the webview, themed and localised)
 
-* **Text selection**: 복사 · 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색 — at the top of the canvas
+* **Text selection**: 복사 · 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색 · 읽어 주기 (P2) — at the top of the canvas
   menu while a text selection exists. 복사 writes the text; 형광펜 / 밑줄 / 취소선 make the same markup the tool
   would (one per page, the tool's remembered style) and clear the selection; 메모 추가 puts a note just after
   the selection's last line and opens it; 영역 표시로 표시 marks the line rects and switches to 편집 · 영역 표시;
   검색 puts the selection (whitespace folded, ≤ 200 characters) into the 검색 panel and runs it
-* **Empty page area**: 붙여넣기 · 메모 추가 · 페이지 회전 · 이미지로 내보내기 · 스냅샷 · 페이지로 이동…
+* **Empty page area**: 붙여넣기 · 메모 추가 · 페이지 회전 · 이미지로 내보내기 · 스냅샷 · 페이지로 이동… · 이 페이지 읽어 주기 (P2)
 * **Annotation**: 편집 · 속성… · 메모 열기 · 복사 · 삭제 · 이 스타일을 기본값으로
 * **Thumbnail / page cell**: 이 페이지로 이동 · 왼쪽/오른쪽 회전 · 삭제 · 복제 · 추출… · 뒤에 페이지 삽입… ·
-  이미지로 내보내기
+  자르기… · 페이지 크기 변경… (P2) · 이미지로 내보내기
 * **Outline item**: 이동 · 하위 항목 모두 펼치기/접기
 * **Search result**: 이동 · 복사 · 이 결과 형광펜
 * **Form field**: 값 지우기 · 모든 필드 지우기 · 필드 강조 표시 전환
@@ -1029,6 +1063,93 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `edit.flow.fitted` | 글자 크기를 {{pct}}%로 줄여 맞췄습니다 | Shrank the text to {{pct}}% to fit |
 
 `edit.paragraph.overflow` (Stage 7's "may overlap the text below" toast) is gone: the flow above replaces it.
+
+### 15.20b P2 — 자르기, 페이지 크기 변경, Bates 번호, 주석 목록 내보내기, 읽어 주기
+`_other` twins (ko repeats the singular) exist for `crop.applyTo.selected`, `crop.done`, `crop.resetDone`,
+`resize.done` and `export.annotations.done`. `annotSummary.*` label the exported file itself (the engine reads them
+from the same catalogue). The native menu's `view.readAloud` label lives in `app/menu.rs` `LABELS`.
+
+| Key | ko | en |
+|---|---|---|
+| `undo.pageCrop` | 페이지 자르기 | Crop Pages |
+| `undo.pageResize` | 페이지 크기 변경 | Resize Pages |
+| `pages.crop` | 자르기… | Crop… |
+| `pages.resize` | 페이지 크기 변경… | Page Size… |
+| `crop.title` | 페이지 자르기 | Crop Pages |
+| `crop.hint` | 페이지 위에서 끌어 남길 영역을 지정하세요. 핸들로 크기를, 안쪽을 끌어 위치를 바꿉니다. | Drag on the page to mark the area to keep. Drag a handle to resize it, drag inside to move it. |
+| `crop.area` | 남길 영역 | Area to keep |
+| `crop.margins` | 여백 (pt) | Margins (pt) |
+| `crop.margin.top` | 위 | Top |
+| `crop.margin.bottom` | 아래 | Bottom |
+| `crop.margin.left` | 왼쪽 | Left |
+| `crop.margin.right` | 오른쪽 | Right |
+| `crop.autoDetect` | 여백 자동 감지 | Detect Margins |
+| `crop.autoDetect.none` | 이 페이지에서 내용을 찾지 못했습니다 | No content was found on this page |
+| `crop.reset` | 원래대로 | Reset |
+| `crop.applyTo` | 적용 대상 | Apply to |
+| `crop.applyTo.selected` | 선택한 페이지 ({{count}}쪽) | Selected page ({{count}}) |
+| `crop.applyTo.all` | 모든 페이지 | All pages |
+| `crop.result` | 남는 크기 {{w}} × {{h}} mm | Result {{w}} × {{h}} mm |
+| `crop.done` | {{count}}쪽을 잘랐습니다 | Cropped {{count}} page |
+| `crop.resetDone` | {{count}}쪽을 원래 크기로 되돌렸습니다 | Restored {{count}} page to its full size |
+| `crop.failed` | 페이지를 자르지 못했습니다 | Could not crop the pages |
+| `resize.title` | 페이지 크기 변경 | Page Size |
+| `resize.size` | 크기 | Size |
+| `resize.size.A4` | A4 (210 × 297 mm) | A4 (210 × 297 mm) |
+| `resize.size.Letter` | 레터 (216 × 279 mm) | Letter (8.5 × 11 in) |
+| `resize.size.A3` | A3 (297 × 420 mm) | A3 (297 × 420 mm) |
+| `resize.size.custom` | 직접 입력 | Custom |
+| `resize.width` | 너비 | Width |
+| `resize.height` | 높이 | Height |
+| `resize.mode` | 내용 | Content |
+| `resize.mode.scaleContent` | 새 크기에 맞게 확대/축소 | Scale to fit the new size |
+| `resize.mode.centerContent` | 원래 크기로 가운데 배치 | Keep its size, centred |
+| `resize.orientationHint` | A4·레터·A3는 각 페이지의 가로/세로 방향을 따릅니다 | A4, Letter and A3 follow each page's orientation |
+| `resize.current` | 현재 {{w}} × {{h}} mm | Now {{w}} × {{h}} mm |
+| `resize.invalid` | 크기를 확인해 주세요 (1–5080 mm) | Check the size (1–5080 mm) |
+| `resize.done` | {{count}}쪽의 크기를 바꿨습니다 | Resized {{count}} page |
+| `resize.failed` | 페이지 크기를 바꾸지 못했습니다 | Could not resize the pages |
+| `stamp.token.bates` | Bates 번호 | Bates number |
+| `stamp.bates.preset` | Bates 번호 매기기 | Bates Numbering |
+| `stamp.bates.section` | Bates 번호 | Bates number |
+| `stamp.bates.start` | 시작 번호 | Start at |
+| `stamp.bates.digits` | 자릿수 | Digits |
+| `stamp.bates.prefix` | 접두어 | Prefix |
+| `stamp.bates.suffix` | 접미어 | Suffix |
+| `stamp.bates.sample` | {{first}} … {{last}} | {{first}} … {{last}} |
+| `stamp.bates.hint` | 번호는 적용할 페이지 순서대로 매겨집니다 | Numbers follow the stamped pages in order |
+| `annotSummary.title` | 주석 목록 | Annotations |
+| `annotSummary.count` | 주석 {{count}}개 | {{count}} annotations |
+| `annotSummary.page` | {{n}}쪽 | Page {{n}} |
+| `annotSummary.none` | 주석이 없습니다 | No annotations |
+| `annotSummary.col.page` | 페이지 | Page |
+| `annotSummary.col.label` | 페이지 레이블 | Page label |
+| `annotSummary.col.kind` | 종류 | Type |
+| `annotSummary.col.author` | 작성자 | Author |
+| `annotSummary.col.created` | 만든 날짜 | Created |
+| `annotSummary.col.modified` | 수정한 날짜 | Modified |
+| `annotSummary.col.color` | 색상 | Colour |
+| `annotSummary.col.contents` | 내용 | Contents |
+| `annotSummary.col.quote` | 인용 텍스트 | Quoted text |
+| `export.format.annotations` | 주석 목록 | Annotation summary |
+| `export.annotations.format` | 파일 형식 | File type |
+| `export.annotations.txt` | 텍스트 (.txt) | Text (.txt) |
+| `export.annotations.csv` | CSV — Excel (.csv) | CSV — Excel (.csv) |
+| `export.annotations.md` | Markdown (.md) | Markdown (.md) |
+| `export.annotations.hint` | 주석마다 한 줄: 쪽, 종류, 작성자, 날짜, 색상, 내용, 형광펜 등으로 표시한 텍스트 | One row per annotation: page, type, author, dates, colour, contents and the marked-up text |
+| `export.annotations.done` | 주석 {{count}}개를 내보냈습니다 | Exported {{count}} annotation |
+| `export.annotations.empty` | 내보낼 주석이 없습니다 (빈 목록을 저장했습니다) | There are no annotations to export (an empty list was saved) |
+| `sidebar.annotations.export` | 내보내기… | Export… |
+| `tts.readSelection` | 읽어 주기 | Read Aloud |
+| `menu.view.readAloud` | 이 페이지 읽어 주기 | Read This Page Aloud |
+| `tts.bar` | 읽어 주기 | Read aloud |
+| `tts.speaking` | 읽는 중… | Reading aloud… |
+| `tts.stop` | 정지 | Stop |
+| `tts.rate` | 속도 | Speed |
+| `tts.voice` | 음성 {{voice}} | Voice {{voice}} |
+| `tts.noText` | 이 페이지에는 읽을 텍스트가 없습니다 | There is no text to read on this page |
+| `tts.unsupported` | 이 컴퓨터에서는 읽어 주기를 사용할 수 없습니다 | Read aloud is not available on this computer |
+| `tts.failed` | 읽어 주기를 시작하지 못했습니다 | Could not start reading aloud |
 
 ### 15.21 Notes for the implementer
 

@@ -746,6 +746,7 @@ fn annotated_doc() -> (TestDoc, Marks) {
         rotate_deg: 0.0,
         opacity: 0.3,
         pages: PageSelection::All(AllPages::All),
+        bates: Default::default(),
     };
     with_state(move |st| stamp::add_stamp(st, &doc_id, &watermark)).expect("watermark");
     (
@@ -1006,6 +1007,7 @@ fn flow_seepdf_footer_stamp_stops_the_push() {
         rotate_deg: 0.0,
         opacity: 1.0,
         pages: PageSelection::All(AllPages::All),
+        bates: Default::default(),
     };
     with_state(move |st| stamp::add_stamp(st, &id, &footer)).expect("footer stamp");
     let before = objects_of(&doc.doc_id);
@@ -1585,6 +1587,7 @@ fn flow_header_stamp_never_joins_the_paragraph() {
         rotate_deg: 0.0,
         opacity: 1.0,
         pages: PageSelection::All(AllPages::All),
+        bates: Default::default(),
     };
     with_state(move |st| stamp::add_stamp(st, &id, &header)).expect("header stamp");
     let before = objects_of(&doc.doc_id);

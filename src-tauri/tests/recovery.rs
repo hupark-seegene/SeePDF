@@ -66,6 +66,7 @@ fn write_creates_pdf_and_sidecar_that_reopen() {
                 rotate_deg: 0.0,
                 opacity: 0.5,
                 pages: PageSelection::All(AllPages::All),
+                bates: Default::default(),
             },
         )
     })

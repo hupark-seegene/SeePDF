@@ -319,6 +319,17 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       case "pages.selectAll":
         if (info) pages.selectAll(info.pageCount);
         return;
+      // P2 자르기 / 페이지 크기 변경: the selection, or the focused page
+      case "pages.crop":
+        if (info) openDialog("crop", { pages: pages.selected.length ? pages.selected : undefined });
+        return;
+      case "pages.resize":
+        if (info) openDialog("resize", { pages: pages.selected.length ? pages.selected : undefined });
+        return;
+      // P2 읽어 주기: 보기 ▸ 이 페이지 읽어 주기 (native menu, ⋯, canvas menu)
+      case "view.readAloud":
+        if (info) void import("../tts/speak").then((m) => m.readPageAloud(view.currentPage));
+        return;
 
       default:
         if (import.meta.env.DEV) console.info(`[command] ${id} — not implemented`);
@@ -366,6 +377,12 @@ function openOverflowMenu(): void {
       { id: "batchOcr", labelKey: "menu.tools.batchOcr", onSelect: () => openDialog("batchOcr") },
       { id: "merge", labelKey: "menu.tools.merge", onSelect: () => openDialog("merge") },
       { id: "split", labelKey: "pages.split", disabled: !info, onSelect: () => openDialog("split") },
+      {
+        id: "readAloud",
+        labelKey: "menu.view.readAloud",
+        disabled: !info,
+        onSelect: () => void import("../tts/speak").then((m) => m.readPageAloud(useViewStore.getState().currentPage)),
+      },
       { id: "sep", separator: true },
       { id: "docInfo", labelKey: "menu.file.docInfo", disabled: !info, onSelect: () => openDialog("docInfo") },
       { id: "settings", labelKey: "menu.settings", onSelect: () => openDialog("settings") },

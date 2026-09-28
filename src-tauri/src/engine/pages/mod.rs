@@ -16,6 +16,8 @@
 //! Every page range the *user* types is 1-based (`"1-3,5"`); every index inside the engine is
 //! 0-based. [`parse_range`] is the only converter and never mixes the two.
 
+pub mod boxes;
+
 use crate::engine::raw;
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
 use crate::engine::render;

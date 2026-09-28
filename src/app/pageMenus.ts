@@ -77,6 +77,8 @@ export function openPageContextMenu(page: PageIndex, source: "canvas" | "thumbna
       labelKey: "pages.insertAfter",
       onSelect: () => void import("../dialogs/flows").then((m) => m.insertFromFileFlow(page + 1)),
     },
+    { id: "crop", labelKey: "pages.crop", onSelect: () => openDialog("crop", { pages: [page] }) },
+    { id: "resize", labelKey: "pages.resize", onSelect: () => openDialog("resize", { pages: [page] }) },
     { id: "sep2", separator: true },
     {
       id: "exportImage",
@@ -96,6 +98,11 @@ export function openPageContextMenu(page: PageIndex, source: "canvas" | "thumbna
   ];
 
   const canvasOnly: MenuEntry[] = [
+    {
+      id: "readPage",
+      labelKey: "menu.view.readAloud",
+      onSelect: () => void import("../tts/speak").then((m) => m.readPageAloud(page)),
+    },
     { id: "sep2", separator: true },
     {
       id: "exportImage",
@@ -145,6 +152,12 @@ export function openPageContextMenu(page: PageIndex, source: "canvas" | "thumbna
           labelKey: "textMenu.search",
           disabled: !selectedText.trim(),
           onSelect: () => textMenu((m) => m.searchSelectedText(selectedText)),
+        },
+        {
+          id: "readSelection",
+          labelKey: "tts.readSelection",
+          disabled: !selectedText.trim(),
+          onSelect: () => void import("../tts/speak").then((m) => m.speakText(selectedText, "selection")),
         },
         { id: "sep0", separator: true },
       ]

@@ -7,6 +7,7 @@ pub mod menu;
 pub mod pdfium_path;
 pub mod signatures;
 pub mod store;
+pub mod tts;
 pub mod undo_labels;
 pub mod windows;
 
