@@ -1873,6 +1873,7 @@ function annotFromSpec(page: PageIndex, spec: AnnotSpec, id: string, author: str
       return {
         ...base, subtype: spec.kind === "square" ? "Square" : "Circle", rect: spec.rect, color: spec.color,
         fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity,
+        ...(spec.dashed ? { dashed: true } : {}),
       };
     case "line":
     case "arrow": {
@@ -1882,6 +1883,7 @@ function annotFromSpec(page: PageIndex, spec: AnnotSpec, id: string, author: str
         ...base, kind: heads[0] || heads[1] ? "arrow" : "line", subtype: "Line",
         linePoints: [spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]], heads,
         ...(spec.measure ? { measure: spec.measure } : {}),
+        ...(spec.dashed ? { dashed: true } : {}),
         color: spec.color, borderWidth: spec.width,
         opacity: spec.opacity, rect: paddedBounds([[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]], spec.width),
       };

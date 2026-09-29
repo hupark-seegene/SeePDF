@@ -57,7 +57,8 @@ pub fn update_in(
     let needs_lopdf = lopdf_kind
         || previous.kind == AnnotKind::Callout
         || patch.dashed.is_some_and(|d| d != previous.dashed)
-        || (previous.dashed && patch.border_width.is_some());
+        // a new width, or new heads (a SeePDF Ink line is rebuilt by PDFium), re-applies the dash
+        || (previous.dashed && (patch.border_width.is_some() || patch.heads.is_some()));
     if needs_lopdf && !rewritable {
         return Err(EngineError::new(
             ErrorCode::Unsupported,
@@ -533,6 +534,8 @@ fn respec(previous: &Annot, patch: &AnnotPatch) -> Result<AnnotSpec, EngineError
             fill_color,
             width,
             opacity,
+            // `rebuild` runs inside a PDFium mutate: `create` cannot write `/BS` there.
+            dashed: false,
         })),
         AnnotKind::Circle => Ok(AnnotSpec::Circle(ShapeSpec {
             rect,
@@ -540,6 +543,8 @@ fn respec(previous: &Annot, patch: &AnnotPatch) -> Result<AnnotSpec, EngineError
             fill_color,
             width,
             opacity,
+            // `rebuild` runs inside a PDFium mutate: `create` cannot write `/BS` there.
+            dashed: false,
         })),
         AnnotKind::Ink | AnnotKind::Signature => Ok(AnnotSpec::Ink(InkSpec {
             paths: patch
@@ -565,6 +570,8 @@ fn respec(previous: &Annot, patch: &AnnotPatch) -> Result<AnnotSpec, EngineError
                 opacity,
                 heads: Some(heads),
                 measure: previous.measure,
+                // a rebuilt SeePDF Ink line (PDFium): `/BS` is lopdf's, see `update_in`
+                dashed: false,
             };
             // v0.3 A1: any head makes it an arrow (`/Subj` SeePDF:Arrow), none a line.
             Ok(if heads[0] || heads[1] {
@@ -635,7 +642,10 @@ pub fn batch_in(
     } else {
         "undo.annotEdit"
     };
-    let mark = st.doc(doc_id)?.history.push_count();
+    // Held trimming + a squash after every op: the batch is one entry the whole time, so
+    // depth trimming (3 on a large document, 50 otherwise) cannot drop its pre-batch
+    // snapshot and the rollback below undoes the whole batch.
+    let mark = st.doc_mut(doc_id)?.history.begin_batch();
     let mut created = Vec::new();
     let mut failed = None;
     for op in ops {
@@ -656,23 +666,36 @@ pub fn batch_in(
             )
             .map(|_| ()),
         };
+        if let Ok(d) = st.doc_mut(doc_id) {
+            d.history.squash_since(mark, label);
+        }
         if let Err(e) = done {
             failed = Some(e);
             break;
         }
     }
+    let Some(e) = failed else {
+        st.doc_mut(doc_id)?.history.end_batch(mark, label);
+        return Ok(created);
+    };
+    // Roll back before trimming resumes: on a depth-3 document the batch entry would
+    // otherwise push the oldest pre-batch entry out for an edit that is then undone.
     let stored = st.doc_mut(doc_id)?.history.squash_since(mark, label);
-    if let Some(e) = failed {
-        if stored {
-            registry::undo(st, doc_id, false).map_err(|u| {
-                e.clone()
-                    .with_detail(format!("rollback failed: {}", u.message))
-            })?;
-            st.doc_mut(doc_id)?.history.discard_last_redo();
-        }
-        return Err(e);
+    let rolled = if stored {
+        registry::undo(st, doc_id, false).map(|_| ())
+    } else {
+        Ok(())
+    };
+    let history = &mut st.doc_mut(doc_id)?.history;
+    if stored && rolled.is_ok() {
+        history.discard_last_redo();
     }
-    Ok(created)
+    history.close_batch();
+    rolled.map_err(|u| {
+        e.clone()
+            .with_detail(format!("rollback failed: {}", u.message))
+    })?;
+    Err(e)
 }
 
 #[cfg(test)]

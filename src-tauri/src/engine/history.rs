@@ -162,6 +162,10 @@ pub struct History {
     /// v0.3 pkg4: entries ever stored by [`push`](Self::push) — the mark of
     /// [`squash_since`](Self::squash_since).
     pushes: u64,
+    /// v0.3 pkg4: a batch is open ([`begin_batch`](Self::begin_batch)) — depth trimming is
+    /// held until [`end_batch`](Self::end_batch), so the entry holding the pre-batch
+    /// snapshot can never be trimmed away while the batch still runs.
+    batching: bool,
 }
 
 impl History {
@@ -186,6 +190,7 @@ impl History {
             spill_dir,
             next_spill: 0,
             pushes: 0,
+            batching: false,
         }
     }
 
@@ -248,11 +253,18 @@ impl History {
             at_ms: now,
         });
         self.pushes += 1;
+        if !self.batching {
+            self.trim();
+        }
+        Ok(true)
+    }
+
+    /// Drops the oldest entries beyond `depth`.
+    fn trim(&mut self) {
         while self.undo.len() > self.depth {
             let dropped = self.undo.remove(0);
             self.release(&dropped.snapshot);
         }
-        Ok(true)
     }
 
     /// Undo a [`push`](Self::push) that turned out to describe an edit that never happened.
@@ -279,6 +291,11 @@ impl History {
     /// names it `label`: a batch of edits becomes **one** undo step. Returns whether an entry
     /// for the batch is on the stack (`false`: nothing was stored since `mark`).
     ///
+    /// The folded entry then counts as the **one** push since `mark`, so calling this again
+    /// with the same mark after more pushes folds only the batch's own entries. A batch
+    /// calls it after every op (inside [`begin_batch`](Self::begin_batch) /
+    /// [`end_batch`](Self::end_batch)) so the stack never grows by more than one op's pushes.
+    ///
     /// [`push_count`]: Self::push_count
     pub fn squash_since(&mut self, mark: u64, label: &str) -> bool {
         let n = (self.pushes.saturating_sub(mark) as usize).min(self.undo.len());
@@ -290,10 +307,37 @@ impl History {
         for entry in &later {
             self.release(&entry.snapshot);
         }
+        self.pushes = mark + 1;
         let entry = &mut self.undo[first];
         entry.label = label.to_string();
         entry.at_ms = now_ms();
         true
+    }
+
+    /// v0.3 pkg4 (A3 / A4): opens a batch — returns the mark for
+    /// [`squash_since`](Self::squash_since) / [`end_batch`](Self::end_batch) and holds depth
+    /// trimming until `end_batch`, so on a depth-3 (large) document, or a batch of more than
+    /// [`DEFAULT_DEPTH`] ops, the pre-batch snapshot is never trimmed away mid-batch.
+    pub fn begin_batch(&mut self) -> u64 {
+        self.batching = true;
+        self.pushes
+    }
+
+    /// v0.3 pkg4: closes a batch opened by [`begin_batch`](Self::begin_batch): folds it into
+    /// one entry named `label` (see [`squash_since`](Self::squash_since)), then trims the
+    /// stack to depth again. Returns whether an entry for the batch is on the stack.
+    pub fn end_batch(&mut self, mark: u64, label: &str) -> bool {
+        let stored = self.squash_since(mark, label);
+        self.close_batch();
+        stored
+    }
+
+    /// v0.3 pkg4: closes a batch without folding — after a failed batch was rolled back
+    /// (its entry undone), so trimming resumes only once the pre-batch entries are the
+    /// newest again and none of them was dropped for an entry that no longer exists.
+    pub fn close_batch(&mut self) {
+        self.batching = false;
+        self.trim();
     }
 
     /// v0.3 pkg4: drops the newest redo entry — a batch that failed half-way is undone with

@@ -1138,7 +1138,8 @@ export interface Annot {
   measure?: MeasureUnit;                 // line / polygon / polyline drawn with a length / area label
 }
 export type AnnotSpec = /* … §7.1 … */
-  | { kind: 'line' | 'arrow'; /* … */ measure?: MeasureUnit }
+  | { kind: 'square' | 'circle'; /* … */ dashed?: boolean }   // v0.3 pkg4: a copy of a dashed shape stays dashed
+  | { kind: 'line' | 'arrow'; /* … */ measure?: MeasureUnit; dashed?: boolean }
   | { kind: 'stamp'; rect: Rect; image: { path: string } | { builtin: string }
       | { text: string; color: Rgb; shape?: StampShape };   // text stamp: {{date}} / {{author}} expand at placement
       rotate?: number; signature?: boolean }
@@ -1208,6 +1209,9 @@ edit of a lopdf annotation are `unsupported`.
 **Dashed border (A6).** `patch.dashed` (or a width change on a dashed annotation) on a square / circle / ink:
 the PDFium part first, then a coalesced lopdf step writes `/BS << /W w /S /D /D [4 3] >>` (or `/S /S`), mirrors
 `SeePDFDash` and drops the `/AP`, which PDFium regenerates dashed on the next render.
+`dashed: true` in a square / circle **spec** (복제 / 붙여넣기 of a dashed shape) takes the same coalesced lopdf
+step right after the create — one undo entry; a line / arrow spec's `dashed` goes into its lopdf `/Line`. An
+encrypted document draws them solid (no lopdf rewrite).
 
 **Stamps (T1, T2).** A picked image is letterboxed into the stamp rect when their aspects differ (the UI sizes
 the rect to the image, so this is a safety net). `{ text, color, shape }` is a text stamp: `{{date}}`
@@ -1249,7 +1253,8 @@ still one `undo.paragraphEdit` step. On an encrypted document neither pass runs 
 create, `undo.annotDelete` when all delete, else `undo.annotEdit`. All or nothing: when an op fails, the earlier ones
 are undone (no undo or redo entry is left) and its error is returned. Used by the partial eraser (one scrub's patches
 and deletes) and by a pen stroke whose pressure is baked into several ink annotations. `created` lists the `/NM` of
-each create op, in order.
+each create op, in order. The batch is folded after every op and depth trimming waits until it ends, so this
+holds for any number of ops and on a large document (undo depth 3) too.
 
 **Annotation summary (A7).** Rows are in **thread order**: each top-level annotation followed by its replies
 (depth-first, each level oldest first). CSV gains two columns at the end, `ID` (the `/NM`) and `답글 대상` /

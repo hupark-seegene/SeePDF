@@ -614,6 +614,9 @@ pub struct ShapeSpec {
     pub fill_color: Option<Rgb>,
     pub width: f32,
     pub opacity: f32,
+    /// v0.3 pkg4: a dashed border (`/BS /S /D`) — a copy of a dashed shape stays dashed.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub dashed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -630,6 +633,9 @@ pub struct LineSpec {
     /// v0.3 pkg4: label the line with its length.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub measure: Option<MeasureUnit>,
+    /// v0.3 pkg4: a dashed line (`/BS /S /D`) — a copy of a dashed line stays dashed.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub dashed: bool,
 }
 
 /// v0.3 pkg4: `/Polygon` and `/PolyLine` (lopdf, own appearance stream).

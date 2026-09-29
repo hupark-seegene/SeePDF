@@ -237,6 +237,22 @@ pub fn create_in(
             }
             Ok(id)
         }
+        // v0.3 pkg4 (round 2): a dashed square / circle gets its `/BS` from lopdf in a
+        // coalesced second step — one undo entry, like a callout.
+        (AnnotSpec::Square(s) | AnnotSpec::Circle(s), _) if s.dashed && rewritable => {
+            let id = registry::mutate(st, doc_id, opts(), |doc| {
+                create_with(doc, page, spec, id, author)
+            })?;
+            let (width, made) = (s.width, id.clone());
+            st.doc_mut(doc_id)?.history.refresh_last();
+            registry::mutate_bytes(st, doc_id, opts().coalesced(), |bytes, _| {
+                lopdf_annots::set_border_style(bytes, page, &made, width, true)
+            })?;
+            st.doc_mut(doc_id)?.touched.insert(page);
+            Ok(id)
+        }
+        // An encrypted document cannot take the lopdf `/BS`: the shape (and an Ink line) is
+        // drawn solid there.
         _ => registry::mutate(st, doc_id, opts(), |doc| {
             create_with(doc, page, spec, id, author)
         }),
@@ -263,7 +279,7 @@ pub fn lopdf_drawn(spec: &AnnotSpec) -> Option<lopdf_annots::Drawn> {
                 fill: None,
                 width: l.width,
                 opacity: l.opacity,
-                dashed: false,
+                dashed: l.dashed,
                 measure: l.measure,
             })
         }

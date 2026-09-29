@@ -978,6 +978,7 @@ fn annotated_doc() -> (TestDoc, Marks) {
             fill_color: None,
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let ink = create_annot(
@@ -1268,6 +1269,7 @@ fn flow_moves_line_polygon_and_callout_geometry_in_one_step() {
         opacity: 1.0,
         heads: Some([false, true]),
         measure: None,
+        dashed: false,
     }));
     let polygon = create(AnnotSpec::Polygon(PolySpec {
         vertices: vec![300.0, 570.0, 330.0, 570.0, 315.0, 585.0],

@@ -187,11 +187,15 @@ export type AnnotSpec =
   | { kind: 'highlight' | 'underline' | 'strikeout' | 'squiggly'; rects: Rect[]; color: Rgb; opacity: number; contents?: string }
   | { kind: 'note'; at: Point; color: Rgb; contents: string }
   | { kind: 'ink' | 'signature'; paths: number[][]; color: Rgb; width: number; opacity: number }
-  | { kind: 'square' | 'circle'; rect: Rect; color: Rgb; fillColor: Rgb | null; width: number; opacity: number }
+  | {
+      kind: 'square' | 'circle'; rect: Rect; color: Rgb; fillColor: Rgb | null; width: number; opacity: number;
+      dashed?: boolean;                      // v0.3 pkg4: /BS /S /D (a copy keeps it)
+    }
   | {
       kind: 'line' | 'arrow'; p1: Point; p2: Point; color: Rgb; width: number; opacity: number;
       heads?: [start: boolean, end: boolean];
       measure?: MeasureUnit;                 // v0.3: label the length
+      dashed?: boolean;                      // v0.3 pkg4: /BS /S /D (a copy keeps it)
     }
   | {
       kind: 'textbox'; rect: Rect; text: string; fontSize: number; color: Rgb;

@@ -945,6 +945,7 @@ mod pkg4 {
                         fill_color: None,
                         width: 2.0,
                         opacity: 1.0,
+                        dashed: false,
                     }),
                     None,
                     None,

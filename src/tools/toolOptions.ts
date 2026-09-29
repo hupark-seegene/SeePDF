@@ -4,7 +4,9 @@
  *
  * * 지우개 — 전체 / 부분 (A3): whole strokes (default) or only what the circle covers;
  * * 펜 — 펜으로만 그리기 (A4): touch pans and only a pen or a mouse draws. Turned on by itself the
- *   first time a pen is seen (a Surface / tablet user never has to find the setting); remembered;
+ *   first time a pen is seen on this device (a Surface / tablet user never has to find the
+ *   setting) — only while no choice is stored: once it is on or off in `localStorage`, that
+ *   choice wins over every later pen, across restarts;
  * * 다각형 — 다각형 / 꺾은선 / 구름 (A2);
  * * 선 / 화살표 / 다각형 — 측정 (A2): label the length / area in mm or pt.
  *
@@ -19,7 +21,10 @@ export type MeasureOption = "off" | "mm" | "pt";
 export interface ToolOptions {
   eraserMode: EraserMode;
   penOnly: boolean;
-  /** a pen has been seen this session (so 펜으로만 그리기 was switched on automatically once) */
+  /**
+   * 펜으로만 그리기 has been decided — switched on by the first pen, or set by the user, now or
+   * in an earlier session (a stored `seepdf.penOnly`): a pen no longer switches it on.
+   */
   penSeen: boolean;
   polygonShape: PolygonShape;
   measure: MeasureOption;
@@ -27,11 +32,13 @@ export interface ToolOptions {
 
 const PEN_ONLY_KEY = "seepdf.penOnly";
 
-function readPenOnly(): boolean {
+/** The stored choice: `null` when none was ever stored on this device. */
+function readPenOnly(): boolean | null {
   try {
-    return globalThis.localStorage?.getItem(PEN_ONLY_KEY) === "1";
+    const v = globalThis.localStorage?.getItem(PEN_ONLY_KEY);
+    return v === "1" ? true : v === "0" ? false : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -43,7 +50,14 @@ function writePenOnly(on: boolean): void {
   }
 }
 
-let options: ToolOptions = { eraserMode: "whole", penOnly: readPenOnly(), penSeen: false, polygonShape: "polygon", measure: "off" };
+function initialOptions(): ToolOptions {
+  const stored = readPenOnly();
+  // v0.3 pkg4 (round 2): a stored choice — the auto-on of an earlier session, or the user's
+  // own on / off — counts as decided, so the first pen of a new session does not override it.
+  return { eraserMode: "whole", penOnly: stored ?? false, penSeen: stored !== null, polygonShape: "polygon", measure: "off" };
+}
+
+let options: ToolOptions = initialOptions();
 const listeners = new Set<() => void>();
 
 export function toolOptions(): ToolOptions {
@@ -52,7 +66,11 @@ export function toolOptions(): ToolOptions {
 
 export function setToolOptions(patch: Partial<ToolOptions>): void {
   options = { ...options, ...patch };
-  if (patch.penOnly !== undefined) writePenOnly(patch.penOnly);
+  if (patch.penOnly !== undefined) {
+    writePenOnly(patch.penOnly);
+    // the user's own choice is a decision too: a later pen this session leaves it alone
+    options.penSeen = true;
+  }
   for (const l of listeners) l();
 }
 
@@ -64,8 +82,9 @@ export function subscribeToolOptions(listener: () => void): () => void {
 }
 
 /**
- * A4: called for every pointer that reaches the drawing surface. The first pen turns
- * 펜으로만 그리기 on (once per session — switching it off again is respected).
+ * A4: called for every pointer that reaches the drawing surface. The first pen ever seen turns
+ * 펜으로만 그리기 on — only while nothing is decided (see [`ToolOptions.penSeen`]): switching it
+ * off again is respected, in this session and every later one.
  */
 export function notePointer(pointerType: string | undefined): void {
   if (pointerType === "pen" && !options.penSeen) setToolOptions({ penSeen: true, penOnly: true });
@@ -76,8 +95,13 @@ export function touchPans(pointerType: string | undefined): boolean {
   return pointerType === "touch" && options.penOnly;
 }
 
-/** Test seam. */
+/** Test seam: a fresh device (nothing stored). */
 export function resetToolOptions(): void {
-  options = { eraserMode: "whole", penOnly: false, penSeen: false, polygonShape: "polygon", measure: "off" };
+  try {
+    globalThis.localStorage?.removeItem(PEN_ONLY_KEY);
+  } catch {
+    // blocked storage: nothing stored anyway
+  }
+  options = initialOptions();
   for (const l of listeners) l();
 }

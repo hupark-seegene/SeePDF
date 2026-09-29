@@ -465,6 +465,7 @@ fn annot_shapes_roundtrip() {
             fill_color: Some([200, 220, 255]),
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     // Circle has no high-level constructor in pdfium-render 0.9.4: raw only.
@@ -477,6 +478,7 @@ fn annot_shapes_roundtrip() {
             fill_color: Some([255, 255, 0]),
             width: 3.0,
             opacity: 0.5,
+            dashed: false,
         }),
     );
 
@@ -528,6 +530,7 @@ fn annot_line_subj_roundtrip() {
             opacity: 1.0,
             heads: None,
             measure: None,
+            dashed: false,
         }),
     );
     let arrow = create(
@@ -541,6 +544,7 @@ fn annot_line_subj_roundtrip() {
             opacity: 1.0,
             heads: None,
             measure: None,
+            dashed: false,
         }),
     );
 
@@ -916,6 +920,7 @@ fn recolor_body() {
             fill_color: Some([0, 255, 0]),
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
 
@@ -1117,6 +1122,7 @@ fn annot_hidden_is_transient() {
             fill_color: Some([255, 200, 200]),
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let visible = render_rect(&doc.doc_id, 0, rect);
@@ -1292,6 +1298,7 @@ fn annot_drag_hide_unhides_before_the_undo_snapshot() {
             fill_color: None,
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let set_hidden = |hidden: bool| {
@@ -1526,6 +1533,7 @@ fn annot_bad_annots_entries_are_skipped() {
             fill_color: None,
             width: 1.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let after = list(&doc.doc_id, 0);
@@ -1744,6 +1752,7 @@ mod pkg4 {
             fill_color: None,
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         })
     }
 
@@ -1867,6 +1876,7 @@ mod pkg4 {
                 opacity: 1.0,
                 heads: None,
                 measure: None,
+                dashed: false,
             }),
         );
         assert_eq!(
@@ -1903,6 +1913,7 @@ mod pkg4 {
                 opacity: 1.0,
                 heads: None,
                 measure: None,
+                dashed: false,
             }),
             None,
         );
@@ -2012,6 +2023,7 @@ mod pkg4 {
                 opacity: 1.0,
                 heads: Some([false, true]),
                 measure: Some(MeasureUnit::Mm),
+                dashed: false,
             }),
             Some("홍길동"),
         );

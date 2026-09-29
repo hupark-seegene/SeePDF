@@ -75,7 +75,7 @@ export function ghostFromSpec(page: PageIndex, spec: AnnotSpec, author: string |
       return { ...base, subtype: "Ink", inkPaths: spec.paths, rect: boundsOfPaths(spec.paths), color: spec.color, borderWidth: spec.width, opacity: spec.opacity };
     case "square":
     case "circle":
-      return { ...base, subtype: spec.kind === "square" ? "Square" : "Circle", rect: spec.rect, color: spec.color, fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity };
+      return { ...base, subtype: spec.kind === "square" ? "Square" : "Circle", rect: spec.rect, color: spec.color, fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity, dashed: spec.dashed };
     case "line":
     case "arrow":
       return {
@@ -85,6 +85,7 @@ export function ghostFromSpec(page: PageIndex, spec: AnnotSpec, author: string |
         linePoints: [spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]],
         heads: spec.heads ?? (spec.kind === "arrow" ? [false, true] : [false, false]),
         measure: spec.measure,
+        dashed: spec.dashed,
         rect: boundsOfPaths([[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]]),
         color: spec.color,
         borderWidth: spec.width,
@@ -422,7 +423,11 @@ export function specFromAnnot(a: Annot, dx = 0, dy = 0): AnnotSpec | null {
       };
     case "square":
     case "circle":
-      return { kind: a.kind, rect: move(a.rect), color: a.color, fillColor: a.fillColor, width: a.borderWidth, opacity: a.opacity };
+      // v0.3 pkg4 (round 2): 복제 / 붙여넣기 keep a dashed border
+      return {
+        kind: a.kind, rect: move(a.rect), color: a.color, fillColor: a.fillColor, width: a.borderWidth, opacity: a.opacity,
+        ...(a.dashed ? { dashed: true } : {}),
+      };
     case "line":
     case "arrow": {
       const p = a.linePoints ?? [a.rect.l, a.rect.b, a.rect.r, a.rect.t];
@@ -431,6 +436,7 @@ export function specFromAnnot(a: Annot, dx = 0, dy = 0): AnnotSpec | null {
         // v0.3 A1: the copy keeps its heads (and its measuring label)
         ...(a.heads ? { heads: a.heads } : {}),
         ...(a.measure ? { measure: a.measure } : {}),
+        ...(a.dashed ? { dashed: true } : {}),
       };
     }
     case "textbox":

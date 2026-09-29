@@ -2,7 +2,7 @@
  * v0.3 pkg4-annotations-stamps-objects — the pure tool state machines and geometry:
  * A3 (partial eraser), A4 (pen / touch / pressure), A2 (polygon, callout, measuring labels).
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Annot, AnnotSpec } from "../ipc/types";
 import type { ToolContext } from "./ToolController";
 import { measureLabel, pathLength, polygonArea, splitPathByCircle } from "./geometry";
@@ -90,6 +90,40 @@ describe("A4 — pen and touch", () => {
     // switched off again, a finger draws
     setToolOptions({ penOnly: false });
     expect(inkTool.onDown(inkTool.init(c), { page: 0, pt: [10, 10], pointerType: "touch" }, c).state.page).toBe(0);
+  });
+
+  // v0.3 pkg4 (verification round 2): the auto-on happens once per device, not once per session
+  it("a user who switched 펜으로만 그리기 off keeps it off after a restart, whatever pen comes", async () => {
+    const first = await import("./toolOptions");
+    first.notePointer("pen");
+    expect(first.toolOptions().penOnly).toBe(true);
+    first.setToolOptions({ penOnly: false });
+    expect(localStorage.getItem("seepdf.penOnly")).toBe("0");
+    vi.resetModules(); // an app restart
+    const restarted = await import("./toolOptions");
+    expect(restarted.toolOptions().penOnly).toBe(false);
+    restarted.notePointer("pen");
+    expect(restarted.toolOptions().penOnly).toBe(false);
+    // switched off and on again by hand within a session: a pen does not flip it either
+    restarted.setToolOptions({ penOnly: true });
+    restarted.setToolOptions({ penOnly: false });
+    restarted.notePointer("pen");
+    expect(restarted.toolOptions().penOnly).toBe(false);
+  });
+
+  it("the first pen still turns it on on a device that never decided, and the choice is remembered", async () => {
+    vi.resetModules();
+    const fresh = await import("./toolOptions");
+    fresh.resetToolOptions();
+    expect(fresh.toolOptions().penOnly).toBe(false);
+    fresh.notePointer("mouse");
+    fresh.notePointer("touch");
+    expect(fresh.toolOptions().penOnly).toBe(false);
+    fresh.notePointer("pen");
+    expect(fresh.toolOptions().penOnly).toBe(true);
+    vi.resetModules();
+    const restarted = await import("./toolOptions");
+    expect(restarted.toolOptions().penOnly).toBe(true);
   });
 
   it("pressure 0.2 and 1.0 give different widths", () => {

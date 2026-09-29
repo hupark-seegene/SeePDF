@@ -120,6 +120,7 @@ fn annotated() -> TestDoc {
             fill_color: None,
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let trace = rects_of(&doc.doc_id, 0, "Trace-based");

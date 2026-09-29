@@ -577,7 +577,7 @@ Where lucide is wrong for a PDF concept (도장, 서명) draw two custom 20×20 
 | 다각형 | click per vertex (rubber band follows the pointer); **double-click** (a second click on the last vertex), a click on the first vertex or ↵ finishes; ⌫ drops the last vertex; Esc cancels. The panel's 모양 picks 다각형 / 꺾은선 / 구름 |
 | 설명선 | press where the arrow points, drag to where the box goes, release, type (the text-box editor); a click without a drag puts the box up-right of the tip |
 | 선 / 화살표 / 다각형 | 측정 (없음 / mm / pt) labels the line's length or the polygon's area — live in the preview, drawn into the annotation |
-| 펜 | pressure (a pen) varies the width; with **펜으로만 그리기** a finger pans the page and only a pen or a mouse draws. It switches itself on the first time a pen touches the page; the choice is remembered on the device |
+| 펜 | pressure (a pen) varies the width; with **펜으로만 그리기** a finger pans the page and only a pen or a mouse draws. It switches itself on the first time a pen touches the page on a device where it was never set; after that the choice (automatic or the user's own) is remembered on the device and a pen never overrides it |
 | 지우개 | 지우기 방식 **전체 획** (default: whole annotations) or **부분** (cuts ink strokes where the circle passes; applied on release, one change per stroke) |
 | 도장 | a picked image follows the pointer as a 50 % ghost of the image itself and is placed at its own aspect (a drag keeps the aspect); a text stamp previews its text in its border |
 
