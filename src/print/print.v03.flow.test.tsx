@@ -229,7 +229,7 @@ describe("print v0.3", () => {
     fireEvent.change(screen.getByLabelText("용지"), { target: { value: "a4" } });
     const onA4 = shrunkCount("a4", sizes);
     if (onA4 > 0) {
-      await waitFor(() => expect(screen.getByTestId("print-actual-hint").textContent).toContain(`${onA4}쪽은 용지보다 커서`));
+      await waitFor(() => expect(screen.getByTestId("print-actual-hint").textContent).toContain(`페이지 ${onA4}개가 용지보다 커서`));
     }
     fireEvent.change(screen.getByLabelText("용지"), { target: { value: "a3" } });
     expect(shrunkCount("a3", sizes)).toBe(0);
@@ -289,7 +289,7 @@ describe("print v0.3", () => {
     const expected = shrunkCount("a4", useDocStore.getState().info!.pages.map((p) => [p.widthPt, p.heightPt]));
     expect(expected).toBeGreaterThan(0);
     await waitFor(() =>
-      expect(screen.getByTestId("print-actual-hint").textContent).toContain(`${expected}쪽은 용지보다 커서 용지에 맞게 줄여 인쇄합니다.`),
+      expect(screen.getByTestId("print-actual-hint").textContent).toContain(`페이지 ${expected}개가 용지보다 커서 용지에 맞게 줄여 인쇄합니다.`),
     );
   });
 

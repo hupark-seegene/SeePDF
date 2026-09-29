@@ -21,7 +21,7 @@ import * as api from "../ipc/api";
 import { patchBackgroundDoc, useTabStore, type Tab } from "../store/tabStore";
 import { useDocStore } from "../store/docStore";
 import {
-  PANE_FIELDS, currentViewTarget, useViewStore, type PaneView, type ViewState, type ViewTarget,
+  PANE_FIELDS, currentViewTarget, useViewStore, viewed, type PaneView, type ViewState, type ViewTarget,
 } from "../store/viewStore";
 import { usePagesStore, type PagesState } from "../store/pagesStore";
 import { useAnnotStore, type AnnotState } from "../store/annotStore";
@@ -128,6 +128,8 @@ function restore(snap: TabSnapshot): void {
     scrollRequest: request(snap.view, snap.at),
     parked: snap.view.parked ? { ...snap.view.parked, scrollRequest: request(snap.view.parked) } : null,
   });
+  // the split is the tab's own: the viewer must not close it as "another document's"
+  viewed.docId = info.docId;
   usePagesStore.setState({ ...snap.pages, dropAt: null, pendingOrder: null });
   // 읽기 while the document changes: `permissions.ts` checks the mode against each new document,
   // and the outgoing tab's mode may be one the incoming document forbids (or the other way round)

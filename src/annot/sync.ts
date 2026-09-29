@@ -20,6 +20,12 @@ import { isDragHiding } from "./dragGate";
 
 /** The document the store currently describes; a change resets everything. */
 let boundDoc: DocId | null = null;
+/**
+ * The document bound when the sync last stopped. The canvas is keyed by document, so a tab switch
+ * (v0.3 DR1) stops and restarts the sync right after `tabs/flow` put the tab's annotation
+ * selection and filter back — a restart on that same document keeps them.
+ */
+let stoppedDoc: DocId | null = null;
 let scanJob: number | null = null;
 
 export async function reloadPages(docId: DocId, pages: PageIndex[]): Promise<void> {
@@ -98,14 +104,19 @@ export function startAnnotSync(): () => void {
   // The store may already hold a document by the time the lazy chunk arrives.
   const current = useDocStore.getState().info?.docId ?? null;
   if (current && current !== boundDoc) {
+    const { selected, filter } = useAnnotStore.getState();
+    const resumed = current === stoppedDoc;
     boundDoc = current;
     useAnnotStore.getState().reset();
+    if (resumed) useAnnotStore.setState({ selected, filter });
     scanDocument(current);
   }
+  stoppedDoc = null;
   return () => {
     offDocChanged();
     offDoc();
     cancelScan();
+    stoppedDoc = boundDoc;
     boundDoc = null;
   };
 }
@@ -130,6 +141,7 @@ export async function redoWithAnnots(): Promise<void> {
 /** Test seam. */
 export function resetAnnotSync(): void {
   boundDoc = null;
+  stoppedDoc = null;
   scanJob = null;
 }
 

@@ -1836,7 +1836,7 @@ dead-key cleanup runs after every v0.3 package is merged).
 | `print.grayscale` | 흑백 | Grayscale |
 | `print.paper` / `.a4` / `.letter` / `.legal` / `.a3` / `.page` | 용지 / A4 / 레터 / 리걸 / A3 / 문서 페이지 크기 | Paper / A4 / Letter / Legal / A3 / Document page size |
 | `print.actualHint` | 실제 크기는 여기서 고른 용지에 맞춰 배치합니다. 시스템 인쇄 대화상자에서도 같은 용지를 고르세요. | Actual size lays the pages out for the paper chosen here. Choose the same paper in the system print dialog. |
-| `print.actualShrunk` | {{count}}쪽은 용지보다 커서 용지에 맞게 줄여 인쇄합니다. | {{count}} page(s) are larger than the paper and will be shrunk to fit it. |
+| `print.actualShrunk` | 페이지 {{count}}개가 용지보다 커서 용지에 맞게 줄여 인쇄합니다. | {{count}} page(s) are larger than the paper and will be shrunk to fit it. |
 | `print.chunkHint` | 긴 문서는 {{size}}쪽씩 {{parts}}번에 나누어 인쇄 대화상자가 열립니다. 한 번에 인쇄하려면 'PDF 앱에서 열기'를 쓰세요. | A long document prints in {{parts}} parts of up to {{size}} pages, each with its own print dialog. Use 'Open in the PDF app' to print it in one go. |
 | `print.progress` | 인쇄 준비 중… {{done}} / {{total}}쪽 ({{part}}/{{parts}}번째 묶음) | Preparing to print… {{done}} / {{total}} pages (part {{part}} of {{parts}}) |
 | `print.chunkClosed` | {{part}}/{{parts}}번째 묶음의 인쇄 대화상자가 닫혔습니다. 다음 묶음을 인쇄할까요? | The print panel for part {{part}} of {{parts}} has closed. Print the next part? |

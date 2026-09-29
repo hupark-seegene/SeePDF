@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useRef, type CSSProperties, type RefObject } from "react";
 import type { DocGeneration, PageIndex } from "../ipc/types";
 import { useDocStore } from "../store/docStore";
-import { SPLIT_MAX, SPLIT_MIN, useViewStore, type PaneId, type SplitOrientation } from "../store/viewStore";
+import { SPLIT_MAX, SPLIT_MIN, useViewStore, viewed, type PaneId, type SplitOrientation } from "../store/viewStore";
 import { useT } from "../i18n/useT";
 import { Scroller } from "./Scroller";
 import { TileManager } from "./TileManager";
@@ -43,9 +43,6 @@ export interface ViewerProps {
   onPageRendered?(page: PageIndex, docGeneration: DocGeneration): void;
 }
 
-/** The document the viewer last showed (it outlives a remount of the viewer). */
-let viewedDoc: string | null = null;
-
 export function Viewer({ layers, fieldHighlight, renderFormWidgets, onPageRendered }: ViewerProps) {
   const info = useDocStore((s) => s.info);
   const split = useViewStore((s) => s.split);
@@ -63,8 +60,8 @@ export function Viewer({ layers, fieldHighlight, renderFormWidgets, onPageRender
   // coming back — 페이지 mode unmounts the viewer — keeps the split.)
   const docId = info?.docId ?? null;
   useEffect(() => {
-    if (docId !== null && viewedDoc !== null && docId !== viewedDoc) useViewStore.getState().closeSplit();
-    if (docId !== null) viewedDoc = docId;
+    if (docId !== null && viewed.docId !== null && docId !== viewed.docId) useViewStore.getState().closeSplit();
+    if (docId !== null) viewed.docId = docId;
   }, [docId]);
 
   if (!info) return null;

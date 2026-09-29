@@ -1256,7 +1256,7 @@
   "print.paper.a3": "A3",
   "print.paper.page": "문서 페이지 크기",
   "print.actualHint": "실제 크기는 여기서 고른 용지에 맞춰 배치합니다. 시스템 인쇄 대화상자에서도 같은 용지를 고르세요.",
-  "print.actualShrunk": "{{count}}쪽은 용지보다 커서 용지에 맞게 줄여 인쇄합니다.",
+  "print.actualShrunk": "페이지 {{count}}개가 용지보다 커서 용지에 맞게 줄여 인쇄합니다.",
   "print.chunkHint": "긴 문서는 {{size}}쪽씩 {{parts}}번에 나누어 인쇄 대화상자가 열립니다. 한 번에 인쇄하려면 'PDF 앱에서 열기'를 쓰세요.",
   "print.progress": "인쇄 준비 중… {{done}} / {{total}}쪽 ({{part}}/{{parts}}번째 묶음)",
   "print.chunkClosed": "{{part}}/{{parts}}번째 묶음의 인쇄 대화상자가 닫혔습니다. 다음 묶음을 인쇄할까요?",

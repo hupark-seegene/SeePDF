@@ -44,6 +44,13 @@ export const ZOOM_STEPS = [25, 50, 75, 100, 125, 150, 200, 400] as const;
 export const MIN_ZOOM = 25;
 export const MAX_ZOOM = 400;
 
+/**
+ * The document the viewer last showed (it outlives a remount of the viewer, which closes the split
+ * when another document arrives). 문서 탭 (v0.3 DR1): `tabs/flow` sets it to the tab it brings back,
+ * whose own 분할 보기 the viewer then keeps.
+ */
+export const viewed: { docId: string | null } = { docId: null };
+
 /** 분할 보기 (P2): the always-present pane and the one the split adds. */
 export type PaneId = "main" | "second";
 /** 좌우 (side by side) or 위아래 (one above the other). */
