@@ -177,13 +177,14 @@ pub async fn redo(engine: State<'_, EngineHandle>, doc_id: String) -> Result<Doc
 ///
 /// v0.3 DR1: a file in another window's background tab counts too — that window is sent
 /// `focus-document` and brings the tab to the front. The calling window is not sent it: it
-/// switches tabs itself.
+/// switches tabs itself — by the returned `docId` (v0.3.0), since its tab may spell the path
+/// differently (`/tmp` vs `/private/tmp`, a symlinked folder, case on Windows).
 #[tauri::command]
 pub fn focus_document_window(
     app: AppHandle,
     window: tauri::WebviewWindow,
     path: String,
-) -> Option<String> {
+) -> Option<crate::app::windows::FocusedWindow> {
     crate::app::windows::focus_window_for_path(&app, &path, Some(window.label()))
 }
 

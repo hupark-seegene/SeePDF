@@ -1047,7 +1047,7 @@
   "security.signed.incremental": "Saving appends your changes, so what each signature signed stays untouched.",
   "security.signed.rewrite": "These changes need a full rewrite: saving will invalidate the existing signatures.",
   "security.signed.editTitle": "This document is signed",
-  "security.signed.editBody": "This document has a digital signature. Editing will invalidate the signature. Continue?",
+  "security.signed.editBody": "“{{name}}” has a digital signature. Editing will invalidate the signature. Continue?",
   "security.signed.editConfirm": "Edit anyway",
   "security.signed.saveTitle": "Signatures will become invalid",
   "security.signed.saveBody": "Saving now rewrites the whole file, which invalidates the existing digital signatures. Save anyway?",

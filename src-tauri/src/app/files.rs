@@ -134,9 +134,9 @@ pub fn open_from_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String
 /// in a new window. Returns the label of the window it went to.
 pub fn open_from_os(app: &AppHandle, path: PathBuf, source: OpenSource) -> Option<String> {
     let text = path.display().to_string();
-    if let Some(label) = crate::app::windows::focus_window_for_path(app, &text, None) {
-        tracing::info!(path = %text, %label, "already open; focused");
-        return Some(label);
+    if let Some(found) = crate::app::windows::focus_window_for_path(app, &text, None) {
+        tracing::info!(path = %text, label = %found.label, "already open; focused");
+        return Some(found.label);
     }
     let mut candidates: Vec<(u8, String)> = app
         .webview_windows()

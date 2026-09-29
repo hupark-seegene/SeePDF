@@ -1354,7 +1354,7 @@ pdf_handler_is_self(): Promise<boolean>   // v0.3 integration (X8): SeePDF is th
 ```ts
 export interface NupOptions {
   perSheet: 1 | 2 | 4 | 6 | 9; order?: 'across' | 'down'; booklet?: boolean;
-  paper?: 'auto' | 'a4' | 'letter'; annots?: PrintAnnots;
+  paper?: 'auto' | 'a4' | 'letter' | 'legal' | 'a3'; annots?: PrintAnnots;
 }
 make_nup(a: { docId: DocId; pages?: PageIndex[]; options: NupOptions; outPath?: string }): Promise<{ path: string; pageCount: number }>
 ```
@@ -1365,7 +1365,8 @@ row-major fill reads down the columns; 소책자 pads to a multiple of 4 with bl
 order (8 pages → 8,1,2,7,6,3,4,5), always 2 per side on a landscape sheet — and laid out with
 `FPDF_ImportNPagesToOne`. The grid (cols × rows = perSheet, portrait or landscape sheet) is the one that prints the
 first page largest (A4 portrait pages: 2-up 2 × 1 landscape, 4-up 2 × 2 portrait, 6-up 3 × 2 landscape, 9-up 3 × 3).
-`paper: 'auto'` = the first page's size. Written to `outPath` (내보내기) or, without one, to a print temp file (the
+`paper: 'auto'` = the first page's size (인쇄 ▸ 크기 ▸ 실제 크기 passes the 용지 chosen in the dialog, v0.3.0, so an n-up
+sheet is never shrunk onto a different paper). Written to `outPath` (내보내기) or, without one, to a print temp file (the
 print path opens it with `open_document { passwordFrom: docId }` and closes it after printing; deleted as above).
 An encrypted source's n-up is re-encrypted with the source's own security handler (v0.3 integration, X2 × S5: same
 open password, same permission bits — a copy-forbidden file's n-up is copy-forbidden too). Errors:
@@ -1627,7 +1628,7 @@ list_attachments(a: { docId: DocId }): Promise<AttachmentInfo[]>                
 save_attachment(a: { docId: DocId; index: number; path: string }): Promise<{ bytes: number }>
 add_attachment(a: { docId: DocId; path: string; name?: string }): Promise<AttachmentInfo[]>
 delete_attachment(a: { docId: DocId; index: number }): Promise<AttachmentInfo[]>
-focus_document_window(a: { path: string }): Promise<string | null>                         // H8
+focus_document_window(a: { path: string }): Promise<{ label: string; docId: DocId } | null>  // H8
 backup_folder(): Promise<string>                                                           // U2
 ```
 
@@ -1691,7 +1692,9 @@ key order) and valid for the generation it was listed in; unknown index → `not
 
 **H8 — one window per file / file changed on disk.** `focus_document_window` canonicalises `path`, finds the
 window bound (`window_bind_document`) to a document with that path, un-minimises, shows and focuses it, and
-returns its label (`null` when none). `openPath` calls it first and opens nothing when another window answers.
+returns its label and that document's id (`null` when none). `openPath` calls it first and opens nothing when
+another window answers; when the caller's own window answers (v0.3.0), the tab with that `docId` comes forward —
+the tab may spell the path differently (`/tmp` vs `/private/tmp`, a symlinked folder, case on Windows).
 v0.3 DR1: a document in a background tab counts too, and the owning window — unless it is the caller, which
 switches tabs itself — is sent `focus-document { docId }` (§8) so that tab comes forward.
 The engine records the file's size and modification time at open and after every save; `save_document` over the

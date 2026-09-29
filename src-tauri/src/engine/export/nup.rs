@@ -34,6 +34,10 @@ use serde::{Deserialize, Serialize};
 pub const A4: (f32, f32) = (595.28, 841.89);
 /// US Letter portrait in points.
 pub const LETTER: (f32, f32) = (612.0, 792.0);
+/// US Legal portrait in points.
+pub const LEGAL: (f32, f32) = (612.0, 1008.0);
+/// A3 portrait in points.
+pub const A3: (f32, f32) = (841.89, 1190.55);
 
 /// Which way the cells of one sheet fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -55,6 +59,22 @@ pub enum NupPaper {
     Auto,
     A4,
     Letter,
+    /// v0.3.0: the 인쇄 dialog's 용지 for 실제 크기 offers these too.
+    Legal,
+    A3,
+}
+
+impl NupPaper {
+    /// The sheet's portrait size in points; `src` (the first page's size) for `Auto`.
+    pub fn size(self, src: (f32, f32)) -> (f32, f32) {
+        match self {
+            NupPaper::Auto => src,
+            NupPaper::A4 => A4,
+            NupPaper::Letter => LETTER,
+            NupPaper::Legal => LEGAL,
+            NupPaper::A3 => A3,
+        }
+    }
 }
 
 /// `make_nup`'s options.
@@ -170,11 +190,7 @@ pub fn make_nup_bytes(
         .ok_or_else(|| EngineError::invalid("no pages to lay out"))?;
     let geom = st.doc(doc_id)?.geom(first)?.clone();
     let src = (geom.width_pt, geom.height_pt);
-    let paper = match opts.paper {
-        NupPaper::Auto => src,
-        NupPaper::A4 => A4,
-        NupPaper::Letter => LETTER,
-    };
+    let paper = opts.paper.size(src);
     let (cols, rows, sheet_w, sheet_h) = if opts.booklet {
         // Two pages side by side on a landscape sheet.
         let (pw, ph) = (paper.0.min(paper.1), paper.0.max(paper.1));
@@ -323,6 +339,21 @@ mod tests {
             down_order(&seq, 2, 2),
             vec![Some(1), Some(3), Some(2), Some(4), Some(5)]
         );
+    }
+
+    #[test]
+    fn every_print_dialog_paper_is_a_sheet_size() {
+        // v0.3.0: 실제 크기 + 모아찍기 builds the sheets on the 용지 chosen in the 인쇄 dialog
+        let opts: NupOptions =
+            serde_json::from_str(r#"{"perSheet":2,"paper":"legal"}"#).expect("legal");
+        assert_eq!(opts.paper, NupPaper::Legal);
+        let opts: NupOptions = serde_json::from_str(r#"{"perSheet":2,"paper":"a3"}"#).expect("a3");
+        assert_eq!(opts.paper.size(A4), A3);
+        assert_eq!(NupPaper::Letter.size(A4), LETTER);
+        assert_eq!(NupPaper::Auto.size((100.0, 200.0)), (100.0, 200.0));
+        // 2-up of A4 on Letter: a landscape Letter sheet, not a landscape A4 one
+        let (_, _, w, h) = choose_grid(2, A4, NupPaper::Letter.size(A4));
+        assert_eq!((w, h), (792.0, 612.0));
     }
 
     #[test]

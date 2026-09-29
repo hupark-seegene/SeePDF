@@ -136,6 +136,29 @@ describe("autosave.timer", () => {
     expect(autosaveSecOf({ autosaveSec: 0 } as Settings)).toBe(0);
     expect(autosaveSecOf({ autosaveSec: 300 } as Settings)).toBe(300);
   });
+
+  it("a tab switch does not restart the interval: switching every 40 s still writes every 60 s (v0.3.0)", async () => {
+    const a = docInfo({ docId: "A" });
+    const b = docInfo({ docId: "B" });
+    let shown = a;
+    const write = vi.fn(async (_docId: string) => undefined as unknown);
+    const ctl = new AutosaveController({
+      current: () => shown,
+      background: () => [shown === a ? b : a],
+      write,
+      clear: async () => undefined,
+      onFail: () => undefined,
+    });
+    ctl.sync(shown, 60);
+    for (let t = 0; t < 600; t += 40) {
+      await vi.advanceTimersByTimeAsync(40_000);
+      shown = shown === a ? b : a;
+      ctl.sync(shown, 60);
+    }
+    expect(write).toHaveBeenCalledWith("A");
+    expect(write).toHaveBeenCalledWith("B");
+    ctl.stop();
+  });
 });
 
 describe("autosave.flows", () => {

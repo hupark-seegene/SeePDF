@@ -638,6 +638,8 @@ export interface EngineCrashedEvent { docIds: DocId[]; label: string }
 export interface ThemeChangedEvent { theme: 'system' | 'light' | 'dark' }
 /** `focus-document` (v0.3 DR1): this window has the file another window tried to open — show its tab. */
 export interface FocusDocumentEvent { docId: DocId }
+/** `focus_document_window`'s answer (H8): the window that has the file and its document there (v0.3.0). */
+export interface FocusedWindow { label: string; docId: DocId }
 
 /** View layout as it is stored in `Settings`/`RecentEntry` (`'two'`), see UI_SPEC §8. */
 export type ViewLayout = Settings['defaultLayout'];
@@ -720,7 +722,7 @@ export interface NupOptions {
   perSheet: 1 | 2 | 4 | 6 | 9;
   order?: 'across' | 'down';     // default across (Z)
   booklet?: boolean;             // saddle stitch, always 2 per side
-  paper?: 'auto' | 'a4' | 'letter';   // default auto = the first page's size
+  paper?: 'auto' | 'a4' | 'letter' | 'legal' | 'a3';   // default auto = the first page's size
   annots?: PrintAnnots;          // baked in first; default all
 }
 export interface NupResult { path: string; pageCount: number }

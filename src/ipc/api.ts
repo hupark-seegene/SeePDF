@@ -30,6 +30,7 @@ import type { OcrCapabilities, OrientationResult, Rotation } from "./types";
 import type { AnnotBatchResult, AnnotOp, ImagePreview, LibraryImage } from "./types";
 // v0.3 pkg8-export-print-compare-batch
 import type { NupOptions, NupResult, PrintAnnots, StitchStart, TextFlowFormat } from "./types";
+import type { FocusedWindow } from "./types";
 
 export { parseTextLayer, parseRawPage };
 export type { RawPage, TextLayerView };
@@ -1011,8 +1012,11 @@ export type { Annot };
 // v0.3 pkg3-security-save-integrity
 // ---------------------------------------------------------------------------
 
-/** H8: bring the window that already shows `path` to the front; `null` when no window has it. */
-export function focusDocumentWindow(a: { path: string }): Promise<string | null> {
+/**
+ * H8: bring the window that already shows `path` to the front; `null` when no window has it. The
+ * answer names the document too (v0.3.0), so the caller's own tab is found under any spelling.
+ */
+export function focusDocumentWindow(a: { path: string }): Promise<FocusedWindow | null> {
   return call("focus_document_window", a, (mock) => mock.focusDocumentWindow(a));
 }
 

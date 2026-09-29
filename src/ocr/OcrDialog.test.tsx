@@ -18,6 +18,7 @@ vi.mock("./ocrJob", async (importOriginal) => {
 import { OcrDialog } from "./OcrDialog";
 import { closeOcrDialog, openOcrDialog } from "./dialogState";
 import { mock } from "../ipc/mock";
+import { useDocStore } from "../store/docStore";
 import { loadOcrCapabilities, resetOcrCapabilities } from "./engine";
 
 /** `ocr_capabilities` as a machine without Apple Vision (Windows, macOS 12) or a Mac with it. */
@@ -215,5 +216,26 @@ describe("ocr.dialog.engine", () => {
     fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));   // before the row appears
     await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
     expect(runOcrJob.mock.calls[0][0].engine).toBe("vision");
+  });
+
+  it("되돌리기 undoes the document the run was started on, even after the tab on screen changed (v0.3.0)", async () => {
+    const a = await mock.openDocument({ path: "/tmp/scan-a.pdf" });
+    const b = await mock.openDocument({ path: "/tmp/scan-b.pdf" });
+    useDocStore.setState({ docId: b.docId, info: b, status: "ready" });
+    let finish: (r: OcrJobResult) => void = () => undefined;
+    runOcrJob.mockImplementation(() => new Promise<OcrJobResult>((resolve) => { finish = resolve; }));
+    const undo = vi.spyOn(mock, "undo").mockResolvedValue(b);
+    render(<OcrDialog />);
+    act(() => openOcrDialog());
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0].docId).toBe(b.docId);
+    // 윈도우 ▸ 이전 탭 보기 (native menu) while the sheet is up
+    act(() => useDocStore.setState({ docId: a.docId, info: a }));
+    await act(async () => { finish(result({ applied: [0, 1] })); });
+    fireEvent.click(await screen.findByRole("button", { name: t("common.undo") }));
+    await waitFor(() => expect(undo).toHaveBeenCalledTimes(2));
+    expect(undo.mock.calls.map(([x]) => x.docId)).toEqual([b.docId, b.docId]);
+    useDocStore.setState({ docId: null, info: null, status: "empty" });
   });
 });

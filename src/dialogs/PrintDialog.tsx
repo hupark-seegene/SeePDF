@@ -63,7 +63,7 @@ export function PrintDialog({ onClose }: { onClose(): void }) {
   const dom = method === "document";
   const sheets = !pages?.length ? 0 : booklet ? Math.ceil(pages.length / 4) * 2 : Math.ceil(pages.length / perSheet);
   // 실제 크기: how many of the chosen pages are larger than the paper (n-up sheets are made by the
-  // engine at the pages' own paper size, so they are not counted here).
+  // engine on the chosen paper — `printFlow.nupPaper` — so they always fit and are not counted).
   const shrunk =
     flow && dom && fit === "actual" && !booklet && perSheet === 1 && pages?.length
       ? flow.shrunkCount(paper, pages.map((p) => flow.displaySize(info?.pages[p], rotation)))

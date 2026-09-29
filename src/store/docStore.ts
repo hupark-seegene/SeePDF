@@ -101,9 +101,13 @@ export const useDocStore = create<DocState>((set, get) => ({
     const docId = get().docId;
     if (!docId) return;
     const info = await api.getDocument({ docId }).catch(() => null);
-    if (info) set({ info });
+    // v0.3.0: the answer describes `docId` — a tab switch (or a new tab) while it was in flight
+    // must not write it over the document now on screen (get_document waits behind its tiles;
+    // the same for undo / redo below)
+    if (!info || get().info?.docId !== docId) return;
+    set({ info });
     // a structural change (page ops, undo / redo of a 목차 편집) can change the outline too
-    if (info) await get().reloadOutline();
+    await get().reloadOutline();
   },
 
   async reloadOutline() {
@@ -141,16 +145,18 @@ export const useDocStore = create<DocState>((set, get) => ({
     const docId = get().docId;
     if (!docId) return;
     const info = await api.undo({ docId }).catch(() => null);
-    if (info) set({ info });
-    if (info) await get().reloadOutline();
+    if (!info || get().info?.docId !== docId) return;
+    set({ info });
+    await get().reloadOutline();
   },
 
   async redo() {
     const docId = get().docId;
     if (!docId) return;
     const info = await api.redo({ docId }).catch(() => null);
-    if (info) set({ info });
-    if (info) await get().reloadOutline();
+    if (!info || get().info?.docId !== docId) return;
+    set({ info });
+    await get().reloadOutline();
   },
 }));
 

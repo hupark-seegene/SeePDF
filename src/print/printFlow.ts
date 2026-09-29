@@ -11,7 +11,7 @@
  *   deleted after 10 minutes and by the startup / exit sweeps.
  */
 import * as api from "../ipc/api";
-import type { DocInfo, PageIndex, PageGeom, Rotation } from "../ipc/types";
+import type { DocInfo, NupOptions, PageIndex, PageGeom, Rotation } from "../ipc/types";
 import { PRINT_DPI, scaleKeyForDpi, usePrintStore, type PrintOptions } from "./printStore";
 import { paperSize } from "./paper";
 
@@ -35,6 +35,17 @@ export function displaySize(g: PageGeom | undefined, rotation: Rotation): [numbe
   return rotation === 90 || rotation === 270 ? [g.heightPt, g.widthPt] : [g.widthPt, g.heightPt];
 }
 
+/**
+ * v0.3.0: the paper `make_nup` builds the sheets on. 실제 크기 lays each sheet out on the paper
+ * chosen in the dialog, so the sheets are made on that paper (the document's own size for
+ * 문서 크기 = `auto`); built at the pages' size instead, a 2-up A4 sheet printed on Letter shrank to
+ * 94 % unannounced. 맞춤 scales the sheet to whatever paper the panel uses: `auto`.
+ */
+export function nupPaper(o: PrintOptions): NupOptions["paper"] {
+  const paper = o.paper ?? "a4";
+  return o.fit === "actual" && paper !== "page" ? paper : "auto";
+}
+
 async function nupFile(info: DocInfo, pages: PageIndex[] | undefined, o: PrintOptions) {
   return api.makeNup({
     docId: info.docId,
@@ -43,7 +54,7 @@ async function nupFile(info: DocInfo, pages: PageIndex[] | undefined, o: PrintOp
       perSheet: o.perSheet ?? 1,
       order: o.order ?? "across",
       booklet: o.booklet ?? false,
-      paper: "auto",
+      paper: nupPaper(o),
       annots: o.annots ?? "all",
     },
   });

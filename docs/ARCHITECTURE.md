@@ -557,14 +557,18 @@ public/ocr/  public/fonts/
   one tab's mode against another's document), then a `get_document` refresh. Background tabs receive
   `doc-changed` through `tabDocChanged` (dot + parked `DocInfo`); autosave walks the active document and
   `backgroundDocs()`; window close / 종료 asks about every dirty tab at once and releases every tab's document.
-* **Memory with many tabs**: every tab keeps its engine document open (PDFium's parsed document, its loaded
-  page objects, ~5 kB/page of plain text for the document's lifetime) — that, not the UI, is what a tab costs.
-  Everything else is shared and budgeted app-wide, not per tab: the one tile LRU (설정 › 캐시 크기, 64 MB default),
-  the 32 MiB text-layer LRU and the webview's ≤ 120 mounted tiles all belong to the tab on screen, and a
-  background tab's entries age out as the active one renders (they are keyed by `docId`, so coming back
-  re-renders from the LRU while it still holds them). A parked tab holds only its snapshot (a few kB; the
-  annotation lists, text layers and thumbnails are re-read on return). There is no cap on the number of tabs;
-  closing a tab (or its window) closes its engine document.
+* **Memory with many tabs**: every tab keeps its engine document open, and with it everything the engine
+  keeps **per document** (`OpenDoc`): PDFium's parsed document, its page LRU (`PageLru`, up to 24 open pages
+  at ~1–2 MiB of PDFium state each), its text-layer LRU (`TextCache`, up to 32 MiB) and ~5 kB/page of plain
+  text for the document's lifetime. These are bounded per tab, not app-wide, and a background tab's pages and
+  text layers stay as they were when it was parked — they do not age out while other tabs render (v0.3.0
+  verification, `10 × 500p.pdf` fully rendered, text-layered and searched: RSS grew about 5 MB per tab; the
+  worst case is ≤ 32 MiB of text layers + 24 open pages per background tab). Shared and budgeted app-wide:
+  the one tile LRU (설정 › 캐시 크기, 64 MB default; keyed by `docId`, so a background tab's tiles do age out as
+  the active one renders, and coming back re-renders from the LRU while it still holds them) and the webview's
+  ≤ 120 mounted tiles, which belong to the tab on screen. A parked tab's UI state is only its snapshot (a few
+  kB; the annotation lists and thumbnails are re-read on return). There is no cap on the number of tabs;
+  closing a tab (or its window) closes its engine document and frees all of the above.
 * **Virtual scroller**: layout comes from `DocInfo.pages[]` alone (no pixels needed), one absolutely
   positioned `PageShell` per page in `[scrollTop − 1.5vh, scrollTop + 2.5vh]`. Zoom during a gesture is a
   CSS `transform: scale()` on the tile container (≤ 1 ms); on settle (120 ms) the layout is recomputed,

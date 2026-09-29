@@ -14,6 +14,7 @@ import { mock, mockAssetUrl } from "../ipc/mock";
 import { useDocStore } from "../store/docStore";
 import { PrintDialog } from "../dialogs/PrintDialog";
 import { paperSize, shrunkCount } from "./paper";
+import { nupPaper } from "./printFlow";
 
 const SAMPLE = "/Users/veri/Documents/SeePDF-샘플.pdf"; // 3 pages
 
@@ -237,6 +238,42 @@ describe("print v0.3", () => {
     fireEvent.click(screen.getByRole("button", { name: "인쇄" }));
     await waitFor(() => expect(usePrintStore.getState().job).not.toBeNull());
     expect(usePrintStore.getState().job).toMatchObject({ fit: "actual", paper: "letter", sheet: paperSize("letter", sizes) });
+  });
+
+  it("실제 크기 + 모아찍기 builds the n-up sheets on the chosen paper, so they print unshrunk (v0.3.0)", async () => {
+    vi.spyOn(window, "print").mockImplementation(() => undefined);
+    const makeNup = vi.spyOn(mock, "makeNup");
+    await openSample();
+    // what the engine answers for 2-up on Letter: landscape Letter sheets
+    const real = mock.openDocument.bind(mock);
+    vi.spyOn(mock, "openDocument").mockImplementation(async (a) => {
+      const info = await real(a);
+      if (!a.path.includes("-nup")) return info;
+      return { ...info, pages: info.pages.map((p) => ({ ...p, widthPt: 792, heightPt: 612 })) };
+    });
+    render(
+      <>
+        <PrintDialog onClose={() => {}} />
+        <PrintRoot />
+      </>,
+    );
+    fireEvent.change(screen.getByLabelText("모아찍기"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("크기"), { target: { value: "actual" } });
+    fireEvent.change(screen.getByLabelText("용지"), { target: { value: "letter" } });
+    fireEvent.click(screen.getByRole("button", { name: "인쇄" }));
+    await waitFor(() => expect(usePrintStore.getState().job).not.toBeNull());
+    expect(makeNup.mock.calls[0][0].options).toMatchObject({ perSheet: 2, paper: "letter" });
+    const job = usePrintStore.getState().job!;
+    expect(job.sheet).toEqual([792, 612]);
+    expect(shrunkCount("letter", job.sizes!)).toBe(0);
+  });
+
+  it("n-up paper: the chosen paper under 실제 크기, the pages' own size otherwise", () => {
+    expect(nupPaper({ perSheet: 2 })).toBe("auto");
+    expect(nupPaper({ perSheet: 2, fit: "fit", paper: "letter" })).toBe("auto");
+    expect(nupPaper({ perSheet: 2, fit: "actual" })).toBe("a4");
+    expect(nupPaper({ perSheet: 4, fit: "actual", paper: "a3" })).toBe("a3");
+    expect(nupPaper({ booklet: true, fit: "actual", paper: "page" })).toBe("auto");
   });
 
   it("the shrink notice names the pages larger than the paper", async () => {

@@ -18,7 +18,7 @@
  * annotation patch is flushed, and a running search is stopped (it runs again on return).
  */
 import * as api from "../ipc/api";
-import { useTabStore, type Tab } from "../store/tabStore";
+import { patchBackgroundDoc, useTabStore, type Tab } from "../store/tabStore";
 import { useDocStore } from "../store/docStore";
 import {
   PANE_FIELDS, currentViewTarget, useViewStore, type PaneView, type ViewState, type ViewTarget,
@@ -35,9 +35,11 @@ import { whenEditsSettled } from "../annot/dragGate";
 import { clearTextSelection } from "../viewer/viewerCommands";
 import { autosave, markRecovered, recoveredEntry } from "../app/autosave";
 import { openContextMenu, type MenuEntry } from "../app/contextMenuStore";
-import { askChoice } from "../dialogs/dialogState";
+import { askChoice, isDialogOpen } from "../dialogs/dialogState";
+import { useOcrDialogStore } from "../ocr/dialogState";
 import { useMock } from "../ipc/env";
-import type { DocInfo, OutlineNode, RecoveryEntry } from "../ipc/types";
+import { onDocSaved } from "../ipc/events";
+import type { DocInfo, DocSavedEvent, OutlineNode, RecoveryEntry } from "../ipc/types";
 
 type ViewSlice = PaneView & Pick<ViewState, "layout" | "split" | "focusedPane" | "parked">;
 type SearchSlice = Pick<
@@ -179,6 +181,8 @@ function serial<T>(fn: () => Promise<T>): Promise<T> {
 async function switchTo(id: number): Promise<boolean> {
   const st = useTabStore.getState();
   if (st.activeId === id) return true;
+  // a file is opening into a new tab: the document it brings must not land on the tab shown now
+  if (st.opening) return false;
   if (!st.tabs.some((t) => t.id === id) || !st.parked[id]) return false;
   // 문서 비교 covers the window and holds the active document as A
   if (useCompareStore.getState().session) return false;
@@ -200,10 +204,14 @@ export function activateTab(id: number): Promise<boolean> {
   return serial(() => switchTo(id));
 }
 
-/** ⌃Tab / ⌃⇧Tab, ⌥⌘→ / ⌥⌘← — wraps around. */
+/**
+ * ⌃Tab / ⌃⇧Tab, ⌥⌘→ / ⌥⌘← — wraps around. v0.3.0: not while a dialog or the 텍스트 인식 sheet is
+ * open — the keymap is off then, but the native 윈도우 menu still gets here, and those work on the
+ * document on screen (the sheet's 되돌리기 followed the new tab).
+ */
 export function cycleTab(step: 1 | -1): Promise<boolean> {
   const { tabs, activeId } = useTabStore.getState();
-  if (tabs.length < 2) return Promise.resolve(false);
+  if (tabs.length < 2 || isDialogOpen() || useOcrDialogStore.getState().open) return Promise.resolve(false);
   const at = tabs.findIndex((t) => t.id === activeId);
   return activateTab(tabs[(at + step + tabs.length) % tabs.length].id);
 }
@@ -216,10 +224,12 @@ export function activateDocument(docId: string): Promise<boolean> {
 
 /**
  * H8 within the window: the tab that already has the file at `path` comes to the front, and its
- * (fresh) document is the answer; `null` when no tab has it.
+ * (fresh) document is the answer; `null` when no tab has it. `docId`: the document the backend
+ * matched by canonical path (`focus_document_window` — the same file under another spelling).
  */
-export async function focusOwnTab(path: string): Promise<DocInfo | null> {
-  const tab = useTabStore.getState().tabs.find((t) => t.path === path);
+export async function focusOwnTab(path: string, docId?: string): Promise<DocInfo | null> {
+  const tabs = useTabStore.getState().tabs;
+  const tab = tabs.find((t) => t.path === path) ?? (docId ? tabs.find((t) => t.docId === docId) : undefined);
   if (!tab || !(await activateTab(tab.id))) return null;
   return useDocStore.getState().info;
 }
@@ -229,19 +239,24 @@ export async function focusOwnTab(path: string): Promise<DocInfo | null> {
  * next document `docStore` gets becomes a tab of its own. Resolves with the rollback for a failed or
  * cancelled open — the parked tab is active again, untouched — or `null` when the guard said 취소.
  */
-export async function beginNewTab(): Promise<(() => void) | null> {
-  const id = useTabStore.getState().activeId;
-  if (id === null || !useDocStore.getState().info) return () => undefined;
-  const pending = editLeaveGuard();
-  if (pending && !(await pending)) return null;
-  await whenEditsSettled();
-  park();
-  useTabStore.setState({ activeId: null });
-  return () => {
-    const s = useTabStore.getState();
-    if (s.activeId !== null || !s.parked[id] || useDocStore.getState().info?.docId !== s.parked[id].doc.info.docId) return;
-    useTabStore.setState({ activeId: id, parked: omit(s.parked, id) });
-  };
+export function beginNewTab(): Promise<(() => void) | null> {
+  // in the queue: a switch or close already under way finishes first; one clicked while the file
+  // opens is refused (`opening`) until the document has its tab or the open was rolled back
+  return serial(async () => {
+    const id = useTabStore.getState().activeId;
+    if (id === null || !useDocStore.getState().info) return () => undefined;
+    const pending = editLeaveGuard();
+    if (pending && !(await pending)) return null;
+    await whenEditsSettled();
+    park();
+    useTabStore.setState({ activeId: null, opening: true });
+    return () => {
+      const s = useTabStore.getState();
+      if (s.opening) useTabStore.setState({ opening: false });
+      if (s.activeId !== null || !s.parked[id] || useDocStore.getState().info?.docId !== s.parked[id].doc.info.docId) return;
+      useTabStore.setState({ activeId: id, parked: omit(s.parked, id) });
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +324,7 @@ export function closeTab(id: number): Promise<boolean> {
   return serial(async () => {
     const st = useTabStore.getState();
     const tab = st.tabs.find((t) => t.id === id);
-    if (!tab || printing(tab.docId)) return false;
+    if (!tab || printing(tab.docId) || st.opening) return false;
     if (id !== st.activeId) {
       if (!tab.dirty) {
         await closeBackground(tab);
@@ -325,6 +340,8 @@ export function closeTab(id: number): Promise<boolean> {
 export function closeActiveTab(): Promise<boolean> {
   return serial(async () => {
     const docId = useDocStore.getState().info?.docId;
+    // while a new tab opens, the document still in `docStore` is a parked tab, not the active one
+    if (useTabStore.getState().opening) return false;
     return docId && printing(docId) ? false : closeActive();
   });
 }
@@ -425,6 +442,9 @@ export async function confirmUnsavedTabs(): Promise<boolean> {
     cancel: { value: "cancel", labelKey: "common.cancel" },
   });
   if (answer === "cancel") return false;
+  // 모두 저장 brings each tab forward, which 문서 비교 forbids (it holds the tab on screen as A):
+  // the window is going anyway, so leave the comparison first (its document B is released)
+  if (answer === "saveAll") await useCompareStore.getState().exit();
   for (const tab of dirty) {
     if (answer === "saveAll") {
       if (!(await activateTab(tab.id)) || !(await f.saveFlow())) return false;
@@ -494,6 +514,18 @@ export async function recoverBackgroundTabs(docIds: string[]): Promise<void> {
     }));
   }
 }
+
+/**
+ * v0.3.0: `doc-saved` for a background tab — a save that finished after the user switched away
+ * (a save is never a `doc-changed`, IPC_CONTRACT §8): its dot goes, and window close stops asking
+ * about it. (`flows.saveFlow` also patches the tab with the saved document's fresh `DocInfo`.)
+ * Subscribed when this module loads — a window has background tabs only once it has (the entry
+ * chunk stays as it was).
+ */
+export function tabDocSaved(e: DocSavedEvent): void {
+  patchBackgroundDoc(e.docId, false, (info) => (e.docGeneration >= info.docGeneration ? { ...info, dirty: false } : info));
+}
+onDocSaved(tabDocSaved);
 
 // ---------------------------------------------------------------------------
 // Menus

@@ -34,6 +34,12 @@ export interface TabState {
   parked: Record<number, TabSnapshot>;
   /** paths of closed tabs, newest last (⌘⇧T) */
   closed: string[];
+  /**
+   * v0.3.0: a document is opening into a new tab (`beginNewTab` parked the active one, so the
+   * document `docStore` gets next becomes a tab of its own): switching and closing tabs are refused
+   * until it has its tab or the open was rolled back
+   */
+  opening: boolean;
   /** drag to reorder: `id` goes to position `to` */
   move(id: number, to: number): void;
 }
@@ -45,6 +51,7 @@ export const useTabStore = create<TabState>((set, get) => ({
   activeId: null,
   parked: {},
   closed: [],
+  opening: false,
   move(id, to) {
     const tabs = [...get().tabs];
     const from = tabs.findIndex((t) => t.id === id);
@@ -93,7 +100,7 @@ useDocStore.subscribe((s, prev) => {
     return;
   }
   const id = nextId++;
-  useTabStore.setState({ tabs: [...st.tabs, { id, ...meta(info) }], activeId: id });
+  useTabStore.setState({ tabs: [...st.tabs, { id, ...meta(info) }], activeId: id, opening: false });
 });
 
 // The window binding (`window_bind_document`) follows the active tab — the native 편집 menu names
@@ -114,38 +121,36 @@ useTabStore.subscribe((s, prev) => {
   if (s.tabs !== prev.tabs) bindWindow();
 });
 
-/** `doc-changed` for a background tab (an autosave, a batch job): its dot and parked state follow. */
-export function tabDocChanged(e: DocChangedEvent): void {
+/**
+ * A background tab's document changed outside `docStore` (a `doc-changed`, a save that finished
+ * after a switch): its tab and its parked `DocInfo` (`patch`) follow; `dirty` is the tab's dot
+ * when it has no snapshot.
+ */
+export function patchBackgroundDoc(docId: DocId, dirty: boolean, patch: (info: DocInfo) => DocInfo): void {
   const st = useTabStore.getState();
-  const tab = st.tabs.find((t) => t.docId === e.docId && t.id !== st.activeId);
+  const tab = st.tabs.find((t) => t.docId === docId && t.id !== st.activeId);
   if (!tab) return;
   const snap = st.parked[tab.id];
-  const info = snap?.doc.info;
+  const info = snap && patch(snap.doc.info);
   useTabStore.setState({
-    tabs: st.tabs.map((t) => (t === tab ? { ...t, dirty: e.dirty } : t)),
-    parked: info
-      ? {
-          ...st.parked,
-          [tab.id]: {
-            ...snap,
-            doc: {
-              ...snap.doc,
-              info: {
-                ...info,
-                docGeneration: e.docGeneration,
-                dirty: e.dirty,
-                canUndo: e.canUndo ?? info.canUndo,
-                canRedo: e.canRedo ?? info.canRedo,
-              },
-            },
-          },
-        }
-      : st.parked,
+    tabs: st.tabs.map((t) => (t === tab ? { ...t, ...(info ? meta(info) : { dirty }) } : t)),
+    parked: info ? { ...st.parked, [tab.id]: { ...snap, doc: { ...snap.doc, info } } } : st.parked,
   });
+}
+
+/** `doc-changed` for a background tab (an autosave, a batch job): its dot and parked state follow. */
+export function tabDocChanged(e: DocChangedEvent): void {
+  patchBackgroundDoc(e.docId, e.dirty, (info) => ({
+    ...info,
+    docGeneration: e.docGeneration,
+    dirty: e.dirty,
+    canUndo: e.canUndo ?? info.canUndo,
+    canRedo: e.canRedo ?? info.canRedo,
+  }));
 }
 
 /** Test seam: forget every tab (the stores are module singletons). */
 export function resetTabs(): void {
   bound = "";
-  useTabStore.setState({ tabs: [], activeId: null, parked: {}, closed: [] });
+  useTabStore.setState({ tabs: [], activeId: null, parked: {}, closed: [], opening: false });
 }

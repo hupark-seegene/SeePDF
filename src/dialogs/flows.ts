@@ -18,7 +18,7 @@ import { windowLabel } from "../ipc/env";
 import { autosave, markRecovered, recoveredEntry, settleRecovered } from "../app/autosave";
 import { whenEditsSettled } from "../annot/dragGate";
 import { editLeaveGuard } from "../tools/commands";
-import { useTabStore } from "../store/tabStore";
+import { patchBackgroundDoc, useTabStore } from "../store/tabStore";
 import type { DocId, DocInfo, PageIndex, PageOp, ProblemReport, RecentEntry, RecoveryEntry, ViewLayout } from "../ipc/types";
 
 /** `import("../tabs/flow")` — the tab switching / parking code stays out of this chunk's hot path. */
@@ -82,9 +82,15 @@ export async function openPath(
     // v0.3 H8 / DR1: one tab per file — a file one of this window's tabs has comes to the front,
     // one another window shows is brought to the front there (recents, the picker, drops and the
     // OS's open-file events all come through here)
-    const own = await (await tabsFlow()).focusOwnTab(path);
+    const tabs = await tabsFlow();
+    const own = await tabs.focusOwnTab(path);
     if (own) return own;
-    if (await focusedElsewhere(path)) return null;
+    const found = await api.focusDocumentWindow({ path }).catch(() => null);
+    if (found && found.label !== windowLabel()) return null;
+    // v0.3.0: the backend compares canonical paths — one of this window's tabs has the file under
+    // another spelling (/tmp vs /private/tmp, a symlinked folder, case on Windows)
+    const same = found ? await tabs.focusOwnTab(path, found.docId) : null;
+    if (same) return same;
   }
   const docs = useDocStore.getState();
   const previous = docs.info;
@@ -107,6 +113,7 @@ export async function openPath(
     // a 복구 copy opens under the original document's name, not `<uuid>.pdf` (Stage 8)
     const info = await docs.open(path, password, opts.recovery?.name);
     if (info) {
+      if (useTabStore.getState().opening) useTabStore.setState({ opening: false });
       if (target === "replace" && previous && previous.docId !== info.docId) await releaseReplaced(previous);
       if (target === "tab") (await tabsFlow()).freshTab();
       if (opts.recovery) markRecovered(info.docId, opts.recovery);
@@ -261,6 +268,8 @@ export async function adoptIntoNewTab(info: DocInfo): Promise<boolean> {
   const tabs = await tabsFlow();
   if (await tabs.beginNewTab()) {
     tabs.freshTab();
+    // the caller adopts `info` right away (no await in between): it becomes the new tab
+    useTabStore.setState({ opening: false });
     return true;
   }
   await api.closeDocument({ docId: info.docId }).catch(() => undefined);
@@ -289,10 +298,7 @@ export async function saveFlow(opts: { force?: boolean } = {}): Promise<boolean>
   try {
     const args = opts.force ? { docId: info.docId, force: true } : { docId: info.docId };
     await api.saveDocument(args, (e) => jobs.apply("save", "status.saving", e));
-    await useDocStore.getState().refresh();
-    await autosave.clear(info.docId);
-    const fresh = useDocStore.getState().info;
-    if (fresh) await touchRecent(fresh);
+    await afterSave(info.docId);
     toast("status.saved", undefined, { tone: "success", timeoutMs: 2200 });
     return true;
   } catch (e) {
@@ -317,17 +323,37 @@ export async function saveAsFlow(): Promise<boolean> {
   const jobs = useJobStore.getState();
   try {
     await api.saveDocumentAs({ docId: info.docId, path }, (e) => jobs.apply("save", "status.saving", e));
-    await useDocStore.getState().refresh();
-    await autosave.clear(info.docId);
-    await settleRecovered(info.docId);
-    const fresh = useDocStore.getState().info;
-    if (fresh) await touchRecent(fresh);
+    await afterSave(info.docId, () => settleRecovered(info.docId));
     toast("status.saved", undefined, { tone: "success", timeoutMs: 2200 });
     return true;
   } catch (e) {
     toast("error.saveFailed", undefined, { tone: "danger", detail: message(e) });
     return false;
   }
+}
+
+/**
+ * After a save of `docId`: its fresh `DocInfo` goes where the document is now — `docStore` when it
+ * is still on screen, else its (background) tab: a save takes seconds on a big file with the window
+ * usable, and the user may have switched tabs meanwhile (v0.3.0). The recovery copy goes, and the
+ * reading position recorded is the document's own (its parked view in the background).
+ */
+async function afterSave(docId: DocId, settle?: () => Promise<void>): Promise<void> {
+  const fresh = await api.getDocument({ docId }).catch(() => null);
+  if (fresh && useDocStore.getState().info?.docId === docId) useDocStore.setState({ info: fresh });
+  // (a parked tab can still be in `docStore` while a new tab opens over it: both follow)
+  if (fresh) patchBackgroundDoc(docId, fresh.dirty, () => fresh);
+  await autosave.clear(docId);
+  await settle?.();
+  if (fresh) await touchRecent(fresh, backgroundPosition(docId));
+}
+
+/** The parked reading position of `docId` when it is in a background tab. */
+function backgroundPosition(docId: DocId): { page: PageIndex; zoomPercent: number; layout: ViewLayout } | undefined {
+  const { tabs, activeId, parked } = useTabStore.getState();
+  const tab = tabs.find((t) => t.docId === docId && t.id !== activeId);
+  const snap = tab && parked[tab.id];
+  return snap ? { page: snap.view.currentPage, zoomPercent: snap.view.zoomPercent, layout: snap.view.layout } : undefined;
 }
 
 /**
@@ -690,10 +716,18 @@ export async function recoverFromEngineCrash(docIds: DocId[]): Promise<DocInfo |
       recoveredEntry(info.docId);
     autosave.stop();
     usePagesStore.getState().reset();
+    // v0.3.0: the reopened document goes back to the crashed tab's place in the strip (UI_SPEC §2.2)
+    const st = useTabStore.getState();
+    const at = st.tabs.findIndex((t) => t.id === st.activeId);
     useDocStore.setState({ docId: null, info: null, outline: [], status: "empty", error: null });
-    if (copy) return await openPath(copy.recoveryPath, { guard: false, recovery: copy, replace: true });
-    if (info.path) return await openPath(info.path, { guard: false, replace: true });
-    return null;
+    const fresh = copy
+      ? await openPath(copy.recoveryPath, { guard: false, recovery: copy, replace: true })
+      : info.path
+        ? await openPath(info.path, { guard: false, replace: true })
+        : null;
+    const tab = fresh && useTabStore.getState().tabs.find((t) => t.docId === fresh.docId);
+    if (tab && at >= 0) useTabStore.getState().move(tab.id, at);
+    return fresh;
   } finally {
     crashHandling = null;
   }
@@ -710,8 +744,8 @@ export { closeDialog, openDialog };
  * the front, and the caller opens nothing. This window's own file is not "elsewhere".
  */
 export async function focusedElsewhere(path: string): Promise<boolean> {
-  const label = await api.focusDocumentWindow({ path }).catch(() => null);
-  return !!label && label !== windowLabel();
+  const found = await api.focusDocumentWindow({ path }).catch(() => null);
+  return !!found && found.label !== windowLabel();
 }
 
 /** Documents whose "저장하면 서명이 무효화됩니다" prompt was answered 저장 (once per document). */

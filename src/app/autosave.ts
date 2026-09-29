@@ -71,7 +71,9 @@ export class AutosaveController {
       if (!doc.dirty && this.written.has(doc.docId)) void this.clear(doc.docId);
     }
     const dirty = (info?.dirty ?? false) || background.some((d) => d.dirty);
-    const key = dirty && sec > 0 ? `${info?.docId ?? ""}:${sec}` : null;
+    // v0.3.0: not keyed by the document on screen — a beat walks every tab itself, and re-arming
+    // on each tab switch meant a user switching more often than the interval never got a copy
+    const key = dirty && sec > 0 ? String(sec) : null;
     if (key === this.armed) return;
     this.stop();
     this.armed = key;

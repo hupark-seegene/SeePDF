@@ -119,8 +119,12 @@ const attachmentsOf = new Map<DocId, { name: string; size: number }[]>();
 const riskyOf = new Map<DocId, SanitizeCounts>();
 /** H8: paths "changed by another program" since they were opened (`mockChangeOnDisk`). */
 const changedOnDisk = new Set<string>();
-/** H8: paths another window already shows (`mockOpenInOtherWindow`) → that window's label. */
-const otherWindows = new Map<string, string>();
+/** H8: paths another window already shows (`mockOpenInOtherWindow`) → that window's label and docId. */
+const otherWindows = new Map<string, { label: string; docId: DocId }>();
+/** H8 × DR1: what each window bound last (`window_bind_document`): its tabs' documents. */
+const boundWindows = new Map<string, DocId[]>();
+/** Like the backend's `canonical`: macOS's `/tmp` is `/private/tmp`. */
+const canonicalPath = (p: string) => p.replace(/^\/private(?=\/)/, "");
 /**
  * P2 읽어 주기: one fake voice for the whole app. It "speaks" for a while proportional to the text
  * (so the bar can be seen in `vite dev`) unless stopped; tests call `ttsStop` or read `mockTts`.
@@ -729,7 +733,11 @@ export const mock = {
   async openInNewWindow(_a: { path?: string }): Promise<string> {
     return `doc-${nextDoc}`;
   },
-  async windowBindDocument(_a: { label: string; docId: DocId | null; tabs?: DocId[] }): Promise<void> {},
+  async windowBindDocument(a: { label: string; docId: DocId | null; tabs?: DocId[] }): Promise<void> {
+    const tabs = a.tabs ?? (a.docId ? [a.docId] : []);
+    if (tabs.length) boundWindows.set(a.label, tabs);
+    else boundWindows.delete(a.label);
+  },
 
   // 5. view / stats ----------------------------------------------------------
   async setViewport(_a: ViewportHint): Promise<void> {},
@@ -1516,8 +1524,19 @@ export const mock = {
   },
 
   // v0.3 pkg3-security-save-integrity ----------------------------------------
-  async focusDocumentWindow(a: { path: string }): Promise<string | null> {
-    return otherWindows.get(a.path) ?? null;
+  async focusDocumentWindow(a: { path: string }): Promise<{ label: string; docId: DocId } | null> {
+    const other = otherWindows.get(a.path);
+    if (other) return other;
+    // like `window_for_path`: canonical paths, over every window's bound tabs
+    const want = canonicalPath(a.path);
+    for (const [label, ids] of boundWindows) {
+      const docId = ids.find((id) => {
+        const path = docs.get(id)?.info.path;
+        return !!path && canonicalPath(path) === want;
+      });
+      if (docId) return { label, docId };
+    }
+    return null;
   },
   async backupFolder(): Promise<string> {
     return "/Users/veri/Library/Application Support/SeePDF/backups";
@@ -3125,6 +3144,7 @@ export function resetMock(): void {
   riskyOf.clear();
   changedOnDisk.clear();
   otherWindows.clear();
+  boundWindows.clear();
   nextTempImage = 1;
   mockClipboardImage = null;
   mockPdfHandlerIsSelf = false;
@@ -3198,8 +3218,8 @@ export function mockChangeOnDisk(path: string): void {
 }
 
 /** Test seam (H8): the window `label` already shows `path`, so `focus_document_window` answers it. */
-export function mockOpenInOtherWindow(path: string, label: string): void {
-  otherWindows.set(path, label);
+export function mockOpenInOtherWindow(path: string, label: string, docId: DocId = "doc-elsewhere"): void {
+  otherWindows.set(path, { label, docId });
 }
 
 /** Test seam (S1): whether the next save of `docId` would be incremental. */

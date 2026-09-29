@@ -133,12 +133,25 @@ struct FocusDocument {
     doc_id: DocId,
 }
 
+/// `focus_document_window`'s answer: the window that has the file, and its document there.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusedWindow {
+    pub label: String,
+    pub doc_id: DocId,
+}
+
 /// `focus_document_window`: when another window already shows the file at `path`, bring it to
-/// the front (un-minimise, show, focus) and return its label; `None` when no window has it.
-/// The caller's own window counts too — the frontend decides what to do then. v0.3 DR1: a file
-/// in a background tab counts, and that window (unless it is `caller`, which switches on its
+/// the front (un-minimise, show, focus) and return its label and document; `None` when no window
+/// has it. The caller's own window counts too — the frontend decides what to do then (v0.3.0: it
+/// brings forward the tab with that document, which may spell the path differently). v0.3 DR1: a
+/// file in a background tab counts, and that window (unless it is `caller`, which switches on its
 /// own) gets `focus-document` so the tab comes to the front.
-pub fn focus_window_for_path(app: &AppHandle, path: &str, caller: Option<&str>) -> Option<String> {
+pub fn focus_window_for_path(
+    app: &AppHandle,
+    path: &str,
+    caller: Option<&str>,
+) -> Option<FocusedWindow> {
     let engine = app.try_state::<crate::engine::EngineHandle>()?;
     let bindings = app.state::<WindowDocs>().all_documents();
     let (label, doc_id) = {
@@ -148,7 +161,10 @@ pub fn focus_window_for_path(app: &AppHandle, path: &str, caller: Option<&str>) 
         })
     }?;
     if caller != Some(label.as_str()) {
-        if let Err(e) = app.emit_to(label.as_str(), "focus-document", FocusDocument { doc_id }) {
+        let event = FocusDocument {
+            doc_id: doc_id.clone(),
+        };
+        if let Err(e) = app.emit_to(label.as_str(), "focus-document", event) {
             tracing::warn!(%label, "focus-document failed: {e}");
         }
     }
@@ -157,7 +173,7 @@ pub fn focus_window_for_path(app: &AppHandle, path: &str, caller: Option<&str>) 
         let _ = window.show();
         let _ = window.set_focus();
     }
-    Some(label)
+    Some(FocusedWindow { label, doc_id })
 }
 
 /// Window geometry shared by every window (`UI_SPEC.md` §2, tauri spike §4).

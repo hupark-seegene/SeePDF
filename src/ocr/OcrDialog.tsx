@@ -75,7 +75,10 @@ function OcrDialogBody(
   const info = useDocStore((s) => s.info);
   const currentPageFromView = useViewStore((s) => s.currentPage);
 
-  const docId = context.docId ?? info?.docId;
+  // v0.3.0: once 시작 is pressed the run belongs to that document — 되돌리기 and the preview stay
+  // with it even if the tab on screen changes meanwhile
+  const [runDocId, setRunDocId] = useState<string | null>(null);
+  const docId = runDocId ?? context.docId ?? info?.docId;
   const docGeneration = context.docGeneration ?? info?.docGeneration ?? 0;
   const pageCount = context.pageCount ?? info?.pageCount ?? 0;
   const pageGeom = context.pages ?? info?.pages;
@@ -141,6 +144,7 @@ function OcrDialogBody(
 
   const start = useCallback(async () => {
     if (!docId || !pages) return;
+    setRunDocId(docId);
     const id = localJobId();
     setJobId(id);
     setPhase("running");
