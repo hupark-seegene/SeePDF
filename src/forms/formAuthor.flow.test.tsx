@@ -72,6 +72,39 @@ describe("필드 만들기", () => {
     expect(useDocStore.getState().info?.undoLabel).toBe("undo.formFieldCreate");
   });
 
+  it("a click on a rotated page places a default-size field that is wide in the view (round 2)", async () => {
+    const { info } = await openForm(0);
+    const page = info.pages[0];
+    // turned a quarter: the page box is heightPt wide
+    const ctx = makePageLayerContext({
+      docId: info.docId,
+      docGeneration: info.docGeneration,
+      page,
+      rotation: 90,
+      zoomPercent: 100,
+      width: page.heightPt,
+      height: page.widthPt,
+    });
+    act(() => useAppStore.getState().setTool("fieldText"));
+    const spy = vi.spyOn(api, "createFormField");
+    const { container } = render(<FormLayer ctx={ctx} />);
+    const surface = container.querySelector(".form-author") as HTMLElement;
+    fireEvent.pointerDown(surface, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(window, { clientX: 100, clientY: 100 });
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    const { rect } = spy.mock.calls[0][0].spec;
+    // 160 × 20 pt across the view = 20 × 160 pt in the page's own (unturned) space
+    expect(rect.r - rect.l).toBeCloseTo(20, 3);
+    expect(rect.t - rect.b).toBeCloseTo(160, 3);
+    // its corner is where the click was
+    const box = ctx.rectToBox(rect);
+    expect(box.x).toBeCloseTo(100, 3);
+    expect(box.y).toBeCloseTo(100, 3);
+    expect(box.w).toBeCloseTo(160, 3);
+    expect(box.h).toBeCloseTo(20, 3);
+    spy.mockRestore();
+  });
+
   it("필드 속성 renames the selected field in one update_form_field", async () => {
     await openForm(0);
     act(() => useAppStore.getState().setTool("fieldCheckbox"));

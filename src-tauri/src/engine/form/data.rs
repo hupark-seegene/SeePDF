@@ -439,7 +439,13 @@ fn writes_for(
         let first = vs.first().cloned().unwrap_or_default();
         let off = first.is_empty() || first == "Off";
         match matching[0].field_type {
-            FieldType::Text | FieldType::Combo => {
+            FieldType::Combo => {
+                // A combo box that takes no typing ignores text: the value picks its choice.
+                let f = matching[0];
+                let editable = super::combo_editable(doc, f.page, f.index);
+                writes.extend(super::combo_write(f, &first, editable, can_clear));
+            }
+            FieldType::Text => {
                 // one widget is enough: the others share the field's value
                 let f = matching[0];
                 if f.value.as_deref().unwrap_or("") != first {
@@ -462,6 +468,17 @@ fn writes_for(
                     .filter(|(_, o)| vs.contains(&o.label))
                     .map(|(i, _)| i as u32)
                     .collect();
+                let current: Vec<u32> = f
+                    .options
+                    .iter()
+                    .flatten()
+                    .enumerate()
+                    .filter(|(_, o)| o.selected)
+                    .map(|(i, _)| i as u32)
+                    .collect();
+                if current == selected {
+                    continue;
+                }
                 writes.push(FieldWrite::Set {
                     page: f.page,
                     index: f.index,

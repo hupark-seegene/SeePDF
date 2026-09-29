@@ -217,6 +217,13 @@ const DEFAULT_SIZE_PT: Record<NewFieldType, [number, number]> = {
   signature: [150, 40],
 };
 
+/** The page-space rectangle (PDF points) spanned by two points of the page box (CSS px). */
+function viewRectToPage(ctx: PageLayerContext, x0: number, y0: number, x1: number, y1: number): Rect {
+  const [a0, b0] = ctx.toPage(x0, y0);
+  const [a1, b1] = ctx.toPage(x1, y1);
+  return { l: Math.min(a0, a1), b: Math.min(b0, b1), r: Math.max(a0, a1), t: Math.max(b0, b1) };
+}
+
 /**
  * 필드 만들기 (v0.3 F1): with a field tool armed, a drag on the page draws the new field's
  * rectangle (a click places a default-sized one). Under the controls, so clicking an existing
@@ -248,12 +255,12 @@ function AuthorSurface({ ctx, type }: { ctx: PageLayerContext; type: NewFieldTyp
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       setDraft(null);
-      const [a0, b0] = ctx.toPage(last.x0, last.y0);
-      const [a1, b1] = ctx.toPage(last.x1, last.y1);
-      let rect: Rect = { l: Math.min(a0, a1), b: Math.min(b0, b1), r: Math.max(a0, a1), t: Math.max(b0, b1) };
+      let rect = viewRectToPage(ctx, last.x0, last.y0, last.x1, last.y1);
       if (rect.r - rect.l < MIN_FIELD_PT || rect.t - rect.b < MIN_FIELD_PT) {
+        // A click: the default size as it is *displayed* (w × h across the view, from the
+        // click down-right), so on a rotated page the field is not turned sideways.
         const [w, h] = DEFAULT_SIZE_PT[type];
-        rect = { l: a0, b: b0 - h, r: a0 + w, t: b0 };
+        rect = viewRectToPage(ctx, last.x0, last.y0, last.x0 + w * ctx.scale, last.y0 + h * ctx.scale);
       }
       void import("./formActions").then((m) => m.createFieldAt(ctx.index, rect, type, { newGroup }));
     };

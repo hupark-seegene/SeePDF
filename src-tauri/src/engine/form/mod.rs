@@ -20,7 +20,9 @@
 //!
 //! v0.3 (pkg2): `/MaxLen` and `/DV` are read with lopdf ([`extras`]); [`reset_form`] applies
 //! `/DV`; a radio group is cleared (`/V /Off`, every kid `/AS /Off`) by a lopdf rewrite, since no
-//! click can switch the last button of a group off ([`clear_radio`]); authoring ([`author`]),
+//! click can switch the last button of a group off ([`clear_radio`]); a combo box that takes no
+//! typing is set by selecting the option whose label is the value, and emptied by a rewrite too,
+//! since PDFium cannot deselect one ([`clear_choice`]); authoring ([`author`]),
 //! data exchange ([`data`]) and flattening ([`flatten`]) live in their own modules.
 
 pub mod author;
@@ -40,6 +42,9 @@ use extras::{DefaultValue, Extras};
 use pdfium_render::prelude::{PdfPage, PdfPageIndex, PdfiumLibraryBindings, FPDF_FORMHANDLE};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::c_int;
+
+/// `/Ff` bit 19 of a choice field: a combo box that also takes typed text.
+const FF_CHOICE_EDIT: c_int = 1 << 18;
 
 /// Which of the two text-entry paths was used for the last write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,7 +310,8 @@ fn write_on_page(
     }
     let raw_type = a.form_field_type(form);
     let field_type = field_type_of(raw_type);
-    if a.form_field_flags(form) & consts::FPDF_FORMFLAG_READONLY != 0 {
+    let flags = a.form_field_flags(form);
+    if flags & consts::FPDF_FORMFLAG_READONLY != 0 {
         return Err(EngineError::new(
             ErrorCode::PermissionDenied,
             format!(
@@ -319,6 +325,27 @@ fn write_on_page(
     let centre = ((rect.l + rect.r) / 2.0, (rect.b + rect.t) / 2.0);
 
     let method = match (field_type, value) {
+        // A combo box that takes no typing ignores typed text (PDFium keeps its value): the
+        // text picks the option with that label instead.
+        (FieldType::Combo, FieldValue::Text { text }) if flags & FF_CHOICE_EDIT == 0 => {
+            if previous.as_deref().unwrap_or("") != text.as_str() {
+                let option = (0..a.option_count(form))
+                    .find(|&i| a.option_label(form, i).as_deref() == Some(text.as_str()));
+                match option {
+                    Some(i) => set_selected(bindings, form, page, &a, &[i as u32])?,
+                    None if text.is_empty() => return Err(EngineError::new(
+                        ErrorCode::Unsupported,
+                        "PDFium cannot empty a combo box that takes no typing (clear_choice does)",
+                    )),
+                    None => {
+                        return Err(EngineError::invalid(format!(
+                            "'{text}' is not one of the combo box's choices"
+                        )))
+                    }
+                }
+            }
+            TextEntryMethod::NotText
+        }
         (FieldType::Text | FieldType::Combo, FieldValue::Text { text }) => set_text(
             bindings,
             form,
@@ -480,16 +507,77 @@ pub enum FieldWrite {
     },
     /// Switch every button of this widget's radio group off (`/V /Off`, `/AS /Off`).
     ClearRadio { page: PageIndex, index: u32 },
+    /// Empty this widget's combo box (`/V ()`). PDFium cannot deselect a combo box
+    /// (`FORM_SetIndexSelected(.., false)` is refused) nor type into one without the Edit flag,
+    /// so the field is made editable for a moment, emptied by the form layer — which draws the
+    /// empty appearance — and its `/Ff` restored and `/V` removed afterwards.
+    ClearChoice { page: PageIndex, index: u32 },
+}
+
+/// The write that makes combo box `field` show `want` (`/DV`, an imported value), or `None`
+/// when it already does or cannot: a value that is not a choice's label goes in as text only
+/// when the combo box takes typing (`editable`); emptying one that does not is a
+/// [`FieldWrite::ClearChoice`], possible only when the document can be rewritten
+/// (`can_rewrite`, [`can_clear_radios`]).
+pub(crate) fn combo_write(
+    field: &FormField,
+    want: &str,
+    editable: bool,
+    can_rewrite: bool,
+) -> Option<FieldWrite> {
+    let (page, index) = (field.page, field.index);
+    let set = |value: FieldValue| Some(FieldWrite::Set { page, index, value });
+    let current = field.value.as_deref().unwrap_or("");
+    let options = field.options.as_deref().unwrap_or(&[]);
+    if want.is_empty() {
+        if current.is_empty() && !options.iter().any(|o| o.selected) {
+            return None;
+        }
+        if editable {
+            return set(FieldValue::Text {
+                text: String::new(),
+            });
+        }
+        return can_rewrite.then_some(FieldWrite::ClearChoice { page, index });
+    }
+    if current == want {
+        return None;
+    }
+    match options.iter().position(|o| o.label == want) {
+        Some(i) if options[i].selected => None,
+        Some(i) => set(FieldValue::Selected {
+            selected: vec![i as u32],
+        }),
+        None if editable => set(FieldValue::Text {
+            text: want.to_string(),
+        }),
+        None => None,
+    }
+}
+
+/// Whether the combo box at `(page, index)` takes typed text (`/Ff` Edit).
+pub(crate) fn combo_editable(doc: &mut OpenDoc<'_>, page: PageIndex, index: u32) -> bool {
+    let Some(form) = doc.form_handle() else {
+        return false;
+    };
+    let bindings = doc.bindings();
+    let Ok(page) = doc.page(page) else {
+        return false;
+    };
+    raw::annot::get(bindings, page, index as usize)
+        .is_ok_and(|a| a.form_field_flags(form) & FF_CHOICE_EDIT != 0)
 }
 
 /// Applies `writes` as **one** undo step `label`, returning how many were applied.
 ///
-/// Without a [`FieldWrite::ClearRadio`] this is one `registry::mutate` through the form-fill
-/// environment, like `set_form_field_value`. With one it is a `registry::mutate_bytes`: the
-/// sets run through the form-fill environment of a scratch copy, which is saved (appearance
-/// streams included) and then rewritten with lopdf to switch the groups off — refused on an
-/// encrypted document, which lopdf cannot write. A write that fails on its own (a read-only
-/// field) is skipped, not fatal.
+/// Without a [`FieldWrite::ClearRadio`] or [`FieldWrite::ClearChoice`] this is one
+/// `registry::mutate` through the form-fill environment, like `set_form_field_value`. With one
+/// it is a `registry::mutate_bytes`: the combo boxes to empty are made editable with lopdf, the
+/// sets (and those combo boxes emptied) run through the form-fill environment of a scratch
+/// copy, which is saved (appearance streams included) and then rewritten with lopdf to switch
+/// the groups off and give the combo boxes back their flags — refused on an encrypted document,
+/// which lopdf cannot write. A write that fails on its own (a read-only field, a value that is
+/// not a choice) is skipped, not fatal, and not counted.
 pub fn write_fields(
     st: &mut EngineState<'_>,
     doc_id: &str,
@@ -503,7 +591,9 @@ pub fn write_fields(
     let pages: Vec<PageIndex> = writes
         .iter()
         .map(|w| match w {
-            FieldWrite::Set { page, .. } | FieldWrite::ClearRadio { page, .. } => *page,
+            FieldWrite::Set { page, .. }
+            | FieldWrite::ClearRadio { page, .. }
+            | FieldWrite::ClearChoice { page, .. } => *page,
         })
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -515,6 +605,13 @@ pub fn write_fields(
             _ => None,
         })
         .collect();
+    let choices: Vec<(PageIndex, u32)> = writes
+        .iter()
+        .filter_map(|w| match w {
+            FieldWrite::ClearChoice { page, index } => Some((*page, *index)),
+            _ => None,
+        })
+        .collect();
     let sets: Vec<(PageIndex, u32, FieldValue)> = writes
         .into_iter()
         .filter_map(|w| match w {
@@ -522,11 +619,7 @@ pub fn write_fields(
             _ => None,
         })
         .collect();
-    let applied = sets.len() + clears.len();
-    if applied == 0 {
-        return Ok(0);
-    }
-    if clears.is_empty() {
+    if clears.is_empty() && choices.is_empty() {
         let opts = MutateOpts::new(label, ChangeReason::Edit).pages(pages);
         return registry::mutate(st, doc_id, opts, |doc| {
             let mut done = 0usize;
@@ -542,9 +635,16 @@ pub fn write_fields(
     let pdfium = st.pdfium;
     let bindings = raw::bindings(pdfium);
     let opts = MutateOpts::new(label, ChangeReason::Edit).all_pages();
+    let empty = FieldValue::Text {
+        text: String::new(),
+    };
+    let cleared = clears.len();
+    let mut done = 0usize;
+    let counted = &mut done;
     registry::mutate_bytes(st, doc_id, opts, move |bytes, doc| {
+        let (bytes, flags) = choices_editable(bytes, &choices)?;
         let scratch = pdfium
-            .load_pdf_from_byte_vec(bytes.to_vec(), doc.password.as_deref())
+            .load_pdf_from_byte_vec(bytes, doc.password.as_deref())
             .map_err(|e| EngineError::pdfium("reload for form writes", e))?;
         let form = scratch.form().map(|f| f.raw_handle()).ok_or_else(|| {
             EngineError::new(ErrorCode::Unsupported, "this document has no AcroForm")
@@ -553,6 +653,9 @@ pub fn write_fields(
         for (page, index, value) in &sets {
             by_page.entry(*page).or_default().push((*index, value));
         }
+        for (page, index) in &choices {
+            by_page.entry(*page).or_default().push((*index, &empty));
+        }
         for (page_index, list) in by_page {
             let page = scratch
                 .pages()
@@ -560,7 +663,9 @@ pub fn write_fields(
                 .map_err(|e| EngineError::pdfium("load page", e))?;
             raw::form::on_after_load_page(bindings, &page, form);
             for (index, value) in list {
-                let _ = write_on_page(bindings, form, &page, page_index, index, value);
+                if write_on_page(bindings, form, &page, page_index, index, value).is_ok() {
+                    *counted += 1;
+                }
             }
             raw::form::force_to_kill_focus(bindings, form);
             raw::form::on_before_close_page(bindings, &page, form);
@@ -568,9 +673,91 @@ pub fn write_fields(
         let written =
             raw::save::save_as_copy(bindings, &scratch, raw::save::SaveFlags::NoIncremental)?;
         drop(scratch);
-        clear_radios_in(&written, &clears)
+        let written = clear_radios_in(&written, &clears)?;
+        restore_choices(&written, &flags)
     })?;
-    Ok(applied)
+    // A radio group is switched off by the rewrite itself; an emptied combo box was counted
+    // by its form-layer write above.
+    Ok(done + cleared)
+}
+
+/// The first half of [`FieldWrite::ClearChoice`]: each widget's field gets the Edit flag, so the
+/// form layer can empty it. Returns the rewritten bytes and, per widget, the field's own `/Ff`
+/// before (`None`: it had none) for [`restore_choices`].
+#[allow(clippy::type_complexity)]
+fn choices_editable(
+    bytes: &[u8],
+    widgets: &[(PageIndex, u32)],
+) -> Result<(Vec<u8>, Vec<((PageIndex, u32), Option<lopdf::Object>)>), EngineError> {
+    use lopdf::Object;
+    if widgets.is_empty() {
+        return Ok((bytes.to_vec(), Vec::new()));
+    }
+    let mut doc = crate::engine::structure::load(bytes)?;
+    let pages = crate::engine::structure::page_ids(&doc);
+    let mut before = Vec::new();
+    for &(page, index) in widgets {
+        let widget = author::widget_id(&doc, &pages, page, index)?;
+        let field = author::field_of(&doc, widget);
+        let own = doc
+            .get_dictionary(field)
+            .ok()
+            .and_then(|d| d.get(b"Ff").ok().cloned());
+        let effective = inherited_ff(&doc, field);
+        if let Ok(dict) = doc.get_dictionary_mut(field) {
+            dict.set("Ff", Object::Integer(effective | FF_CHOICE_EDIT as i64));
+        }
+        before.push(((page, index), own));
+    }
+    Ok((crate::engine::structure::write(doc)?, before))
+}
+
+/// A field's `/Ff`, inherited from its ancestors when it has none.
+fn inherited_ff(doc: &lopdf::Document, field: lopdf::ObjectId) -> i64 {
+    let mut current = field;
+    for _ in 0..32 {
+        let Ok(dict) = doc.get_dictionary(current) else {
+            break;
+        };
+        if let Ok(ff) = dict.get(b"Ff").and_then(lopdf::Object::as_i64) {
+            return ff;
+        }
+        match dict.get(b"Parent").and_then(lopdf::Object::as_reference) {
+            Ok(parent) => current = parent,
+            Err(_) => break,
+        }
+    }
+    0
+}
+
+/// The second half of [`FieldWrite::ClearChoice`]: each field gets its own `/Ff` back, an empty
+/// `/V` and no `/I`; the empty appearance the form layer drew stays.
+fn restore_choices(
+    bytes: &[u8],
+    flags: &[((PageIndex, u32), Option<lopdf::Object>)],
+) -> Result<Vec<u8>, EngineError> {
+    if flags.is_empty() {
+        return Ok(bytes.to_vec());
+    }
+    use lopdf::Object;
+    let mut doc = crate::engine::structure::load(bytes)?;
+    let pages = crate::engine::structure::page_ids(&doc);
+    for ((page, index), own) in flags {
+        let widget = author::widget_id(&doc, &pages, *page, *index)?;
+        let field = author::field_of(&doc, widget);
+        if let Ok(dict) = doc.get_dictionary_mut(field) {
+            match own {
+                Some(ff) => dict.set("Ff", ff.clone()),
+                None => {
+                    dict.remove(b"Ff");
+                }
+            }
+            // An empty /V, not none: without /V PDFium reports (and draws) a choice field's /DV.
+            dict.set("V", Object::string_literal(""));
+            dict.remove(b"I");
+        }
+    }
+    crate::engine::structure::write(doc)
 }
 
 /// The lopdf half of [`FieldWrite::ClearRadio`]: for each `(page, annotation index)` widget,
@@ -636,6 +823,42 @@ pub fn clear_radio(
     })
 }
 
+/// `set_form_field_value { text: "" }` (or `{ selected: [] }`) on a combo box that has a value
+/// (v0.3 F2, 값 지우기): the combo box is emptied — through the form layer when it takes typing,
+/// else by [`FieldWrite::ClearChoice`], which an encrypted document refuses. One undo step
+/// `undo.formFill`.
+pub fn clear_choice(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page: PageIndex,
+    index: u32,
+) -> Result<WriteOutcome, EngineError> {
+    let previous = field_at(st, doc_id, page, index)?.value;
+    if combo_editable(st.doc_mut(doc_id)?, page, index) {
+        let empty = FieldValue::Text {
+            text: String::new(),
+        };
+        return registry::mutate(
+            st,
+            doc_id,
+            MutateOpts::new("undo.formFill", ChangeReason::Edit).page(page),
+            |doc| set_value(doc, page, index, &empty),
+        );
+    }
+    write_fields(
+        st,
+        doc_id,
+        "undo.formFill",
+        vec![FieldWrite::ClearChoice { page, index }],
+    )?;
+    let field = field_at(st, doc_id, page, index)?;
+    Ok(WriteOutcome {
+        field,
+        previous,
+        method: TextEntryMethod::NotText,
+    })
+}
+
 /// The field at `(page, index)`, or `notFound`.
 pub fn field_at(
     st: &mut EngineState<'_>,
@@ -658,7 +881,9 @@ pub fn field_at(
 /// `reset_form` — every writable field back to its default value (`/DV`), one undo step
 /// `undo.formReset`:
 ///
-/// * text and combo fields get their `/DV` string, or become empty;
+/// * text fields get their `/DV` string, or become empty; a combo box selects the choice its
+///   `/DV` names (typed in when it takes typing and `/DV` is no choice), or is emptied
+///   ([`combo_write`]);
 /// * a list box selects the options its `/DV` names, or none;
 /// * a checkbox is on only when its `/DV` names its on-state;
 /// * a radio group turns on the button whose export value its `/DV` names, and is switched
@@ -684,6 +909,12 @@ fn reset_writes(st: &mut EngineState<'_>, doc_id: &str) -> Result<Vec<FieldWrite
     let doc = st.doc_mut(doc_id)?;
     let extras = extras::of(doc);
     let fields = list(doc, None)?;
+    let editable: BTreeSet<(PageIndex, u32)> = fields
+        .iter()
+        .filter(|f| f.field_type == FieldType::Combo)
+        .map(|f| (f.page, f.index))
+        .filter(|&(page, index)| combo_editable(doc, page, index))
+        .collect();
     // The on-state of each radio widget, decoded like `/DV` (both read with lopdf).
     let exports: BTreeMap<(PageIndex, u32), String> = fields
         .iter()
@@ -714,7 +945,14 @@ fn reset_writes(st: &mut EngineState<'_>, doc_id: &str) -> Result<Vec<FieldWrite
                     Some(DefaultValue::Many(v)) => v.into_iter().next().unwrap_or_default(),
                     None => String::new(),
                 };
-                if field.value.as_deref().unwrap_or("") != want {
+                if field.field_type == FieldType::Combo {
+                    writes.extend(combo_write(
+                        field,
+                        &want,
+                        editable.contains(&(field.page, field.index)),
+                        can_clear,
+                    ));
+                } else if field.value.as_deref().unwrap_or("") != want {
                     writes.push(set(FieldValue::Text { text: want }));
                 }
             }

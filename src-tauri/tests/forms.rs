@@ -353,6 +353,11 @@ fn forms_xfdf_and_csv_round_trip() {
             [Some(false), Some(false)],
             "no /DV: the radio group is switched off"
         );
+        assert_eq!(
+            cleared.3.as_deref().unwrap_or(""),
+            "",
+            "{ext}: no /DV: the combo box is emptied (so the import below really sets it)"
+        );
 
         let imported = with_state({
             let (id, path) = (id.clone(), path.display().to_string());
@@ -361,6 +366,10 @@ fn forms_xfdf_and_csv_round_trip() {
         .expect("import_form_data");
         assert!(imported.unknown.is_empty(), "{:?}", imported.unknown);
         assert_eq!(snapshot(&id), filled, "{ext}: import restores every value");
+        assert_eq!(
+            imported.fields, 4,
+            "{ext}: text, checkbox, one radio button, combo — each write changed something"
+        );
     }
 
     // An unknown name is reported, not fatal.
@@ -791,4 +800,328 @@ fn forms_radio_rename_joins_group() {
     undo(&id); // the merge
     assert_eq!(radios(&id, "라디오2").len(), 2);
     assert_eq!(radios(&id, "라디오1").len(), 1);
+}
+
+// ---------------------------------------------------------------------------------------
+// Verification round 2
+// ---------------------------------------------------------------------------------------
+
+/// The page rendered at 1 px per point: (width, height, RGBA pixels).
+fn render(doc_id: &str, page: u16) -> (usize, usize, Vec<u8>) {
+    let doc_id = doc_id.to_string();
+    let b = with_state(move |st| {
+        seepdf_lib::engine::render::tiles::render_raw_buffer(st, &doc_id, page, 1.0, None)
+    })
+    .expect("render_page_raw");
+    let w = u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize;
+    let h = u32::from_le_bytes(b[12..16].try_into().unwrap()) as usize;
+    (w, h, b[32..].to_vec())
+}
+
+/// The bounding box `(x0, y0, x1, y1)` of the pixels that differ between two renders.
+fn changed_box(
+    a: &(usize, usize, Vec<u8>),
+    b: &(usize, usize, Vec<u8>),
+) -> (usize, usize, usize, usize) {
+    assert_eq!((a.0, a.1), (b.0, b.1));
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+    for y in 0..a.1 {
+        for x in 0..a.0 {
+            let at = (y * a.0 + x) * 4;
+            let d = (0..3)
+                .map(|c| (a.2[at + c] as i32 - b.2[at + c] as i32).abs())
+                .max()
+                .unwrap();
+            if d > 48 {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    assert!(x0 <= x1, "the fill changed no pixel");
+    (x0, y0, x1, y1)
+}
+
+/// Round 2, F1: a field drawn on a `/Rotate 90` page to look horizontal in the view (tall in
+/// user space) gets `/MK /R 90`, and its filled value reads horizontally, at a readable size —
+/// not sideways and tiny across the box's short side. Same for a combo box.
+#[test]
+fn forms_field_on_rotated_page_reads_horizontally() {
+    let doc = open("rotation.pdf");
+    let page = doc
+        .info
+        .pages
+        .iter()
+        .find(|p| p.rotation == 90)
+        .expect("rotation.pdf has a /Rotate 90 page");
+    let (pg, c) = (page.index, page.crop);
+    // What AuthorSurface sends for a 200 × 30 box drawn in the view: 30 × 200 in user space.
+    let mut text = spec(
+        NewFieldType::Text,
+        "rot",
+        Rect::new(c.l + 100.0, c.b + 100.0, c.l + 130.0, c.b + 300.0),
+        &[],
+    );
+    text.page = pg;
+    create(&doc.doc_id, text);
+    let mut combo = spec(
+        NewFieldType::Combo,
+        "rotcombo",
+        Rect::new(c.l + 200.0, c.b + 100.0, c.l + 220.0, c.b + 250.0),
+        &["Seoul", "Busan"],
+    );
+    combo.page = pg;
+    create(&doc.doc_id, combo);
+
+    // The widget carries the page's rotation.
+    let bytes = with_state({
+        let id = doc.doc_id.clone();
+        move |st| seepdf_lib::engine::save::serialize(st, &id)
+    })
+    .unwrap();
+    let parsed = lopdf::Document::load_mem(&bytes).unwrap();
+    let rotations: Vec<i64> = parsed
+        .objects
+        .values()
+        .filter_map(|o| o.as_dict().ok())
+        .filter(|d| d.get(b"Subtype").and_then(|s| s.as_name()).ok() == Some(b"Widget"))
+        .map(|d| {
+            d.get(b"MK")
+                .and_then(|m| m.as_dict())
+                .and_then(|m| m.get(b"R"))
+                .and_then(|r| r.as_i64())
+                .unwrap_or(0)
+        })
+        .collect();
+    assert_eq!(rotations, [90, 90], "/MK /R follows the page's /Rotate");
+
+    let all = fields(&doc.doc_id);
+    let before = render(&doc.doc_id, pg);
+    set(
+        &doc.doc_id,
+        by_name(&all, "rot"),
+        FieldValue::Text {
+            text: "HELLO WORLD".into(),
+        },
+    );
+    let after = render(&doc.doc_id, pg);
+    let (x0, y0, x1, y1) = changed_box(&before, &after);
+    let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
+    assert!(
+        w > 2 * h,
+        "the value runs horizontally in the view: {w} × {h} px"
+    );
+    assert!(h >= 8, "at a readable size: {w} × {h} px");
+
+    let before = render(&doc.doc_id, pg);
+    set(
+        &doc.doc_id,
+        by_name(&all, "rotcombo"),
+        FieldValue::Selected { selected: vec![1] },
+    );
+    let after = render(&doc.doc_id, pg);
+    let (x0, y0, x1, y1) = changed_box(&before, &after);
+    let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
+    assert!(w > h, "the combo's value runs horizontally: {w} × {h} px");
+}
+
+/// The dark pixels (any channel under 128) inside `rect` (PDF points, page without rotation,
+/// rendered at 1 px per point), left of `right_margin` points from its right edge.
+fn ink_in(doc_id: &str, page: u16, crop: Rect, rect: Rect, right_margin: f32) -> usize {
+    let (w, _, px) = render(doc_id, page);
+    let x0 = (rect.l - crop.l + 2.0) as usize;
+    let x1 = (rect.r - crop.l - right_margin) as usize;
+    let y0 = (crop.t - rect.t + 2.0) as usize;
+    let y1 = (crop.t - rect.b - 2.0) as usize;
+    let mut n = 0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let at = (y * w + x) * 4;
+            if px[at..at + 3].iter().any(|&c| c < 128) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Round 2, F1/F2: a combo box (every one `create_form_field` makes, most real ones) takes no
+/// typing, so PDFium ignores a text write to it. Import selects the choice whose label is the
+/// value; reset selects the `/DV` choice or empties it; 값 지우기 empties it — and the value is
+/// gone from the page too. Only writes that change something are counted.
+#[test]
+fn forms_combo_import_reset_and_clear() {
+    let doc = open("tracemonkey.pdf");
+    let id = doc.doc_id.clone();
+    let ko_rect = Rect::new(72.0, 580.0, 192.0, 600.0);
+    create(
+        &id,
+        spec(
+            NewFieldType::Combo,
+            "지역",
+            ko_rect,
+            &["서울", "부산", "대구"],
+        ),
+    );
+    create(
+        &id,
+        spec(
+            NewFieldType::Combo,
+            "city",
+            Rect::new(72.0, 540.0, 192.0, 560.0),
+            &["Seoul", "Busan", "Daegu"],
+        ),
+    );
+    let values = |id: &str| -> Vec<(String, Option<String>)> {
+        fields(id)
+            .into_iter()
+            .map(|f| (f.name, f.value.filter(|v| !v.is_empty())))
+            .collect()
+    };
+    let crop = doc.info.pages[0].crop;
+    // the dropdown button takes the right end of the box: look left of it
+    let blank_ink = ink_in(&id, 0, crop, ko_rect, 24.0);
+
+    let imported = import_csv(&id, "combo-in.csv", "name,value\n지역,대구\ncity,Daegu\n");
+    assert_eq!(imported.fields, 2);
+    assert_eq!(
+        values(&id),
+        [
+            ("지역".to_string(), Some("대구".to_string())),
+            ("city".to_string(), Some("Daegu".to_string()))
+        ],
+        "import selects the choices"
+    );
+    let again = import_csv(&id, "combo-in.csv", "name,value\n지역,대구\ncity,Daegu\n");
+    assert_eq!(again.fields, 0, "nothing changed, nothing counted");
+    let odd = import_csv(&id, "combo-odd.csv", "name,value\ncity,Tokyo\n");
+    assert_eq!(odd.fields, 0, "a value that is no choice is not typed in");
+    assert_eq!(values(&id)[1].1.as_deref(), Some("Daegu"));
+    assert!(
+        ink_in(&id, 0, crop, ko_rect, 24.0) > blank_ink,
+        "the chosen value is drawn"
+    );
+
+    // Reset without /DV empties both — value and appearance.
+    let changed = with_state({
+        let id = id.clone();
+        move |st| form::reset_form(st, &id)
+    })
+    .expect("reset_form");
+    assert_eq!(changed, 2);
+    assert_eq!(
+        values(&id),
+        [("지역".to_string(), None), ("city".to_string(), None)],
+        "no /DV: emptied"
+    );
+    assert!(
+        ink_in(&id, 0, crop, ko_rect, 24.0) <= blank_ink,
+        "the emptied combo box shows no value"
+    );
+    let flags = |id: &str| -> Vec<i64> {
+        let bytes = with_state({
+            let id = id.to_string();
+            move |st| seepdf_lib::engine::save::serialize(st, &id)
+        })
+        .unwrap();
+        let parsed = lopdf::Document::load_mem(&bytes).unwrap();
+        parsed
+            .objects
+            .values()
+            .filter_map(|o| o.as_dict().ok())
+            .filter(|d| d.get(b"FT").and_then(|t| t.as_name()).ok() == Some(b"Ch"))
+            .map(|d| d.get(b"Ff").and_then(|f| f.as_i64()).unwrap_or(0))
+            .collect()
+    };
+    assert_eq!(
+        flags(&id),
+        [1 << 17, 1 << 17],
+        "the combo boxes are not left editable"
+    );
+    undo(&id);
+    assert_eq!(
+        values(&id)[0].1.as_deref(),
+        Some("대구"),
+        "reset is one undo step"
+    );
+
+    // Reset with /DV selects the /DV choice (the verifier's probe: /V differs from /DV).
+    let bytes = with_state({
+        let id = id.clone();
+        move |st| seepdf_lib::engine::save::serialize(st, &id)
+    })
+    .unwrap();
+    let mut parsed = lopdf::Document::load_mem(&bytes).unwrap();
+    let ids: Vec<lopdf::ObjectId> = parsed.objects.keys().copied().collect();
+    for oid in ids {
+        let Ok(d) = parsed.get_dictionary_mut(oid) else {
+            continue;
+        };
+        let name = d
+            .get(b"T")
+            .ok()
+            .and_then(|t| lopdf::decode_text_string(t).ok());
+        let (dv, v) = match name.as_deref() {
+            Some("지역") => ("서울", "부산"),
+            Some("city") => ("Seoul", "Busan"),
+            _ => continue,
+        };
+        d.set("DV", seepdf_lib::engine::save::pdf_text_string(dv));
+        d.set("V", seepdf_lib::engine::save::pdf_text_string(v));
+    }
+    let mut out = Vec::new();
+    parsed.save_to(&mut out).unwrap();
+    let info = with_state(move |st| registry::open(st, None, out, None)).unwrap();
+    let dv = info.doc_id.clone();
+    assert_eq!(
+        values(&dv),
+        [
+            ("지역".to_string(), Some("부산".to_string())),
+            ("city".to_string(), Some("Busan".to_string()))
+        ]
+    );
+    let changed = with_state({
+        let dv = dv.clone();
+        move |st| form::reset_form(st, &dv)
+    })
+    .expect("reset_form");
+    assert_eq!(changed, 2);
+    assert_eq!(
+        values(&dv),
+        [
+            ("지역".to_string(), Some("서울".to_string())),
+            ("city".to_string(), Some("Seoul".to_string()))
+        ],
+        "reset goes to /DV"
+    );
+    let again = with_state({
+        let dv = dv.clone();
+        move |st| form::reset_form(st, &dv)
+    })
+    .unwrap();
+    assert_eq!(again, 0, "already at /DV: nothing counted");
+
+    // 값 지우기 (what `set_form_field_value { text: "" }` routes a combo box to).
+    let combo = by_name(&fields(&dv), "지역").clone();
+    let cleared = with_state({
+        let dv = dv.clone();
+        move |st| form::clear_choice(st, &dv, combo.page, combo.index)
+    })
+    .expect("clear_choice");
+    assert_eq!(cleared.field.value.as_deref().unwrap_or(""), "");
+    assert_eq!(cleared.previous.as_deref(), Some("서울"));
+    assert!(
+        ink_in(&dv, 0, crop, ko_rect, 24.0) <= blank_ink,
+        "the emptied combo box shows no value (not its /DV either)"
+    );
+    let reopened = save_and_reopen(&dv);
+    assert_eq!(
+        values(&reopened.doc_id),
+        [
+            ("지역".to_string(), None),
+            ("city".to_string(), Some("Seoul".to_string()))
+        ],
+        "only that combo box is emptied, and it stays empty after a save"
+    );
+    undo(&dv);
+    assert_eq!(values(&dv)[0].1.as_deref(), Some("서울"), "one undo step");
 }

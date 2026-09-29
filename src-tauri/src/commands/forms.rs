@@ -44,11 +44,27 @@ pub async fn set_form_field_value(
 ) -> Result<SetFormFieldResult, EngineError> {
     engine
         .call(Lane::Edit, "set_form_field_value", move |st| {
+            let current = form::field_at(st, &doc_id, page, index).ok();
             let clear_radio = matches!(value, FieldValue::Checked { checked: false })
-                && form::field_at(st, &doc_id, page, index)
-                    .is_ok_and(|f| f.field_type == FieldType::Radio && f.checked.unwrap_or(false));
+                && current.as_ref().is_some_and(|f| {
+                    f.field_type == FieldType::Radio && f.checked.unwrap_or(false)
+                });
+            // 값 지우기 on a combo box: PDFium cannot deselect one (v0.3 round 2).
+            let empty = match &value {
+                FieldValue::Text { text } => text.is_empty(),
+                FieldValue::Selected { selected } => selected.is_empty(),
+                FieldValue::Checked { .. } => false,
+            };
+            let clear_choice = empty
+                && current.as_ref().is_some_and(|f| {
+                    f.field_type == FieldType::Combo
+                        && (f.value.as_deref().is_some_and(|v| !v.is_empty())
+                            || f.options.iter().flatten().any(|o| o.selected))
+                });
             let outcome = if clear_radio {
                 form::clear_radio(st, &doc_id, page, index)?
+            } else if clear_choice {
+                form::clear_choice(st, &doc_id, page, index)?
             } else {
                 registry::mutate(
                     st,

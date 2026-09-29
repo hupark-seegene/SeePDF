@@ -18,7 +18,9 @@
 //!
 //! Every widget gets `/F 4` (print), `/P`, a thin grey border (`/MK /BC`, `/BS`) and a basic
 //! `/AP` so it shows in viewers that do not build appearances; PDFium rebuilds the appearance
-//! of a text or choice field the first time it is filled. `/AcroForm` gets `/DR` with Helvetica
+//! of a text or choice field the first time it is filled. On a rotated page (`/Rotate`, inherited)
+//! the widget also gets `/MK /R` = that rotation and its `/AP` is drawn turned the same way
+//! ([`Frame`]), so a field drawn horizontal in the view shows its value horizontal too. `/AcroForm` gets `/DR` with Helvetica
 //! (`/Helv`) and ZapfDingbats (`/ZaDb`) when it lacks them. Korean typed into a `/Helv` field is
 //! drawn by PDFium's font substitution when the value is committed.
 
@@ -259,7 +261,74 @@ fn root_named(doc: &Document, af: ObjectId, name: &str) -> Option<ObjectId> {
         })
 }
 
-fn appearance(doc: &mut Document, w: f32, h: f32, content: String, fonts: bool) -> ObjectId {
+/// The frame a new widget's appearance is drawn in: the widget's rect size and its `/MK /R`.
+///
+/// On a page with `/Rotate 90` (a landscape scan, a rotated page) a field drawn to look
+/// horizontal in the view is tall in user space. Its contents must turn with the page, so the
+/// widget gets `/MK /R` = the page's rotation — PDFium builds the filled appearance in that
+/// frame — and the basic `/AP` is drawn the same way: a `/BBox` of the *displayed* size (width
+/// and height swapped for 90 and 270) mapped onto the rect by a `/Matrix` (PDFium's
+/// `CPDF_GenerateAP` matrices).
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    /// The rect's width and height in user space.
+    w: f32,
+    h: f32,
+    /// 0, 90, 180 or 270.
+    rot: i64,
+}
+
+impl Frame {
+    /// The appearance's own width and height: the field as it is displayed.
+    fn size(self) -> (f32, f32) {
+        if self.rot % 180 == 90 {
+            (self.h, self.w)
+        } else {
+            (self.w, self.h)
+        }
+    }
+
+    fn matrix(self) -> Option<[f32; 6]> {
+        let (w, h) = (self.w, self.h);
+        match self.rot {
+            90 => Some([0.0, 1.0, -1.0, 0.0, w, 0.0]),
+            180 => Some([-1.0, 0.0, 0.0, -1.0, w, h]),
+            270 => Some([0.0, -1.0, 1.0, 0.0, 0.0, h]),
+            _ => None,
+        }
+    }
+}
+
+/// A page's `/Rotate`, inherited from its `/Pages` ancestors, as 0, 90, 180 or 270.
+fn page_rotation(doc: &Document, page: ObjectId) -> i64 {
+    let mut current = page;
+    for _ in 0..64 {
+        let Ok(dict) = doc.get_dictionary(current) else {
+            break;
+        };
+        if let Some(r) = dict
+            .get(b"Rotate")
+            .ok()
+            .and_then(|r| doc.dereference(r).ok())
+            .and_then(|(_, r)| {
+                r.as_i64()
+                    .ok()
+                    .or_else(|| r.as_float().ok().map(|f| f as i64))
+            })
+        {
+            let r = r.rem_euclid(360);
+            return if r % 90 == 0 { r } else { 0 };
+        }
+        match dict.get(b"Parent").and_then(Object::as_reference) {
+            Ok(parent) => current = parent,
+            Err(_) => break,
+        }
+    }
+    0
+}
+
+fn appearance(doc: &mut Document, frame: Frame, content: String, fonts: bool) -> ObjectId {
+    let (w, h) = frame.size();
     let mut dict = Dictionary::new();
     dict.set("Type", Object::Name(b"XObject".to_vec()));
     dict.set("Subtype", Object::Name(b"Form".to_vec()));
@@ -272,6 +341,12 @@ fn appearance(doc: &mut Document, w: f32, h: f32, content: String, fonts: bool) 
             Object::Real(h),
         ]),
     );
+    if let Some(m) = frame.matrix() {
+        dict.set(
+            "Matrix",
+            Object::Array(m.iter().map(|v| Object::Real(*v)).collect()),
+        );
+    }
     if fonts {
         let mut font = Dictionary::new();
         font.set(
@@ -317,7 +392,13 @@ fn write_new_field(
     let pages = structure::page_ids(&doc);
     let page_obj = structure::page_id(&pages, spec.page)?;
     let af = acroform(&mut doc)?;
-    let (w, h) = (rect.width(), rect.height());
+    let frame = Frame {
+        w: rect.width(),
+        h: rect.height(),
+        rot: page_rotation(&doc, page_obj),
+    };
+    // What the appearances draw: the field as it is displayed (see [`Frame`]).
+    let (w, h) = frame.size();
 
     let existing = root_named(&doc, af, name);
     if let Some(found) = existing {
@@ -352,6 +433,9 @@ fn write_new_field(
     bs.set("W", Object::Integer(1));
     bs.set("S", Object::Name(b"S".to_vec()));
     widget.set("BS", Object::Dictionary(bs));
+    if frame.rot != 0 {
+        mk.set("R", Object::Integer(frame.rot));
+    }
 
     let mut ff: i64 = if spec.required { FF_REQUIRED } else { 0 };
     let widget_id = doc.new_object_id();
@@ -368,13 +452,13 @@ fn write_new_field(
             if let Some(max) = spec.max_len.filter(|m| *m > 0) {
                 widget.set("MaxLen", Object::Integer(max as i64));
             }
-            let ap = appearance(&mut doc, w, h, border(w, h), false);
+            let ap = appearance(&mut doc, frame, border(w, h), false);
             widget.set("AP", ap_dict(Object::Reference(ap)));
         }
         NewFieldType::Signature => {
             widget.set("FT", Object::Name(b"Sig".to_vec()));
             widget.set("T", crate::engine::save::pdf_text_string(name));
-            let ap = appearance(&mut doc, w, h, border(w, h), false);
+            let ap = appearance(&mut doc, frame, border(w, h), false);
             widget.set("AP", ap_dict(Object::Reference(ap)));
         }
         NewFieldType::Combo => {
@@ -388,7 +472,7 @@ fn write_new_field(
             widget.set("DA", Object::string_literal("/Helv 0 Tf 0 g"));
             ff |= FF_COMBO;
             widget.set("Opt", opt_array(&spec.options));
-            let ap = appearance(&mut doc, w, h, border(w, h), false);
+            let ap = appearance(&mut doc, frame, border(w, h), false);
             widget.set("AP", ap_dict(Object::Reference(ap)));
         }
         NewFieldType::Checkbox => {
@@ -398,8 +482,8 @@ fn write_new_field(
             widget.set("AS", Object::Name(b"Off".to_vec()));
             widget.set("DA", Object::string_literal("/ZaDb 0 Tf 0 g"));
             mk.set("CA", Object::string_literal("4"));
-            let on = appearance(&mut doc, w, h, glyph(w, h, '4'), true);
-            let off = appearance(&mut doc, w, h, border(w, h), false);
+            let on = appearance(&mut doc, frame, glyph(w, h, '4'), true);
+            let off = appearance(&mut doc, frame, border(w, h), false);
             widget.set("AP", state_ap(b"Yes", on, off));
         }
         NewFieldType::Radio => {
@@ -433,8 +517,8 @@ fn write_new_field(
             // Two buttons with one export value would switch on and off together: a button
             // joining a group gets a state no other button of the group has.
             let export = unique_state(&group_states(&doc, group), &export);
-            let on = appearance(&mut doc, w, h, glyph(w, h, 'l'), true);
-            let off = appearance(&mut doc, w, h, border(w, h), false);
+            let on = appearance(&mut doc, frame, glyph(w, h, 'l'), true);
+            let off = appearance(&mut doc, frame, border(w, h), false);
             widget.set("AP", state_ap(export.as_bytes(), on, off));
             widget.set("Parent", Object::Reference(group));
             if let Ok(g) = doc.get_dictionary_mut(group) {
