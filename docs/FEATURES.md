@@ -522,6 +522,11 @@ section).
   the trailing one; a 여러 파일 처리 row that finished reports all its pages done (stamp / password / flatten send
   no page progress, so the row kept `done: 0` beside 완료). `imagesToPdf.flow.test.tsx`, `appShell.pkg5.test.tsx`,
   `batch.flow.test.tsx`.
+* **CI on main `299fdcc`** — windows-x64 failed one test: `tests/ocr_vision.rs native_ocr_is_unsupported_off_macos`
+  predated O3 and expected `unsupported` on every non-macOS host, but Windows now reads the page with
+  Windows.Media.Ocr (the default kor / eng recogniser). It now runs off macOS and Windows only; Windows has
+  `native_ocr_off_macos_is_windows_ocr_on_windows` (reads with an installed kor / eng recogniser, `unsupported`
+  only without one). The other jobs (frontend, macos-arm64, macos-x64 incl. its Intel bundle build) passed.
 * **Partial items closed** — H6 (the dead-key deletion; `--strict` in CI) and V2 (the 편집 object paste lands at
   the click point). The "Not in v1" table below now says which of its rows v0.3 delivered.
 * **Partial items left as they are** (each needs more than a small, safe change): H12 / H13 / O3 need the Windows
