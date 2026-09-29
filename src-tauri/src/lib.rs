@@ -386,6 +386,8 @@ pub fn run() {
             commands::app::problem_report,
             commands::app::open_log_folder,
             commands::app::third_party_notices,
+            // --- v0.3 pkg1-redaction-and-text-objects (R4 그룹 해제) ---
+            commands::objects::ungroup_object,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

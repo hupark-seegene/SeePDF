@@ -3,8 +3,10 @@
  * collateral → confirm → ONE `apply_redactions_batch` for both pages (one undo step) → toast; the
  * form-field refusal; `verifyFailed` (everything rolled back, every mark kept); cancel keeps the
  * marks; click-to-mark a text run, remove with ⌫; the leave guard; undo drops the marks; 영역
- * 표시로 표시 from a selection; Stage 8: a drag snaps to the runs it crosses and is clipped to the
- * page; closing / replacing the document with pending marks asks first.
+ * 표시로 표시 from a selection; a drag is clipped to the page (v0.3: no longer snapped to the runs it
+ * crosses — the engine splits them); closing / replacing the document with pending marks asks first.
+ * v0.3 (pkg1): marks inside a group confirm once and apply with `ungroup`; 검색해서 표시 and 검색 ▸
+ * 모든 결과를 영역 표시 mark every match, reviewable in 표시 목록, and the applied text is gone.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -77,7 +79,8 @@ function withCollateral(extra: Partial<RedactPreview> = {}) {
     if (a.page !== 0) return p;
     return {
       ...p,
-      textObjects: p.textObjects.map((o, i) => ({ ...o, fullyInside: i > 0 })),
+      // v0.3: a run that cannot be split (Type3, no /ToUnicode) — the collateral case
+      textObjects: p.textObjects.map((o, i) => ({ ...o, fullyInside: i > 0, split: false })),
       collateral: ["Andreas Gal"],
       ...extra,
     };
@@ -183,6 +186,15 @@ describe("편집 · 영역 표시", () => {
     expect(marks().map((m) => m.page)).toEqual([0, 1]);
   });
 
+  it("v0.3: a page the engine's dry run refuses says why in the preview", async () => {
+    const { ctxs, surfaces, panel } = await setup();
+    vi.spyOn(mock, "redactPreview").mockRejectedValue({ code: "verifyFailed", message: "3 character(s) outside the marks would be lost" });
+    drag(surfaces[0], ctxs[0], [60, 745], [400, 720]);
+    const note = await panel.findByTestId("redact-preview-0");
+    await waitFor(() => expect(note.textContent).toContain("표시하지 않은 글자도 사라지므로"));
+    expect(useEditStore.getState().previews[0]).toMatchObject({ status: "error", refused: true });
+  });
+
   it("cancel at the confirm keeps every mark and writes nothing", async () => {
     const { ctxs, surfaces } = await setup();
     const apply = vi.spyOn(mock, "applyRedactionsBatch");
@@ -261,7 +273,7 @@ describe("편집 · 영역 표시", () => {
 });
 
 describe("편집 · 영역 표시 — Stage 8", () => {
-  it("a drag snaps to the whole of every text run it crosses and keeps its own extent elsewhere", async () => {
+  it("v0.3: a drag over part of a run marks exactly what was dragged (the engine splits the run)", async () => {
     const { ctxs, surfaces } = await setup();
     const line = useEditStore.getState().pages[0]!.objects.find((o) => o.text?.startsWith("Lightweight"))!;
     const midY = (line.rect.b + line.rect.t) / 2;
@@ -270,13 +282,10 @@ describe("편집 · 영역 표시 — Stage 8", () => {
     drag(surfaces[0], ctxs[0], [midX, midY + 2], [line.rect.r + 30, midY - 2]);
     expect(marks()).toHaveLength(1);
     const r = marks()[0].rect;
-    expect(r.l).toBeCloseTo(line.rect.l);
-    expect(r.b).toBeCloseTo(line.rect.b);
-    expect(r.t).toBeCloseTo(line.rect.t);
-    expect(r.r).toBeCloseTo(line.rect.r + 30); // the raw extent past the text stays
-    // the neighbours whose boxes the drag only grazes are not pulled in
-    const others = useEditStore.getState().pages[0]!.objects.filter((o) => o.type === "text" && o.objectId !== line.objectId);
-    for (const o of others) expect(o.rect.t <= r.b + 0.01 || o.rect.b >= r.t - 0.01 || o.rect.r <= r.l || o.rect.l >= r.r).toBe(true);
+    expect(r.l).toBeCloseTo(midX);
+    expect(r.b).toBeCloseTo(midY - 2);
+    expect(r.t).toBeCloseTo(midY + 2);
+    expect(r.r).toBeCloseTo(line.rect.r + 30);
   });
 
   it("a drag over empty paper keeps the raw rect; everything is clipped to the page box", async () => {
@@ -291,7 +300,7 @@ describe("편집 · 영역 표시 — Stage 8", () => {
     expect(useEditStore.getState().markSel).toBe(marks()[0].id); // a press on a mark selects it
   });
 
-  it("the draft mark shows the snapped rect while dragging", async () => {
+  it("the draft mark shows the dragged rect while dragging", async () => {
     const { ctxs, surfaces } = await setup();
     const line = useEditStore.getState().pages[0]!.objects.find((o) => o.text?.startsWith("Lightweight"))!;
     const midY = (line.rect.b + line.rect.t) / 2;
@@ -299,7 +308,7 @@ describe("편집 · 영역 표시 — Stage 8", () => {
     fireEvent.pointerDown(surfaces[0], at(ctxs[0], midX, midY + 2));
     fireEvent.pointerMove(surfaces[0], at(ctxs[0], midX + 20, midY - 2));
     const draft = surfaces[0].querySelector(".redact-mark[data-draft]") as HTMLElement;
-    const box = ctxs[0].rectToBox(line.rect);
+    const box = ctxs[0].rectToBox({ l: midX, b: midY - 2, r: midX + 20, t: midY + 2 });
     expect(parseFloat(draft.style.left)).toBeCloseTo(box.x);
     expect(parseFloat(draft.style.width)).toBeCloseTo(box.w);
     fireEvent.pointerUp(surfaces[0], at(ctxs[0], midX + 20, midY - 2));

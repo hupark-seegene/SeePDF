@@ -1191,6 +1191,11 @@ pub struct RedactTextObject {
     pub text: String,
     pub rect: Rect,
     pub fully_inside: bool,
+    /// v0.3 (pkg1, R2): the object is only partly marked and will be **split** — the marked
+    /// characters go, the rest is re-emitted in place. `false` for a partly marked object
+    /// that falls back to whole-run removal (its text is then listed in `collateral`).
+    #[serde(default)]
+    pub split: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1199,6 +1204,12 @@ pub struct RedactImageObject {
     pub object_id: ObjectId,
     pub rect: Rect,
     pub fully_inside: bool,
+    /// v0.3 (pkg1, R1): the image is partly marked and the pixels under the marks will be
+    /// **blanked** (the rest of the image stays). `false` with `fully_inside == false` means
+    /// the image cannot be re-encoded faithfully (transparency, a palette, a stencil mask) and
+    /// is removed whole.
+    #[serde(default)]
+    pub blank: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1212,6 +1223,11 @@ pub struct RedactPreview {
     pub form_fields: Vec<String>,
     /// Text that will be removed although it is outside the marks.
     pub collateral: Vec<String>,
+    /// v0.3 (pkg1, R4): top-level Form XObjects (groups) holding marked text or images. The
+    /// apply refuses (`verifyFailed`) unless `RedactOptions.ungroup` is set, in which case
+    /// they are ungrouped first (same undo step).
+    #[serde(default)]
+    pub groups: Vec<ObjectId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1220,6 +1236,10 @@ pub struct RedactOptions {
     pub fill: Rgb,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub overlay_text: Option<String>,
+    /// v0.3 (pkg1, R4): ungroup the Form XObjects the marks reach (`RedactPreview.groups`)
+    /// before removing anything. The UI sets it after one confirm.
+    #[serde(default)]
+    pub ungroup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1247,6 +1267,23 @@ pub struct RedactBatchResult {
     pub doc_generation: DocGeneration,
     /// The pages that were redacted, ascending and deduplicated.
     pub pages: Vec<PageIndex>,
+    /// v0.3 (pkg1, R2): text that was removed although it is outside the marks — runs that
+    /// could not be split after all (the preview promised a split, the re-emission failed
+    /// its check). Empty in the normal case (and then not serialised).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collateral: Vec<String>,
+}
+
+// v0.3 pkg1-redaction-and-text-objects (R4) ------------------------------------------------
+
+/// `ungroup_object`: the page after the Form XObject `objectId` was replaced by its children.
+/// `newObjectIds` are the children's ids, in drawing order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UngroupResult {
+    pub doc_generation: DocGeneration,
+    pub objects: Vec<PageObject>,
+    pub new_object_ids: Vec<ObjectId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2765,6 +2802,7 @@ mod tests {
             verified: true,
             doc_generation: 9,
             pages: vec![0, 2],
+            collateral: vec![],
         };
         assert_eq!(
             serde_json::to_value(&batch).unwrap(),

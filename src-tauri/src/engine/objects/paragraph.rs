@@ -158,9 +158,122 @@ enum Classified {
     Skip,
 }
 
-/// What kind of text object this is for the paragraph editor.
-fn classify(index: usize, object: &PdfPageObject<'_>, text_page: &PdfPageText<'_>) -> Classified {
-    let bounds = bounds_of(object);
+/// v0.3 (R5): the frame a paragraph is detected, laid out and rewritten in. Upright text uses
+/// the page itself; a paragraph whose runs are all rotated by θ (a 90° caption up the margin,
+/// a landscape table on a portrait page) is handled in a frame rotated by θ, where it is
+/// upright: runs, lines, the layout and the probe rect are frame coordinates there, and the
+/// new objects are rotated back onto the page. The flow does not move anything for a rotated
+/// paragraph (the content "below" it is not below it on the page).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rot {
+    cos: f32,
+    sin: f32,
+}
+
+impl Rot {
+    const UPRIGHT: Rot = Rot { cos: 1.0, sin: 0.0 };
+
+    /// The direction of a text object's baseline; [`Rot::UPRIGHT`] within 0.02 rad.
+    fn of_matrix(m: [f32; 6]) -> Rot {
+        let len = (m[0] * m[0] + m[1] * m[1]).sqrt();
+        if len < 1e-6 {
+            return Rot::UPRIGHT;
+        }
+        let (cos, sin) = (m[0] / len, m[1] / len);
+        if cos > 0.0 && sin.abs() <= 0.02 {
+            Rot::UPRIGHT
+        } else {
+            Rot { cos, sin }
+        }
+    }
+
+    fn upright(&self) -> bool {
+        *self == Rot::UPRIGHT
+    }
+
+    /// Page → frame.
+    fn to_frame(self, (x, y): (f32, f32)) -> (f32, f32) {
+        (x * self.cos + y * self.sin, -x * self.sin + y * self.cos)
+    }
+
+    /// Frame → page.
+    fn to_page(self, (x, y): (f32, f32)) -> (f32, f32) {
+        (x * self.cos - y * self.sin, x * self.sin + y * self.cos)
+    }
+
+    /// An object matrix as seen in the frame.
+    fn matrix_to_frame(&self, m: [f32; 6]) -> [f32; 6] {
+        let (c, s) = (self.cos, self.sin);
+        let (e, f) = self.to_frame((m[4], m[5]));
+        [
+            m[0] * c + m[1] * s,
+            -m[0] * s + m[1] * c,
+            m[2] * c + m[3] * s,
+            -m[2] * s + m[3] * c,
+            e,
+            f,
+        ]
+    }
+
+    /// The frame-aligned box of four page points.
+    fn points_to_frame(&self, points: [(f32, f32); 4]) -> Rect {
+        let (mut l, mut b, mut r, mut t) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in points {
+            let (x, y) = self.to_frame(p);
+            l = l.min(x);
+            b = b.min(y);
+            r = r.max(x);
+            t = t.max(y);
+        }
+        Rect::new(l, b, r, t)
+    }
+
+    /// A frame rect as the page-aligned box around it.
+    fn rect_to_page(&self, r: Rect) -> Rect {
+        if self.upright() {
+            return r;
+        }
+        let back = Rot {
+            cos: self.cos,
+            sin: -self.sin,
+        };
+        back.points_to_frame([(r.l, r.b), (r.r, r.b), (r.r, r.t), (r.l, r.t)])
+    }
+}
+
+/// An object's bounds in the frame `rot` (its tight rotated quad for text and images).
+fn bounds_in(object: &PdfPageObject<'_>, rot: Rot) -> Rect {
+    if rot.upright() {
+        return bounds_of(object);
+    }
+    object
+        .bounds()
+        .map(|q| {
+            rot.points_to_frame([
+                (q.x1().value, q.y1().value),
+                (q.x2().value, q.y2().value),
+                (q.x3().value, q.y3().value),
+                (q.x4().value, q.y4().value),
+            ])
+        })
+        .unwrap_or(Rect::ZERO)
+}
+
+fn matrix_of(object: &PdfPageObject<'_>) -> Option<[f32; 6]> {
+    object
+        .matrix()
+        .ok()
+        .map(|m| [m.a(), m.b(), m.c(), m.d(), m.e(), m.f()])
+}
+
+/// What kind of text object this is for the paragraph editor, seen in the frame `rot`.
+fn classify(
+    index: usize,
+    object: &PdfPageObject<'_>,
+    text_page: &PdfPageText<'_>,
+    rot: Rot,
+) -> Classified {
+    let bounds = bounds_in(object, rot);
     if object.object_type() == PdfPageObjectType::XObjectForm {
         let has_text = object
             .as_x_object_form_object()
@@ -186,9 +299,9 @@ fn classify(index: usize, object: &PdfPageObject<'_>, text_page: &PdfPageText<'_
     if text.trim().is_empty() {
         return Classified::Skip;
     }
-    let (a, b, d, e, f) = object
-        .matrix()
-        .map(|m| (m.a(), m.b(), m.d(), m.e(), m.f()))
+    let (a, b, d, e, f) = matrix_of(object)
+        .map(|m| rot.matrix_to_frame(m))
+        .map(|m| (m[0], m[1], m[3], m[4], m[5]))
         .unwrap_or((1.0, 0.0, 1.0, bounds.l, bounds.b));
     let size = t.unscaled_font_size().value * d.abs();
     let font = t.font().name();
@@ -828,43 +941,69 @@ pub fn probe(
     let stamps: HashSet<usize> = stamp::stamp_indices(doc.bindings(), &scratch.page, None)
         .into_iter()
         .collect();
-    let (runs, obstacles) = {
-        let text_page = scratch.page.text().ctx("load text page")?;
-        let mut runs = Vec::new();
-        let mut obstacles = Vec::new();
-        for (index, object) in scratch.page.objects().iter().enumerate() {
-            if stamps.contains(&index) {
-                continue;
+    let collect =
+        |page: &PdfPage<'_>, rot: Rot| -> Result<(Vec<Run>, Vec<Obstacle>), EngineError> {
+            let text_page = page.text().ctx("load text page")?;
+            let mut runs = Vec::new();
+            let mut obstacles = Vec::new();
+            for (index, object) in page.objects().iter().enumerate() {
+                if stamps.contains(&index) {
+                    continue;
+                }
+                match classify(index, &object, &text_page, rot) {
+                    Classified::Run(r) => runs.push(r),
+                    Classified::Obstacle(o) => obstacles.push(o),
+                    Classified::Skip => {}
+                }
             }
-            match classify(index, &object, &text_page) {
-                Classified::Run(r) => runs.push(r),
-                Classified::Obstacle(o) => obstacles.push(o),
-                Classified::Skip => {}
+            Ok((runs, obstacles))
+        };
+    let hit_line = |lines: &[Line], (px, py): (f32, f32)| {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                let pad = 0.25 * l.size;
+                let in_band = py >= l.baseline - 0.35 * l.size && py <= l.baseline + 0.95 * l.size;
+                let in_box = py >= l.bounds.b - 1.0 && py <= l.bounds.t + 1.0;
+                (in_band || in_box) && px >= l.left - pad && px <= l.right + pad
+            })
+            .min_by(|(_, a), (_, b)| {
+                let da = (py - (a.baseline + 0.3 * a.size)).abs();
+                let db = (py - (b.baseline + 0.3 * b.size)).abs();
+                da.total_cmp(&db)
+            })
+            .map(|(i, _)| i)
+    };
+    let (mut runs, obstacles) = collect(&scratch.page, Rot::UPRIGHT)?;
+    let [px, py] = at;
+    let mut rot = Rot::UPRIGHT;
+    let mut lines = build_lines(&runs, true);
+    let mut hit = hit_line(&lines, (px, py));
+
+    let inside =
+        |r: &Rect| px >= r.l - 1.0 && px <= r.r + 1.0 && py >= r.b - 1.0 && py <= r.t + 1.0;
+    if hit.is_none() {
+        // v0.3 (R5): a click on rotated text probes again in that text's own frame.
+        let rotated = obstacles
+            .iter()
+            .find(|o| o.reason == NotEditableReason::RotatedText && inside(&o.bounds))
+            .and_then(|o| scratch.page.objects().get(o.index).ok())
+            .and_then(|object| matrix_of(&object))
+            .map(Rot::of_matrix)
+            .filter(|r| !r.upright());
+        if let Some(frame) = rotated {
+            let (frame_runs, _) = collect(&scratch.page, frame)?;
+            let frame_lines = build_lines(&frame_runs, true);
+            if let Some(h) = hit_line(&frame_lines, frame.to_frame((px, py))) {
+                rot = frame;
+                runs = frame_runs;
+                lines = frame_lines;
+                hit = Some(h);
             }
         }
-        (runs, obstacles)
-    };
-    let [px, py] = at;
-    let lines = build_lines(&runs, true);
-    let hit = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| {
-            let pad = 0.25 * l.size;
-            let in_band = py >= l.baseline - 0.35 * l.size && py <= l.baseline + 0.95 * l.size;
-            let in_box = py >= l.bounds.b - 1.0 && py <= l.bounds.t + 1.0;
-            (in_band || in_box) && px >= l.left - pad && px <= l.right + pad
-        })
-        .min_by(|(_, a), (_, b)| {
-            let da = (py - (a.baseline + 0.3 * a.size)).abs();
-            let db = (py - (b.baseline + 0.3 * b.size)).abs();
-            da.total_cmp(&db)
-        })
-        .map(|(i, _)| i);
-
+    }
     let Some(hit) = hit else {
-        let inside =
-            |r: &Rect| px >= r.l - 1.0 && px <= r.r + 1.0 && py >= r.b - 1.0 && py <= r.t + 1.0;
         return Ok(obstacles
             .iter()
             .find(|o| inside(&o.bounds))
@@ -916,7 +1055,8 @@ pub fn probe(
     // Dropping the scratch page without `regenerate_content()` discards the trial objects.
     Ok(Some(ParagraphProbe {
         object_ids: info.ids,
-        rect: info.rect,
+        // v0.3: the page-aligned box around a rotated paragraph.
+        rect: rot.rect_to_page(info.rect),
         text: info.text,
         font_name: dominant.font.clone(),
         font_size_pt: info.size,
@@ -1082,6 +1222,7 @@ fn runs_for(
     bindings: &'static dyn PdfiumLibraryBindings,
     page: &PdfPage<'_>,
     ids: &[ObjectId],
+    rot: Rot,
 ) -> Result<Vec<Run>, EngineError> {
     let text_page = page.text().ctx("load text page")?;
     let stamps: HashSet<usize> = stamp::stamp_indices(bindings, page, None)
@@ -1095,7 +1236,7 @@ fn runs_for(
             )));
         }
         let object = object_at(page, id)?;
-        match classify(id as usize, &object, &text_page) {
+        match classify(id as usize, &object, &text_page, rot) {
             Classified::Run(r) => {
                 if let Some(reason) = r.reason {
                     return Err(not_editable(reason).with_detail(format!("object {id}")));
@@ -1144,6 +1285,8 @@ struct Outcome {
     fit_scale: Option<f32>,
     past_bottom: f32,
     moved_band: Option<Rect>,
+    /// v0.3 (R5): an order anchor was left for `restore_order`.
+    anchored: bool,
 }
 
 impl Outcome {
@@ -1231,6 +1374,9 @@ pub fn edit(
     ids.dedup();
     let flow = edit.flow.unwrap_or_default();
     let pdfium = st.pdfium;
+    // v0.3 (R5): the new text keeps the old paragraph's place in the reading order — a
+    // `lopdf` pass after the write, which cannot write an encrypted file back.
+    let keep_order = !edit.dry_run && !st.doc(doc_id)?.encrypted;
     let job = Job {
         page_index,
         ids: &ids,
@@ -1238,6 +1384,7 @@ pub fn edit(
         edit: &edit,
         flow,
         allow_font_substitution,
+        keep_order,
     };
 
     let outcome = if edit.dry_run {
@@ -1251,6 +1398,14 @@ pub fn edit(
             |doc| run(doc, pdfium, &job, true),
         )?
     };
+    // Nothing is anchored for an emptied paragraph: there is nothing to move.
+    if keep_order && outcome.anchored {
+        // Best effort: the edit itself is done and verified; a failure here only leaves the
+        // paragraph last in the reading order (and an empty placeholder where it was).
+        if let Err(e) = restore_order(st, doc_id, page_index) {
+            tracing::warn!(doc_id, page = page_index, error = %e, "paragraph reading order not restored");
+        }
+    }
     // A dry run changed nothing: no need to list the page again (on a dense page the listing
     // costs more than the plan).
     let objects = if edit.dry_run {
@@ -1274,6 +1429,68 @@ struct Job<'a> {
     edit: &'a ParagraphEdit,
     flow: ParagraphFlow,
     allow_font_substitution: bool,
+    /// v0.3 (R5): leave an order anchor and mark the new objects (see [`restore_order`]).
+    keep_order: bool,
+}
+
+/// v0.3 (R5): moves the new paragraph back to where the old one was in the page's content
+/// stream (`flow::restore_reading_order`), inside the same undo step: the bytes are replaced
+/// without a history entry of their own, and the page renders exactly as before.
+fn restore_order(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page_index: PageIndex,
+) -> Result<bool, EngineError> {
+    let bytes = crate::engine::save::serialize(st, doc_id)?;
+    let Some(out) = flow::restore_reading_order(&bytes, page_index)? else {
+        return Ok(false);
+    };
+    let (pages, password) = {
+        let doc = st.doc(doc_id)?;
+        (doc.page_count(), doc.password.clone())
+    };
+    crate::engine::save::verify_bytes(st, &out, pages, password)?;
+    registry::replace(st, doc_id, std::sync::Arc::from(out.into_boxed_slice()))?;
+    Ok(true)
+}
+
+/// The placeholder [`flow::restore_reading_order`] looks for: a copy of the object at `at`,
+/// moved out of a throw-away second parse (so it keeps that object's content stream), inserted
+/// at `at`, emptied and marked. On any failure nothing is left behind.
+fn order_anchor(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    document: &PdfDocument<'_>,
+    page: &PdfPage<'_>,
+    page_index: PageIndex,
+    at: usize,
+) -> Result<(), EngineError> {
+    let mut source = document
+        .pages()
+        .get(page_index as PdfPageIndex)
+        .ctx(&format!("load page {page_index}"))?;
+    source.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+    let handle = crate::engine::redact::raw::transplant_at(bindings, &source, at, page, at)?;
+    drop(source);
+    let emptied = (|| {
+        let mut object = page.objects().get(at).ctx("load the anchor")?;
+        object
+            .as_text_object_mut()
+            .ok_or_else(|| EngineError::invalid("the anchor is not a text object"))?
+            .set_text("")
+            .ctx("empty the anchor")?;
+        raw::object::add_mark(
+            bindings,
+            document,
+            page,
+            at,
+            raw::object::Mark::plain(flow::ORDER_ANCHOR),
+        )
+    })();
+    if let Err(e) = emptied {
+        let _ = crate::engine::redact::raw::remove_and_destroy(bindings, page, handle);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Layout, flow plan and — when `apply` — the page rewrite. The caller is inside
@@ -1290,7 +1507,16 @@ fn run<'p>(
     let bindings = doc.bindings();
     let crop = doc.geom(page_index)?.crop;
     let mut scratch = ScratchPage::open(doc, page_index)?;
-    let runs = runs_for(bindings, &scratch.page, job.ids)?;
+    // v0.3 (R5): the paragraph's frame, from its first run (upright for upright text).
+    let rot = scratch
+        .page
+        .objects()
+        .get(job.ids[0] as usize)
+        .ok()
+        .and_then(|o| matrix_of(&o))
+        .map(Rot::of_matrix)
+        .unwrap_or(Rot::UPRIGHT);
+    let runs = runs_for(bindings, &scratch.page, job.ids, rot)?;
     let mut lines = build_lines(&runs, false);
     lines.sort_by(|a, b| b.baseline.total_cmp(&a.baseline));
     let line_refs: Vec<&Line> = lines.iter().collect();
@@ -1417,19 +1643,19 @@ fn run<'p>(
     // The new objects, measured before anything on the page changes.
     let built = {
         let document = measuring_doc.as_ref().unwrap_or_else(|| doc.pdf());
-        build_objects(document, token, size, color, render_mode, &placed)?
+        build_objects(document, token, size, color, render_mode, &placed, rot)?
     };
     let new_rect = built
         .iter()
         .map(|(_, r)| *r)
         .reduce(|a, b| a.union(&b))
         // Deleted: a zero-height box at the paragraph's top (its column stays the column).
-        .unwrap_or(Rect::new(
+        .unwrap_or(rot.rect_to_page(Rect::new(
             info.rect.l,
             info.rect.t,
             info.rect.r,
             info.rect.t,
-        ));
+        )));
 
     // What follows the paragraph, from the page as it is (indices still the listed ones).
     let own_ids: HashSet<usize> = job.ids.iter().map(|&i| i as usize).collect();
@@ -1458,7 +1684,15 @@ fn run<'p>(
     } else {
         growth.max(original_bottom - new_rect.b)
     };
-    let mut decision = flow::decide(&plan, job.flow, growth, reach);
+    if !rot.upright() {
+        // A rotated paragraph reflows in its own frame; nothing on the page moves for it.
+        plan = plan.frozen();
+    }
+    let mut decision = if rot.upright() {
+        flow::decide(&plan, job.flow, growth, reach)
+    } else {
+        flow::decide(&plan, ParagraphFlow::Overlap, 0.0, 0.0)
+    };
     let is_moving = |d: &flow::Decision, p: &flow::Plan| {
         d.shift.abs() >= flow::MIN_SHIFT && !p.movable.is_empty()
     };
@@ -1489,6 +1723,7 @@ fn run<'p>(
     let moved: &[usize] = if moving { &plan.movable } else { &[] };
 
     let mut moved_annotations = if moving { plan.annots.len() as u32 } else { 0 };
+    let mut anchored = false;
     if apply {
         let count = scratch.page.objects().len();
         // Moves first, while the listed indices are still valid; then add first, remove
@@ -1502,6 +1737,19 @@ fn run<'p>(
             raw::object::translate(bindings, &scratch.page, index, 0.0, 0.0)?;
         }
         let added = built.len();
+        // v0.3 (R5): a placeholder where the paragraph starts, in its content stream.
+        anchored = job.keep_order
+            && added > 0
+            && order_anchor(
+                bindings,
+                doc.pdf(),
+                &scratch.page,
+                page_index,
+                job.ids[0] as usize,
+            )
+            .is_ok();
+        let shift = usize::from(anchored);
+        let first_new = scratch.page.objects().len();
         for (object, _) in built {
             scratch
                 .page
@@ -1509,11 +1757,23 @@ fn run<'p>(
                 .add_text_object(object)
                 .ctx("add text object")?;
         }
+        if anchored {
+            for index in first_new..first_new + added {
+                raw::object::add_mark(
+                    bindings,
+                    doc.pdf(),
+                    &scratch.page,
+                    index,
+                    raw::object::Mark::plain(flow::ORDER_PARA),
+                )?;
+            }
+        }
         for &id in job.ids.iter().rev() {
+            let index = id as usize + shift;
             scratch
                 .page
                 .objects_mut()
-                .remove_object_at_index(id as usize)
+                .remove_object_at_index(index)
                 .ctx(&format!("remove object {id}"))?;
         }
         scratch
@@ -1530,7 +1790,7 @@ fn run<'p>(
         // rewrites (text, paths and forms are always written): re-parse, and refuse (the
         // mutation rolls back) rather than lose it.
         if !risky.is_empty() {
-            let expected = count - job.ids.len() + added;
+            let expected = count - job.ids.len() + added + usize::from(anchored);
             let reparsed = ScratchPage::open(doc, page_index)?.page.objects().len();
             if reparsed < expected {
                 return Err(unwritable(page_index).with_detail(format!(
@@ -1553,6 +1813,7 @@ fn run<'p>(
         fit_scale: (job.flow == ParagraphFlow::Fit).then(|| round2(factor)),
         past_bottom: decision.past_bottom,
         moved_band: if moving { plan.band } else { None },
+        anchored,
     })
 }
 
@@ -1646,6 +1907,7 @@ fn build_objects<'p>(
     color: Rgb,
     render_mode: PdfPageTextRenderMode,
     placed: &[Placed],
+    rot: Rot,
 ) -> Result<Vec<(PdfPageTextObject<'p>, Rect)>, EngineError> {
     let mut out = Vec::with_capacity(placed.len());
     for p in placed {
@@ -1660,16 +1922,34 @@ fn build_objects<'p>(
         ) {
             object.set_render_mode(render_mode).ctx("set_render_mode")?;
         }
-        object
-            .translate(PdfPoints::new(p.x), PdfPoints::new(p.baseline))
-            .ctx("place text object")?;
-        let b = object.bounds().ctx("measure text object")?.to_rect();
-        let r = Rect::new(
-            b.left().value,
-            b.bottom().value,
-            b.right().value,
-            b.top().value,
-        );
+        if rot.upright() {
+            object
+                .translate(PdfPoints::new(p.x), PdfPoints::new(p.baseline))
+                .ctx("place text object")?;
+        } else {
+            // v0.3 (R5): laid out in the rotated frame, drawn rotated back onto the page.
+            let (x, y) = rot.to_page((p.x, p.baseline));
+            object
+                .apply_matrix(PdfMatrix::new(rot.cos, rot.sin, -rot.sin, rot.cos, x, y))
+                .ctx("place rotated text object")?;
+        }
+        let q = object.bounds().ctx("measure text object")?;
+        let r = if rot.upright() {
+            let b = q.to_rect();
+            Rect::new(
+                b.left().value,
+                b.bottom().value,
+                b.right().value,
+                b.top().value,
+            )
+        } else {
+            Rot::UPRIGHT.points_to_frame([
+                (q.x1().value, q.y1().value),
+                (q.x2().value, q.y2().value),
+                (q.x3().value, q.y3().value),
+                (q.x4().value, q.y4().value),
+            ])
+        };
         out.push((object, r));
     }
     Ok(out)

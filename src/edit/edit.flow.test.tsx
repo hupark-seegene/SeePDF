@@ -201,11 +201,27 @@ describe("편집 · 텍스트 수정", () => {
     expect(toastKeys().filter((k) => k.startsWith("edit.flow."))).toEqual([]);
   });
 
-  it("a refused paragraph toasts its reason and opens nothing", async () => {
+  // v0.3 pkg1 (R4): a run inside a group asks 그룹 해제 후 편집할까요? instead of only refusing
+  it("a paragraph inside a group asks to ungroup: 취소 opens nothing, 그룹 해제 ungroups and opens the editor", async () => {
     const { ctx, surface } = await setup("editText");
+    const ungroup = vi.spyOn(mock, "ungroupObject");
     fireEvent.pointerDown(surface, at(ctx, 100, 765));
-    await waitFor(() => expect(toastKeys()).toContain("edit.readOnly.xobject"));
+    await waitFor(() => expect(confirmTop()).not.toBeNull());
+    expect(useDialogStore.getState().stack.at(-1)!.props).toMatchObject({ titleKey: "edit.ungroup.title" });
+    act(() => confirmTop()!(false));
+    await act(async () => undefined);
+    expect(ungroup).not.toHaveBeenCalled();
     expect(useEditStore.getState().session).toBeNull();
+
+    fireEvent.pointerDown(surface, at(ctx, 100, 765));
+    await waitFor(() => expect(confirmTop()).not.toBeNull());
+    act(() => confirmTop()!(true));
+    await waitFor(() => expect(useEditStore.getState().session?.kind).toBe("paragraph"));
+    expect(ungroup).toHaveBeenCalledTimes(1);
+    expect(ungroup.mock.calls[0][0]).toMatchObject({ page: 0, objectId: 0 });
+    const info = await api.getDocument({ docId: useDocStore.getState().info!.docId });
+    expect(info.undoLabel).toBe("undo.ungroup");
+    expect(objects()[0].editable).toBe("full");
   });
 });
 

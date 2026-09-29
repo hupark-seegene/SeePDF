@@ -3,8 +3,14 @@
  * page) → 적용 → ONE `apply_redactions_batch` for every marked page (one undo step; a failed
  * verification rolls all of them back, so the marks stay).
  *
- * A dragged mark snaps to the text runs it crosses (PDFium removes a text object whole, so the
- * box must cover all of it) and every mark is clipped to the page box (`geometry.snapMark`).
+ * v0.3 (R2): the engine removes exactly the characters under a mark and re-emits the rest of their
+ * run, so a dragged mark is kept as drawn (Stage 8 snapped it to every run it crossed, because a run
+ * went whole) and only clipped to the page box. A click still marks the whole run under it.
+ *
+ * v0.3 (R3): 검색해서 표시 — `findAndMark` runs the keyword / 개인정보 patterns (`redactPatterns.ts`)
+ * over the text layer of every page in range, and 검색 ▸ 모든 결과를 영역 표시 (`markSearchHits`) turns
+ * search hits into marks. Such marks carry a label (what matched) so the panel can list them for
+ * review; each can be removed before 적용.
  *
  * Marks are geometry only (page points, y-up) and live in `editStore` until applied. They survive
  * tool switches inside 편집, and are dropped when the mode is left (after a confirm — the leave
@@ -15,15 +21,16 @@
  * No React here; `redact.flow.test.tsx` drives it against the mock adapter.
  */
 import * as api from "../ipc/api";
-import type { DocChangedEvent, PageIndex, Point, Rect, RedactBatchMark, RedactPreview } from "../ipc/types";
+import type { DocChangedEvent, PageIndex, Point, Rect, RedactBatchMark, RedactPreview, SearchHit } from "../ipc/types";
 import { toast } from "../app/toastStore";
 import { askConfirm } from "../dialogs/dialogState";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { toolController } from "../tools/ToolController";
-import { clearTextSelection, getTextLayer, isEmptySelection, orderSelection, pageRange, useSelectionStore } from "../viewer";
+import { clearTextSelection, getTextLayer, isEmptySelection, orderSelection, pageRange, PageTextLayer, useSelectionStore } from "../viewer";
 import { useEditStore, type RedactMark } from "./editStore";
-import { clipRect, hitObject, snapMark } from "./geometry";
+import { clipRect, hitObject } from "./geometry";
+import { findAll, type PatternKind } from "./redactPatterns";
 
 export const PREVIEW_DEBOUNCE_MS = 250;
 /** a drag smaller than this (points, either side) is a click */
@@ -62,12 +69,15 @@ export function pageBox(page: PageIndex): Rect {
   return info && info.docId === docId() ? info.pages[page]?.crop ?? EVERYWHERE : EVERYWHERE;
 }
 
-/** What a drag of `rect` on `page` becomes: snapped to the text runs it crosses, clipped to the page. */
+/**
+ * What a drag of `rect` on `page` becomes: clipped to the page. (v0.3: no longer snapped to the text
+ * runs it crosses — the engine splits a run instead of removing it whole.)
+ */
 export function markRectFor(page: PageIndex, rect: Rect): Rect | null {
-  return snapMark(rect, useEditStore.getState().pages[page]?.objects ?? [], pageBox(page));
+  return clipRect(rect, pageBox(page));
 }
 
-/** A dragged rectangle (snapped + clipped); `false` when it was too small to be a mark. */
+/** A dragged rectangle (clipped); `false` when it was too small to be a mark. */
 export function markArea(page: PageIndex, rect: Rect): boolean {
   if (rect.r - rect.l < MIN_MARK_PT || rect.t - rect.b < MIN_MARK_PT) return false;
   const snapped = markRectFor(page, rect);
@@ -165,8 +175,9 @@ export async function runPreview(page: PageIndex): Promise<RedactPreview | null>
       useEditStore.getState().setPreview(page, { status: "ready", result });
     }
     return result;
-  } catch {
-    if (latest.get(page) === mine && marksOn(page).length) useEditStore.getState().setPreview(page, { status: "error" });
+  } catch (e) {
+    const refused = api.isSeePdfError(e) && e.code === "verifyFailed";
+    if (latest.get(page) === mine && marksOn(page).length) useEditStore.getState().setPreview(page, { status: "error", refused });
     return null;
   }
 }
@@ -204,12 +215,14 @@ export async function applyMarks(): Promise<boolean> {
       toast("redact.formFields", { names: fields.join(", ") }, { tone: "danger" });
       return false;
     }
-    const ok = await askConfirm({
-      titleKey: "redact.confirmTitle",
-      bodyKey: "redact.applyWarning",
-      confirmKey: "redact.apply",
-      danger: true,
-    });
+    // v0.3 (R4): content inside a group (Form XObject) can only go after the group is ungrouped —
+    // one confirm says both, and the engine ungroups in the same undo step.
+    const ungroup = previews.some((p) => (p?.groups?.length ?? 0) > 0);
+    const ok = await askConfirm(
+      ungroup
+        ? { titleKey: "redact.groups.title", bodyKey: "redact.groups.body", confirmKey: "redact.groups.confirm", danger: true }
+        : { titleKey: "redact.confirmTitle", bodyKey: "redact.applyWarning", confirmKey: "redact.apply", danger: true },
+    );
     if (!ok) return false;
 
     const { redactFill, redactOverlay } = useEditStore.getState();
@@ -219,12 +232,18 @@ export async function applyMarks(): Promise<boolean> {
       .map((page) => ({ page, rects: sent.filter((m) => m.page === page).map((m) => m.rect) }))
       .filter((m) => m.rects.length > 0);
     if (marks.length === 0) return false;
+    let collateral: string[] = [];
     try {
-      await api.applyRedactionsBatch({
+      const result = await api.applyRedactionsBatch({
         docId: doc,
         marks,
-        options: overlayText ? { fill: redactFill, overlayText } : { fill: redactFill },
+        options: {
+          fill: redactFill,
+          ...(overlayText ? { overlayText } : null),
+          ...(ungroup ? { ungroup: true } : null),
+        },
       });
+      collateral = result.collateral ?? [];
     } catch (e) {
       const verify = api.isSeePdfError(e) && e.code === "verifyFailed";
       toast(verify ? "redact.verifyFailed" : api.errorKey(e), undefined, {
@@ -236,7 +255,10 @@ export async function applyMarks(): Promise<boolean> {
     }
     for (const page of pages) cancelTimer(page);
     useEditStore.getState().removeMarks(sent.map((m) => m.id));
+    for (const m of sent) labels.delete(m.id);
     toast("redact.done", { count: sent.length }, { tone: "success" });
+    // a run the preview promised to split went whole after all (its re-emission failed a check)
+    if (collateral.length) toast("redact.splitFallback", { text: collateral.join(", ") }, { tone: "info" });
     return true;
   } finally {
     applying = false;
@@ -264,6 +286,7 @@ export function confirmLeave(): Promise<boolean> | null {
 export function dropMarks(): void {
   stopPreviews();
   useEditStore.getState().clearMarks();
+  labels.clear();
 }
 
 /** The document moved: undo / redo / page ops / OCR drop the marks; our own edits re-preview. */
@@ -324,4 +347,161 @@ export function watchMarks(): () => void {
       if (before.get(p) !== after.get(p) && !(applying && !after.has(p))) schedulePreview(p);
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 (R3) 검색해서 표시: labelled marks, pattern search over the text layers, search hits
+// ---------------------------------------------------------------------------
+
+/** What made a mark: a keyword, a 개인정보 pattern, a 검색 hit — or a hand-drawn area. */
+export type MarkSource = "keyword" | PatternKind | "search" | "area";
+
+interface MarkLabel {
+  group: number;
+  source: Exclude<MarkSource, "area">;
+  text: string;
+}
+
+/** mark id → what matched (one match spanning two lines is two marks of one group) */
+const labels = new Map<number, MarkLabel>();
+let nextGroup = 1;
+
+/** One reviewable entry of the panel's 표시 목록: every mark of one match, or one hand-drawn mark. */
+export interface MarkGroup {
+  key: string;
+  page: PageIndex;
+  ids: number[];
+  source: MarkSource;
+  text: string;
+}
+
+export function markGroups(marks: RedactMark[] = useEditStore.getState().marks): MarkGroup[] {
+  const out: MarkGroup[] = [];
+  const byGroup = new Map<number, MarkGroup>();
+  for (const m of marks) {
+    const label = labels.get(m.id);
+    if (!label) {
+      out.push({ key: `m${m.id}`, page: m.page, ids: [m.id], source: "area", text: "" });
+      continue;
+    }
+    const known = byGroup.get(label.group);
+    if (known) {
+      known.ids.push(m.id);
+      continue;
+    }
+    const group: MarkGroup = { key: `g${label.group}`, page: m.page, ids: [m.id], source: label.source, text: label.text };
+    byGroup.set(label.group, group);
+    out.push(group);
+  }
+  return out.sort((a, b) => a.page - b.page || a.ids[0] - b.ids[0]);
+}
+
+/**
+ * A search-derived rect a hair narrower than the characters' boxes: the engine removes every
+ * character whose ink the mark overlaps, and the boxes of kerned neighbours can overlap by a
+ * fraction of a point.
+ */
+function inset(r: Rect): Rect {
+  const dx = Math.min(0.25, (r.r - r.l) * 0.1);
+  return { l: r.l + dx, b: r.b, r: r.r - dx, t: r.t };
+}
+
+function sameRect(a: Rect, b: Rect): boolean {
+  return Math.abs(a.l - b.l) < 0.5 && Math.abs(a.b - b.b) < 0.5 && Math.abs(a.r - b.r) < 0.5 && Math.abs(a.t - b.t) < 0.5;
+}
+
+/** Adds the marks of one match (skipping any identical mark already there); returns their ids. */
+function addLabelled(page: PageIndex, rects: Rect[], source: MarkLabel["source"], text: string): number[] {
+  const box = pageBox(page);
+  const existing = marksOn(page).map((m) => m.rect);
+  const fresh = rects
+    .flatMap((r) => clipRect(inset(r), box) ?? [])
+    .filter((r) => !existing.some((e) => sameRect(e, r)));
+  if (fresh.length === 0) return [];
+  const ids = useEditStore.getState().addMarks(page, fresh);
+  const group = nextGroup++;
+  for (const id of ids) labels.set(id, { group, source, text: text.replace(/\s+/g, " ").trim() });
+  return ids;
+}
+
+/** Switches to 편집 · 영역 표시 (after marks were added from outside the edit layer). */
+function armRedact(): void {
+  const app = useAppStore.getState();
+  if (app.mode !== "edit") app.setMode("edit");
+  useAppStore.getState().setTool("redact");
+  toolController.arm("redact");
+}
+
+/**
+ * 검색 ▸ 모든 결과를 영역 표시 / a result's 영역 표시: every hit's line rects become marks (labelled
+ * with the matched text) and 편집 · 영역 표시 is armed. Returns the number of hits marked.
+ */
+export function markSearchHits(hits: SearchHit[]): number {
+  const info = useDocStore.getState().info;
+  if (!info || hits.length === 0) return 0;
+  useEditStore.getState().bind(info.docId);
+  let marked = 0;
+  for (const hit of hits) {
+    const [start, length] = hit.contextMatch;
+    const text = hit.context.slice(start, start + length);
+    if (addLabelled(hit.page, hit.rects, "search", text).length) marked += 1;
+  }
+  if (marked) armRedact();
+  return marked;
+}
+
+export interface FindOptions {
+  keyword: string;
+  patterns: PatternKind[];
+  pages: PageIndex[];
+  matchCase?: boolean;
+}
+
+/** The page's characters as one string, and the character index of every UTF-16 unit of it. */
+function layerText(layer: PageTextLayer): { text: string; charOf: number[] } {
+  let text = "";
+  const charOf: number[] = [];
+  for (let i = 0; i < layer.charCount; i++) {
+    const code = layer.charCode(i);
+    const s = code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "�";
+    text += s;
+    for (let k = 0; k < s.length; k++) charOf.push(i);
+  }
+  return { text, charOf };
+}
+
+/**
+ * 검색해서 표시: the keyword and the chosen patterns over every page of `opts.pages` (each page's
+ * text layer is fetched once); each match's character boxes become labelled marks. `onProgress`
+ * after every page; `signal.cancelled` stops between pages (marks found so far stay). Returns the
+ * number of matches marked.
+ */
+export async function findAndMark(
+  opts: FindOptions,
+  onProgress?: (done: number, total: number) => void,
+  signal?: { cancelled: boolean },
+): Promise<number> {
+  const info = useDocStore.getState().info;
+  const doc = docId();
+  if (!info || !doc || (!opts.keyword.trim() && opts.patterns.length === 0)) return 0;
+  useEditStore.getState().bind(doc);
+  let marked = 0;
+  let done = 0;
+  for (const page of opts.pages) {
+    if (signal?.cancelled) break;
+    try {
+      const layer = new PageTextLayer(await api.getTextLayer({ docId: doc, page }));
+      const { text, charOf } = layerText(layer);
+      for (const m of findAll(text, { keyword: opts.keyword, patterns: opts.patterns, matchCase: opts.matchCase })) {
+        if (m.end <= m.start) continue;
+        const rects = layer.rangeRects(charOf[m.start], charOf[m.end - 1] + 1);
+        if (addLabelled(page, rects, m.kind, m.text).length) marked += 1;
+      }
+    } catch {
+      // a page without a text layer (a scan without OCR) has nothing to find
+    }
+    done += 1;
+    onProgress?.(done, opts.pages.length);
+  }
+  return marked;
 }

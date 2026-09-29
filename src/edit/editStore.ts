@@ -60,7 +60,9 @@ export interface RedactMark {
 export type RedactPreviewState =
   | { status: "loading" }
   | { status: "ready"; result: RedactPreview }
-  | { status: "error" };
+  // v0.3 (pkg1): `refused` = the engine's dry run of the apply said `verifyFailed` — applying would
+  // lose text outside the marks, so it would be refused too.
+  | { status: "error"; refused?: boolean };
 
 export const DEFAULT_REDACT_FILL: Rgb = [0, 0, 0];
 

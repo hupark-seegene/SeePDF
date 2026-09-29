@@ -122,6 +122,8 @@ mod tests {
             "undo.linkEdit",
             "undo.linkDelete",
             "undo.pageLabels",
+            // v0.3 pkg1 (R4)
+            "undo.ungroup",
         ];
         for key in keys {
             for locale in [Locale::Ko, Locale::En] {

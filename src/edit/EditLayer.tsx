@@ -259,7 +259,7 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
       )}
       {preview?.status === "ready" &&
         preview.result.textObjects
-          .filter((o) => !o.fullyInside)
+          .filter((o) => !o.fullyInside && !o.split) // v0.3 (R2): a split run loses nothing outside the marks
           .map((o) => {
             const box = ctx.rectToBox(o.rect);
             return (

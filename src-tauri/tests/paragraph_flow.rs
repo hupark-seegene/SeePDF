@@ -255,7 +255,19 @@ fn survivors<'a>(
         after.len(),
         kept.len()
     );
-    kept.into_iter().zip(after.iter()).collect()
+    // v0.3 (R5): the new paragraph's objects take the old one's place in the list (reading
+    // order) instead of coming last, so each survivor is paired with the next object of the
+    // same type and text; the ones skipped over are the new paragraph.
+    let mut out = Vec::with_capacity(kept.len());
+    let mut next = 0;
+    for k in kept {
+        let at = (next..after.len())
+            .find(|&i| after[i].object_type == k.object_type && after[i].text == k.text)
+            .unwrap_or_else(|| panic!("{:?} {:?} survives the edit", k.object_type, k.text));
+        out.push((k, &after[at]));
+        next = at + 1;
+    }
+    out
 }
 
 fn same_bits(a: &PageObject, b: &PageObject) -> bool {

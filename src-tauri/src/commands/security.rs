@@ -28,8 +28,8 @@ pub async fn redact_preview(
 ) -> Result<RedactPreview, EngineError> {
     engine
         .call(Lane::Interactive, "redact_preview", move |st| {
-            let doc = st.doc_mut(&doc_id)?;
-            redact::preview(doc, page, &rects)
+            // v0.3 (pkg1): the static plan plus a dry run of the apply on a throw-away copy.
+            redact::preview_checked(st, &doc_id, page, &rects)
         })
         .await
 }

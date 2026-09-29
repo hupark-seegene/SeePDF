@@ -47,6 +47,8 @@ type MockObj = Omit<PageObject, "objectId">;
 interface Snapshot {
   info: DocInfo; annots: [PageIndex, Annot[]][]; fields: FormField[]; objects: [PageIndex, MockObj[]][];
   outline: OutlineNode[]; labelRanges: PageLabelRange[];
+  /** v0.3 pkg1: redacted areas per page (their characters leave the fake text layer) */
+  redacted?: [PageIndex, Rect[]][];
 }
 
 interface MockDoc {
@@ -60,6 +62,8 @@ interface MockDoc {
   objects: Map<PageIndex, MockObj[]>;
   undo: Snapshot[];
   redo: Snapshot[];
+  /** v0.3 pkg1 (R3): redacted areas per page — their characters leave the fake text layer */
+  redacted?: Map<PageIndex, Rect[]>;
 }
 
 const docs = new Map<DocId, MockDoc>();
@@ -179,6 +183,7 @@ function snapshot(d: MockDoc): Snapshot {
     objects: [...d.objects.entries()].map(([p, o]) => [p, structuredClone(o)] as [PageIndex, MockObj[]]),
     outline: structuredClone(d.outline),
     labelRanges: structuredClone(d.labelRanges),
+    redacted: [...(d.redacted ?? new Map<PageIndex, Rect[]>()).entries()].map(([p, r]) => [p, structuredClone(r)] as [PageIndex, Rect[]]),
   };
 }
 
@@ -189,6 +194,7 @@ function restore(d: MockDoc, s: Snapshot): void {
   d.objects = new Map(s.objects.map(([p, o]) => [p, structuredClone(o)]));
   d.outline = structuredClone(s.outline);
   d.labelRanges = structuredClone(s.labelRanges);
+  d.redacted = new Map((s.redacted ?? []).map(([p, r]) => [p, structuredClone(r)]));
 }
 
 /** Like the engine: `pages[i].label` and `pageLabels` follow the /PageLabels ranges. */
@@ -365,14 +371,16 @@ interface MockTextPage {
 }
 
 const textCache = new Map<string, MockTextPage>();
+/** v0.3 pkg1 (tests): `docId:page` → the lines that page shows instead of the fixture's. */
+const textOverrides = new Map<string, FixtureLine[]>();
 
 function isWide(ch: string): boolean {
   const c = ch.codePointAt(0) ?? 0;
   return c >= 0x1100 && c <= 0xffe6; // CJK / Hangul — one em wide
 }
 
-function buildTextPage(page: PageIndex): MockTextPage {
-  const fixture = TEXT_PAGES[page % TEXT_PAGES.length];
+function buildTextPage(page: PageIndex, override?: FixtureLine[], redacted: Rect[] = []): MockTextPage {
+  const fixture = override ? { lines: override } : TEXT_PAGES[page % TEXT_PAGES.length];
   const chars: TextChar[] = [];
   const words: TextWord[] = [];
   const lines: TextLine[] = [];
@@ -391,6 +399,12 @@ function buildTextPage(page: PageIndex): MockTextPage {
     };
     for (const ch of [...line.text]) {
       const advance = line.size * (ch === " " ? 0.32 : isWide(ch) ? 1 : 0.52);
+      // v0.3 pkg1: a redacted character is gone from the page, like the engine's text layer
+      const box = { l: x, b: line.y - line.size * 0.24, r: x + advance, t: line.y + line.size * 0.78 };
+      if (redacted.some((r) => r.l < box.r && box.l < r.r && r.b < box.t && box.b < r.t)) {
+        x += advance;
+        continue;
+      }
       charTextOffset.push(text.length);
       text += ch;
       chars.push({
@@ -433,7 +447,7 @@ function textPage(d: MockDoc, page: PageIndex): MockTextPage {
   const key = `${d.info.docId}:${d.info.docGeneration}:${page}`;
   const hit = textCache.get(key);
   if (hit) return hit;
-  const built = buildTextPage(page);
+  const built = buildTextPage(page, textOverrides.get(`${d.info.docId}:${page}`), d.redacted?.get(page));
   textCache.set(key, built);
   return built;
 }
@@ -1184,9 +1198,14 @@ export const mock = {
     const d = doc(a.docId);
     const tp = textPage(d, a.page);
     const textObjects = tp.lines
-      .map((l, i) => ({ objectId: i, text: sliceLineText(tp, i), rect: l.box, fullyInside: false }))
+      .map((l, i) => ({ objectId: i, text: sliceLineText(tp, i), rect: l.box, fullyInside: false, split: true }))
       .filter((o) => a.rects.some((r) => intersects(r, o.rect)));
-    return { page: a.page, textObjects, imageObjects: [], annotations: [], formFields: [], collateral: [] };
+    // v0.3 (R4): the read-only "inside a Form XObject" runs are the groups
+    const groups = pageObjects(d, a.page)
+      .map((o, id) => ({ o, id }))
+      .filter(({ o }) => o.reason === "insideXObject" && a.rects.some((r) => intersects(r, o.rect)))
+      .map(({ id }) => id);
+    return { page: a.page, textObjects, imageObjects: [], annotations: [], formFields: [], collateral: [], groups };
   },
   async applyRedactions(a: { docId: DocId; page: PageIndex; rects: Rect[] }) {
     const d = doc(a.docId);
@@ -1197,15 +1216,24 @@ export const mock = {
     }));
   },
   // Stage 8: every page in one mutation (= one undo step); text / image objects the marks touch go.
-  async applyRedactionsBatch(a: { docId: DocId; marks: RedactBatchMark[]; options: { fill: Rgb; overlayText?: string } }): Promise<RedactBatchResult> {
+  async applyRedactionsBatch(a: { docId: DocId; marks: RedactBatchMark[]; options: { fill: Rgb; overlayText?: string; ungroup?: boolean } }): Promise<RedactBatchResult> {
     const d = doc(a.docId);
     const pages = [...new Set(a.marks.filter((m) => m.rects.length > 0).map((m) => m.page))].sort((x, y) => x - y);
     if (pages.length === 0) throw err("invalidArgument", "no marks");
     for (const p of pages) if (p < 0 || p >= d.info.pageCount) throw err("invalidArgument", `no page ${p}`);
+    // v0.3 (R4): content inside a group needs { ungroup: true }, like the engine
+    const grouped = (p: PageIndex, rects: Rect[]) =>
+      pageObjects(d, p).filter((o) => o.reason === "insideXObject" && rects.some((r) => intersects(r, o.rect)));
+    if (!a.options.ungroup && pages.some((p) => grouped(p, a.marks.filter((m) => m.page === p).flatMap((m) => m.rects)).length)) {
+      throw err("verifyFailed", "marked text is inside a Form XObject; ungroup first");
+    }
     return mutate(d, { reason: "redact", pages, undoLabel: "undo.redact" }, () => {
       let removedObjects = 0;
       for (const p of pages) {
         const rects = a.marks.filter((m) => m.page === p).flatMap((m) => m.rects);
+        for (const o of grouped(p, rects)) Object.assign(o, { editable: "full", reason: undefined });
+        d.redacted ??= new Map();
+        d.redacted.set(p, [...(d.redacted.get(p) ?? []), ...structuredClone(rects)]);
         const list = pageObjects(d, p);
         const kept = list.filter((o) => !((o.type === "text" || o.type === "image") && rects.some((r) => intersects(r, o.rect))));
         removedObjects += list.length - kept.length;
@@ -1213,6 +1241,18 @@ export const mock = {
       }
       return () => ({ removedObjects, verified: true, docGeneration: d.info.docGeneration, pages });
     })();
+  },
+  // v0.3 pkg1 (R4) 그룹 해제: the read-only "inside a Form XObject" run becomes an ordinary one
+  async ungroupObject(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration }): Promise<import("./types").UngroupResult> {
+    const d = doc(a.docId);
+    checkGeneration(d, a.expectGeneration);
+    const o = pageObjects(d, a.page)[a.objectId];
+    if (!o) throw err("notFound", `object ${a.objectId}`);
+    if (o.reason !== "insideXObject") throw err("invalidArgument", "not a group", { detail: "notAGroup" });
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.ungroup" }, () => {
+      Object.assign(o, { editable: "full", reason: undefined });
+      return { ...listObjects(d, a.page), newObjectIds: [a.objectId] };
+    });
   },
   // both write a copy to `outPath`; the open document is untouched
   async removePassword(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }> {
@@ -2446,6 +2486,7 @@ export function resetMock(): void {
   for (const job of jobs.values()) job.cancel();
   jobs.clear();
   textCache.clear();
+  textOverrides.clear();
   imageCache.clear();
   appBus.clear();
   nextDoc = 1;
@@ -2454,6 +2495,13 @@ export function resetMock(): void {
   openedUrls = [];
   recents = structuredClone(recentsFixture) as unknown as RecentEntry[];
   settings = seedSettings();
+}
+
+/** v0.3 pkg1 test helper: `page` of `docId` shows these lines (PDF points) instead of the fixture's. */
+export function mockSetPageText(docId: DocId, page: PageIndex, lines: { text: string; x: number; y: number; size: number }[]): void {
+  textOverrides.set(`${docId}:${page}`, lines);
+  for (const key of [...textCache.keys()]) if (key.startsWith(`${docId}:`) && key.endsWith(`:${page}`)) textCache.delete(key);
+  docs.get(docId)?.objects.delete(page);
 }
 
 /** Test helper: queue an OS-level open so `take_pending_opens` returns something. */
