@@ -14,6 +14,8 @@ import { isDialogOpen } from "../../dialogs/dialogState";
 import { ensureTextLayer, getTextLayer } from "./textLayers";
 import { isEmptySelection, useSelectionStore, type TextPoint } from "./selection";
 import { caretRect, caretX, lineEdge, offsetOnLine, stepChar, stepLine, useCaretStore } from "./caret";
+import { permissionBlock } from "../../app/permissions";
+import { toast } from "../../app/toastStore";
 
 /** 메모's icon box (tools/note.ts `NOTE_SIZE_PT`, not imported: that module is the tools chunk's). */
 const NOTE_PT = 22;
@@ -123,7 +125,11 @@ export function onCaretKey(e: KeyboardEvent): void {
 
   const key = letter(e);
   if (!e.shiftKey && (key === "n" || key === "h" || key === "u" || key === "k")) {
-    if (key === "n") {
+    // v0.3 integration (S5 × caret N/H/U/K): each makes a 주석, which the document may forbid
+    const blocked = permissionBlock("mode.annotate", info);
+    if (blocked) {
+      toast(blocked, undefined, { tone: "info" });
+    } else if (key === "n") {
       void addNote(info);
     } else {
       const selection = useSelectionStore.getState().selection;

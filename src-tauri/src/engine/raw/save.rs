@@ -21,6 +21,9 @@ pub enum SaveFlags {
     /// `FPDF_REMOVE_SECURITY = 4` — writes the document with its encryption dictionary
     /// dropped. The value is 4 on build 8057; 3 is the deprecated alias and does nothing.
     RemoveSecurity,
+    /// `FPDF_INCREMENTAL = 1` — the loaded bytes verbatim plus an appended update (v0.3 S1:
+    /// saving a signed document keeps the signed revisions byte-identical).
+    Incremental,
 }
 
 impl SaveFlags {
@@ -29,6 +32,7 @@ impl SaveFlags {
             SaveFlags::Default => 0,
             SaveFlags::NoIncremental => crate::engine::raw::consts::FPDF_NO_INCREMENTAL,
             SaveFlags::RemoveSecurity => crate::engine::raw::consts::FPDF_REMOVE_SECURITY,
+            SaveFlags::Incremental => crate::engine::raw::consts::FPDF_INCREMENTAL,
         }
     }
 }

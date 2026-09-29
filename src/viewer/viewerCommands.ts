@@ -23,6 +23,8 @@ import { useSearchStore } from "./search/SearchController";
 import { stepPage } from "./stepPage";
 import { getTextLayer } from "./text/textLayers";
 import { selectionText, useSelectionStore } from "./text/selection";
+import { copyForbidden } from "../app/permissions";
+import { toast } from "../app/toastStore";
 
 /** A tap is shorter than this; longer means the hand tool is being held (UI_SPEC §13). */
 export const SPACE_HOLD_MS = 200;
@@ -75,6 +77,8 @@ function ensureMirror(): HTMLElement {
 /** Put `text` in the mirror and make it the DOM selection (empty text clears both). */
 export function syncClipboardMirror(text: string): void {
   if (typeof document === "undefined") return;
+  // v0.3 pkg3 (S5): a document that forbids copying never puts its text in the mirror
+  if (copyForbidden(useDocStore.getState().info)) text = "";
   const el = ensureMirror();
   const selection = document.getSelection();
   if (!text) {
@@ -100,6 +104,11 @@ export function syncClipboardMirror(text: string): void {
  */
 export function copyToClipboard(text: string): boolean {
   if (!text || typeof document === "undefined") return false;
+  // v0.3 pkg3 (S5): the document's copy / extract permission
+  if (copyForbidden(useDocStore.getState().info)) {
+    toast("security.restricted.reason.extractText", undefined, { tone: "info" });
+    return false;
+  }
   const active = document.activeElement as HTMLElement | null;
   const area = document.createElement("textarea");
   area.value = text;

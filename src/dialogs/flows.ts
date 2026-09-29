@@ -13,7 +13,8 @@ import { useAppStore } from "../store/appStore";
 import { useJobStore } from "../store/jobStore";
 import { usePagesStore } from "../store/pagesStore";
 import { toast } from "../app/toastStore";
-import { askConfirm, askMultipleFiles, askPassword, askUnsaved, closeDialog, openDialog } from "./dialogState";
+import { askChoice, askConfirm, askMultipleFiles, askPassword, askUnsaved, closeDialog, openDialog } from "./dialogState";
+import { windowLabel } from "../ipc/env";
 import { autosave, markRecovered, recoveredEntry, settleRecovered } from "../app/autosave";
 import { whenEditsSettled } from "../annot/dragGate";
 import { editLeaveGuard } from "../tools/commands";
@@ -44,6 +45,8 @@ export async function openPaths(paths: string[]): Promise<void> {
 async function openSeparately(paths: string[]): Promise<void> {
   await openPath(paths[0]);
   for (const path of paths.slice(1)) {
+    // v0.3 H8: a file another window already shows is focused, not opened a second time
+    if (await focusedElsewhere(path)) continue;
     await api.openInNewWindow({ path }).catch(() => undefined);
   }
 }
@@ -57,6 +60,9 @@ export async function openPath(
   path: string,
   opts: { guard?: boolean; recovery?: RecoveryEntry; password?: string } = {},
 ): Promise<DocInfo | null> {
+  // v0.3 H8: one window per file — a file another window shows is brought to the front there
+  // (recents, the picker, drops and the OS's open-file events all come through here)
+  if (!opts.recovery && (await focusedElsewhere(path))) return null;
   if (opts.guard !== false && !(await confirmLeaveDocument())) return null;
   const docs = useDocStore.getState();
   const previous = docs.info;
@@ -203,8 +209,12 @@ export async function mergePaths(
 // Saving
 // ---------------------------------------------------------------------------
 
-/** ⌘S. Atomic on the backend; a read-only target falls through to Save As with an explanation. */
-export async function saveFlow(): Promise<boolean> {
+/**
+ * ⌘S. Atomic on the backend; a read-only target falls through to Save As with an explanation.
+ * v0.3: a signed document that would be rewritten asks first (S1), and a file changed on disk by
+ * another program asks 덮어쓰기 / 다른 이름으로 저장 / 다시 불러오기 (H8; `force` is the first).
+ */
+export async function saveFlow(opts: { force?: boolean } = {}): Promise<boolean> {
   // ⌘S mid-drag is queued until the drop has settled: never save the transient `/F HIDDEN`. The
   // last nudge / slider patch still in its coalescing delay goes to the engine first.
   await whenEditsSettled();
@@ -212,9 +222,11 @@ export async function saveFlow(): Promise<boolean> {
   if (!info) return false;
   // a 복구 copy is not the user's file: never save over it in place
   if (!info.path || recoveredEntry(info.docId)) return saveAsFlow();
+  if (!(await confirmSignatureRewrite(info))) return false;
   const jobs = useJobStore.getState();
   try {
-    await api.saveDocument({ docId: info.docId }, (e) => jobs.apply("save", "status.saving", e));
+    const args = opts.force ? { docId: info.docId, force: true } : { docId: info.docId };
+    await api.saveDocument(args, (e) => jobs.apply("save", "status.saving", e));
     await useDocStore.getState().refresh();
     await autosave.clear(info.docId);
     const fresh = useDocStore.getState().info;
@@ -226,6 +238,7 @@ export async function saveFlow(): Promise<boolean> {
       toast("dialog.saveAs.readOnly", undefined, { tone: "info" });
       return saveAsFlow();
     }
+    if (api.isSeePdfError(e) && e.code === "fileChangedOnDisk") return resolveChangedOnDisk(info);
     toast("error.saveFailed", undefined, { tone: "danger", detail: message(e) });
     return false;
   }
@@ -238,6 +251,7 @@ export async function saveAsFlow(): Promise<boolean> {
   if (!info) return false;
   const path = await api.saveFileDialog({ defaultPath: recoveredEntry(info.docId)?.name ?? info.name });
   if (!path) return false;
+  if (!(await confirmSignatureRewrite(info))) return false;
   const jobs = useJobStore.getState();
   try {
     await api.saveDocumentAs({ docId: info.docId, path }, (e) => jobs.apply("save", "status.saving", e));
@@ -415,6 +429,11 @@ export async function runPrint(
 ): Promise<void> {
   const info = useDocStore.getState().info;
   if (!info) return;
+  // v0.3 S5: the document's print permission (the engine refuses `print_prepare` as well)
+  if (!info.permissions.print) {
+    toast("security.restricted.reason.print", undefined, { tone: "info" });
+    return;
+  }
   if (method === "document") return printDocumentDom(info, pages);
   toast("print.preparing", undefined, { timeoutMs: 1800 });
   try {
@@ -595,3 +614,65 @@ export async function recoverFromEngineCrash(docIds: DocId[]): Promise<DocInfo |
 }
 
 export { closeDialog, openDialog };
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg3-security-save-integrity
+// ---------------------------------------------------------------------------
+
+/**
+ * H8: `true` when another window already shows the file at `path` — the backend has brought it to
+ * the front, and the caller opens nothing. This window's own file is not "elsewhere".
+ */
+export async function focusedElsewhere(path: string): Promise<boolean> {
+  const label = await api.focusDocumentWindow({ path }).catch(() => null);
+  return !!label && label !== windowLabel();
+}
+
+/** Documents whose "저장하면 서명이 무효화됩니다" prompt was answered 저장 (once per document). */
+const rewriteAcknowledged = new Set<string>();
+
+/**
+ * S1: a signed document whose next save is a full rewrite (a lopdf edit happened, or an undo went
+ * back to a re-serialised state) invalidates its signatures — ask once. An incremental save keeps
+ * them and asks nothing.
+ */
+export async function confirmSignatureRewrite(info: DocInfo): Promise<boolean> {
+  if (!info.signatures?.length || rewriteAcknowledged.has(info.docId)) return true;
+  const fresh = await api.getDocument({ docId: info.docId }).catch(() => info);
+  if (fresh.incrementalSave !== false) return true;
+  const ok = await askConfirm({
+    titleKey: "security.signed.saveTitle",
+    bodyKey: "security.signed.saveBody",
+    confirmKey: "common.save",
+    danger: true,
+  });
+  if (ok) rewriteAcknowledged.add(info.docId);
+  return ok;
+}
+
+export type ChangedOnDiskAnswer = "overwrite" | "saveAs" | "reload" | "cancel";
+
+/**
+ * H8: the file changed on disk since it was opened — 덮어쓰기 (save with `force`), 다른 이름으로
+ * 저장, or 다시 불러오기 (reopen the file from disk, dropping this window's changes).
+ */
+export async function resolveChangedOnDisk(info: DocInfo): Promise<boolean> {
+  const answer = await askChoice<ChangedOnDiskAnswer>({
+    titleKey: "save.changed.title",
+    bodyKey: "save.changed.body",
+    bodyParams: { name: info.name },
+    options: [
+      { value: "overwrite", labelKey: "save.changed.overwrite", primary: true },
+      { value: "saveAs", labelKey: "save.changed.saveAs" },
+      { value: "reload", labelKey: "save.changed.reload" },
+    ],
+    cancel: { value: "cancel", labelKey: "common.cancel" },
+  });
+  if (answer === "overwrite") return saveFlow({ force: true });
+  if (answer === "saveAs") return saveAsFlow();
+  if (answer === "reload" && info.path) {
+    await autosave.clear(info.docId);
+    return (await openPath(info.path, { guard: false })) !== null;
+  }
+  return false;
+}

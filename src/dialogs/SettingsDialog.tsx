@@ -330,6 +330,20 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                 />
                 <span>{t("settings.backups")}</span>
               </label>
+              {/* v0.3 pkg3 (U2): backups live in <app data>/backups */}
+              <p className="dlg-hint text-xs">{t("settings.backups.hint")}</p>
+              <button
+                type="button"
+                className="btn"
+                onClick={() =>
+                  void api
+                    .backupFolder()
+                    .then((path) => api.revealInFileManager({ path }))
+                    .catch(() => undefined)
+                }
+              >
+                {t("settings.backups.openFolder")}
+              </button>
               <div className="inline-row">
                 <button type="button" className="btn" onClick={() => void resetToDefaults()}>
                   {t("settings.resetDefaults")}

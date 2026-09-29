@@ -13,8 +13,9 @@
 use crate::engine::redact;
 use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
-    BytesWritten, DocInfo, DocMeta, PageIndex, PermissionsRequest, Rect, RedactBatchMark,
-    RedactBatchResult, RedactOptions, RedactPreview, RedactResult,
+    AttachmentInfo, BytesWritten, DocInfo, DocMeta, PageIndex, PermissionsRequest, Rect,
+    RedactBatchMark, RedactBatchResult, RedactOptions, RedactPreview, RedactResult,
+    SanitizeOptions, SanitizeResult,
 };
 use crate::ipc::EngineError;
 use tauri::State;
@@ -87,6 +88,8 @@ pub async fn remove_password(
 ) -> Result<BytesWritten, EngineError> {
     engine
         .call(Lane::Edit, "remove_password", move |st| {
+            // v0.3 S5: an unlocked copy of a restricted document needs the owner password.
+            crate::engine::security::ensure_security_change(st.doc(&doc_id)?)?;
             crate::engine::render::tiles::generate_appearances(st, &doc_id)?;
             let doc = st.doc(&doc_id)?;
             let bytes = crate::engine::raw::save::save_as_copy(
@@ -149,6 +152,93 @@ pub async fn set_metadata(
     engine
         .call(Lane::Edit, "set_metadata", move |st| {
             crate::engine::security::set_metadata(st, &doc_id, &meta)
+        })
+        .await
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg3-security-save-integrity
+// ---------------------------------------------------------------------------------------
+
+/// S5 제한됨 › 권한 암호로 잠금 해제: reopens the document with its permissions (owner)
+/// password, keeping the docId and the undo history; see `engine::security::unlock`.
+#[tauri::command]
+pub async fn unlock_document(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    password: String,
+) -> Result<DocInfo, EngineError> {
+    engine
+        .call(Lane::Edit, "unlock_document", move |st| {
+            crate::engine::security::unlock(st, &doc_id, &password)
+        })
+        .await
+}
+
+/// S3 문서 정리 — one undo step; see `engine::sanitize`. Missing options are all `true`.
+#[tauri::command]
+pub async fn sanitize_document(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    options: Option<SanitizeOptions>,
+) -> Result<SanitizeResult, EngineError> {
+    engine
+        .call(Lane::Edit, "sanitize_document", move |st| {
+            crate::engine::sanitize::sanitize(st, &doc_id, &options.unwrap_or_default())
+        })
+        .await
+}
+
+/// S4 첨부 파일 panel.
+#[tauri::command]
+pub async fn list_attachments(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+) -> Result<Vec<AttachmentInfo>, EngineError> {
+    engine
+        .call(Lane::Interactive, "list_attachments", move |st| {
+            Ok(crate::engine::attachments::list(st.doc(&doc_id)?))
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn save_attachment(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    index: u32,
+    path: String,
+) -> Result<BytesWritten, EngineError> {
+    engine
+        .call(Lane::Edit, "save_attachment", move |st| {
+            crate::engine::attachments::save(st.doc(&doc_id)?, index, &path)
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn add_attachment(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    path: String,
+    name: Option<String>,
+) -> Result<Vec<AttachmentInfo>, EngineError> {
+    engine
+        .call(Lane::Edit, "add_attachment", move |st| {
+            crate::engine::attachments::add(st, &doc_id, &path, name.as_deref())
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn delete_attachment(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    index: u32,
+) -> Result<Vec<AttachmentInfo>, EngineError> {
+    engine
+        .call(Lane::Edit, "delete_attachment", move |st| {
+            crate::engine::attachments::delete(st, &doc_id, index)
         })
         .await
 }

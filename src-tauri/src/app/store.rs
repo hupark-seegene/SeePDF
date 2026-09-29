@@ -35,6 +35,12 @@ pub fn signatures_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     Some(app.path().app_data_dir().ok()?.join("signatures"))
 }
 
+/// `$APPDATA/SeePDF/backups/`, where 저장 시 백업 copies go (v0.3 U2; they used to go to
+/// `$TEMP`, which the OS may purge). Not created here — the first backup creates it.
+pub fn backups_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    Some(app.path().app_data_dir().ok()?.join("backups"))
+}
+
 /// `$TEMP/seepdf-history/`, where undo snapshots spill.
 pub fn history_spill_dir<R: Runtime>(app: Option<&AppHandle<R>>) -> PathBuf {
     let base = app

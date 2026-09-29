@@ -20,7 +20,7 @@ use crate::engine::types::{DocSummary, EngineState};
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
     Annot, ChangeReason, ChangedPages, DocChangedPayload, DocGeneration, DocId, DocInfo, DocMeta,
-    OutlineNode, PageGeom, Permissions, Rect, SecurityRevision,
+    OutlineNode, PageGeom, Permissions, Rect, SecurityRevision, SignatureInfo,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
@@ -107,6 +107,19 @@ pub struct OpenDoc<'p> {
     /// loaded, so the in-memory document is no longer `bytes`: the next [`mutate`] must
     /// snapshot `to_bytes()`, or undoing it would reload the file and hand out new ids.
     pub ids_stamped: bool,
+    // --- v0.3 pkg3-security-save-integrity -------------------------------------------
+    /// S1: the document's digital signatures (detection only), re-read on every reload.
+    pub signatures: Vec<SignatureInfo>,
+    /// S1: the bytes of the file on disk, kept only for a **signed** document: an
+    /// incremental save must append to exactly these bytes.
+    pub incremental_base: Option<Arc<[u8]>>,
+    /// S1: the PDFium document was loaded from `incremental_base` and has only been changed
+    /// through PDFium since (no lopdf rewrite, no undo to a re-serialised snapshot), so
+    /// `FPDF_INCREMENTAL` appends to the signed file instead of rewriting it.
+    pub pristine: bool,
+    /// H8: size and modification time of `path` when it was opened or last saved;
+    /// `save_document` refuses (`fileChangedOnDisk`) when the file no longer matches.
+    pub disk_stamp: Option<crate::engine::save::FileStamp>,
 }
 
 impl<'p> OpenDoc<'p> {
@@ -276,6 +289,9 @@ impl<'p> OpenDoc<'p> {
             pdf_version: self.pdf_version.clone(),
             tagged: self.tagged,
             page_labels: self.page_labels(),
+            signatures: self.signatures.clone(),
+            incremental_save: (!self.signatures.is_empty()).then_some(self.pristine),
+            attachment_count: self.doc.attachments().len() as u32,
         }
     }
 
@@ -307,6 +323,31 @@ impl<'p> OpenDoc<'p> {
     pub fn to_bytes(&self) -> Result<Arc<[u8]>, EngineError> {
         let bytes = self.doc.save_to_bytes().ctx("save_to_bytes")?;
         Ok(Arc::from(bytes.into_boxed_slice()))
+    }
+
+    /// The undo / redo snapshot of the document as it is now. A signed document that only
+    /// PDFium has changed since its signed bytes were loaded (`pristine`) is serialised with
+    /// `FPDF_INCREMENTAL`, so the snapshot still **starts with** `incremental_base` and
+    /// [`replace`] keeps the document pristine when it is loaded again (v0.3 S1: an undo — or
+    /// the first edit after `list_annotations` stamped `/NM` ids — must not turn the next save
+    /// into a full rewrite). Everything else is [`Self::to_bytes`].
+    pub fn snapshot_bytes(&self) -> Result<Arc<[u8]>, EngineError> {
+        if let (true, false, Some(base)) = (
+            self.pristine,
+            self.signatures.is_empty(),
+            self.incremental_base.as_ref(),
+        ) {
+            let out = raw::save::save_as_copy(
+                self.bindings,
+                &self.doc,
+                raw::save::SaveFlags::Incremental,
+            )?;
+            if out.starts_with(base) {
+                return Ok(Arc::from(out.into_boxed_slice()));
+            }
+            tracing::warn!(doc_id = %self.doc_id, "incremental snapshot did not keep the signed bytes");
+        }
+        self.to_bytes()
     }
 
     /// The document's outline as the contract's nested node list, depth-first.
@@ -386,6 +427,16 @@ pub fn open_named<'p>(
     let tagged = doc.catalog().is_tagged();
     let has_outline = doc.bookmarks().root().is_some();
     let pages_meta = read_pages_meta(bindings, &doc)?;
+    // v0.3 pkg3: S1 signatures (a signed file keeps its bytes for an incremental save), H8
+    // the file's size and modification time.
+    let signatures = crate::engine::security::read_signatures(
+        bindings,
+        &doc,
+        &shared_bytes,
+        password.as_deref(),
+    );
+    let incremental_base = (!signatures.is_empty() && path.is_some()).then(|| shared_bytes.clone());
+    let disk_stamp = path.as_deref().and_then(crate::engine::save::file_stamp);
 
     let spill_dir = st.spill_dir.join(&doc_id);
     let mut open_doc = OpenDoc {
@@ -417,6 +468,10 @@ pub fn open_named<'p>(
         compress_pending: None,
         recovery_id: None,
         ids_stamped: false,
+        pristine: incremental_base.is_some(),
+        signatures,
+        incremental_base,
+        disk_stamp,
     };
 
     // Exact geometry (rotation, crop box, label) for as many pages as the budget allows.
@@ -584,6 +639,12 @@ pub fn mutate<'p, T>(
         .get_mut(doc_id)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))?;
 
+    // 0. v0.3 S5: the document's own permission bits, before anything is pushed.
+    crate::engine::security::ensure_permitted(
+        doc,
+        crate::engine::security::perm_for(opts.label, opts.reason, opts.structural),
+    )?;
+
     // 1. undo snapshot of the *pre-edit* state. The first push after open/save/undo reuses
     //    the bytes we already have and is free.
     let base = pre_edit_bytes(doc)?;
@@ -658,6 +719,10 @@ pub fn mutate<'p, T>(
     Ok(out)
 }
 
+/// `mutate_bytes` labels whose closure returns the finished, already encrypted file instead of
+/// rewriting the bytes it is given (v0.3 S2).
+const FINAL_BYTES_LABELS: &[&str] = &["undo.compress"];
+
 /// The undo snapshot of the document as it is now. Right after open / save / undo the
 /// document *is* `bytes`, so that is free — unless `list_annotations` has since stamped ids
 /// into it, which only `to_bytes()` (5 ms/MB) captures.
@@ -665,7 +730,7 @@ fn pre_edit_bytes(doc: &OpenDoc<'_>) -> Result<Arc<[u8]>, EngineError> {
     if doc.generation == doc.saved_generation && doc.history.undo_depth() == 0 && !doc.ids_stamped {
         Ok(doc.bytes.clone())
     } else {
-        doc.to_bytes()
+        doc.snapshot_bytes()
     }
 }
 
@@ -758,16 +823,53 @@ pub fn mutate_bytes_checked(
         .docs
         .get_mut(doc_id)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))?;
+    // v0.3 S5: the document's own permission bits, before anything is pushed.
+    crate::engine::security::ensure_permitted(
+        doc,
+        crate::engine::security::perm_for(opts.label, opts.reason, opts.structural),
+    )?;
     let base = pre_edit_bytes(doc)?;
     let pushed = doc.history.push(opts.label, base.clone(), opts.coalesce)?;
 
-    let rewritten = (|| {
+    let rewritten = (|| -> Result<(), EngineError> {
         let current = super::save::serialize(st, doc_id)?;
         let doc = st.doc(doc_id)?;
         let (pages, password) = (doc.page_count(), doc.password.clone());
-        let out = f(&current, doc)?;
-        super::save::verify_bytes_with(st, &out, pages, password, check)?;
-        replace(st, doc_id, Arc::from(out.into_boxed_slice()))
+        // v0.3 S2: an encrypted document is rewritten decrypted and re-encrypted with its own
+        // security handler state, and must reopen with the same password and permissions.
+        // `compress_apply` hands back finished bytes PDFium itself encrypted (its closure
+        // ignores the input), so it skips the round trip; any other rewrite that comes back
+        // already encrypted is passed through by `Crypt::encrypt`.
+        let (out, expect) = if doc.encrypted && !FINAL_BYTES_LABELS.contains(&opts.label) {
+            let (plain, crypt) = crate::engine::security::decrypt_for_rewrite(doc, &current)?;
+            let out = crypt.encrypt(&f(&plain, doc)?)?;
+            let revision = security_revision(doc.bindings, doc.pdf());
+            (out, Some((revision, doc.permissions)))
+        } else {
+            (f(&current, doc)?, None)
+        };
+        super::save::verify_bytes_with(st, &out, pages, password, |bindings, reopened| {
+            if let Some((revision, permissions)) = expect {
+                let (r, p) = (
+                    security_revision(bindings, reopened),
+                    read_permissions(bindings, reopened),
+                );
+                if r != revision || p != permissions {
+                    return Err(EngineError::new(
+                        ErrorCode::VerifyFailed,
+                        format!(
+                            "the re-encrypted file reads R{r} {p:?}, expected R{revision} \
+                             {permissions:?}"
+                        ),
+                    ));
+                }
+            }
+            check(bindings, reopened)
+        })?;
+        replace(st, doc_id, Arc::from(out.into_boxed_slice()))?;
+        // v0.3 S1: a lopdf rewrite never keeps the signed bytes, whatever it starts with.
+        st.doc_mut(doc_id)?.pristine = false;
+        Ok(())
     })();
     if let Err(e) = rewritten {
         let doc = st.doc_mut(doc_id)?;
@@ -822,6 +924,29 @@ pub fn replace<'p>(
     let tagged = loaded.catalog().is_tagged();
     let has_outline = loaded.bookmarks().root().is_some();
     let pages_meta = read_pages_meta(doc.bindings, &loaded)?;
+    // v0.3 S1: the signature list only changes with the bytes; field names need a lopdf
+    // parse, so they are kept when PDFium reports the same signatures as before.
+    if !doc.signatures.is_empty() || crate::engine::raw::sig::count(doc.bindings, &loaded) > 0 {
+        let fresh = crate::engine::security::read_signatures(doc.bindings, &loaded, &[], None);
+        let same = fresh.len() == doc.signatures.len()
+            && fresh.iter().zip(&doc.signatures).all(|(a, b)| {
+                a.reason == b.reason && a.time == b.time && a.sub_filter == b.sub_filter
+            });
+        if !same {
+            doc.signatures = crate::engine::security::read_signatures(
+                doc.bindings,
+                &loaded,
+                &bytes,
+                password.as_deref(),
+            );
+        }
+    }
+    // An incremental snapshot (`OpenDoc::snapshot_bytes`) is the signed bytes plus PDFium's
+    // appended updates: it still starts with them, so the next save can append again.
+    doc.pristine = doc
+        .incremental_base
+        .as_ref()
+        .is_some_and(|base| Arc::ptr_eq(base, &bytes) || bytes.starts_with(base));
 
     let old = std::mem::replace(&mut doc.doc, loaded);
     drop(old);
@@ -865,7 +990,7 @@ pub fn undo(st: &mut EngineState<'_>, doc_id: &str, redo: bool) -> Result<DocInf
         .docs
         .get_mut(doc_id)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))?;
-    let current = doc.to_bytes()?;
+    let current = doc.snapshot_bytes()?;
     let Some(step) = doc.history.prepare(redo, current)? else {
         return Err(EngineError::invalid(if redo {
             "nothing to redo"
@@ -1020,6 +1145,11 @@ pub fn geom_from_page(index: u16, page: &PdfPage<'_>) -> Option<PageGeom> {
 fn security_revision(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>) -> i32 {
     // SAFETY: a live document handle on the engine thread.
     unsafe { bindings.FPDF_GetSecurityHandlerRevision(doc.raw_handle()) }
+}
+
+/// [`read_permissions`] for other modules (v0.3 S5 `security::unlock` probes a password).
+pub fn permissions_of(bindings: &dyn PdfiumLibraryBindings, doc: &PdfDocument<'_>) -> Permissions {
+    read_permissions(bindings, doc)
 }
 
 /// The permission flags the **current** open grants (an owner-password open gets all bits).

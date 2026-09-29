@@ -19,6 +19,8 @@ import { encodePng } from "../ipc/png";
 import type { DocId, PageIndex, Point, Rect, Rotation } from "../ipc/types";
 import { toast } from "../app/toastStore";
 import { useAppStore } from "../store/appStore";
+import { useDocStore } from "../store/docStore";
+import { copyForbidden, reasonKey } from "../app/permissions";
 import type { ToolModule } from "./ToolController";
 
 /** The snapshot is rendered at this multiple of the device scale on screen… */
@@ -188,6 +190,11 @@ export async function saveSnapshotAs(blob: Blob, req: Pick<SnapshotRequest, "pag
  * clipboard write starts before anything is awaited. Resolves `true` when the clipboard took it.
  */
 export function copySnapshot(req: SnapshotRequest): Promise<boolean> {
+  // v0.3 integration (S5 × V1): the document's copy permission covers snapshots too
+  if (copyForbidden(useDocStore.getState().info)) {
+    toast(reasonKey("extractText"), undefined, { tone: "info" });
+    return Promise.resolve(false);
+  }
   const png = snapshotPng(req);
   // never an unhandled rejection: every path below observes it
   png.catch(() => undefined);

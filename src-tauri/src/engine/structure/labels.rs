@@ -73,10 +73,10 @@ pub fn get_page_labels(
     st: &EngineState<'_>,
     doc_id: &str,
 ) -> Result<Vec<PageLabelRange>, EngineError> {
-    refuse_encrypted(st, doc_id)?;
     let doc = st.doc(doc_id)?;
     let page_count = doc.page_count();
-    let parsed = super::load(&doc.bytes)?;
+    // v0.3 pkg3 (S2): an encrypted document is read decrypted, not refused.
+    let parsed = crate::engine::security::plain_lopdf(doc)?;
     Ok(read_ranges(&parsed)
         .into_iter()
         .filter(|r| r.start < page_count)

@@ -35,6 +35,7 @@ import { toolController } from "../tools/ToolController";
 import { useAnnotStore, type ToolStyle } from "../store/annotStore";
 import { styleFor, toolOfKind } from "../store/toolStyles";
 import type { Annot, PageIndex, PageOp, Point } from "../ipc/types";
+import { permissionBlock } from "./permissions";
 
 /** The page a context-menu event happened on, or `null` when it was not over a page. */
 export function pageFromEvent(target: EventTarget | null): { page: PageIndex; source: "canvas" | "thumbnail" } | null {
@@ -170,6 +171,13 @@ export function openPageContextMenu(
   const view = useViewStore.getState();
   const app = useAppStore.getState();
 
+  // v0.3 pkg3 (S5): entries the document's permissions forbid are disabled, with the reason
+  const annotBlock = permissionBlock("mode.annotate", info);
+  const pagesBlock = permissionBlock("mode.pages", info);
+  const redactBlock = permissionBlock("tools.redact", info);
+  const editBlock = permissionBlock("mode.edit", info);
+  const snapshotBlock = permissionBlock("tool.snapshot", info);
+
   // UI_SPEC §12 Annotation: 편집 · 속성… · 메모 열기 · 답글 (P2) · 복사 · 삭제 · 이 스타일을 기본값으로
   const annot = source === "canvas" ? annotationUnder(page, x, y, target) : null;
   const annotTool = annot ? toolOfKind(annot.kind) : null;
@@ -178,7 +186,8 @@ export function openPageContextMenu(
         {
           id: "editAnnot",
           labelKey: "canvasMenu.edit",
-          disabled: annot.locked || annot.editable === "readOnly",
+          disabled: annot.locked || annot.editable === "readOnly" || !!annotBlock,
+          hintKey: annotBlock ?? undefined,
           onSelect: () =>
             inAnnotate(() => {
               const store = useAnnotStore.getState();
@@ -194,6 +203,8 @@ export function openPageContextMenu(
         {
           id: "propsAnnot",
           labelKey: "canvasMenu.properties",
+          disabled: !!annotBlock,
+          hintKey: annotBlock ?? undefined,
           onSelect: () =>
             inAnnotate(() => {
               useAnnotStore.getState().select([annot.id]);
@@ -205,6 +216,8 @@ export function openPageContextMenu(
         {
           id: "noteAnnot",
           labelKey: "canvasMenu.openNote",
+          disabled: !!annotBlock,
+          hintKey: annotBlock ?? undefined,
           onSelect: () =>
             inAnnotate(() => {
               if (annot.kind === "note") useAnnotStore.getState().setEditing({ page, id: annot.id });
@@ -214,6 +227,9 @@ export function openPageContextMenu(
         {
           id: "replyAnnot",
           labelKey: "annot.thread.reply",
+          // v0.3 pkg3 (S5): 답글 switches to 주석, which the document may forbid
+          disabled: !!annotBlock,
+          hintKey: annotBlock ?? undefined,
           onSelect: () => inAnnotate(() => openThread(page, annot.id, true)),
         },
         { id: "sepAnnot0", separator: true },
@@ -226,6 +242,8 @@ export function openPageContextMenu(
           id: "deleteAnnot",
           labelKey: "common.delete",
           danger: true,
+          disabled: !!annotBlock,
+          hintKey: annotBlock ?? undefined,
           onSelect: () => void deleteAnnotations(page, [annot.id]),
         },
         { id: "sepAnnot1", separator: true },
@@ -245,13 +263,16 @@ export function openPageContextMenu(
   const point = source === "canvas" && !annot ? pagePointUnder(page, x, y, target) : null;
   const canPasteAnnots = !!point && runAnnotCommand("annot.canPaste");
   const canPaste = canPasteAnnots || (!!point && canPasteObjects());
+  const pasteBlock = canPasteAnnots ? annotBlock : canPaste ? editBlock : null;
   const emptyItems: MenuEntry[] = point
     ? [
         {
           id: "pasteHere",
           labelKey: "menu.edit.paste",
           shortcut: shortcutFor("edit.paste", app.os),
-          disabled: !canPaste,
+          // v0.3 pkg3 (S5): annotations need 주석, page objects need 편집
+          disabled: !canPaste || !!pasteBlock,
+          hintKey: pasteBlock ?? undefined,
           onSelect: () => {
             if (canPasteAnnots) runAnnotCommand("annot.pasteAt", { page, at: point.at });
             else void editActions?.pasteObjects(page);
@@ -260,6 +281,8 @@ export function openPageContextMenu(
         {
           id: "noteHere",
           labelKey: "textMenu.addNote",
+          disabled: !!annotBlock,
+          hintKey: annotBlock ?? undefined,
           onSelect: () =>
             inAnnotate(() => {
               const crop = useDocStore.getState().info?.pages[page]?.crop;
@@ -332,6 +355,9 @@ export function openPageContextMenu(
       id: "snapshot",
       labelKey: "tool.snapshot",
       shortcut: shortcutFor("tool.snapshot", app.os),
+      // v0.3 integration (S5 × V1): a document that forbids copying forbids snapshots
+      disabled: !!snapshotBlock,
+      hintKey: snapshotBlock ?? undefined,
       onSelect: () => {
         useAppStore.getState().setTool("snapshot");
         toolController.arm("snapshot");
@@ -340,6 +366,8 @@ export function openPageContextMenu(
     {
       id: "organize",
       labelKey: "pages.title",
+      disabled: !!pagesBlock,
+      hintKey: pagesBlock ?? undefined,
       onSelect: () => {
         const pending = app.mode === "edit" ? editLeaveGuard() : null;
         if (!pending) return app.setMode("pages");
@@ -362,13 +390,15 @@ export function openPageContextMenu(
           onSelect: () => void copyToClipboard(selectedText),
         },
         { id: "sepText1", separator: true },
-        { id: "highlightSelection", labelKey: "tool.highlight", onSelect: () => textMenu((m) => m.markupSelection("highlight")) },
-        { id: "underlineSelection", labelKey: "tool.underline", onSelect: () => textMenu((m) => m.markupSelection("underline")) },
-        { id: "strikeoutSelection", labelKey: "tool.strikeout", onSelect: () => textMenu((m) => m.markupSelection("strikeout")) },
-        { id: "noteSelection", labelKey: "textMenu.addNote", onSelect: () => textMenu((m) => m.noteOnSelection()) },
+        { id: "highlightSelection", labelKey: "tool.highlight", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => textMenu((m) => m.markupSelection("highlight")) },
+        { id: "underlineSelection", labelKey: "tool.underline", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => textMenu((m) => m.markupSelection("underline")) },
+        { id: "strikeoutSelection", labelKey: "tool.strikeout", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => textMenu((m) => m.markupSelection("strikeout")) },
+        { id: "noteSelection", labelKey: "textMenu.addNote", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => textMenu((m) => m.noteOnSelection()) },
         {
           id: "redactSelection",
           labelKey: "redact.markSelection",
+          disabled: !!redactBlock,
+          hintKey: redactBlock ?? undefined,
           onSelect: () => void import("../edit/redact").then((m) => m.markTextSelection()),
         },
         { id: "sepText2", separator: true },

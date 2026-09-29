@@ -5,15 +5,23 @@
 //! `/MCID`. The pieces must keep their marked-content id, or the surviving words of a
 //! redacted paragraph would drop to "untagged content, read last" in read aloud and the
 //! screen-reader region.
+//!
+//! pkg1 (R5) keeps an edited paragraph's reading order with a `lopdf` pass after the write;
+//! pkg3 (S1) saves a signed file incrementally only while nothing but PDFium has changed it.
+//! On a signed file the reorder is skipped, so a paragraph edit still saves incrementally.
 
 mod common;
 
 use common::*;
+use seepdf_lib::engine::objects::paragraph;
 use seepdf_lib::engine::redact;
 use seepdf_lib::engine::registry;
 use seepdf_lib::engine::render::tiles;
+use seepdf_lib::engine::save;
 use seepdf_lib::engine::text::{layer, structtree};
-use seepdf_lib::ipc::types::{PageIndex, ReadingOrder, Rect, RedactBatchMark, RedactOptions};
+use seepdf_lib::ipc::types::{
+    PageIndex, ParagraphEdit, ParagraphFlow, ReadingOrder, Rect, RedactBatchMark, RedactOptions,
+};
 
 /// A minimal PDF from `(number, body)` objects with a correct xref table; object 1 is the
 /// catalog.
@@ -228,4 +236,171 @@ fn a_split_redaction_keeps_the_structure_reading_order() {
     check(&saved, "after save");
     close(saved);
     close(doc_id);
+}
+
+// ---------------------------------------------------------------------------------------
+// pkg1 (R5 paragraph reading order) × pkg3 (S1 incremental save of a signed file)
+// ---------------------------------------------------------------------------------------
+
+/// Three Helvetica paragraphs and one (dummy-valued) signature field, like pkg3's fixture.
+fn signed_paragraphs_pdf() -> Vec<u8> {
+    let content = "BT /F1 12 Tf 72 700 Td (Alpha paragraph opens the page) Tj ET\n\
+                   BT /F1 12 Tf 72 600 Td (Bravo paragraph sits in the middle) Tj ET\n\
+                   BT /F1 12 Tf 72 450 Td (Charlie paragraph closes the page) Tj ET\n";
+    let stream = format!(
+        "<< /Length {} >>\nstream\n{content}endstream",
+        content.len()
+    );
+    pdf(&[
+        (
+            1,
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] /SigFlags 3 >> >>".into(),
+        ),
+        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        (
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R /Annots [6 0 R] >>"
+                .into(),
+        ),
+        (
+            4,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .into(),
+        ),
+        (5, stream),
+        (
+            6,
+            "<< /Type /Annot /Subtype /Widget /FT /Sig /T (Signature1) /V 7 0 R \
+             /Rect [0 0 0 0] /F 132 /P 3 0 R >>"
+                .into(),
+        ),
+        (
+            7,
+            "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached \
+             /ByteRange [0 0 0 0] /Contents <30820100> >>"
+                .into(),
+        ),
+    ])
+}
+
+fn page_text(doc_id: &str) -> String {
+    with_doc(doc_id, |d| Ok(layer::page_text(d, 0)?.text.clone())).unwrap()
+}
+
+fn incremental_save(doc_id: &str) -> Option<bool> {
+    with_doc(doc_id, |d| Ok(d.info().incremental_save)).unwrap()
+}
+
+/// Edits the paragraph under `(x, y)` on page 0 to `text`.
+fn edit_paragraph_at(doc_id: &str, x: f32, y: f32, text: &str) {
+    let probe = with_doc(doc_id, move |d| paragraph::probe(d, 0, [x, y]))
+        .expect("probe_paragraph")
+        .expect("a paragraph under the point");
+    let edit = ParagraphEdit {
+        object_ids: probe.object_ids.clone(),
+        text: text.to_string(),
+        width: None,
+        font_size_pt: None,
+        color: None,
+        align: None,
+        flow: Some(ParagraphFlow::Push),
+        dry_run: false,
+    };
+    let (doc_id, generation) = (doc_id.to_string(), probe.doc_generation);
+    with_state(move |st| paragraph::edit(st, &doc_id, 0, generation, edit, false))
+        .expect("edit_paragraph");
+}
+
+/// A paragraph edit on a signed file must not run R5's `lopdf` reorder: that rewrite would
+/// turn the next save into a full rewrite and invalidate the signature. The edit lands, the
+/// document stays incrementally saveable, and the saved file still starts with the signed
+/// bytes. The same edit on an unsigned file still keeps the reading order (R5).
+#[test]
+fn a_paragraph_edit_on_a_signed_file_still_saves_incrementally() {
+    let original = signed_paragraphs_pdf();
+    let dir = fixture("out").join("v03-integration");
+    std::fs::create_dir_all(&dir).expect("create fixtures/out/v03-integration");
+    let path = dir.join("signed-paragraph-edit.pdf");
+    std::fs::write(&path, &original).expect("write the fixture");
+
+    let (owned, bytes) = (path.clone(), original.clone());
+    let info = with_state(move |st| registry::open(st, Some(owned), bytes, None)).expect("open");
+    assert_eq!(info.signatures.len(), 1, "the fixture is signed");
+    let doc_id = info.doc_id.clone();
+    assert_eq!(incremental_save(&doc_id), Some(true));
+
+    edit_paragraph_at(
+        &doc_id,
+        100.0,
+        603.0,
+        "Delta paragraph replaces the middle one",
+    );
+    let text = page_text(&doc_id);
+    assert!(
+        text.contains("Delta paragraph") && !text.contains("Bravo"),
+        "{text:?}"
+    );
+    assert_eq!(
+        incremental_save(&doc_id),
+        Some(true),
+        "the paragraph edit kept the signed file incrementally saveable"
+    );
+
+    let d = doc_id.clone();
+    with_state(move |st| save::save_with(st, &d, None, &save::SaveOptions::default()).map(|_| ()))
+        .expect("save");
+    let saved = std::fs::read(&path).expect("read the saved file");
+    assert!(saved.len() > original.len(), "an update was appended");
+    assert!(
+        saved.starts_with(&original),
+        "the signed revision stays byte-identical"
+    );
+    let reopened = open_bytes(saved);
+    assert!(page_text(&reopened).contains("Delta paragraph"));
+    close(reopened);
+    close(doc_id);
+
+    // Unsigned (the same page without the signature): R5 still restores the reading order.
+    let unsigned = open_bytes(pdf(&[
+        (1, "<< /Type /Catalog /Pages 2 0 R >>".into()),
+        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        (
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+                .into(),
+        ),
+        (
+            4,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .into(),
+        ),
+        (5, {
+            let content = "BT /F1 12 Tf 72 700 Td (Alpha paragraph opens the page) Tj ET\n\
+                           BT /F1 12 Tf 72 600 Td (Bravo paragraph sits in the middle) Tj ET\n\
+                           BT /F1 12 Tf 72 450 Td (Charlie paragraph closes the page) Tj ET\n";
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            )
+        }),
+    ]));
+    edit_paragraph_at(
+        &unsigned,
+        100.0,
+        603.0,
+        "Delta paragraph replaces the middle one",
+    );
+    let text = page_text(&unsigned);
+    let (a, d, c) = (
+        text.find("Alpha").unwrap(),
+        text.find("Delta").unwrap(),
+        text.find("Charlie").unwrap(),
+    );
+    assert!(
+        a < d && d < c,
+        "R5 keeps the unsigned edit second: {text:?}"
+    );
+    close(unsigned);
 }

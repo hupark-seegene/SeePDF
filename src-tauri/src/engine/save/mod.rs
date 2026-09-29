@@ -25,6 +25,19 @@
 //!
 //! Metadata (P1-1) is the one thing this module writes *after* PDFium: [`write_info`] rewrites
 //! `/Info` and drops the XMP packet with `lopdf`, through [`registry::mutate_bytes`].
+//!
+//! v0.3 (pkg3-security-save-integrity), all in [`save_with`]:
+//!
+//! * **S1** — a digitally signed document that has only been changed through PDFium since it
+//!   was loaded (`OpenDoc::pristine`) is saved with `FPDF_INCREMENTAL`: the signed file's bytes
+//!   verbatim plus an appended update, so every existing signature still covers exactly what
+//!   it signed. Anything else is a full rewrite, which the UI warns invalidates signatures.
+//! * **H8** — a plain save over the document's own file first compares the file's size and
+//!   modification time with what was recorded at open / the last save; a mismatch is
+//!   `fileChangedOnDisk` unless the caller forces the save. Save As (a path the user picked
+//!   and confirmed in the save panel) never checks, even when it is the own file.
+//! * **U2** — the backup is written only when asked for, under the root the caller passes
+//!   (the app data `backups/` folder; the temp directory only without an app).
 
 use crate::engine::pages::write_atomic;
 use crate::engine::raw;
@@ -70,12 +83,78 @@ pub fn serialize_with(
 /// `save_document` / `save_document_as`.
 ///
 /// `target` is `None` for a plain save, which needs the document to have a path; `Some(path)`
-/// is Save As and also re-points the document at the new file.
+/// is Save As and also re-points the document at the new file. `backup` writes a backup
+/// under the temp directory ([`save_with`] takes the root and the H8 `force` flag).
 pub fn save(
     st: &mut EngineState<'_>,
     doc_id: &str,
     target: Option<&str>,
     backup: bool,
+) -> Result<SaveResult, EngineError> {
+    let options = SaveOptions {
+        backup_root: backup.then(default_backup_root),
+        force: false,
+    };
+    save_with(st, doc_id, target, &options)
+}
+
+/// How [`save_with`] saves (v0.3 pkg3).
+#[derive(Debug, Clone, Default)]
+pub struct SaveOptions {
+    /// U2: write a backup of the file being replaced under `<root>/<stem>/` (the newest
+    /// three are kept). `None` = no backup (Settings › 저장 시 백업 off).
+    pub backup_root: Option<PathBuf>,
+    /// H8: overwrite even when the file changed on disk since it was opened (덮어쓰기).
+    pub force: bool,
+}
+
+/// H8: what a file looked like when SeePDF last read or wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    pub len: u64,
+    pub modified: Option<std::time::SystemTime>,
+}
+
+/// The current [`FileStamp`] of `path`, or `None` when it cannot be read.
+pub fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(FileStamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    })
+}
+
+/// `fileChangedOnDisk` when `path` still exists and no longer matches `stamp`.
+fn check_unchanged(path: &Path, stamp: Option<FileStamp>) -> Result<(), EngineError> {
+    let (Some(stamp), Some(now)) = (stamp, file_stamp(path)) else {
+        // Never recorded (a new file), or gone: nothing of someone else's to overwrite.
+        return Ok(());
+    };
+    if stamp != now {
+        return Err(EngineError::new(
+            ErrorCode::FileChangedOnDisk,
+            format!(
+                "{} changed on disk since it was opened ({} → {} bytes)",
+                path.display(),
+                stamp.len,
+                now.len
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    a == b || canon(a) == canon(b)
+}
+
+/// [`save`] with explicit [`SaveOptions`] — what `save_document` calls.
+pub fn save_with(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    target: Option<&str>,
+    options: &SaveOptions,
 ) -> Result<SaveResult, EngineError> {
     let started = Instant::now();
     let path: PathBuf = match target {
@@ -87,16 +166,49 @@ pub fn save(
             )
         })?,
     };
+    // H8: a plain save over the document's own file must not silently drop someone else's
+    // change. Save As never checks, even onto the own file: the user picked that file in the
+    // save panel, which already asked whether to replace it.
+    if target.is_none() && !options.force {
+        let doc = st.doc(doc_id)?;
+        if doc.path.as_deref().is_some_and(|own| same_file(own, &path)) {
+            check_unchanged(&path, doc.disk_stamp)?;
+        }
+    }
     check_writable(&path)?;
 
-    let bytes = serialize(st, doc_id)?;
+    // S1: a signed document that PDFium alone has changed is appended to, not rewritten.
+    let incremental = {
+        let doc = st.doc(doc_id)?;
+        doc.pristine && !doc.signatures.is_empty()
+    };
+    let bytes = if incremental {
+        let out = serialize_with(st, doc_id, raw::save::SaveFlags::Incremental)?;
+        let doc = st.doc(doc_id)?;
+        let base = doc
+            .incremental_base
+            .clone()
+            .unwrap_or_else(|| doc.bytes.clone());
+        if out.starts_with(&base) {
+            out
+        } else {
+            // Never observed; if PDFium did not append, a verified full rewrite beats a
+            // file whose signed part is not what was signed.
+            tracing::warn!(doc_id, "incremental save did not keep the original bytes");
+            serialize(st, doc_id)?
+        }
+    } else {
+        serialize(st, doc_id)?
+    };
     let expected_pages = st.doc(doc_id)?.page_count();
     verify_bytes(st, &bytes, expected_pages, st.doc(doc_id)?.password.clone())?;
 
-    if backup && path.exists() {
-        if let Err(e) = write_backup(&path) {
-            // A failed backup must never block the save the user asked for.
-            tracing::warn!(error = %e, path = %path.display(), "backup failed");
+    if let Some(root) = &options.backup_root {
+        if path.exists() {
+            if let Err(e) = write_backup(&path, root) {
+                // A failed backup must never block the save the user asked for.
+                tracing::warn!(error = %e, path = %path.display(), "backup failed");
+            }
         }
     }
     let written = write_atomic(&path, &bytes)?;
@@ -104,11 +216,20 @@ pub fn save(
     // The in-memory document is reloaded from exactly the bytes on disk, so object indices,
     // annotation ids and the page LRU all describe the saved file.
     let shared: Arc<[u8]> = Arc::from(bytes.into_boxed_slice());
+    {
+        // S1: the saved file is the new base of the next incremental save (set before the
+        // reload, which compares against it).
+        let doc = st.doc_mut(doc_id)?;
+        if !doc.signatures.is_empty() {
+            doc.incremental_base = Some(shared.clone());
+        }
+    }
     registry::replace(st, doc_id, shared)?;
     let doc = st.doc_mut(doc_id)?;
     doc.path = Some(path.clone());
     doc.saved_generation = doc.generation;
     doc.touched.clear();
+    doc.disk_stamp = file_stamp(&path);
     let generation = doc.generation;
     let summary = doc.summary();
     st.shared.docs.write().insert(doc_id.to_string(), summary);
@@ -247,9 +368,9 @@ fn probe_directory(dir: &Path) -> Result<(), EngineError> {
     }
 }
 
-/// Copies the current file to `<data dir>/backups/<stem>/<timestamp>-<name>`, keeping the
-/// three most recent. Best-effort: a failure is logged, never fatal.
-fn write_backup(path: &Path) -> Result<PathBuf, EngineError> {
+/// Copies the current file to `<root>/<stem>/<timestamp>-<name>`, keeping the three most
+/// recent. Best-effort: a failure is logged, never fatal.
+fn write_backup(path: &Path, root: &Path) -> Result<PathBuf, EngineError> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -258,13 +379,14 @@ fn write_backup(path: &Path) -> Result<PathBuf, EngineError> {
         .file_stem()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "document".into());
-    let dir = backup_root().join(sanitize(&stem));
+    let dir = root.join(sanitize(&stem));
     std::fs::create_dir_all(&dir).map_err(EngineError::from)?;
+    // Milliseconds, so two saves within one second do not overwrite each other's backup.
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
         .unwrap_or(0);
-    let target = dir.join(format!("{stamp}-{name}"));
+    let target = dir.join(format!("{stamp:013}-{name}"));
     std::fs::copy(path, &target).map_err(EngineError::from)?;
 
     // Keep the newest three.
@@ -279,7 +401,9 @@ fn write_backup(path: &Path) -> Result<PathBuf, EngineError> {
     Ok(target)
 }
 
-fn backup_root() -> PathBuf {
+/// Where backups go when there is no app to ask (tests, tools). The app passes
+/// `<app data>/backups` (`app::store::backups_dir`), which the OS does not purge.
+pub fn default_backup_root() -> PathBuf {
     std::env::temp_dir().join("seepdf-backups")
 }
 

@@ -100,8 +100,10 @@ Frontend:
   `ownerRequired` whenever a permission is unchecked and the owner password is blank or equal to
   the open password; the dialog shows `dialog.security.ownerRequired` and keeps 암호 설정 disabled.
   The blank-owner fallback is still allowed when nothing is restricted, where it is harmless.
-* Metadata edit on an encrypted document (decrypt, then re-encrypt with the same passwords) is not
-  supported.
+* ~~Metadata edit on an encrypted document (decrypt, then re-encrypt with the same passwords) is not
+  supported.~~ **Resolved in v0.3 (pkg3, S2)**: every lopdf rewrite of an encrypted document works on
+  PDFium's decrypted serialisation and is re-encrypted with the file's own security-handler state
+  (`engine::security::Crypt`, `IPC_CONTRACT.md` §7.11); only the modify permission refuses it.
 * The two 암호 확인 inputs share one aria-label.
 * For R3/R4 files, `extract_text` now reads bit 5 instead of bit 10 (ISO 32000-2 table 22). This is
   a behaviour change from Stage 2.

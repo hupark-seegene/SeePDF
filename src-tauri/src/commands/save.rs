@@ -14,25 +14,48 @@ use crate::engine::{save, EngineHandle, Lane};
 use crate::ipc::types::{JobEvent, SaveResult};
 use crate::ipc::EngineError;
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, State};
 
+/// `force` (v0.3 H8): overwrite even when the file changed on disk since it was opened —
+/// the answer to the `fileChangedOnDisk` prompt's 덮어쓰기.
 #[tauri::command]
 pub async fn save_document(
+    app: AppHandle,
     engine: State<'_, EngineHandle>,
     doc_id: String,
+    force: Option<bool>,
     on_progress: Channel<JobEvent>,
 ) -> Result<SaveResult, EngineError> {
-    run_save(engine, doc_id, None, on_progress).await
+    run_save(
+        app,
+        engine,
+        doc_id,
+        None,
+        force.unwrap_or(false),
+        on_progress,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn save_document_as(
+    app: AppHandle,
     engine: State<'_, EngineHandle>,
     doc_id: String,
     path: String,
     on_progress: Channel<JobEvent>,
 ) -> Result<SaveResult, EngineError> {
-    run_save(engine, doc_id, Some(path), on_progress).await
+    run_save(app, engine, doc_id, Some(path), false, on_progress).await
+}
+
+/// v0.3 U2: the folder backups are written to (`<app data>/backups`), created if missing —
+/// for Settings › 고급 › 백업 폴더 열기.
+#[tauri::command]
+pub fn backup_folder(app: AppHandle) -> Result<String, EngineError> {
+    let dir = crate::app::store::backups_dir(&app)
+        .ok_or_else(|| EngineError::io("no app data directory"))?;
+    std::fs::create_dir_all(&dir).map_err(EngineError::from)?;
+    Ok(dir.display().to_string())
 }
 
 /// `true` when something already exists at `path` (P1-7 여러 파일 OCR).
@@ -115,18 +138,26 @@ pub fn list_pdfs(dir: &std::path::Path, recursive: bool) -> Result<Vec<String>, 
 }
 
 async fn run_save(
+    app: AppHandle,
     engine: State<'_, EngineHandle>,
     doc_id: String,
     path: Option<String>,
+    force: bool,
     on_progress: Channel<JobEvent>,
 ) -> Result<SaveResult, EngineError> {
     // Progress only: a save is one atomic rewrite and cannot stop half-way, so its id is not
     // registered for `cancel_job` (which answers `false` for it).
     let job_id = engine.jobs.progress_only();
     let _ = on_progress.send(JobEvent::Started { job_id, total: 1 });
+    // v0.3 U2: Settings › 저장 시 백업 decides, and backups live in the app data folder.
+    let backup_root = crate::app::store::get_settings(&app)
+        .backups_enabled
+        .then(|| crate::app::store::backups_dir(&app))
+        .flatten();
+    let options = save::SaveOptions { backup_root, force };
     let result = engine
         .call(Lane::Edit, "save_document", move |st| {
-            save::save(st, &doc_id, path.as_deref(), true)
+            save::save_with(st, &doc_id, path.as_deref(), &options)
         })
         .await;
     match &result {

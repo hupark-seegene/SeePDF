@@ -33,6 +33,9 @@ pub mod structure;
 pub mod text;
 pub mod thread;
 pub mod types;
+// v0.3 pkg3-security-save-integrity: 첨부 파일 (S4) and 문서 정리 (S3).
+pub mod attachments;
+pub mod sanitize;
 
 pub use thread::{spawn, EngineHandle, Submit};
 pub use types::{Cmd, CmdStatus, EngineShared, EngineState, Lane, Reply, Viewport};

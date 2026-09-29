@@ -7,7 +7,12 @@ import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { shortcutFor } from "../keys/keymap";
 import { historyTitle } from "./historyLabel";
+import { DocBadges } from "./DocBadges";
+import { installSignatureGate } from "./signatureGate";
 import type { CommandId } from "./useCommands";
+
+// v0.3 pkg3 (S1): the first edit of a signed document asks once (see `signatureGate.ts`).
+installSignatureGate();
 
 /**
  * The 44 px title-bar toolbar (UI_SPEC §2). The whole strip is `data-tauri-drag-region`; every
@@ -87,6 +92,8 @@ export function TitleBar({ run }: { run: (id: CommandId) => void }) {
             )}
           </div>
         )}
+        {/* v0.3 pkg3: 서명됨 (n) · 제한됨 */}
+        <DocBadges />
       </div>
 
       <div className="titlebar-centre" data-tauri-drag-region="false">

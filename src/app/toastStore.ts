@@ -4,6 +4,7 @@
  */
 import { create } from "zustand";
 import type { TParams } from "../i18n";
+import { DECLINED } from "../ipc/api";
 
 export type ToastTone = "info" | "success" | "danger";
 
@@ -52,6 +53,9 @@ export function toast(
   params?: TParams,
   opts: { tone?: ToastTone; actions?: ToastAction[]; detail?: string; timeoutMs?: number } = {},
 ): number {
+  // v0.3 pkg3 (S1): 취소 on the signed-document prompt rejects the edit with `cancelled`
+  // (`api.DECLINED`); the callers' error toasts carry it as `detail` and are skipped.
+  if (opts.detail === DECLINED) return 0;
   return useToastStore.getState().push({
     messageKey,
     params,

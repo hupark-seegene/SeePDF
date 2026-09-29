@@ -112,7 +112,7 @@ pub enum SecurityRevision {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Permissions {
     pub print: bool,
@@ -216,6 +216,23 @@ pub struct DocInfo {
     /// then shows plain page numbers. The same values as `pages[i].label`, as one array.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_labels: Option<Vec<String>>,
+    // --- v0.3 pkg3-security-save-integrity ---
+    /// S1: the document's digital signatures (`FPDF_GetSignatureCount`), in file order. Only
+    /// **detected** — no cryptographic validation is performed. Absent when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub signatures: Vec<SignatureInfo>,
+    /// S1: on a signed document, whether the next `save_document` appends an incremental
+    /// update (the signed revisions stay byte-identical) instead of a full rewrite that
+    /// invalidates every signature. Absent on an unsigned document.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub incremental_save: Option<bool>,
+    /// S4: how many document-level attachments (`/EmbeddedFiles`) there are; absent when 0.
+    #[serde(skip_serializing_if = "is_zero", default)]
+    pub attachment_count: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2158,6 +2175,93 @@ pub struct ReadingOrder {
 #[serde(rename_all = "camelCase")]
 pub struct TtsProgressPayload {
     pub sentence_index: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg3-security-save-integrity: signatures (S1), sanitize (S3), attachments (S4)
+// ---------------------------------------------------------------------------------------
+
+/// S1: one digital signature as PDFium reports it (`FPDFSignatureObj_*`) plus the signature
+/// field's `/T`. Every value is optional because a signature dictionary may omit it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureInfo {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub field_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reason: Option<String>,
+    /// `/M`, the raw PDF date string (`D:YYYYMMDDHHmmSS…`), passed through unparsed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub time: Option<String>,
+    /// `/SubFilter`, e.g. `adbe.pkcs7.detached`, `ETSI.CAdES.detached`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sub_filter: Option<String>,
+}
+
+/// S3 `sanitize_document`: what to remove. Every flag the frontend leaves out is `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SanitizeOptions {
+    /// Document JavaScript (`/Names /JavaScript`) and every JavaScript action.
+    pub javascript: bool,
+    /// Embedded files (`/Names /EmbeddedFiles`) and FileAttachment annotations.
+    pub attachments: bool,
+    /// Automatic actions: `/OpenAction` and every `/AA` (catalog, page, annotation, field).
+    pub actions: bool,
+    /// `/Info`, every `/Metadata` stream (XMP) and `/PieceInfo`.
+    pub metadata: bool,
+    /// Optional-content groups that are hidden by default: `/OCProperties` is removed, so
+    /// every layer shows and nothing stays hidden in the file.
+    pub hidden_layers: bool,
+}
+
+impl Default for SanitizeOptions {
+    fn default() -> Self {
+        Self {
+            javascript: true,
+            attachments: true,
+            actions: true,
+            metadata: true,
+            hidden_layers: true,
+        }
+    }
+}
+
+/// S3: how many entries `sanitize_document` removed per category (0 = none found).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SanitizeCounts {
+    pub javascript: u32,
+    pub attachments: u32,
+    pub actions: u32,
+    pub metadata: u32,
+    pub hidden_layers: u32,
+}
+
+impl SanitizeCounts {
+    pub fn total(&self) -> u32 {
+        self.javascript + self.attachments + self.actions + self.metadata + self.hidden_layers
+    }
+}
+
+/// S3 result: the report and the document afterwards. When nothing was found no undo step is
+/// pushed and the generation is unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SanitizeResult {
+    pub removed: SanitizeCounts,
+    pub info: DocInfo,
+}
+
+/// S4: one document-level attachment (`/Names /EmbeddedFiles`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentInfo {
+    /// Position in PDFium's attachment list; valid for the generation it was listed in.
+    pub index: u32,
+    pub name: String,
+    /// Uncompressed size in bytes.
+    pub size: u64,
 }
 
 #[cfg(test)]

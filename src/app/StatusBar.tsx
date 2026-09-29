@@ -17,6 +17,7 @@ import { toolController } from "../tools/ToolController";
 import type { ToolId } from "../store/appStore";
 import type { IconProps } from "./IconButton";
 import type { ComponentType } from "react";
+import { permissionBlock } from "./permissions";
 
 const LAYOUTS: { id: ViewLayout; labelKey: string; keyId: string }[] = [
   { id: "single", labelKey: "view.layout.single", keyId: "view.layout.single" },
@@ -135,14 +136,17 @@ export function StatusBar() {
                 // a held Space shows 손 as the tool of the moment, but the latch is still 선택
                 const latched = (momentaryFrom ?? tool) === rt.id;
                 const Icon = rt.icon;
+                // v0.3 integration (S5 × V1): 스냅샷 is off when the document forbids copying
+                const blocked = permissionBlock(rt.keyId, info);
                 return (
-                  <Tooltip key={rt.id} label={t(rt.labelKey)} shortcut={shortcutFor(rt.keyId, os)}>
+                  <Tooltip key={rt.id} label={blocked ? t(blocked) : t(rt.labelKey)} shortcut={shortcutFor(rt.keyId, os)}>
                     <button
                       type="button"
                       className="segment"
                       data-active={latched || undefined}
                       aria-pressed={latched}
                       aria-label={t(rt.labelKey)}
+                      disabled={!!blocked}
                       onClick={() => {
                         useAppStore.getState().setTool(rt.id);
                         toolController.arm(rt.id);

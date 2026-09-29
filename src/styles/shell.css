@@ -885,3 +885,28 @@
     margin-inline: var(--space-1);
   }
 }
+
+/* v0.3 pkg3: 서명됨 (n) / 제한됨 badges beside the document title (popover: app/badges.css) */
+.doc-badges {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+}
+
+.doc-badge {
+  height: 22px;
+  padding-inline: var(--space-2);
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--accent-subtle);
+  white-space: nowrap;
+}
+
+.doc-badge.warn {
+  color: var(--warning);
+  background: rgb(199 119 0 / 0.12);
+}

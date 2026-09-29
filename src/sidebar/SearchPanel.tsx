@@ -23,6 +23,7 @@ import type { SearchHit } from "../ipc/types";
 import { openContextMenu } from "../app/contextMenuStore";
 import { toast } from "../app/toastStore";
 import "./sidebar.css";
+import { copyForbidden, permissionBlock, reasonKey } from "../app/permissions";
 
 const DEBOUNCE_MS = 220;
 const RENDER_CHUNK = 200;
@@ -37,6 +38,8 @@ export function SearchPanel() {
   const matchCase = useSearchStore((s) => s.matchCase);
   const wholeWord = useSearchStore((s) => s.wholeWord);
   const hits = useSearchStore((s) => s.hits);
+  // v0.3 integration (R3 × S5): 영역 표시 needs the modify permission
+  const markAllBlock = permissionBlock("tools.redact", info);
   const current = useSearchStore((s) => s.current);
   const running = useSearchStore((s) => s.running);
   const run = useSearchStore((s) => s.run);
@@ -203,7 +206,13 @@ export function SearchPanel() {
 
       {/* v0.3 (R3): every hit becomes a 영역 표시 mark, reviewed in 편집 before 적용 */}
       {!running && total > 0 && (
-        <button type="button" className="btn quiet search-mark-all text-sm" onClick={() => void markHits(hits)}>
+        <button
+          type="button"
+          className="btn quiet search-mark-all text-sm"
+          disabled={!!markAllBlock}
+          title={markAllBlock ? t(markAllBlock) : undefined}
+          onClick={() => void markHits(hits)}
+        >
           {t("sidebar.search.markAll")}
         </button>
       )}
@@ -266,7 +275,11 @@ function resultMenu(e: React.MouseEvent, hit: SearchHit, go: () => void): void {
   e.stopPropagation();
   const [start, length] = hit.contextMatch;
   const text = hit.context.slice(start, start + length);
-  const permissions = useDocStore.getState().info?.permissions;
+  const info = useDocStore.getState().info;
+  // v0.3 integration (pkg1 R6 × pkg3 S5): the permissions gate these the way the canvas menu does
+  const copyBlock = copyForbidden(info) ? reasonKey("extractText") : null;
+  const annotBlock = permissionBlock("mode.annotate", info);
+  const markBlock = permissionBlock("tools.redact", info);
   openContextMenu({
     x: e.clientX,
     y: e.clientY,
@@ -276,12 +289,14 @@ function resultMenu(e: React.MouseEvent, hit: SearchHit, go: () => void): void {
       {
         id: "copy",
         labelKey: "menu.edit.copy",
+        disabled: !!copyBlock,
+        hintKey: copyBlock ?? undefined,
         // written inside the click's gesture, before anything is awaited
         onSelect: () => void navigator.clipboard?.writeText(text).catch(() => undefined),
       },
       { id: "sep", separator: true },
-      { id: "highlight", labelKey: "sidebar.search.menu.highlight", disabled: permissions?.annotate === false, onSelect: () => void highlightHit(hit) },
-      { id: "mark", labelKey: "sidebar.search.menu.mark", disabled: permissions?.modify === false, onSelect: () => void markHits([hit]) },
+      { id: "highlight", labelKey: "sidebar.search.menu.highlight", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => void highlightHit(hit) },
+      { id: "mark", labelKey: "sidebar.search.menu.mark", disabled: !!markBlock, hintKey: markBlock ?? undefined, onSelect: () => void markHits([hit]) },
     ],
   });
 }

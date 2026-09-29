@@ -153,3 +153,11 @@ pub async fn redo(engine: State<'_, EngineHandle>, doc_id: String) -> Result<Doc
         })
         .await
 }
+
+/// v0.3 pkg3 (H8): the window already showing the file at `path`, brought to the front; `null`
+/// when no window has it. `openPath` calls this first and opens nothing when another window
+/// answers.
+#[tauri::command]
+pub fn focus_document_window(app: AppHandle, path: String) -> Option<String> {
+    crate::app::windows::focus_window_for_path(&app, &path)
+}

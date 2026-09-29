@@ -33,6 +33,8 @@ pub mod save;
 // v0.3 pkg6: web links in the page text (V5) and the structure tree's reading order (V6)
 pub mod structtree;
 pub mod weblinks;
+// v0.3 pkg3 (S1): `FPDFSignatureObj_GetSubFilter`, which pdfium-render does not expose.
+pub mod sig;
 
 use pdfium_render::prelude::{Pdfium, PdfiumLibraryBindings};
 

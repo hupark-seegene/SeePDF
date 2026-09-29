@@ -41,6 +41,9 @@ pub enum ErrorCode {
     /// v0.3 pkg5 (H4): the command panicked on the engine thread. The documents it touched
     /// were closed (`engine-crashed` event); the engine keeps serving the others.
     EngineCrashed,
+    /// v0.3 pkg3 (H8): `save_document` found the file on disk changed (size or modification
+    /// time) since it was opened or last saved; retry with `force: true` to overwrite.
+    FileChangedOnDisk,
 }
 
 /// The error object delivered to JS on rejection.

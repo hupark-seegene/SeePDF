@@ -772,32 +772,25 @@ fn get_outline_len_of(name: &str) -> usize {
 // Encrypted documents
 // ---------------------------------------------------------------------------------------
 
+/// v0.3 S2 (pkg3): the lopdf rewrites work on an encrypted document and keep it encrypted
+/// (it used to refuse them); the full matrix is in `tests/security.rs`.
 #[test]
-fn structure_refused_on_encrypted() {
+fn structure_on_encrypted_keeps_encryption() {
     let doc = try_open("gen/encrypted-rc4-40.pdf", Some("user")).expect("open with the password");
     let can_undo = |id: &str| with_doc(id, |d| Ok(d.history.can_undo())).unwrap();
 
-    let err = set_outline(&doc.doc_id, vec![node("x", Some(0))]).unwrap_err();
-    assert_eq!(err.code, ErrorCode::Unsupported);
-    assert!(
-        err.message.contains("remove the password first"),
-        "{}",
-        err.message
-    );
-    let err = set_labels(
+    let info = set_outline(&doc.doc_id, vec![node("x", Some(0))]).expect("outline");
+    assert!(info.encrypted && info.has_outline);
+    let info = set_labels(
         &doc.doc_id,
         vec![range(0, PageLabelStyle::Roman, None, None)],
     )
-    .unwrap_err();
-    assert_eq!(err.code, ErrorCode::Unsupported);
-    assert_eq!(
-        get_labels(&doc.doc_id).unwrap_err().code,
-        ErrorCode::Unsupported
-    );
+    .expect("labels");
+    assert!(info.encrypted);
+    assert_eq!(get_labels(&doc.doc_id).expect("labels read back").len(), 1);
     let rect = Rect::new(50.0, 50.0, 150.0, 80.0);
-    let err = create_link(&doc.doc_id, 0, rect, page_target(0, Some(10.0))).unwrap_err();
-    assert_eq!(err.code, ErrorCode::Unsupported);
-    assert!(!can_undo(&doc.doc_id), "a refusal pushes no undo step");
+    create_link(&doc.doc_id, 0, rect, page_target(0, Some(10.0))).expect("page link");
+    assert!(can_undo(&doc.doc_id));
 
     // A web link needs no rewrite: PDFium writes it, encryption and all.
     let r = create_link(&doc.doc_id, 0, rect, url_target("https://example.com")).expect("url link");

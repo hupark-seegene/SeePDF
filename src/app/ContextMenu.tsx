@@ -91,6 +91,7 @@ export default function ContextMenu() {
               data-danger={item.danger || undefined}
               data-active={active === i || undefined}
               disabled={item.disabled}
+              title={item.hintKey ? t(item.hintKey) : undefined}
               onMouseEnter={() => setActive(i)}
               onClick={() => choose(i)}
             >

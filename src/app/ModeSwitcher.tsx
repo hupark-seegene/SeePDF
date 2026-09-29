@@ -8,6 +8,7 @@ import { MODES } from "./tools";
 import { Tooltip } from "./Tooltip";
 import type { IconProps } from "./IconButton";
 import type { CommandId } from "./useCommands";
+import { permissionBlock } from "./permissions";
 
 /** v0.3 pkg5 (H14): the glyph each mode keeps when its label no longer fits (UI_SPEC §1, §14.6). */
 const MODE_ICON: Record<Mode, ComponentType<IconProps>> = {
@@ -47,7 +48,8 @@ export function ModeSwitcher({ run, narrow }: { run: (id: CommandId) => void; na
   const t = useT();
   const os = useAppStore((s) => s.os);
   const mode = useAppStore((s) => s.mode);
-  const hasDoc = useDocStore((s) => s.info !== null);
+  const info = useDocStore((s) => s.info);
+  const hasDoc = info !== null;
   const narrowWindow = useNarrowWindow();
   const iconOnly = narrow ?? narrowWindow;
 
@@ -55,8 +57,10 @@ export function ModeSwitcher({ run, narrow }: { run: (id: CommandId) => void; na
     <div className="segmented" role="tablist" aria-label={t("mode.read")} data-icon-only={iconOnly || undefined}>
       {MODES.map((m) => {
         const Icon = MODE_ICON[m.id];
+        // v0.3 pkg3 (S5): a mode the document's permissions forbid is disabled, with the reason
+        const blocked = permissionBlock(m.keyId, info);
         return (
-          <Tooltip key={m.id} label={t(m.labelKey)} shortcut={shortcutFor(m.keyId, os)}>
+          <Tooltip key={m.id} label={blocked ? t(blocked) : t(m.labelKey)} shortcut={shortcutFor(m.keyId, os)}>
             <button
               type="button"
               role="tab"
@@ -64,7 +68,7 @@ export function ModeSwitcher({ run, narrow }: { run: (id: CommandId) => void; na
               aria-selected={mode === m.id}
               aria-label={iconOnly ? t(m.labelKey) : undefined}
               data-active={mode === m.id || undefined}
-              disabled={!hasDoc}
+              disabled={!hasDoc || !!blocked}
               onClick={() => run(m.keyId as CommandId)}
             >
               {iconOnly ? <Icon size={16} strokeWidth={1.75} aria-hidden /> : t(m.labelKey)}

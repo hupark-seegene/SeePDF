@@ -1375,8 +1375,14 @@ pub fn edit(
     let flow = edit.flow.unwrap_or_default();
     let pdfium = st.pdfium;
     // v0.3 (R5): the new text keeps the old paragraph's place in the reading order — a
-    // `lopdf` pass after the write, which cannot write an encrypted file back.
-    let keep_order = !edit.dry_run && !st.doc(doc_id)?.encrypted;
+    // `lopdf` pass after the write, which cannot write an encrypted file back. v0.3
+    // integration (R5 × S1): nor is it run on a signed file that can still be saved
+    // incrementally (`pristine`): the rewrite would force a full save, which invalidates
+    // the signatures; there the edit keeps them and the paragraph reads last instead.
+    let keep_order = !edit.dry_run && {
+        let doc = st.doc(doc_id)?;
+        !doc.encrypted && !doc.pristine
+    };
     let job = Job {
         page_index,
         ids: &ids,

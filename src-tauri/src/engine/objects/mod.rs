@@ -257,6 +257,10 @@ pub fn probe(
     object_id: ObjectId,
     new_text: &str,
 ) -> Result<TextEditProbe, EngineError> {
+    // v0.3 pkg3 (S5): a document that forbids modification says so before anything else.
+    if !doc.permissions.modify {
+        return Ok(refused(NotEditableReason::Permissions));
+    }
     let page = doc.page(page_index)?;
     let object = object_at(page, object_id)?;
     if object.object_type() == PdfPageObjectType::XObjectForm {

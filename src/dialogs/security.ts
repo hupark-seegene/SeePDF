@@ -2,7 +2,12 @@
  * Pure logic behind the 보안 dialog (P1-2 / P1-3): password validation and the `set_password`
  * payload. Kept out of the component so it is unit-testable.
  */
-import type { DocId, Permissions } from "../ipc/types";
+import type { DocId, Permissions, SanitizeOptions } from "../ipc/types";
+
+/** v0.3 S3 문서 정리: the checkboxes, in display order. */
+export const SANITIZE_KEYS: readonly (keyof SanitizeOptions)[] = [
+  "javascript", "attachments", "actions", "metadata", "hiddenLayers",
+];
 
 export interface SecurityForm {
   openPassword: string;

@@ -17,6 +17,7 @@ import { ChevronDown, ChevronRight, Globe } from "lucide-react";
 import type { OutlineNode, PageIndex } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
+import { structureLocked } from "../app/permissions";
 import { useViewStore } from "../store/viewStore";
 import { displayLabel } from "../viewer/pageLabel";
 import { openContextMenu } from "../app/contextMenuStore";
@@ -102,8 +103,8 @@ export function Outline() {
       <button
         type="button"
         className="btn quiet outline-edit-btn text-sm"
-        disabled={info.encrypted}
-        title={info.encrypted ? t("structure.encrypted") : undefined}
+        disabled={structureLocked(info)}
+        title={structureLocked(info) ? t("security.restricted.reason.modify") : undefined}
         onClick={() => setEditing(true)}
       >
         {t("outline.edit")}
