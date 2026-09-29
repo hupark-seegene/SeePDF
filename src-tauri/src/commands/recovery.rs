@@ -77,7 +77,8 @@ pub async fn clear_recovery(
 }
 
 /// Skips the copies of documents that are open right now (another window, or a reloaded main
-/// window): those are live autosaves, not crash leftovers.
+/// window): those are live autosaves, not crash leftovers. `recovery::list` also skips those of
+/// another running SeePDF process (v0.3 pkg5, H2: the sidecar's owner still holds its lock).
 #[tauri::command]
 pub async fn list_recovery(
     app: AppHandle,

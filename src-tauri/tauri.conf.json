@@ -45,7 +45,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/pdfium/*", "resources/fonts/*"],
+    "resources": ["resources/pdfium/*", "resources/fonts/*", "resources/notices/*"],
     "fileAssociations": [
       {
         "ext": ["pdf"],
@@ -57,7 +57,7 @@
       }
     ],
     "macOS": {
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "13.0"
     },
     "createUpdaterArtifacts": false
   },

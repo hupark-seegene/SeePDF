@@ -811,3 +811,77 @@
   border-radius: var(--radius-xl);
   color: var(--text-secondary);
 }
+
+/* ------------------------------------------------ v0.3 pkg5-app-shell-release-diagnostics */
+
+/* H3: 읽기 전용 / 암호화됨 badges in the status bar's right group, before the save state. */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding-inline: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* V7: 선택 / 손 in 읽기 — icon segments, the same height as the layout segmented. */
+.status-tools .segment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+}
+
+/* H14: below a 900 px window (UI_SPEC §1). The title bar and status bar are size containers, so
+   these rules follow their own width; the mode labels turn into icons in ModeSwitcher (the same
+   900 px, from the window width). Nothing wraps: the chrome keeps one row at the 800 px minimum. */
+.titlebar {
+  container: titlebar / inline-size;
+}
+
+.statusbar {
+  container: statusbar / inline-size;
+}
+
+.titlebar,
+.statusbar {
+  white-space: nowrap;
+}
+
+.segmented[data-icon-only] .segment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: var(--space-2);
+}
+
+@container titlebar (max-width: 899.98px) {
+  /* 찾기 and 내보내기 move into ⋯ (useCommands adds them to the overflow menu at this width) */
+  .titlebar-right > .tooltip-host:not(:last-child) {
+    display: none;
+  }
+  /* the document title truncates first */
+  .doc-title {
+    max-width: 180px;
+  }
+}
+
+@container statusbar (max-width: 899.98px) {
+  .zoom-slider {
+    display: none;
+  }
+  .status-left,
+  .status-right {
+    overflow: hidden;
+  }
+  .statusbar .save-state {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .status-sep {
+    margin-inline: var(--space-1);
+  }
+}

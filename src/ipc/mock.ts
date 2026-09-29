@@ -22,6 +22,7 @@ import type {
   CompareOptions, CompareReport, ComparePage, DiffOp, RecoveryEntry,
   DuplicateObjectsResult, RedactBatchMark, RedactBatchResult, AnnotationSummaryResult, ResizeMode,
   ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus, LinkTarget, PageLabelRange,
+  AppInfo, ProblemReport,
 } from "./types";
 import { labelsFor, normalizeRanges } from "../dialogs/pageLabels";
 
@@ -568,6 +569,10 @@ export const mock = {
     if (/encrypted/i.test(a.path) && !a.password) throw err("passwordRequired", "document is encrypted");
     // a path that names itself damaged fails to open, so a batch can exercise its 실패 row
     if (/damaged/i.test(a.path)) throw err("pdfium", "the file is damaged or not a PDF");
+    // v0.3 pkg5 (H3): like the engine's `detail` — a renamed text file, a broken body, a read that ran out of memory
+    if (/not-a-pdf/i.test(a.path)) throw err("pdfium", "load document: FormatError", { detail: "notPdf" });
+    if (/corrupt/i.test(a.path)) throw err("pdfium", "load document: FormatError", { detail: "corrupted" });
+    if (/out-of-memory/i.test(a.path)) throw err("io", "out of memory", { detail: "outOfMemory" });
     const recent = recents.find((r) => r.path === a.path);
     const d = makeDoc(a.path, recent?.pages ?? BASE_DOC.pageCount);
     // Stage 8: a recovered copy reports the original name, not `<uuid>.pdf`
@@ -1585,6 +1590,26 @@ export const mock = {
     const path = `/mock/app-data/signatures/sig-${hash.toString(16).padStart(8, "0")}.png`;
     writtenFiles.add(path);
     return path;
+  },
+
+  // --- v0.3 pkg5-app-shell-release-diagnostics ---
+  async appInfo(): Promise<AppInfo> {
+    return {
+      version: "0.2.0", os: "macos", arch: "aarch64", debug: false,
+      pdfiumVersion: "155.0.8057.0", pdfiumDir: "/Applications/SeePDF.app/Contents/Resources/resources/pdfium",
+      locale: settings.locale, theme: settings.theme,
+    };
+  },
+  async problemReport(): Promise<ProblemReport> {
+    const path = "/mock/logs/problem-report.txt";
+    writtenFiles.add(path);
+    return { text: "SeePDF 0.2.0\nOS: macos / aarch64\nPDFium: 155.0.8057.0\nLog lines (0):\n", path };
+  },
+  async openLogFolder(): Promise<string> {
+    return "/mock/logs";
+  },
+  async thirdPartyNotices(): Promise<string> {
+    return delay("SeePDF — third-party notices\n\n==== pdfium-render 0.9.0 (MIT OR Apache-2.0) ====\n\n==== react 19.1.0 (MIT) ====\n", 10);
   },
 };
 

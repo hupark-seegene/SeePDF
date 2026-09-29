@@ -33,7 +33,13 @@ One document per window; the first window shows the welcome screen.
 * Chrome heights are fixed tokens: titlebar 44 · tool strip 40 · status bar 28 · sidebar 240 (drag
   180–420, collapsible to 0) · inspector 260.
 * Below a 900 px window width: tool buttons collapse into `⋯`, mode labels become icon-only, and the
-  document title truncates first. **The toolbar never wraps.**
+  document title truncates first. **The toolbar never wraps.** (v0.3 pkg5, H14: the title bar and status bar
+  are CSS size containers — under 900 px 찾기 / 내보내기 hide and ⋯ lists them first, the title caps at 180 px,
+  the status bar's zoom slider hides; the mode switcher shows 읽기 `book-open` · 주석 `highlighter` · 편집
+  `square-pen` · 페이지 `layout-grid` · 양식 `text-cursor-input`, names kept as tooltip and accessible name.)
+* First run (v0.3 pkg5, H14): a main window larger than 90 % of its monitor's work area — 1400×900 on a
+  1366×768 laptop at 125 % — is shrunk to 90 % of it and centred (after window-state restored it; a maximised
+  or full-screen window is left alone).
 
 ---
 
@@ -45,7 +51,7 @@ One document per window; the first window shows the welcome screen.
 | left group | `☰` sidebar toggle · `↶` undo · `↷` redo (undo/redo only when a document is open) |
 | centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty |
 | centre | **mode switcher**: 읽기 · 주석 · 편집 · 페이지 · 양식 (segmented, ⌘1–⌘5) |
-| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정) |
+| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정, 업데이트 확인…, 손 도구; then 도움말 — 단축키, 문제 보고…, 로그 폴더 열기, SeePDF 정보 — which is where Windows, with no menu bar, finds them (v0.3 pkg5); under 900 px 찾기 / 내보내기 come first) |
 
 Changing mode changes four things at once: the tool strip, the default canvas cursor, the properties
 panel content, and what a click on the page does.
@@ -204,7 +210,10 @@ view layout segmented (단일 / 연속 / 두 쪽) · 왼쪽/오른쪽 회전 ·
 나누기 `rows-2` ⇄ 좌우로 나누기 `columns-2` and 동기화 스크롤 `link-2`, pressed while on — P2; the page field, layout,
 rotation and zoom act on the focused pane) · zoom `− [slider] +` with a numeric combo (25/50/75/100/125/150/200/400 %, 페이지 맞춤, 너비 맞춤,
 실제 크기) · right side: save state (저장됨 / 저장되지 않은 변경 사항 / 저장 중…) and a progress slot used
-by OCR, export, search and save (label + determinate bar + cancel ×). P2: while the system voice reads
+by OCR, export, search and save (label + determinate bar + cancel ×; the bar reads 진행률 N퍼센트 to a screen
+reader). v0.3 pkg5: in 읽기, after the page field, 선택 `mouse-pointer-2` / 손 `hand` icon segments (V7 — a
+click latches the tool, Esc returns to 선택; V1's 스냅샷 joins them); before the save state, `lock` 읽기 전용 when
+the PDF's permissions forbid modifying and `shield-check` 암호화됨 for a password-protected document (H3). P2: while the system voice reads
 (읽어 주기), a pressed `audio-lines` button at the start of the right side — `읽는 중… — 정지`; a click stops it.
 
 ---
@@ -379,6 +388,22 @@ once the rows differ from the file) → `set_page_labels` (one undo step 페이�
 문서 분할 ({{n}}쪽마다 / 페이지 범위로, output folder) · 인쇄 (range + the system dialog) ·
 설정 (일반 / 모양 / 주석 / 고급) · 문서 정보 · 여러 파일을 어떻게 열까요? (각각 열기 / 하나로 합치기).
 
+**SeePDF 정보** (v0.3 pkg5, H1 / H11; md, from ⋯ and on Windows the only About): the wordmark and 버전 {{version}},
+PDF 엔진 `PDFium <build>`, 운영 체제 `<os> / <arch>`, 포함된 오픈 소스 구성 요소 (PDFium BSD-3-Clause, pdfium-render,
+Tauri, React, tesseract.js, Noto Sans KR — each with its licence); secondary 오픈 소스 라이선스 swaps the body (lg)
+for the whole `THIRD_PARTY_NOTICES.txt` in a scrollable, selectable monospace pane, with 뒤로; 닫기. The macOS app
+menu keeps the native About panel, whose credits name the licences and point here.
+
+**문제 보고…** (v0.3 pkg5, H10; 도움말 on macOS, ⋯ everywhere): no dialog — the report (version, OS / arch, PDFium,
+the last 200 log lines) goes to the clipboard, the log folder opens with `problem-report.txt` (the same text)
+selected, and a toast says 문제 보고 내용을 클립보드에 복사했습니다… (or, when the clipboard refused, to attach the
+file). **로그 폴더 열기** opens the folder. A startup failure is a native message box: SeePDF를 시작할 수 없습니다 /
+PDF 라이브러리를 불러올 수 없습니다 — 재설치하거나 백신 예외를 추가하세요. + 오류 + 로그 (Rust-side strings: the
+webview never loaded).
+
+**업데이트 확인** (v0.3 pkg5, H1): a feed without `latest.json` (404) shows 지금은 업데이트 정보를 찾을 수 없습니다. 나중에
+다시 확인해 주세요. — neutral, no 다시 시도.
+
 All dialogs are rendered in the webview, `--elevation-3`, `--radius-xl`, Esc closes, the primary button
 is the accent one and is 36 px tall.
 
@@ -439,8 +464,10 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 **Navigation** — 다음/이전 페이지 ↓ ↑ PageDown PageUp Space ⇧Space · 첫/마지막 페이지 ⌘↑ / ⌘↓
 (Ctrl+Home / Ctrl+End) · 페이지로 이동 ⌥⌘G / Ctrl+G · 뒤로/앞으로 ⌘[ / ⌘] (Alt+← / Alt+→)
 
+**Help** (v0.3 pkg5) — 단축키 ⌘/ / F1 (always; the Welcome screen's 도움말 and ⋯ open the same sheet)
+
 **Modes and tools** (only while the canvas has focus and no input is editing) — 모드 ⌘1…⌘5 ·
-선택 V · 손 Space(hold) · 형광펜 H · 밑줄 U · 취소선 K · 메모 N · 펜 P · 지우개 E · 사각형 R · 타원 O ·
+선택 V · 손 Space(hold), ⇧H latches it (v0.3 pkg5; also 보기 ▸ 손 도구) · 형광펜 H · 밑줄 U · 취소선 K · 메모 N · 펜 P · 지우개 E · 사각형 R · 타원 O ·
 선 L · 화살표 A · 텍스트 상자 T · 도장 S · 서명 G · 영역 표시 ⇧R · 도구 해제 Esc
 
 **Pages mode** — 회전 ⌘L / ⌘R · 삭제 ⌫ · 추출 ⌥⌘X / Ctrl+Alt+X · 페이지 삽입 ⌥⌘I / Ctrl+Alt+I · 모두 선택 ⌘A
@@ -1311,6 +1338,30 @@ from the same catalogue). The native menu's `view.readAloud` label lives in `app
 | `multiSearch.reason.password` | 암호를 입력하지 않았습니다 | No password was entered |
 | `multiSearch.reason.searchFailed` | 검색하지 못했습니다 | Could not be searched |
 | `multiSearch.openHit` | {{name}} {{page}}쪽 열기 | Open {{name}}, page {{page}} |
+
+### 15.20c v0.3 pkg5 — 도움말, SeePDF 정보, 문제 보고, 업데이트 정보 없음
+
+| Key | ko | en |
+|---|---|---|
+| `menu.help.reportProblem` | 문제 보고… | Report a Problem… |
+| `menu.help.openLogs` | 로그 폴더 열기 | Open Log Folder |
+| `menu.view.handTool` | 손 도구 | Hand Tool |
+| `help.report.copied` | 문제 보고 내용을 클립보드에 복사했습니다. 로그 폴더의 problem-report.txt에도 저장했습니다. | The problem report is on the clipboard, and saved as problem-report.txt in the log folder. |
+| `help.report.copyFailed` | 클립보드에 복사하지 못했습니다. 열린 로그 폴더의 problem-report.txt를 첨부해 주세요. | Could not copy to the clipboard. Please attach problem-report.txt from the log folder that just opened. |
+| `help.report.failed` | 문제 보고를 만들지 못했습니다 | Could not create the problem report |
+| `help.logs.failed` | 로그 폴더를 열 수 없습니다 | Could not open the log folder |
+| `about.engine` | PDF 엔진 | PDF engine |
+| `about.platform` | 운영 체제 | Operating system |
+| `about.components` | 포함된 오픈 소스 구성 요소 | Bundled open-source components |
+| `about.licenses` | 오픈 소스 라이선스 | Open-Source Licences |
+| `about.licenses.loading` | 라이선스 고지를 불러오는 중… | Loading the licence notices… |
+| `about.licenses.missing` | 라이선스 고지를 찾을 수 없습니다. SeePDF를 다시 설치해 보세요. | The licence notices could not be found. Try reinstalling SeePDF. |
+| `about.back` | 뒤로 | Back |
+| `update.noInfo` | 지금은 업데이트 정보를 찾을 수 없습니다. 나중에 다시 확인해 주세요. | No update information is available right now. Please check again later. |
+
+Existing keys put to use: `status.readOnly`, `status.encrypted`, `error.notPdf`, `error.corrupted`,
+`error.outOfMemory`, `error.engineCrashed`, `a11y.progress`, `menu.help.about`, `menu.help.shortcuts`.
+The native menu's 문제 보고… / 로그 폴더 열기 / 손 도구 rows live in `menu.rs` `LABELS` (§15.2 rule).
 
 ### 15.21 Notes for the implementer
 

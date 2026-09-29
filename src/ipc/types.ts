@@ -27,7 +27,8 @@ export type ErrorCode =
   | 'fontCoverage'       // the requested text cannot be rendered by the target font
   | 'verifyFailed'       // save or redaction post-condition failed; the document was rolled back
   | 'pdfium'             // PdfiumError that maps to nothing more specific
-  | 'io';                // filesystem error
+  | 'io'                 // filesystem error
+  | 'engineCrashed';     // v0.3 pkg5 (H4): the command panicked on the engine thread; its documents were closed
 
 export interface EngineError { code: ErrorCode; message: string; page?: number; detail?: string }
 
@@ -518,6 +519,22 @@ export type SavedSignature =
 // ---------------------------------------------------------------------------
 // Convenience aliases used by the shell (not part of the wire format)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg5-app-shell-release-diagnostics
+// ---------------------------------------------------------------------------
+
+/** `app_info` (IPC_CONTRACT §11): diagnostics for SeePDF 정보, Welcome and 문제 보고. */
+export interface AppInfo {
+  version: string; os: string; arch: string; debug: boolean;
+  pdfiumVersion: string; pdfiumDir: string; locale: 'ko' | 'en'; theme: 'system' | 'light' | 'dark';
+}
+/** `problem_report` (H10): the text 문제 보고 copies, and where it was also written. */
+export interface ProblemReport { text: string; path: string }
+/** `engine-crashed` (H4): the documents a panicking engine command left closed. */
+export interface EngineCrashedEvent { docIds: DocId[]; label: string }
+/** `theme-changed` (U4): one window changed 밝게 / 어둡게 / 시스템; the others follow. */
+export interface ThemeChangedEvent { theme: 'system' | 'light' | 'dark' }
 
 /** View layout as it is stored in `Settings`/`RecentEntry` (`'two'`), see UI_SPEC §8. */
 export type ViewLayout = Settings['defaultLayout'];

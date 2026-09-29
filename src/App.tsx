@@ -12,7 +12,7 @@ import { StatusBar } from "./app/StatusBar";
 import { useCommands } from "./app/useCommands";
 import { useKeymap } from "./keys/useKeymap";
 import { MENU_IDS, type KeyContext } from "./keys/keymap";
-import { onDocChanged, onFileDrop, onMenuCommand, onOpenFile, onRecentsChanged } from "./ipc/events";
+import { onDocChanged, onEngineCrashed, onFileDrop, onMenuCommand, onOpenFile, onRecentsChanged, onThemeChanged } from "./ipc/events";
 import * as api from "./ipc/api";
 import { useMock } from "./ipc/env";
 import { useAppStore } from "./store/appStore";
@@ -166,6 +166,13 @@ export default function App() {
     [],
   );
   useEffect(() => onMenuCommand((id) => run(id), MENU_IDS), [run]);
+  // v0.3 pkg5: a panicking engine command closed this window's document (H4) → reopen it; another
+  // window changed the theme (U4) → follow it, native chrome included
+  useEffect(
+    () => onEngineCrashed((e) => void import("./dialogs/flows").then((m) => m.recoverFromEngineCrash(e.docIds))),
+    [],
+  );
+  useEffect(() => onThemeChanged((e) => useAppStore.getState().adoptTheme(e.theme)), []);
 
   // 3. closing the window with unsaved changes asks 저장 / 저장 안 함 / 취소 (F-23)
   useEffect(() => {

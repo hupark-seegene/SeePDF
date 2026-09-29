@@ -97,6 +97,10 @@ pub const MENU_IDS: &[&str] = &[
     "help.shortcuts",
     "settings",
     "app.checkUpdates",
+    // v0.3 pkg5: 도움말 › 문제 보고… / 로그 폴더 열기 (H10), 보기 › 손 도구 (V7)
+    "help.reportProblem",
+    "help.openLogs",
+    "view.handTool",
 ];
 
 /// `(key, 한국어, English)` — the `menu.*` rows of `UI_SPEC.md` §15.2, verbatim. The key is
@@ -192,7 +196,35 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("window.zoom", "확대/축소", "Zoom"),
     ("window.close", "닫기", "Close"),
     ("help.shortcuts", "단축키", "Keyboard Shortcuts"),
+    // v0.3 pkg5
+    ("help.reportProblem", "문제 보고…", "Report a Problem…"),
+    ("help.openLogs", "로그 폴더 열기", "Open Log Folder"),
+    ("view.handTool", "손 도구", "Hand Tool"),
 ];
+
+/// v0.3 pkg5 (H11): the macOS About panel names the licences and where to read them in full.
+/// macOS shows `credits` only (`license` is Windows / Linux), so the licence line goes there.
+pub fn about_credits(locale: Locale) -> String {
+    if locale == Locale::Ko {
+        "오픈 소스 구성 요소: PDFium (BSD-3-Clause), Tauri · React 외 (MIT / Apache-2.0), \
+         Noto Sans KR (OFL-1.1), Tesseract (Apache-2.0).\n\
+         전체 라이선스 고지: ⋯ ▸ SeePDF 정보 ▸ 오픈 소스 라이선스"
+            .into()
+    } else {
+        "Open-source components: PDFium (BSD-3-Clause), Tauri, React and others \
+         (MIT / Apache-2.0), Noto Sans KR (OFL-1.1), Tesseract (Apache-2.0).\n\
+         Full licence notices: ⋯ ▸ About SeePDF ▸ Open-Source Licences"
+            .into()
+    }
+}
+
+fn about_metadata(locale: Locale) -> AboutMetadata<'static> {
+    AboutMetadata {
+        credits: Some(about_credits(locale)),
+        license: Some("MIT / Apache-2.0 / BSD-3-Clause / OFL-1.1".into()),
+        ..Default::default()
+    }
+}
 
 /// The label of one menu key in the app language. Panics only in debug builds; a release
 /// build falls back to the key so a missing row can never take the menu bar down.
@@ -227,7 +259,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&PredefinedMenuItem::about(
             app,
             Some(t("help.about")),
-            Some(AboutMetadata::default()),
+            Some(about_metadata(locale)),
         )?)
         .item(&item("app.checkUpdates", None)?)
         .separator()
@@ -319,6 +351,9 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .separator()
         // P2 읽어 주기: the current page with the system voice (no shortcut).
         .item(&item("view.readAloud", None)?)
+        // v0.3 pkg5 (V7): latches the hand tool (drag pans); Esc returns to 선택. The keymap's
+        // ⇧H is canvas-only, so the item carries no accelerator.
+        .item(&item("view.handTool", None)?)
         .build()?;
 
     let go_menu = SubmenuBuilder::new(app, t("go"))
@@ -358,7 +393,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .build()?;
 
     let help_menu = SubmenuBuilder::new(app, t("help"))
-        .item(&item("help.shortcuts", None)?)
+        .item(&item("help.shortcuts", Some("CmdOrCtrl+/"))?)
+        // v0.3 pkg5 (H10)
+        .separator()
+        .item(&item("help.reportProblem", None)?)
+        .item(&item("help.openLogs", None)?)
         .build()?;
 
     HISTORY.lock().locale = locale;

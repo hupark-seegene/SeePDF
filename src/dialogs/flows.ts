@@ -17,7 +17,7 @@ import { askConfirm, askMultipleFiles, askPassword, askUnsaved, closeDialog, ope
 import { autosave, markRecovered, recoveredEntry, settleRecovered } from "../app/autosave";
 import { whenEditsSettled } from "../annot/dragGate";
 import { editLeaveGuard } from "../tools/commands";
-import type { DocInfo, PageIndex, PageOp, RecentEntry, RecoveryEntry } from "../ipc/types";
+import type { DocId, DocInfo, PageIndex, PageOp, ProblemReport, RecentEntry, RecoveryEntry } from "../ipc/types";
 
 // ---------------------------------------------------------------------------
 // Opening
@@ -83,7 +83,8 @@ export async function openPath(
       password = entered;
       continue;
     }
-    toast(error?.code === "notFound" ? "error.fileMissing" : "error.openFailed", undefined, {
+    // v0.3 pkg5 (H3): PDF 아님 / 손상된 PDF / 메모리 부족 when the engine could tell why
+    toast(api.openErrorKey(error), undefined, {
       tone: "danger",
       detail: error?.message,
     });
@@ -516,6 +517,81 @@ export function dirName(path: string): string {
 
 export function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg5-app-shell-release-diagnostics
+// ---------------------------------------------------------------------------
+
+/**
+ * H10 도움말 › 문제 보고…: the report (version, OS / arch, pdfium, the last 200 log lines) goes to the
+ * clipboard, and the log folder opens with `problem-report.txt` — the same text — selected, so the
+ * report survives a clipboard that refused it (a native-menu click carries no user activation).
+ */
+export async function reportProblem(): Promise<void> {
+  let report: ProblemReport;
+  try {
+    report = await api.problemReport();
+  } catch (e) {
+    toast("help.report.failed", undefined, { tone: "danger", detail: message(e) });
+    return;
+  }
+  const copied = await copyText(report.text);
+  await api.revealInFileManager({ path: report.path }).catch(() => undefined);
+  toast(copied ? "help.report.copied" : "help.report.copyFailed", undefined, {
+    tone: copied ? "success" : "info",
+    timeoutMs: 8000,
+  });
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator === "undefined" || !navigator.clipboard) return false;
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** H10 도움말 › 로그 폴더 열기. */
+export async function openLogFolder(): Promise<void> {
+  try {
+    await api.openLogFolder();
+  } catch (e) {
+    toast("help.logs.failed", undefined, { tone: "danger", detail: message(e) });
+  }
+}
+
+let crashHandling: DocId | null = null;
+
+/**
+ * H4: a panicking engine command closed this window's document (`engine-crashed`). The engine no
+ * longer knows it, so the window forgets it without `close_document` and opens it again — from its
+ * newest 자동 저장 copy when it had unsaved changes and one exists (the copy is marked, so 저장 asks
+ * for a location like any 복구), else from its file. A never-saved document without a copy is lost:
+ * the window goes back to the welcome screen. Resolves with the reopened document, or null.
+ */
+export async function recoverFromEngineCrash(docIds: DocId[]): Promise<DocInfo | null> {
+  const info = useDocStore.getState().info;
+  if (!info || !docIds.includes(info.docId) || crashHandling === info.docId) return null;
+  crashHandling = info.docId;
+  try {
+    toast("error.engineCrashed", undefined, { tone: "danger" });
+    const copies = info.dirty ? await api.listRecovery().catch(() => [] as RecoveryEntry[]) : [];
+    // newest first (list_recovery's order); a document that itself came from 복구 falls back to its copy
+    const copy =
+      copies.find((c) => (info.path ? c.originalPath === info.path : c.originalPath === null && c.name === info.name)) ??
+      recoveredEntry(info.docId);
+    autosave.stop();
+    usePagesStore.getState().reset();
+    useDocStore.setState({ docId: null, info: null, outline: [], status: "empty", error: null });
+    if (copy) return await openPath(copy.recoveryPath, { guard: false, recovery: copy });
+    if (info.path) return await openPath(info.path, { guard: false });
+    return null;
+  } finally {
+    crashHandling = null;
+  }
 }
 
 export { closeDialog, openDialog };

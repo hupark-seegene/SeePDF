@@ -69,6 +69,22 @@ lopdf = { version = "0.45", default-features = false }
 getrandom = "0.4"
 # Local-time ModDate for set_metadata. Already in the tree (pdfium-render), same features.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# v0.3 pkg5 (H10): a daily rolling log file in the app log directory, 7 files kept. Its `time`
+# and `crossbeam-channel` dependencies are already in the tree.
+tracing-appender = "0.2"
+# v0.3 pkg5 (H10): the log directory before the Tauri app exists (the lookup tauri's own
+# `app_log_dir` does; already in the tree through tauri).
+dirs = "6"
+
+# v0.3 pkg5 (H10): the "cannot start" message box when setup fails, before any webview exists.
+# The same rfd 0.16 with the features tauri-plugin-dialog already builds: nothing new compiles.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
+
+# v0.3 pkg5 (H2): a second SeePDF process (an Explorer double-click) hands its files to the
+# running one. `~2.4`: 2.5 needs tauri 2.12. macOS is single-instance through LaunchServices.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-single-instance = "~2.4"
 
 # P1-11: macOS Vision OCR (`ocr_recognize_native`). The same objc2 0.6 / 0.3.2 family Tauri
 # already links on macOS, so this adds bindings, not a second runtime. Default features off: the
@@ -120,7 +136,10 @@ pdfium-render = { path = "../vendor/pdfium-render" }
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# v0.3 pkg5 (H4): `unwind`, not `abort`. The engine thread catches a panic in one command
+# (`engine::thread`), closes the document it was working on and keeps serving the others; with
+# `abort` one bad page took every window and its unsaved changes with it.
+panic = "unwind"
 strip = true
 
 # Mandatory: without it PNG encoding is 141-260 ms per page instead of 2.3 ms and every

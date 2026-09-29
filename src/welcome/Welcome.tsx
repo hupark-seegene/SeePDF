@@ -1,14 +1,14 @@
 /**
  * Welcome / recent screen (UI_SPEC §11, F-01). Replaces Stage 0's `WelcomeStub`.
  *
- * Left rail: wordmark, version, 파일 열기…, a quiet 설정. Right: recents as cards with their
+ * Left rail: wordmark, version (`app_info`), 파일 열기…, a quiet 도움말 (단축키) and 설정. Right: recents as cards with their
  * `/recent-thumb` first page, filename, folder, relative date, page count and size; pinned first;
  * a filter field; right-click → 열기 / Finder에서 보기 / 목록에서 제거 / 즐겨찾기.
  * The whole window is a drop target — `App.tsx` feeds `onFileDrop` into `openPaths`, which asks
  * 각각 열기 / 하나로 합치기 for more than one file.
  */
 import { useEffect, useMemo, useState } from "react";
-import { FileText, FolderOpen, Pin, Settings } from "lucide-react";
+import { CircleHelp, FileText, FolderOpen, Pin, Settings } from "lucide-react";
 import { useT } from "../i18n/useT";
 import { formatBytes, formatRelativeDay } from "../i18n";
 import { useAppStore } from "../store/appStore";
@@ -43,6 +43,8 @@ export function Welcome() {
   const os = useAppStore((s) => s.os);
   const recents = useAppStore((s) => s.recents);
   const settings = useAppStore((s) => s.settings);
+  // v0.3 pkg5 (H1): the running build's version (`app_info`), not a hard-coded one
+  const version = useAppStore((s) => s.appInfo?.version);
   const refreshRecents = useAppStore((s) => s.refreshRecents);
   const status = useDocStore((s) => s.status);
   const error = useDocStore((s) => s.error);
@@ -121,7 +123,7 @@ export function Welcome() {
           </span>
           <span className="wordmark-text text-lg">{t("app.name")}</span>
         </div>
-        <p className="text-xs dim">{t("app.version", { version: "0.1.0" })}</p>
+        {version && <p className="text-xs dim">{t("app.version", { version })}</p>}
 
         <button type="button" className="btn primary" onClick={() => void openPicker()}>
           <FolderOpen size={16} strokeWidth={1.75} aria-hidden />
@@ -130,6 +132,12 @@ export function Welcome() {
         </button>
 
         <div className="rail-spacer" />
+        {/* v0.3 pkg5 (H1): 도움말 — the shortcuts sheet (Windows has no menu bar to find it in) */}
+        <button type="button" className="btn quiet" onClick={() => openDialog("shortcuts")}>
+          <CircleHelp size={16} strokeWidth={1.75} aria-hidden />
+          {t("menu.help")}
+          <span className="btn-key">{shortcutFor("help.shortcuts", os)}</span>
+        </button>
         <button type="button" className="btn quiet" onClick={() => openDialog("settings")}>
           <Settings size={16} strokeWidth={1.75} aria-hidden />
           {t("settings.title")}
@@ -150,7 +158,7 @@ export function Welcome() {
         </header>
 
         {status === "error" && error && !isPasswordError(error.code) && (
-          <p className="banner danger text-sm">{t("error.openFailed")}</p>
+          <p className="banner danger text-sm">{t(api.openErrorKey(error))}</p>
         )}
 
         {shown.length === 0 ? (

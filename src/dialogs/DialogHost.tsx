@@ -43,6 +43,8 @@ const ResizeDialog = lazy(() => import("./ResizeDialog"));
 const PageLabelsDialog = lazy(() => import("./PageLabelsDialog"));
 // 여러 파일에서 검색 (P2): its own chunk.
 const MultiSearchDialog = lazy(() => import("../multisearch/MultiSearchDialog"));
+// v0.3 pkg5: SeePDF 정보 (H1) with 오픈 소스 라이선스 (H11) — rare, its own chunk.
+const AboutDialog = lazy(() => import("./AboutDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -183,6 +185,12 @@ function Current({ entry }: { entry: DialogEntry }) {
       return (
         <Suspense fallback={null}>
           <UpdateDialog onClose={close} />
+        </Suspense>
+      );
+    case "about":
+      return (
+        <Suspense fallback={null}>
+          <AboutDialog onClose={close} />
         </Suspense>
       );
     case "pageLabels":

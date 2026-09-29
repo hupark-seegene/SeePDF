@@ -352,9 +352,12 @@ pub fn open_named<'p>(
         .pdfium
         .load_pdf_from_byte_vec(bytes, password.as_deref())
         .map_err(|e| {
+            let detail = open_error_detail(&shared_bytes, &e);
             let err = EngineError::pdfium("load document", e);
             if err.code == ErrorCode::PasswordRequired && password.is_some() {
                 EngineError::new(ErrorCode::PasswordWrong, "supplied password was rejected")
+            } else if let Some(detail) = detail {
+                err.with_detail(detail)
             } else {
                 err
             }
@@ -428,6 +431,30 @@ pub fn open_named<'p>(
         .insert(doc_id.clone(), open_doc.summary());
     st.docs.insert(doc_id, open_doc);
     Ok(info)
+}
+
+/// v0.3 pkg5 (H3): the `detail` of an `open_document` failure, so the frontend can say *why*
+/// instead of a generic "cannot open": `notPdf` when the first 1 KiB has no `%PDF-` header (a
+/// renamed text or image file), `corrupted` for PDFium's `FPDF_ERR_FORMAT`. Password errors
+/// get none (they have their own codes); `outOfMemory` comes from the file read
+/// (`EngineError::from(io::Error)`).
+pub fn open_error_detail(bytes: &[u8], e: &PdfiumError) -> Option<&'static str> {
+    if matches!(
+        e,
+        PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError)
+    ) {
+        return None;
+    }
+    let head = &bytes[..bytes.len().min(1024)];
+    if !head.windows(5).any(|w| w == b"%PDF-") {
+        return Some("notPdf");
+    }
+    match e {
+        PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::FormatError) => {
+            Some("corrupted")
+        }
+        _ => None,
+    }
 }
 
 /// Closes a document: pages → form → document, in that order.

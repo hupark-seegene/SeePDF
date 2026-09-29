@@ -13,18 +13,104 @@
 //!   run one command
 //! starvation guard: after 8 consecutive Interactive/Prefetch pops, take one Edit/Background
 //! ```
+//!
+//! **Panics** (v0.3 pkg5, H4). A Rust panic inside one command no longer takes the process
+//! down (`panic = "unwind"` in the release profile). The command's caller gets
+//! `engineCrashed`; every document the command touched (`EngineState::doc` / `doc_mut`
+//! record it through [`touch`]) is closed, because its pdfium state may be half-edited; the
+//! `engine-crashed` event names them so their windows reopen the file (or its autosave copy);
+//! and the thread carries on serving the other documents. The panic itself is logged by the
+//! hook `app::diagnostics` installs. A crash **inside PDFium's C++** is not a Rust panic and
+//! still ends the process — out of scope.
 
 use crate::engine::jobs::Jobs;
 use crate::engine::render::encode::EncodePool;
 use crate::engine::types::{Cmd, CmdStatus, EngineShared, EngineState, Lane, Reply};
+use crate::ipc::types::DocId;
 use crate::ipc::{EngineError, ErrorCode};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use pdfium_render::prelude::Pdfium;
+use std::cell::RefCell;
 use std::collections::{BinaryHeap, HashMap};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+thread_local! {
+    /// The documents the running command looked up, in order, without repeats.
+    static TOUCHED: RefCell<Vec<DocId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Records that the running engine command works on `doc_id` (called by
+/// `EngineState::doc` / `doc_mut`; cheap — one comparison when it is the same document).
+pub fn touch(doc_id: &str) {
+    TOUCHED.with(|t| {
+        let mut t = t.borrow_mut();
+        if !t.iter().any(|d| d == doc_id) {
+            t.push(doc_id.to_string());
+        }
+    });
+}
+
+fn take_touched() -> Vec<DocId> {
+    TOUCHED.with(|t| std::mem::take(&mut *t.borrow_mut()))
+}
+
+/// The error a caller receives when its command panicked.
+fn crashed(label: &str, payload: &(dyn std::any::Any + Send)) -> EngineError {
+    EngineError::new(
+        ErrorCode::EngineCrashed,
+        format!(
+            "{label} panicked: {}",
+            crate::app::diagnostics::panic_message(payload)
+        ),
+    )
+}
+
+/// `engine-crashed`: the documents a panicking command left closed.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineCrashedEvent {
+    pub doc_ids: Vec<DocId>,
+    pub label: String,
+}
+
+/// After a panic: close every document the command touched and tell the frontend.
+fn poison(st: &mut EngineState<'_>, label: &str, touched: Vec<DocId>) {
+    let mut closed = Vec::new();
+    for doc_id in touched {
+        if !st.docs.contains_key(&doc_id) {
+            continue;
+        }
+        // Closing runs pdfium on a document that may be half-edited; a second panic here must
+        // not escape the loop either.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            crate::engine::registry::close(st, &doc_id)
+        }));
+        if !matches!(result, Ok(Ok(()))) {
+            // Forget it without pdfium: leaking a handle beats crashing.
+            if let Some(doc) = st.docs.remove(&doc_id) {
+                std::mem::forget(doc);
+            }
+            st.shared.docs.write().remove(&doc_id);
+            st.shared.tiles.drop_document(&doc_id);
+        }
+        closed.push(doc_id);
+    }
+    tracing::error!(label, docs = ?closed, "engine command panicked; documents closed");
+    if let Some(app) = &st.app {
+        use tauri::Emitter;
+        let event = EngineCrashedEvent {
+            doc_ids: closed,
+            label: label.to_string(),
+        };
+        if let Err(e) = app.emit("engine-crashed", event) {
+            tracing::warn!("emit engine-crashed failed: {e}");
+        }
+    }
+}
 
 /// Renders are refused with `busy` past this many queued commands.
 const MAX_QUEUED: u32 = 1024;
@@ -195,8 +281,17 @@ impl EngineHandle {
         T: Send + 'static,
         F: FnOnce(&mut EngineState<'_>) -> Result<T, EngineError> + Send + 'static,
     {
+        let label = opts.label;
         self.dispatch(opts, move |st, status| match status {
-            CmdStatus::Run => reply.send(f(st)),
+            // A panic answers the caller with `engineCrashed`, then carries on unwinding so
+            // the loop closes the documents the command touched.
+            CmdStatus::Run => match catch_unwind(AssertUnwindSafe(|| f(st))) {
+                Ok(result) => reply.send(result),
+                Err(payload) => {
+                    reply.send(Err(crashed(label, payload.as_ref())));
+                    resume_unwind(payload)
+                }
+            },
             CmdStatus::Stale => reply.send(Err(EngineError::stale("viewport moved on"))),
             CmdStatus::Cancelled => reply.send(Err(EngineError::cancelled("job cancelled"))),
         })
@@ -313,7 +408,11 @@ fn engine_main(
             }
             let label = cmd.label;
             let started = Instant::now();
-            (cmd.run)(&mut st, status);
+            let run = cmd.run;
+            take_touched();
+            if catch_unwind(AssertUnwindSafe(|| run(&mut st, status))).is_err() {
+                poison(&mut st, label, take_touched());
+            }
             let elapsed = started.elapsed().as_secs_f64() * 1000.0;
             if elapsed > 50.0 {
                 tracing::debug!(label, ms = elapsed, "long engine command");

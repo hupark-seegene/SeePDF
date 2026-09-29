@@ -966,5 +966,20 @@
   "multiSearch.folderFailed": "The folder could not be read",
   "multiSearch.reason.password": "No password was entered",
   "multiSearch.reason.searchFailed": "Could not be searched",
-  "multiSearch.openHit": "Open {{name}}, page {{page}}"
+  "multiSearch.openHit": "Open {{name}}, page {{page}}",
+  "menu.help.reportProblem": "Report a Problem…",
+  "menu.help.openLogs": "Open Log Folder",
+  "menu.view.handTool": "Hand Tool",
+  "help.report.copied": "The problem report is on the clipboard, and saved as problem-report.txt in the log folder.",
+  "help.report.copyFailed": "Could not copy to the clipboard. Please attach problem-report.txt from the log folder that just opened.",
+  "help.report.failed": "Could not create the problem report",
+  "help.logs.failed": "Could not open the log folder",
+  "about.engine": "PDF engine",
+  "about.platform": "Operating system",
+  "about.components": "Bundled open-source components",
+  "about.licenses": "Open-Source Licences",
+  "about.licenses.loading": "Loading the licence notices…",
+  "about.licenses.missing": "The licence notices could not be found. Try reinstalling SeePDF.",
+  "about.back": "Back",
+  "update.noInfo": "No update information is available right now. Please check again later."
 }

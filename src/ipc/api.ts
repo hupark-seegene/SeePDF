@@ -18,6 +18,7 @@ import type {
   RedactPreview, RemoveStampsResult, ResizeMode, ResizeTarget, Rgb, SaveResult, SearchEvent,
   SetPageBoxesArgs, Settings, StampResult, StampRole, StampSpec, SummaryFormat, TextEditProbe, TtsStatus,
   ViewportHint, LinkTarget, PageLabelRange,
+  AppInfo, ProblemReport,
 } from "./types";
 
 export { parseTextLayer, parseRawPage };
@@ -69,6 +70,9 @@ export function errorKey(e: unknown): string {
       return "error.saveFailed";
     case "io":
       return "error.saveFailed";
+    // v0.3 pkg5 (H4)
+    case "engineCrashed":
+      return "error.engineCrashed";
     case "unsupported":
     case "invalidArgument":
     case "stale":
@@ -724,6 +728,46 @@ export function writeSignatureImage(a: { bytes: Uint8Array }): Promise<string> {
   // A JSON array: `Vec<u8>` on the Rust side (a typed array would serialise as an object).
   const args = { bytes: Array.from(a.bytes) };
   return call("write_signature_image", args, (mock) => mock.writeSignatureImage(args));
+}
+
+// --- v0.3 pkg5-app-shell-release-diagnostics ---------------------------------
+
+/** H1: version, OS / arch, pdfium version — Welcome, SeePDF 정보, 문제 보고. Cheap, no pdfium call. */
+export function appInfo(): Promise<AppInfo> {
+  return call("app_info", {}, (mock) => mock.appInfo());
+}
+
+/** H10 문제 보고…: the report text (to copy) and the `problem-report.txt` it was written to (to reveal). */
+export function problemReport(): Promise<ProblemReport> {
+  return call("problem_report", {}, (mock) => mock.problemReport());
+}
+
+/** H10 로그 폴더 열기: opens the app log directory; resolves with its path. */
+export function openLogFolder(): Promise<string> {
+  return call("open_log_folder", {}, (mock) => mock.openLogFolder());
+}
+
+/** H11 오픈 소스 라이선스: the bundled `THIRD_PARTY_NOTICES.txt`. */
+export function thirdPartyNotices(): Promise<string> {
+  return call("third_party_notices", {}, (mock) => mock.thirdPartyNotices());
+}
+
+/**
+ * H3: the `error.*` key for a failed `open_document` — why, when the engine could tell
+ * (`detail`: `notPdf`, `corrupted`, `outOfMemory`), else 파일을 찾을 수 없습니다 / 파일을 열 수 없습니다.
+ */
+export function openErrorKey(e: { code?: string; detail?: string } | null | undefined): string {
+  switch (e?.detail) {
+    case "notPdf":
+      return "error.notPdf";
+    case "corrupted":
+      return "error.corrupted";
+    case "outOfMemory":
+      return "error.outOfMemory";
+  }
+  if (e?.code === "notFound") return "error.fileMissing";
+  if (e?.code === "engineCrashed") return "error.engineCrashed";
+  return "error.openFailed";
 }
 
 // ---------------------------------------------------------------------------

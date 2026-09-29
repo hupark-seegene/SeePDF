@@ -45,7 +45,16 @@ function runPages(ops: PageOp[]): void {
 }
 
 export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) => void {
-  return useCallback((id: CommandId, opts?: { momentary?: boolean }) => {
+  return useCallback(runCommand, []);
+}
+
+/**
+ * The dispatcher itself. A plain function (v0.3 pkg5) so the ⋯ menu below can route its 도움말 rows
+ * through the same table as the keys and the native menu; `useCommands` hands out a stable reference.
+ */
+export function runCommand(id: CommandId, opts?: { momentary?: boolean }): void {
+  // (the block keeps the body at its old indentation, so parallel edits to the switch still merge)
+  {
     const app = useAppStore.getState();
     const docs = useDocStore.getState();
     const view = useViewStore.getState();
@@ -174,6 +183,22 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
         return;
       case "help.shortcuts":
         openDialog("shortcuts");
+        return;
+      // v0.3 pkg5: SeePDF 정보 (⋯; the macOS app menu keeps the native About panel), 문제 보고…,
+      // 로그 폴더 열기 (H1 / H10), 보기 › 손 도구 (V7: latched, Esc returns to 선택)
+      case "help.about":
+        openDialog("about");
+        return;
+      case "help.reportProblem":
+        void flows().then((m) => m.reportProblem());
+        return;
+      case "help.openLogs":
+        void flows().then((m) => m.openLogFolder());
+        return;
+      case "view.handTool":
+        if (!info) return;
+        app.setTool("hand");
+        toolController.arm("hand");
         return;
 
       // Edit -----------------------------------------------------------------
@@ -387,7 +412,7 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
       default:
         if (import.meta.env.DEV) console.info(`[command] ${id} — not implemented`);
     }
-  }, []);
+  }
 }
 
 /** 실행 취소 / 다시 실행 with a text field focused: the field's own history, not the document's. */
@@ -419,14 +444,31 @@ function openRecentMenu(): void {
   openContextMenu({ x: 96, y: 52, labelKey: "menu.file.openRecent", items });
 }
 
-/** ⋯ — 인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정 (UI_SPEC §2). */
+/** Below this window width the title bar's 찾기 / 내보내기 move into ⋯ (UI_SPEC §1, H14 — shell.css). */
+export const NARROW_WINDOW_PX = 900;
+
+/**
+ * ⋯ — 인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정
+ * (UI_SPEC §2); v0.3 pkg5: 손 도구, and 도움말 — 단축키, 문제 보고…, 로그 폴더 열기, SeePDF 정보 — which Windows has
+ * no menu bar for; in a narrow window also 찾기 / 내보내기.
+ */
 function openOverflowMenu(): void {
   const info = useDocStore.getState().info;
+  const narrow = typeof window !== "undefined" && window.innerWidth < NARROW_WINDOW_PX;
+  const run = (id: CommandId) => () => runCommand(id);
+  const moved: MenuEntry[] = narrow
+    ? [
+        { id: "find", labelKey: "menu.edit.find", disabled: !info, onSelect: run("edit.find") },
+        { id: "export", labelKey: "export.title", disabled: !info, onSelect: run("file.export") },
+        { id: "sepNarrow", separator: true },
+      ]
+    : [];
   openContextMenu({
     x: typeof window === "undefined" ? 0 : window.innerWidth - 16,
     y: 52,
     labelKey: "common.more",
     items: [
+      ...moved,
       { id: "print", labelKey: "menu.file.print", disabled: !info, onSelect: () => openDialog("print") },
       { id: "security", labelKey: "menu.tools.security", disabled: !info, onSelect: () => openDialog("security") },
       { id: "stamp", labelKey: "menu.tools.stamp", disabled: !info, onSelect: () => openDialog("stamp") },
@@ -459,6 +501,13 @@ function openOverflowMenu(): void {
           void import("../update/updateStore").then((m) => m.checkForUpdates());
         },
       },
+      // v0.3 pkg5 (V7, H1, H10)
+      { id: "handTool", labelKey: "menu.view.handTool", disabled: !info, onSelect: run("view.handTool") },
+      { id: "sepHelp", separator: true },
+      { id: "shortcuts", labelKey: "menu.help.shortcuts", onSelect: run("help.shortcuts") },
+      { id: "reportProblem", labelKey: "menu.help.reportProblem", onSelect: run("help.reportProblem") },
+      { id: "openLogs", labelKey: "menu.help.openLogs", onSelect: run("help.openLogs") },
+      { id: "about", labelKey: "menu.help.about", onSelect: run("help.about") },
     ],
   });
 }

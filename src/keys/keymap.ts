@@ -125,6 +125,12 @@ export const KEYMAP: KeyBinding[] = [
   { id: "pages.extract", labelKey: "pages.extract", mac: ["Alt+Cmd+X"], win: ["Ctrl+Alt+X"], when: "pages", group: "pages" },
   { id: "pages.insert", labelKey: "pages.insertBlank", mac: ["Alt+Cmd+I"], win: ["Ctrl+Alt+I"], when: "pages", group: "pages" },
   { id: "pages.selectAll", labelKey: "menu.edit.selectAll", mac: ["Cmd+A"], win: ["Ctrl+A"], when: "pages", group: "pages" },
+
+  // --- v0.3 pkg5-app-shell-release-diagnostics ---
+  // H1: 도움말 › 단축키 — reachable on Windows too (no menu bar there): F1 / ⌘/
+  { id: "help.shortcuts", labelKey: "menu.help.shortcuts", mac: ["Cmd+Slash"], win: ["F1"], when: "always", group: "view" },
+  // V7: 보기 › 손 도구 latches the hand tool (Space only holds it); Esc returns to 선택
+  { id: "view.handTool", labelKey: "menu.view.handTool", mac: ["Shift+H"], win: ["Shift+H"], when: "canvas", group: "tool" },
 ];
 
 export const KEYMAP_BY_ID: Record<string, KeyBinding> = Object.fromEntries(KEYMAP.map((b) => [b.id, b]));
@@ -138,11 +144,13 @@ export const KEYMAP_BY_ID: Record<string, KeyBinding> = Object.fromEntries(KEYMA
 export const MENU_ONLY_IDS: readonly string[] = [
   "tools.ocr", "tools.batchOcr", "tools.security", "tools.compress", "tools.compare", "tools.merge",
   "tools.redact", "settings", "app.checkUpdates", "file.clearRecent", "file.revealInFinder",
-  "edit.deselect", "help.shortcuts",
+  "edit.deselect",
   // P2: 보기 ▸ 이 페이지 읽어 주기
   "view.readAloud",
   // P2 여러 파일에서 검색… (편집 menu, ⋯, the 검색 panel)
   "edit.findInFiles",
+  // v0.3 pkg5 (H10): 도움말 › 문제 보고… / 로그 폴더 열기 (also in ⋯)
+  "help.reportProblem", "help.openLogs",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 
@@ -188,6 +196,7 @@ export function eventTokens(e: Pick<KeyboardEvent, "key" | "code">): string[] {
   else if (k === ",") tokens.push("Comma");
   else if (k === "[") tokens.push("BracketLeft");
   else if (k === "]") tokens.push("BracketRight");
+  else if (k === "/") tokens.push("Slash");
   else if (k === "+" || k === "=") tokens.push("Plus");
   else if (k === "-" || k === "_") tokens.push("Minus");
   else if (k.length === 1) tokens.push(k.toUpperCase());
@@ -253,12 +262,12 @@ const MAC_SYMBOLS: Record<string, string> = {
   Cmd: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧",
   ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
   Backspace: "⌫", Delete: "⌦", Escape: "⎋", Space: "␣", Enter: "↩",
-  Comma: ",", BracketLeft: "[", BracketRight: "]", Plus: "+", Minus: "−",
+  Comma: ",", BracketLeft: "[", BracketRight: "]", Plus: "+", Minus: "−", Slash: "/",
   PageUp: "⇞", PageDown: "⇟", Home: "↖", End: "↘",
 };
 
 const WIN_NAMES: Record<string, string> = {
-  Cmd: "Ctrl", Comma: ",", BracketLeft: "[", BracketRight: "]", Plus: "+", Minus: "-",
+  Cmd: "Ctrl", Comma: ",", BracketLeft: "[", BracketRight: "]", Plus: "+", Minus: "-", Slash: "/",
   ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
 };
 
