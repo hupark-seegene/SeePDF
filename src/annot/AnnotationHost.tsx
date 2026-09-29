@@ -27,6 +27,7 @@ import {
   deleteAnnotations,
   duplicateAnnotations,
   erasePartial,
+  createAnnotations,
   flushPatches,
   patchAnnotation,
   specFromAnnot,
@@ -78,9 +79,13 @@ const sink: ToolSink = {
   erase(page, ids) {
     void deleteAnnotations(page, ids);
   },
-  // v0.3 A3: 부분 지우개 — the pieces left of each stroke, one update each
+  // v0.3 A3: 부분 지우개 — the pieces left of each stroke, the whole scrub one undo step
   erasePartial(page, edits) {
-    erasePartial(page, edits);
+    void erasePartial(page, edits);
+  },
+  // v0.3 A4: a pen stroke split into pressure bands — one undo step
+  commitMany(page, specs: AnnotSpec[]) {
+    void createAnnotations(page, specs);
   },
   patch(page, edits, live) {
     // Only the 선택 tool's move / resize reaches here: the drag hides the bitmap copy (P1-12).

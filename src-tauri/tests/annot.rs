@@ -2413,4 +2413,193 @@ mod pkg4 {
             .unwrap();
         assert_eq!(back.line_points, Some(p0));
     }
+
+    fn batch(
+        doc_id: &str,
+        ops: Vec<seepdf_lib::ipc::types::AnnotOp>,
+    ) -> Result<Vec<String>, seepdf_lib::ipc::EngineError> {
+        let doc_id = doc_id.to_string();
+        with_state(move |st| {
+            seepdf_lib::engine::annot::update::batch_in(st, &doc_id, 0, &ops, Some("Batch"))
+        })
+    }
+
+    fn ink(paths: Vec<Vec<f32>>, width: f32) -> AnnotSpec {
+        AnnotSpec::Ink(InkSpec {
+            paths,
+            color: [0, 0, 255],
+            width,
+            opacity: 1.0,
+        })
+    }
+
+    /// Verification round 1 (A3): one partial-eraser scrub across several strokes — the
+    /// patches of the split strokes and the delete of an erased one — is ONE undo step.
+    #[test]
+    fn batch_partial_erase_is_one_undo_step() {
+        use seepdf_lib::ipc::types::AnnotOp;
+        let doc = open("tracemonkey.pdf");
+        let a = make(
+            &doc.doc_id,
+            0,
+            ink(vec![vec![80.0, 100.0, 120.0, 100.0]], 2.0),
+            None,
+        );
+        let b = make(
+            &doc.doc_id,
+            0,
+            ink(vec![vec![80.0, 120.0, 120.0, 120.0]], 2.0),
+            None,
+        );
+        let c = make(
+            &doc.doc_id,
+            0,
+            ink(vec![vec![98.0, 110.0, 102.0, 110.0]], 2.0),
+            None,
+        );
+        let before = list(&doc.doc_id, 0);
+        let depth = undo_depth(&doc.doc_id);
+        let split = |y: f32| vec![vec![80.0, y, 95.0, y], vec![105.0, y, 120.0, y]];
+        let created = batch(
+            &doc.doc_id,
+            vec![
+                AnnotOp::Update {
+                    id: a.clone(),
+                    patch: AnnotPatch {
+                        paths: Some(split(100.0)),
+                        ..AnnotPatch::default()
+                    },
+                },
+                AnnotOp::Update {
+                    id: b.clone(),
+                    patch: AnnotPatch {
+                        paths: Some(split(120.0)),
+                        ..AnnotPatch::default()
+                    },
+                },
+                AnnotOp::Delete {
+                    ids: vec![c.clone()],
+                },
+            ],
+        )
+        .expect("batch");
+        assert!(created.is_empty());
+        let after = list(&doc.doc_id, 0);
+        let paths_of = |l: &[Annot], id: &str| {
+            l.iter()
+                .find(|x| x.id == id)
+                .and_then(|x| x.ink_paths.clone())
+                .map(|p| p.len())
+        };
+        assert_eq!(paths_of(&after, &a), Some(2));
+        assert_eq!(paths_of(&after, &b), Some(2));
+        assert!(after.iter().all(|x| x.id != c), "the erased stroke is gone");
+        let label = with_doc(&doc.doc_id, |d| Ok(d.history.undo_label())).unwrap();
+        assert_eq!(undo_depth(&doc.doc_id), depth + 1, "one undo step");
+        assert_eq!(label.as_deref(), Some("undo.annotEdit"));
+        undo(&doc.doc_id);
+        let back = list(&doc.doc_id, 0);
+        assert_eq!(paths_of(&back, &a), Some(1));
+        assert_eq!(paths_of(&back, &b), Some(1));
+        assert_eq!(
+            back.len(),
+            before.len(),
+            "one undo brings the whole scrub back"
+        );
+        assert_eq!(undo_depth(&doc.doc_id), depth);
+    }
+
+    /// Verification round 1 (A4): a pen stroke split into pressure bands is created — and
+    /// undone — as one step; `created` names the pieces in order, all with 작성자.
+    #[test]
+    fn batch_pressure_stroke_is_one_undo_step() {
+        use seepdf_lib::ipc::types::AnnotOp;
+        let doc = open("tracemonkey.pdf");
+        let before = list(&doc.doc_id, 0).len();
+        let depth = undo_depth(&doc.doc_id);
+        let ops = [(0.8, 1.0), (1.0, 2.0), (1.3, 3.0)]
+            .iter()
+            .map(|&(w, k)| AnnotOp::Create {
+                spec: ink(vec![vec![100.0 * k, 300.0, 100.0 * k + 90.0, 310.0]], w),
+                id: None,
+            })
+            .collect();
+        let created = batch(&doc.doc_id, ops).expect("batch");
+        assert_eq!(created.len(), 3);
+        let after = list(&doc.doc_id, 0);
+        for id in &created {
+            let a = after.iter().find(|a| &a.id == id).expect("created");
+            assert_eq!(a.author.as_deref(), Some("Batch"));
+        }
+        assert_eq!(undo_depth(&doc.doc_id), depth + 1);
+        let label = with_doc(&doc.doc_id, |d| Ok(d.history.undo_label())).unwrap();
+        assert_eq!(label.as_deref(), Some("undo.annotCreate"));
+        undo(&doc.doc_id);
+        assert_eq!(
+            list(&doc.doc_id, 0).len(),
+            before,
+            "one undo removes every band"
+        );
+        // …and one redo brings all three back, with their ids.
+        let id = doc.doc_id.clone();
+        with_state(move |st| registry::undo(st, &id, true)).expect("redo");
+        let redone = list(&doc.doc_id, 0);
+        assert!(created.iter().all(|id| redone.iter().any(|a| &a.id == id)));
+    }
+
+    /// A batch is all or nothing: an op that fails undoes the ones before it, and leaves no
+    /// undo or redo entry behind.
+    #[test]
+    fn batch_failure_rolls_back_everything() {
+        use seepdf_lib::ipc::types::AnnotOp;
+        let doc = open("tracemonkey.pdf");
+        let a = make(
+            &doc.doc_id,
+            0,
+            ink(vec![vec![80.0, 100.0, 120.0, 100.0]], 2.0),
+            None,
+        );
+        let before = list(&doc.doc_id, 0);
+        let depth = undo_depth(&doc.doc_id);
+        let err = batch(
+            &doc.doc_id,
+            vec![
+                AnnotOp::Update {
+                    id: a.clone(),
+                    patch: AnnotPatch {
+                        paths: Some(vec![vec![80.0, 100.0, 90.0, 100.0]]),
+                        ..AnnotPatch::default()
+                    },
+                },
+                AnnotOp::Create {
+                    spec: ink(vec![vec![10.0, 10.0, 50.0, 50.0]], 1.0),
+                    id: None,
+                },
+                AnnotOp::Delete {
+                    ids: vec!["no-such-annotation".into()],
+                },
+            ],
+        )
+        .expect_err("the delete fails");
+        assert!(!err.message.is_empty());
+        let after = list(&doc.doc_id, 0);
+        assert_eq!(after.len(), before.len(), "the create was rolled back");
+        let a_after = after.iter().find(|x| x.id == a).unwrap();
+        assert_eq!(
+            a_after.ink_paths.as_ref().unwrap()[0].len(),
+            4,
+            "the update was rolled back"
+        );
+        let (d, redo) = with_doc(&doc.doc_id, |d| {
+            Ok((d.history.undo_depth(), d.history.redo_depth()))
+        })
+        .unwrap();
+        assert_eq!(
+            (d, redo),
+            (depth, 0),
+            "no undo or redo entry is left behind"
+        );
+        let empty = batch(&doc.doc_id, Vec::new()).expect_err("empty");
+        assert_eq!(empty.code, seepdf_lib::ipc::ErrorCode::InvalidArgument);
+    }
 }

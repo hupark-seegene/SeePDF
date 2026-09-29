@@ -871,9 +871,9 @@ pub fn read_annots(
 ///
 /// Geometry keys PDFium cannot write (`/L` of a Line, `/Vertices` of a Polygon, `/CL` of a
 /// FreeText callout) keep their old values here; the appearance, which is what every viewer
-/// draws, moves. (A page resize maps them with lopdf, v0.3 A8; the paragraph flow does not
-/// yet — that pass would belong in `edit_paragraph`.) A moved annotation's `/Popup` moves
-/// with it (v0.3 A8).
+/// draws, moves. `edit_paragraph` maps them right after with a coalesced lopdf pass over the
+/// annotations [`lopdf_geometry`] names (v0.3 A8, as a page resize does). A moved
+/// annotation's `/Popup` moves with it (v0.3 A8).
 pub fn move_annots(
     bindings: &'static dyn PdfiumLibraryBindings,
     page: &PdfPage<'_>,
@@ -925,6 +925,31 @@ pub fn move_annots(
         }
     }
     Ok(moved)
+}
+
+/// v0.3 A8 (pkg4): which of `indices` carry geometry only lopdf can move — every Line,
+/// Polygon and PolyLine (`/L`, `/Vertices`), and a FreeText with a callout (`/CL`, or SeePDF's
+/// mirror of it). Empty: the flow needs no lopdf pass.
+pub fn lopdf_geometry(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    indices: &[usize],
+) -> Vec<usize> {
+    indices
+        .iter()
+        .copied()
+        .filter(|&index| {
+            raw::annot::slot(bindings, page, index).is_some_and(|a| match a.subtype() {
+                consts::FPDF_ANNOT_LINE
+                | consts::FPDF_ANNOT_POLYGON
+                | consts::FPDF_ANNOT_POLYLINE => true,
+                consts::FPDF_ANNOT_FREETEXT => {
+                    a.has_key("CL") || a.has_key(crate::engine::annot::KEY_CALLOUT)
+                }
+                _ => false,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -24,7 +24,7 @@ import type {
   ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus, LinkTarget, PageLabelRange,
 } from "./types";
 // v0.3 pkg4-annotations-stamps-objects
-import type { LibraryImage } from "./types";
+import type { AnnotBatchResult, AnnotOp, LibraryImage } from "./types";
 import { labelsFor, normalizeRanges } from "../dialogs/pageLabels";
 
 import documentFixture from "../test/ipc-samples/document.json";
@@ -1644,6 +1644,47 @@ export const mock = {
     const dir = a.library === "stamp" ? "/mock/app-data/stamps/" : "/mock/app-data/signatures/";
     if (!a.path.startsWith(`${dir}img-`)) return false;
     return writtenFiles.delete(a.path);
+  },
+  /** A3 / A4: like `annotation_batch` — every op on a working copy, then ONE mutation (all or nothing). */
+  async annotationBatch(a: { docId: DocId; page: PageIndex; ops: AnnotOp[] }): Promise<AnnotBatchResult> {
+    const d = doc(a.docId);
+    if (a.ops.length === 0) throw err("invalidArgument", "ops is empty");
+    const author = settings.author?.trim() || null;
+    let list = structuredClone(d.annots.get(a.page) ?? []);
+    const created: string[] = [];
+    for (const op of a.ops) {
+      if (op.op === "create") {
+        const annot = annotFromSpec(a.page, op.spec, op.id ?? `mock-${nextAnnot++}`, author);
+        list.push(annot);
+        created.push(annot.id);
+      } else if (op.op === "update") {
+        const idx = list.findIndex((x) => x.id === op.id);
+        if (idx < 0) throw err("notFound", `annotation ${op.id}`);
+        list[idx] = { ...patchedAnnot(list[idx], op.patch), modified: new Date().toISOString() };
+      } else {
+        const onPage = new Set(list.map((x) => x.id));
+        const missing = op.ids.filter((id) => !onPage.has(id));
+        if (missing.length) throw err("notFound", `annotation(s) ${JSON.stringify(missing)} are not on page ${a.page}`, { page: a.page });
+        const doomed = new Set(op.ids);
+        for (let grew = true; grew; ) {
+          grew = false;
+          for (const x of list) {
+            if (x.inReplyTo && doomed.has(x.inReplyTo) && !doomed.has(x.id)) {
+              doomed.add(x.id);
+              grew = true;
+            }
+          }
+        }
+        list = list.filter((x) => !doomed.has(x.id));
+      }
+    }
+    const undoLabel = a.ops.every((o) => o.op === "create")
+      ? "undo.annotCreate"
+      : a.ops.every((o) => o.op === "delete") ? "undo.annotDelete" : "undo.annotEdit";
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel }, () => {
+      d.annots.set(a.page, list);
+      return { list: listOf(d, a.page), created };
+    });
   },
   /** P1-9: the path is content-addressed like the real one, so the same PNG gives the same path. */
   async writeSignatureImage(a: { bytes: number[] }): Promise<string> {

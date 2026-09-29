@@ -26,8 +26,8 @@ use crate::engine::raw::{self, annot::ColorKind, consts};
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
 use crate::engine::types::EngineState;
 use crate::ipc::types::{
-    Annot, AnnotId, AnnotKind, AnnotPatch, AnnotSpec, CalloutSpec, ChangeReason, InkSpec, LineSpec,
-    MarkupSpec, PageIndex, Rect, ShapeSpec, TextAlign, TextBoxSpec,
+    Annot, AnnotId, AnnotKind, AnnotOp, AnnotPatch, AnnotSpec, CalloutSpec, ChangeReason, InkSpec,
+    LineSpec, MarkupSpec, PageIndex, Rect, ShapeSpec, TextAlign, TextBoxSpec,
 };
 use crate::ipc::{EngineError, ErrorCode};
 
@@ -611,6 +611,68 @@ fn ink_bounds(paths: &[Vec<f32>], width: f32) -> Rect {
     }
     let r = acc.unwrap_or(Rect::ZERO);
     Rect::new(r.l - pad, r.b - pad, r.r + pad, r.t + pad)
+}
+
+/// v0.3 A3 / A4 `annotation_batch`: `ops` in order on `page`, folded into **one** undo step
+/// (`undo.annotCreate` when every op creates, `undo.annotDelete` when every op deletes,
+/// `undo.annotEdit` otherwise) — a partial-eraser scrub, a pen stroke split into pressure
+/// bands. All or nothing: when an op fails, the ones before it are undone (and not offered
+/// as a redo) and the error is returned. Returns the `/NM` of each created annotation.
+pub fn batch_in(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page: PageIndex,
+    ops: &[AnnotOp],
+    author: Option<&str>,
+) -> Result<Vec<AnnotId>, EngineError> {
+    if ops.is_empty() {
+        return Err(EngineError::invalid("ops is empty"));
+    }
+    let label = if ops.iter().all(|o| matches!(o, AnnotOp::Create { .. })) {
+        "undo.annotCreate"
+    } else if ops.iter().all(|o| matches!(o, AnnotOp::Delete { .. })) {
+        "undo.annotDelete"
+    } else {
+        "undo.annotEdit"
+    };
+    let mark = st.doc(doc_id)?.history.push_count();
+    let mut created = Vec::new();
+    let mut failed = None;
+    for op in ops {
+        let done = match op {
+            AnnotOp::Create { spec, id } => {
+                create::create_in(st, doc_id, page, spec, id.clone(), author).map(|id| {
+                    created.push(id);
+                })
+            }
+            AnnotOp::Update { id, patch } => update_in(st, doc_id, page, id, patch).map(|_| ()),
+            AnnotOp::Delete { ids } => registry::mutate(
+                st,
+                doc_id,
+                MutateOpts::new("undo.annotDelete", ChangeReason::Edit)
+                    .page(page)
+                    .keeps_text(),
+                |doc| annot::delete(doc, page, ids),
+            )
+            .map(|_| ()),
+        };
+        if let Err(e) = done {
+            failed = Some(e);
+            break;
+        }
+    }
+    let stored = st.doc_mut(doc_id)?.history.squash_since(mark, label);
+    if let Some(e) = failed {
+        if stored {
+            registry::undo(st, doc_id, false).map_err(|u| {
+                e.clone()
+                    .with_detail(format!("rollback failed: {}", u.message))
+            })?;
+            st.doc_mut(doc_id)?.history.discard_last_redo();
+        }
+        return Err(e);
+    }
+    Ok(created)
 }
 
 #[cfg(test)]

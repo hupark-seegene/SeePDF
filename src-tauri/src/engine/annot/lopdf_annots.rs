@@ -348,63 +348,97 @@ pub fn transform_geometry(
         let page_id = page_id(&doc, *page)?;
         let annots = annots_of(&doc, page_id)?;
         for (slot, entry) in annots.iter().enumerate() {
-            let Some(dict) = resolve(&doc, entry).cloned() else {
+            let Some(next) = resolve(&doc, entry).and_then(|d| mapped_geometry(d, m)) else {
                 continue;
             };
-            let subtype = dict
-                .get(b"Subtype")
-                .and_then(Object::as_name)
-                .unwrap_or_default()
-                .to_vec();
-            let mut next = dict.clone();
-            let mut touched = false;
-            for key in ["L", "Vertices", "CL"] {
-                if let Some(v) = numbers_of(&dict, key.as_bytes()) {
-                    next.set(key, reals(&map_points(&v, m)));
-                    touched = true;
-                }
-            }
-            // The mirror of `/CL` follows the real key.
-            if let Some(v) = dict
-                .get(annot::KEY_CALLOUT.as_bytes())
-                .ok()
-                .and_then(|o| lopdf::decode_text_string(o).ok())
-                .map(|s| crate::engine::annot::read::parse_numbers(&s))
-                .filter(|v| v.len() >= 4)
-            {
-                next.set(
-                    annot::KEY_CALLOUT,
-                    save::pdf_text_string(&numbers(&map_points(&v, m))),
-                );
-                touched = true;
-            }
-            if let Some(v) = dict
-                .get(annot::KEY_BOX.as_bytes())
-                .ok()
-                .and_then(|o| lopdf::decode_text_string(o).ok())
-                .map(|s| crate::engine::annot::read::parse_numbers(&s))
-                .filter(|v| v.len() == 4)
-            {
-                let b = bounds_of(&map_points(
-                    &[v[0], v[1], v[2], v[3], v[0], v[3], v[2], v[1]],
-                    m,
-                ));
-                next.set(
-                    annot::KEY_BOX,
-                    save::pdf_text_string(&numbers(&[b.l, b.b, b.r, b.t])),
-                );
-                touched = true;
-            }
-            if touched && subtype != b"Popup" {
-                put(&mut doc, page_id, slot, next)?;
-                changed = true;
-            }
+            put(&mut doc, page_id, slot, next)?;
+            changed = true;
         }
     }
     if !changed {
         return Ok(bytes.to_vec());
     }
     save_doc(&mut doc, bytes.len())
+}
+
+/// v0.3 A8 (verification round 1): the paragraph flow's half of [`transform_geometry`] —
+/// only the annotations in `/Annots` slots `slots` of `page` (PDFium's annotation indices,
+/// which are the `/Annots` array order) are translated by `(0, dy)`: the flow moves some
+/// annotations of a page, not all of them. Their `/Rect` PDFium already moved.
+pub fn translate_annots(
+    bytes: &[u8],
+    page: PageIndex,
+    slots: &[usize],
+    dy: f32,
+) -> Result<Vec<u8>, EngineError> {
+    let mut doc = load(bytes)?;
+    let page_id = page_id(&doc, page)?;
+    let annots = annots_of(&doc, page_id)?;
+    let m = [1.0, 0.0, 0.0, 1.0, 0.0, dy];
+    let mut changed = false;
+    for &slot in slots {
+        let Some(next) = annots
+            .get(slot)
+            .and_then(|entry| resolve(&doc, entry))
+            .and_then(|d| mapped_geometry(d, &m))
+        else {
+            continue;
+        };
+        put(&mut doc, page_id, slot, next)?;
+        changed = true;
+    }
+    if !changed {
+        return Ok(bytes.to_vec());
+    }
+    save_doc(&mut doc, bytes.len())
+}
+
+/// `dict` with `/L`, `/Vertices`, `/CL` and SeePDF's callout mirrors mapped by `m`; `None`
+/// when it has none of them (or is a popup, which PDFium moves with its parent).
+fn mapped_geometry(dict: &Dictionary, m: &[f32; 6]) -> Option<Dictionary> {
+    if dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Popup".as_slice()) {
+        return None;
+    }
+    let mut next = dict.clone();
+    let mut touched = false;
+    for key in ["L", "Vertices", "CL"] {
+        if let Some(v) = numbers_of(dict, key.as_bytes()) {
+            next.set(key, reals(&map_points(&v, m)));
+            touched = true;
+        }
+    }
+    // The mirror of `/CL` follows the real key.
+    if let Some(v) = dict
+        .get(annot::KEY_CALLOUT.as_bytes())
+        .ok()
+        .and_then(|o| lopdf::decode_text_string(o).ok())
+        .map(|s| crate::engine::annot::read::parse_numbers(&s))
+        .filter(|v| v.len() >= 4)
+    {
+        next.set(
+            annot::KEY_CALLOUT,
+            save::pdf_text_string(&numbers(&map_points(&v, m))),
+        );
+        touched = true;
+    }
+    if let Some(v) = dict
+        .get(annot::KEY_BOX.as_bytes())
+        .ok()
+        .and_then(|o| lopdf::decode_text_string(o).ok())
+        .map(|s| crate::engine::annot::read::parse_numbers(&s))
+        .filter(|v| v.len() == 4)
+    {
+        let b = bounds_of(&map_points(
+            &[v[0], v[1], v[2], v[3], v[0], v[3], v[2], v[1]],
+            m,
+        ));
+        next.set(
+            annot::KEY_BOX,
+            save::pdf_text_string(&numbers(&[b.l, b.b, b.r, b.t])),
+        );
+        touched = true;
+    }
+    touched.then_some(next)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -467,6 +501,9 @@ fn apply(doc: &mut lopdf::Document, dict: &mut Dictionary, d: &Drawn, date: &str
         bs.set("S", Object::Name(b"S".to_vec()));
     }
     dict.set("BS", Object::Dictionary(bs));
+    // `/Border` too: PDFium's `FPDFAnnot_GetBorder` (what `read` reports as `borderWidth`, and
+    // what a later edit redraws with) only reads this array, not `/BS /W`.
+    dict.set("Border", reals(&[0.0, 0.0, width]));
     match &d.shape {
         Shape::Line { p1, p2, heads } => {
             dict.set("L", reals(&[p1[0], p1[1], p2[0], p2[1]]));

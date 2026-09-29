@@ -153,6 +153,8 @@ export interface ToolSink {
   edit(target: { page: PageIndex; rect?: Rect; id?: AnnotId; callout?: number[] }): void;
   /** v0.3 A3: the partial eraser's result — patch `paths`, delete what is empty (optional sink) */
   erasePartial?(page: PageIndex, edits: { id: AnnotId; paths: number[][] }[]): void;
+  /** v0.3 A4: several annotations of one gesture, created as ONE undo step (without it: `commit` each) */
+  commitMany?(page: PageIndex, specs: AnnotSpec[]): void;
   /** the tool finished and asked to go back to 선택 */
   done(): void;
 }
@@ -361,7 +363,10 @@ class RealToolController implements ToolController {
       if (result.erase && result.erase.ids.length) sink.erase(result.erase.page, result.erase.ids);
       if (result.patch?.edits.length) sink.patch(result.patch.page, result.patch.edits, result.patch.live ?? false);
       if (result.commit) sink.commit(result.commit.page, result.commit.spec);
-      for (const c of result.commits ?? []) sink.commit(c.page, c.spec);
+      const commits = result.commits ?? [];
+      const onePage = commits.length > 1 && commits.every((c) => c.page === commits[0].page);
+      if (onePage && sink.commitMany) sink.commitMany(commits[0].page, commits.map((c) => c.spec));
+      else for (const c of commits) sink.commit(c.page, c.spec);
       if (result.partialErase?.edits.length) sink.erasePartial?.(result.partialErase.page, result.partialErase.edits);
       if (result.edit) sink.edit(result.edit);
     }

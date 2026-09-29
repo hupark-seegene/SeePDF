@@ -20,7 +20,7 @@ import type {
   ViewportHint, LinkTarget, PageLabelRange,
 } from "./types";
 // v0.3 pkg4-annotations-stamps-objects
-import type { ImagePreview, LibraryImage } from "./types";
+import type { AnnotBatchResult, AnnotOp, ImagePreview, LibraryImage } from "./types";
 
 export { parseTextLayer, parseRawPage };
 export type { RawPage, TextLayerView };
@@ -828,4 +828,13 @@ export function copyLibraryImage(a: { path: string; library: "stamp" | "signatur
 /** T2 / T3: deletes a library copy when its entry is removed (anything else is left alone → `false`). */
 export function removeLibraryImage(a: { path: string; library: "stamp" | "signature" }): Promise<boolean> {
   return call("remove_library_image", a, (mock) => mock.removeLibraryImage(a));
+}
+
+/**
+ * A3 / A4: several annotation edits of one gesture on `page` — a partial-eraser scrub's patches
+ * and deletes, a pen stroke's pressure bands — as ONE undo step (`undo.annotCreate` when all
+ * create, `undo.annotDelete` when all delete, else `undo.annotEdit`). All or nothing.
+ */
+export function annotationBatch(a: { docId: DocId; page: PageIndex; ops: AnnotOp[] }): Promise<AnnotBatchResult> {
+  return call("annotation_batch", a, (mock) => mock.annotationBatch(a));
 }

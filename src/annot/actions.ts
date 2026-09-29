@@ -14,7 +14,7 @@
  *   keeps the engine at one `update_annotation` — and therefore one undo step — per gesture.
  */
 import * as api from "../ipc/api";
-import type { Annot, AnnotId, AnnotPatch, AnnotSpec, DocId, PageIndex, Rect } from "../ipc/types";
+import type { Annot, AnnotId, AnnotOp, AnnotPatch, AnnotSpec, DocId, PageIndex, Rect } from "../ipc/types";
 import { useAnnotStore } from "../store/annotStore";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
@@ -487,14 +487,80 @@ export async function reloadPage(page: PageIndex): Promise<void> {
 // ---------------------------------------------------------------- v0.3 pkg4-annotations-stamps-objects
 
 /**
- * A3 부분 지우개: the pieces left of each touched ink annotation — one `update_annotation {paths}`
- * per annotation (one undo step each, sent at once, not coalesced), or a delete when nothing is
- * left.
+ * A3 부분 지우개: the pieces left of each touched ink annotation — `update {paths}` for what is
+ * left, `delete` for a stroke erased whole — sent as ONE `annotation_batch`, so the scrub is one
+ * undo step. Queued behind the patches already in flight. An erased stroke with replies asks
+ * first, like 삭제; kept, it stays whole.
  */
-export function erasePartial(page: PageIndex, edits: { id: AnnotId; paths: number[][] }[]): void {
-  const gone = edits.filter((e) => e.paths.length === 0).map((e) => e.id);
-  for (const e of edits) {
-    if (e.paths.length) patchAnnotation(page, e.id, { paths: e.paths });
+export async function erasePartial(page: PageIndex, edits: { id: AnnotId; paths: number[][] }[]): Promise<void> {
+  const id = docId();
+  if (!id || edits.length === 0) return;
+  let gone = edits.filter((e) => e.paths.length === 0).map((e) => e.id);
+  const list = useAnnotStore.getState().byPage[page] ?? [];
+  const replies = [...new Set(gone.flatMap((target) => descendantIds(list, target)))].filter((r) => !gone.includes(r));
+  if (replies.length) {
+    const ok = await askConfirm({
+      titleKey: "annot.thread.deleteTitle",
+      bodyKey: "annot.thread.deleteBody",
+      bodyParams: { count: replies.length },
+      confirmKey: "common.delete",
+      danger: true,
+    });
+    if (!ok) gone = [];
   }
-  if (gone.length) void deleteAnnotations(page, gone);
+  const ops: AnnotOp[] = edits
+    .filter((e) => e.paths.length > 0)
+    .map((e) => ({ op: "update", id: e.id, patch: { paths: e.paths } }));
+  if (gone.length) ops.push({ op: "delete", ids: gone });
+  if (ops.length === 0) return;
+  for (const e of edits) if (e.paths.length) applyLocally(page, e.id, { paths: e.paths });
+  if (gone.length) useAnnotStore.getState().remove(page, [...gone, ...replies]);
+  const run = sendPatches(takePendingPatches()).then(async () => {
+    try {
+      const result = await api.annotationBatch({ docId: id, page, ops });
+      useAnnotStore.getState().setPage(page, result.list.annots, result.list.docGeneration);
+    } catch {
+      void reloadPage(page);
+    }
+  });
+  inFlight = run;
+  return run;
+}
+
+/**
+ * A4: the annotations of one gesture (a pen stroke split into pressure bands) as ONE
+ * `annotation_batch` — one undo step — with a ghost each until the page repaints. Selects them.
+ */
+export async function createAnnotations(page: PageIndex, specs: AnnotSpec[]): Promise<Annot[]> {
+  if (specs.length <= 1) {
+    const one = specs.length ? await createAnnotation(page, specs[0]) : null;
+    return one ? [one] : [];
+  }
+  const id = docId();
+  if (!id) return [];
+  const author = useAppStore.getState().settings?.author?.trim() || null;
+  const ghosts = specs.map((spec) => ghostFromSpec(page, spec, author));
+  for (const g of ghosts) useAnnotStore.getState().addGhost(g);
+  try {
+    const result = await api.annotationBatch({ docId: id, page, ops: specs.map((spec) => ({ op: "create", spec })) });
+    const generation = result.list.docGeneration;
+    useAnnotStore.getState().setPage(page, result.list.annots, generation);
+    const made = result.created.map((nm) => result.list.annots.find((a) => a.id === nm));
+    useAnnotStore.setState((s) => ({
+      ghosts: s.ghosts.map((g) => {
+        const k = ghosts.findIndex((x) => x.id === g.annot.id);
+        const annot = k >= 0 ? made[k] : undefined;
+        return annot ? { annot: { ...annot }, generation } : g;
+      }),
+    }));
+    ghosts.forEach((g, k) => {
+      if (!made[k]) useAnnotStore.getState().clearGhostById(g.id);
+    });
+    const annots = made.filter((a): a is Annot => a !== undefined);
+    if (annots.length) useAnnotStore.getState().select(annots.map((a) => a.id));
+    return annots;
+  } catch {
+    for (const g of ghosts) useAnnotStore.getState().clearGhostById(g.id);
+    return [];
+  }
 }

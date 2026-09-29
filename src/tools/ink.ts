@@ -9,7 +9,8 @@
  * * **pressure** modulates the width. A PDF `/InkList` has one width per annotation, so the width
  *   is *baked*: a stroke of even pressure is one annotation at `pressureWidth(width, mean)`; a
  *   stroke whose pressure really varies becomes a few consecutive annotations, one per pressure
- *   band, sharing their joints (`inkSpecs`). A mouse (pressure 0.5 while pressed) draws at the
+ *   band, sharing their joints (`inkSpecs`), created together by one `annotation_batch` — one
+ *   undo step, selected together (`commits` → `ToolSink.commitMany`). A mouse (pressure 0.5 while pressed) draws at the
  *   style's width, as before;
  * * the surface feeds `getCoalescedEvents()` samples, so a fast pen stroke stays smooth.
  *

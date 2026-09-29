@@ -189,6 +189,7 @@ pub fn run() {
             // --- annotation threads (P2) ---
             commands::annots::reply_annotation,
             // v0.3 pkg4-annotations-stamps-objects
+            commands::annots::annotation_batch,
             commands::images::image_preview,
             commands::images::copy_library_image,
             commands::images::remove_library_image,

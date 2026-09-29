@@ -175,6 +175,13 @@ export interface LinkDest { page: PageIndex; x?: number; y?: number; zoom?: numb
 export type LinkTarget = LinkDest | { url: string };
 export interface AnnotList { docId: DocId; page: PageIndex; docGeneration: DocGeneration; annots: Annot[] }
 export interface AnnotResult { list: AnnotList; annot: Annot | null; previous: Annot | null }
+/** v0.3 pkg4 (A3 / A4) `annotation_batch`: one step of several edits made by one gesture. */
+export type AnnotOp =
+  | { op: 'create'; spec: AnnotSpec; id?: AnnotId }
+  | { op: 'update'; id: AnnotId; patch: AnnotPatch }
+  | { op: 'delete'; ids: AnnotId[] };
+/** `created`: the `/NM` of each `create` op, in order. */
+export interface AnnotBatchResult { list: AnnotList; created: AnnotId[] }
 
 export type AnnotSpec =
   | { kind: 'highlight' | 'underline' | 'strikeout' | 'squiggly'; rects: Rect[]; color: Rgb; opacity: number; contents?: string }

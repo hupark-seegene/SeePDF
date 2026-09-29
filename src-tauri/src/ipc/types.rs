@@ -552,6 +552,33 @@ pub struct AnnotResult {
     pub previous: Option<Annot>,
 }
 
+// v0.3 pkg4-annotations-stamps-objects (A3 / A4): `annotation_batch` — several annotation
+// edits of one gesture (a partial-eraser scrub, a pressure-banded pen stroke) as ONE undo step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum AnnotOp {
+    Create {
+        spec: AnnotSpec,
+        #[serde(default)]
+        id: Option<AnnotId>,
+    },
+    Update {
+        id: AnnotId,
+        patch: AnnotPatch,
+    },
+    Delete {
+        ids: Vec<AnnotId>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotBatchResult {
+    pub list: AnnotList,
+    /// The `/NM` of each `create` op, in order.
+    pub created: Vec<AnnotId>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarkupSpec {

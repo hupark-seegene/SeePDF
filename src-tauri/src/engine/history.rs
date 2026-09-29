@@ -159,6 +159,9 @@ pub struct History {
     depth: usize,
     spill_dir: PathBuf,
     next_spill: u64,
+    /// v0.3 pkg4: entries ever stored by [`push`](Self::push) — the mark of
+    /// [`squash_since`](Self::squash_since).
+    pushes: u64,
 }
 
 impl History {
@@ -182,6 +185,7 @@ impl History {
             depth,
             spill_dir,
             next_spill: 0,
+            pushes: 0,
         }
     }
 
@@ -243,6 +247,7 @@ impl History {
             snapshot,
             at_ms: now,
         });
+        self.pushes += 1;
         while self.undo.len() > self.depth {
             let dropped = self.undo.remove(0);
             self.release(&dropped.snapshot);
@@ -257,6 +262,44 @@ impl History {
     /// would be offering to redo nothing. Used by `registry::mutate`'s error path.
     pub fn discard_last_undo(&mut self) {
         if let Some(entry) = self.undo.pop() {
+            self.release(&entry.snapshot);
+            // v0.3 pkg4: the push it undoes no longer counts (`squash_since`).
+            self.pushes = self.pushes.saturating_sub(1);
+        }
+    }
+
+    /// v0.3 pkg4: a mark for [`squash_since`](Self::squash_since) — how many entries
+    /// [`push`](Self::push) has stored so far.
+    pub fn push_count(&self) -> u64 {
+        self.pushes
+    }
+
+    /// v0.3 pkg4 (A3 / A4): folds every entry stored since `mark` (a [`push_count`]) into
+    /// the oldest of them — its snapshot is the state before the first of those edits — and
+    /// names it `label`: a batch of edits becomes **one** undo step. Returns whether an entry
+    /// for the batch is on the stack (`false`: nothing was stored since `mark`).
+    ///
+    /// [`push_count`]: Self::push_count
+    pub fn squash_since(&mut self, mark: u64, label: &str) -> bool {
+        let n = (self.pushes.saturating_sub(mark) as usize).min(self.undo.len());
+        if n == 0 {
+            return false;
+        }
+        let first = self.undo.len() - n;
+        let later: Vec<Entry> = self.undo.drain(first + 1..).collect();
+        for entry in &later {
+            self.release(&entry.snapshot);
+        }
+        let entry = &mut self.undo[first];
+        entry.label = label.to_string();
+        entry.at_ms = now_ms();
+        true
+    }
+
+    /// v0.3 pkg4: drops the newest redo entry — a batch that failed half-way is undone with
+    /// [`registry::undo`](crate::engine::registry::undo) and must not be offered as a redo.
+    pub fn discard_last_redo(&mut self) {
+        if let Some(entry) = self.redo.pop() {
             self.release(&entry.snapshot);
         }
     }

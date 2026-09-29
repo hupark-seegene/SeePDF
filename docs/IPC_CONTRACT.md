@@ -1239,8 +1239,17 @@ stamp (`SeePDF:Stamp`, role), so `remove_stamps` takes it away.
 **Page resize (A8).** After `resize_pages`' PDFium transform, a coalesced lopdf pass maps `/L`, `/Vertices`, `/CL`
 (and SeePDF's `SeePDFCL` / `SeePDFBox`) through the same matrix as `/Rect` on the pages that have Line, Polygon,
 PolyLine or FreeText annotations — still one undo step. Popups were already mapped. The paragraph flow
-(`edit_paragraph`) moves a moved annotation's `/Popup` with it; its `/L` / `/Vertices` / `/CL` are not rewritten
-yet (the appearance moves).
+(`edit_paragraph`) moves a moved annotation's `/Popup` with it, and translates the `/L` / `/Vertices` / `/CL` (and
+mirrors) of the moved Line, Polygon, PolyLine and callout annotations by the same `dy` in a coalesced lopdf pass —
+still one `undo.paragraphEdit` step. On an encrypted document neither pass runs (only the appearance moves).
+
+**`annotation_batch`** (A3 / A4) `{ docId, page, ops: AnnotOp[] } → { list: AnnotList, created: AnnotId[] }`, where
+`AnnotOp = { op: 'create', spec, id? } | { op: 'update', id, patch } | { op: 'delete', ids }`. The ops run in order
+(each like its single command; creates carry 작성자) and fold into **one** undo step — `undo.annotCreate` when all
+create, `undo.annotDelete` when all delete, else `undo.annotEdit`. All or nothing: when an op fails, the earlier ones
+are undone (no undo or redo entry is left) and its error is returned. Used by the partial eraser (one scrub's patches
+and deletes) and by a pen stroke whose pressure is baked into several ink annotations. `created` lists the `/NM` of
+each create op, in order.
 
 **Annotation summary (A7).** Rows are in **thread order**: each top-level annotation followed by its replies
 (depth-first, each level oldest first). CSV gains two columns at the end, `ID` (the `/NM`) and `답글 대상` /
@@ -1491,6 +1500,7 @@ ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors:
 | `list_pdf_files` | P2, `commands/save.rs` | P2 multi-file search |
 | `image_preview`, `copy_library_image`, `remove_library_image` | v0.3 pkg4, `commands/images.rs` + `app/signatures.rs` | v0.3 T1 / T2 / T3 |
 | `restack_objects` | v0.3 pkg4, `engine/objects/mod.rs` | v0.3 A6 |
+| `annotation_batch` | v0.3 pkg4, `engine/annot/update.rs` (`batch_in`, `History::squash_since`) | v0.3 A3 / A4 |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

@@ -12,8 +12,8 @@ use crate::engine::registry::{self, MutateOpts};
 use crate::engine::types::CmdStatus;
 use crate::engine::{EngineHandle, Lane, Submit};
 use crate::ipc::types::{
-    Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, ChangeReason, JobId,
-    PageIndex, ViewNonce,
+    Annot, AnnotBatchResult, AnnotList, AnnotOp, AnnotPatch, AnnotResult, AnnotScanEvent,
+    AnnotSpec, ChangeReason, JobId, PageIndex, ViewNonce,
 };
 use crate::ipc::EngineError;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -166,6 +166,28 @@ pub async fn delete_annotations(
                 |doc| annot::delete(doc, page, &ids),
             )?;
             result_for(st, &doc_id, page, None, None)
+        })
+        .await
+}
+
+/// v0.3 A3 / A4 (pkg4): several edits of one gesture on `page` — a partial-eraser scrub's
+/// patches and deletes, a pen stroke's pressure bands — as **one** undo step
+/// (`engine::annot::update::batch_in`); all or nothing. Creates are written with 작성자 like
+/// `create_annotation`.
+#[tauri::command]
+pub async fn annotation_batch(
+    app: tauri::AppHandle,
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    ops: Vec<AnnotOp>,
+) -> Result<AnnotBatchResult, EngineError> {
+    let author = crate::app::store::get_settings(&app).author;
+    engine
+        .call(Lane::Edit, "annotation_batch", move |st| {
+            let created = annot::update::batch_in(st, &doc_id, page, &ops, Some(author.as_str()))?;
+            let list = result_for(st, &doc_id, page, None, None)?.list;
+            Ok(AnnotBatchResult { list, created })
         })
         .await
 }
