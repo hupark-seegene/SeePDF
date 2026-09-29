@@ -66,12 +66,18 @@ describe("print v0.3", () => {
     expect(print).toHaveBeenCalledTimes(1);
     act(() => void window.dispatchEvent(new Event("afterprint")));
 
+    // The panel closed: nothing mounted until the user asks for the next chunk.
+    expect(images(container)).toHaveLength(0);
+    expect(print).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "다음 묶음 인쇄 (2/3)" }));
+
     // Chunk 2: the next 50, never more than one chunk mounted.
     expect(images(container)).toHaveLength(PRINT_CHUNK);
     expect(images(container)[0].src).toContain(`page=${PRINT_CHUNK}&`);
     settleAll(container);
     expect(print).toHaveBeenCalledTimes(2);
     act(() => void window.dispatchEvent(new Event("afterprint")));
+    fireEvent.click(screen.getByRole("button", { name: "다음 묶음 인쇄 (3/3)" }));
 
     // Chunk 3: the remaining 7, then the job is over.
     expect(images(container)).toHaveLength(7);
@@ -79,6 +85,47 @@ describe("print v0.3", () => {
     expect(print).toHaveBeenCalledTimes(3);
     act(() => void window.dispatchEvent(new Event("afterprint")));
     expect(usePrintStore.getState().job).toBeNull();
+  });
+
+  it("a cancelled print panel does not open the next chunk's panel; 중지 ends the job", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => undefined);
+    const close = vi.spyOn(mock, "closeDocument");
+    const { container } = render(<PrintRoot />);
+    act(() =>
+      usePrintStore.getState().start({
+        docId: "d1", generation: 1, pages: Array.from({ length: PRINT_CHUNK * 10 }, (_, i) => i),
+        rotation: 0, scaleKey: 208, tempDocId: "d1",
+      }),
+    );
+    settleAll(container);
+    expect(print).toHaveBeenCalledTimes(1);
+    // The user presses 취소 in the print panel: WebKit fires afterprint all the same.
+    act(() => void window.dispatchEvent(new Event("afterprint")));
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(usePrintStore.getState().chunk).toBe(0);
+    expect(usePrintStore.getState().waiting).toBe(true);
+    expect(images(container)).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "중지" }));
+    expect(usePrintStore.getState().job).toBeNull();
+    expect(print).toHaveBeenCalledTimes(1);
+    // The temporary n-up document is closed with the job.
+    await waitFor(() => expect(close).toHaveBeenCalledWith({ docId: "d1" }));
+  });
+
+  it("취소 on the progress line stops a chunked job while its pages are still loading", () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => undefined);
+    const { container } = render(<PrintRoot />);
+    act(() =>
+      usePrintStore.getState().start({
+        docId: "d1", generation: 1, pages: Array.from({ length: PRINT_CHUNK * 10 }, (_, i) => i),
+        rotation: 0, scaleKey: 208,
+      }),
+    );
+    expect(images(container)).toHaveLength(PRINT_CHUNK);
+    fireEvent.click(screen.getByRole("button", { name: "취소" }));
+    expect(usePrintStore.getState().job).toBeNull();
+    expect(images(container)).toHaveLength(0);
+    expect(print).not.toHaveBeenCalled();
   });
 
   it("marks landscape pages so the sheet turns them, and keeps fit / grayscale on the root", () => {

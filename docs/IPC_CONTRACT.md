@@ -883,11 +883,15 @@ page, then `done{elapsedMs, report}` — or `cancelled` / `error`. The open docu
     spliced and its 8-bit gray mask resampled by the same factor (kept at its resolution when lopdf cannot decode
     it); an all-255 mask counts as none; a `/Mask` (colour key / stencil) image, or one drawn with transparent
     graphics state, is left alone. Encrypted documents: soft-masked images are left alone.
-  * **`optimize`** (unencrypted only): page resource entries (`/XObject`, `/Font`) the content never uses are
-    removed (a resource dictionary shared by pages keeps the union; one shared with a form XObject or inherited from
-    the page tree is left alone; a form drawn without its own resources counts as the page's), empty content streams
-    leave `/Contents`, unreferenced objects are pruned, and the file is written with object streams + an xref stream
-    (`lopdf::save_modern`). Kept only when smaller and PDFium still opens it; then a result with
+  * **`optimize`** (unencrypted only): page resource entries (`/XObject`, `/Font`) whose name appears nowhere in
+    the page's content are removed — a lexical scan of every `/Name` token (`#xx` decoded), not lopdf's content
+    parser, which stops silently at a token it cannot read (form feed, NUL, a comment between operands). Streams
+    without `/Resources` that PDFium draws with the page's — forms, annotation appearance streams, Type 3 glyph
+    procedures, tiling patterns, soft-mask groups — count as the page's content. A resource dictionary shared by
+    pages keeps the union; one referenced by anything but a page, or inherited from the page tree, is left alone.
+    Empty content streams leave `/Contents`, unreferenced objects are pruned, and the file is written with object
+    streams + an xref stream (`lopdf::save_modern`). Kept only when smaller, PDFium still opens it, **and every page
+    that lost a resource entry renders identically** (160 px, annotations on) before and after; then a result with
     `imagesDownsampled == 0` but `afterBytes < beforeBytes` **is** applicable (the dialog passes the flag to its
     `applyBlock`).
 

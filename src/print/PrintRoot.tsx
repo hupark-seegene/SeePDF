@@ -19,7 +19,9 @@
  *   whose orientation differs from the sheet's is turned 90° (`data-orient` + the print media
  *   query `orientation`). More than `PRINT_CHUNK` pages are printed as consecutive print jobs of
  *   at most that many images each, with an on-screen progress line, so a 500-page job never
- *   decodes 500 bitmaps at once.
+ *   decodes 500 bitmaps at once. `afterprint` fires for 인쇄 and 취소 alike, so after each
+ *   chunk but the last the job waits (`waiting`, no images mounted) for 다음 묶음 인쇄 / 중지,
+ *   and the progress line has a 취소 button while a chunk is being prepared.
  * * X2 — 실제 크기 (`data-fit="actual"`: physical size, centred) and 흑백 (CSS grayscale); an n-up
  *   job prints a temporary document, closed when the job ends.
  */
@@ -53,6 +55,9 @@ export function PrintRoot() {
   const settled = usePrintStore((s) => s.settled);
   const noteSettled = usePrintStore((s) => s.noteSettled);
   const advance = usePrintStore((s) => s.advance);
+  const chunkDone = usePrintStore((s) => s.chunkDone);
+  const clear = usePrintStore((s) => s.clear);
+  const waiting = usePrintStore((s) => s.waiting);
   const printed = useRef(false);
 
   useEffect(() => {
@@ -68,10 +73,11 @@ export function PrintRoot() {
     };
   }, [job]);
 
-  const mounted = job ? chunkPages(job, chunk) : [];
+  // Between chunks nothing is mounted: the finished chunk's bitmaps are released.
+  const mounted = job && !waiting ? chunkPages(job, chunk) : [];
 
   useEffect(() => {
-    if (!job) return;
+    if (!job || waiting) return;
     /**
      * `window.print()` in WKWebView **returns before the panel has rendered**, so clearing the
      * job in a `finally` unmounted the page images while the sheet was still laying them out —
@@ -89,7 +95,7 @@ export function PrintRoot() {
         const done = () => {
           window.removeEventListener("afterprint", done);
           window.clearTimeout(timer);
-          advance();
+          chunkDone();
         };
         cleanup = () => window.removeEventListener("afterprint", done);
         window.addEventListener("afterprint", done);
@@ -103,7 +109,7 @@ export function PrintRoot() {
     }
     const timer = window.setTimeout(fire, SETTLE_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [job, chunk, settled, mounted.length, advance]);
+  }, [job, chunk, waiting, settled, mounted.length, chunkDone]);
 
   if (!job) return null;
   const chunks = Math.ceil(job.pages.length / PRINT_CHUNK);
@@ -111,13 +117,25 @@ export function PrintRoot() {
   return (
     <>
       {chunks > 1 && (
-        <div className="print-progress" role="status" aria-live="polite">
-          {t("print.progress", {
-            done: Math.min(chunk * PRINT_CHUNK + settled, job.pages.length),
-            total: job.pages.length,
-            part: chunk + 1,
-            parts: chunks,
-          })}
+        <div className="print-progress">
+          <span role="status" aria-live="polite">
+            {waiting
+              ? t("print.chunkClosed", { part: chunk + 1, parts: chunks })
+              : t("print.progress", {
+                  done: Math.min(chunk * PRINT_CHUNK + settled, job.pages.length),
+                  total: job.pages.length,
+                  part: chunk + 1,
+                  parts: chunks,
+                })}
+          </span>
+          {waiting && (
+            <button type="button" className="btn primary" autoFocus onClick={advance}>
+              {t("print.nextChunk", { next: chunk + 2, parts: chunks })}
+            </button>
+          )}
+          <button type="button" className="btn" onClick={clear}>
+            {waiting ? t("print.stop") : t("common.cancel")}
+          </button>
         </div>
       )}
       <div

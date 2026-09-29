@@ -60,8 +60,15 @@ export interface PrintState {
   chunk: number;
   /** How many images of the mounted chunk have settled (loaded **or** failed). */
   settled: number;
+  /**
+   * v0.3 (X8): the print panel of a chunk that is not the last has closed and the next chunk
+   * waits for the user (`afterprint` fires for 인쇄 and 취소 alike, so it cannot go on alone).
+   */
+  waiting: boolean;
   start(job: PrintJob): void;
   noteSettled(): void;
+  /** The print panel closed: wait for the user before the next chunk, or `clear()` after the last. */
+  chunkDone(): void;
   /** The next chunk, or `clear()` after the last one. */
   advance(): void;
   clear(): void;
@@ -74,19 +81,26 @@ export const usePrintStore = create<PrintState>((set, get) => ({
   job: null,
   chunk: 0,
   settled: 0,
+  waiting: false,
   start(job) {
-    set({ job, chunk: 0, settled: 0 });
+    set({ job, chunk: 0, settled: 0, waiting: false });
   },
   noteSettled() {
     set((s) => ({ settled: s.settled + 1 }));
   },
+  chunkDone() {
+    const { job, chunk } = get();
+    if (job && (chunk + 1) * PRINT_CHUNK < job.pages.length) set({ waiting: true, settled: 0 });
+    else get().clear();
+  },
   advance() {
     const { job, chunk } = get();
-    if (job && (chunk + 1) * PRINT_CHUNK < job.pages.length) set({ chunk: chunk + 1, settled: 0 });
+    if (job && (chunk + 1) * PRINT_CHUNK < job.pages.length)
+      set({ chunk: chunk + 1, settled: 0, waiting: false });
     else get().clear();
   },
   clear() {
-    set({ job: null, chunk: 0, settled: 0 });
+    set({ job: null, chunk: 0, settled: 0, waiting: false });
   },
 }));
 

@@ -18,6 +18,12 @@
 
 /* v0.3 (X8): the chunk progress of a long print, on screen only. */
 .print-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: calc(100vw - 32px);
   position: fixed;
   left: 50%;
   bottom: 44px;

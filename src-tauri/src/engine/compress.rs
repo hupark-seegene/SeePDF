@@ -969,80 +969,248 @@ fn downsample_mask(mask: &lopdf::Stream, sx: f64, sy: f64) -> Option<lopdf::Stre
     Some(next)
 }
 
-/// `(XObject names, font names)` a content stream uses (`"*"` = could not tell: keep all).
-type UsedNames = (HashSet<Vec<u8>>, HashSet<Vec<u8>>);
+/// Every name a content stream mentions (`"*"` = could not tell: keep all).
+///
+/// Deliberately **lexical**, not `lopdf::content::Content::decode`: that parser stops quietly
+/// at the first token it cannot read (a form feed or NUL between tokens, a comment between
+/// operands…) and returns only the operations before it, while PDFium draws the whole stream —
+/// so a `Do` / `Tf` after that point was never seen and its image or font was removed from a
+/// page that still draws it (verification round 1). A name that appears anywhere — as the
+/// operand of `Do` / `Tf`, of another operator, in a comment, inside a string or inline image
+/// data — counts as used: over-counting only keeps an entry, it can never drop one in use.
+type UsedNames = HashSet<Vec<u8>>;
+
+/// The names in `content` (PDF 32000-1 §7.2.2 white space and delimiters, `#xx` decoded).
+fn content_names(content: &[u8]) -> Vec<Vec<u8>> {
+    fn ends_name(c: u8) -> bool {
+        b" \t\n\r\0\x0c()<>[]{}/%".contains(&c)
+    }
+    fn hex(c: u8) -> Option<u8> {
+        (c as char).to_digit(16).map(|d| d as u8)
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < content.len() {
+        if content[i] != b'/' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let mut name = Vec::new();
+        while i < content.len() && !ends_name(content[i]) {
+            match (
+                content[i],
+                content.get(i + 1).copied().and_then(hex),
+                content.get(i + 2).copied().and_then(hex),
+            ) {
+                (b'#', Some(h), Some(l)) => {
+                    name.push(h << 4 | l);
+                    i += 3;
+                }
+                (c, _, _) => {
+                    name.push(c);
+                    i += 1;
+                }
+            }
+        }
+        out.push(name);
+    }
+    out
+}
+
+/// A stream's decoded bytes (`None` when a filter cannot be undone).
+fn stream_data(stream: &lopdf::Stream) -> Option<Vec<u8>> {
+    if stream.dict.has(b"Filter") {
+        stream.decompressed_content().ok()
+    } else {
+        Some(stream.content.clone())
+    }
+}
+
+/// Adds the names `content` uses to `out`, following the form XObjects it may draw that have no
+/// `/Resources` of their own (PDFium draws those with the page's).
+fn scan_names(
+    doc: &lopdf::Document,
+    content: &[u8],
+    xobjects: Option<&lopdf::Dictionary>,
+    depth: u8,
+    out: &mut UsedNames,
+) {
+    for name in content_names(content) {
+        if !out.insert(name.clone()) {
+            continue;
+        }
+        let form = xobjects
+            .and_then(|x| x.get(&name).ok())
+            .and_then(|o| doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_stream().ok());
+        if let Some(form) = form {
+            let is_form = form
+                .dict
+                .get(b"Subtype")
+                .and_then(|s| s.as_name())
+                .map(|s| s == b"Form")
+                .unwrap_or(false);
+            if is_form && !form.dict.has(b"Resources") {
+                scan_resourceless(doc, form, xobjects, depth + 1, out);
+            }
+        }
+    }
+}
+
+/// A stream drawn with the page's resources when it has none of its own: its names are the
+/// page's too. Undecodable, or nested too deep: keep everything.
+fn scan_resourceless(
+    doc: &lopdf::Document,
+    stream: &lopdf::Stream,
+    xobjects: Option<&lopdf::Dictionary>,
+    depth: u8,
+    out: &mut UsedNames,
+) {
+    if stream.dict.has(b"Resources") {
+        return;
+    }
+    match stream_data(stream) {
+        Some(data) if depth < 8 => scan_names(doc, &data, xobjects, depth, out),
+        _ => {
+            out.insert(b"*".to_vec());
+        }
+    }
+}
+
+/// The streams besides the page content that PDFium resolves against the page's resources
+/// when they have no `/Resources`: annotation appearance streams (`/AP` `/N` `/R` `/D`, per
+/// state), Type 3 glyph procedures, tiling patterns and soft-mask groups.
+fn scan_page_extras(
+    doc: &lopdf::Document,
+    page: &lopdf::Dictionary,
+    resources: Option<&lopdf::Dictionary>,
+    xobjects: Option<&lopdf::Dictionary>,
+    out: &mut UsedNames,
+) {
+    use lopdf::Object;
+    let deref = |o: &Object| -> Option<Object> { doc.dereference(o).ok().map(|(_, o)| o.clone()) };
+    let dict_at = |d: &lopdf::Dictionary, key: &[u8]| -> Option<lopdf::Dictionary> {
+        d.get(key)
+            .ok()
+            .and_then(deref)
+            .and_then(|o| o.as_dict().ok().cloned())
+    };
+    let visit = |o: &Object, out: &mut UsedNames| {
+        if let Some(Object::Stream(s)) = deref(o) {
+            scan_resourceless(doc, &s, xobjects, 0, out);
+        }
+    };
+
+    // Annotation appearances.
+    if let Some(Object::Array(annots)) = page.get(b"Annots").ok().and_then(deref) {
+        for annot in &annots {
+            let Some(Object::Dictionary(annot)) = deref(annot) else {
+                continue;
+            };
+            let Some(ap) = dict_at(&annot, b"AP") else {
+                continue;
+            };
+            for key in [b"N".as_slice(), b"R", b"D"] {
+                match ap.get(key).ok().and_then(deref) {
+                    Some(Object::Stream(s)) => scan_resourceless(doc, &s, xobjects, 0, out),
+                    Some(Object::Dictionary(states)) => {
+                        for (_, state) in states.iter() {
+                            visit(state, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let Some(resources) = resources else { return };
+    // Type 3 fonts without resources: their glyph procedures draw with the page's.
+    if let Some(fonts) = dict_at(resources, b"Font") {
+        for (_, font) in fonts.iter() {
+            let Some(Object::Dictionary(font)) = deref(font) else {
+                continue;
+            };
+            let type3 = font
+                .get(b"Subtype")
+                .and_then(|s| s.as_name())
+                .map(|s| s == b"Type3")
+                .unwrap_or(false);
+            if !type3 || font.has(b"Resources") {
+                continue;
+            }
+            if let Some(procs) = dict_at(&font, b"CharProcs") {
+                for (_, glyph) in procs.iter() {
+                    visit(glyph, out);
+                }
+            }
+        }
+    }
+    if let Some(patterns) = dict_at(resources, b"Pattern") {
+        for (_, pattern) in patterns.iter() {
+            visit(pattern, out);
+        }
+    }
+    if let Some(states) = dict_at(resources, b"ExtGState") {
+        for (_, gs) in states.iter() {
+            let Some(Object::Dictionary(gs)) = deref(gs) else {
+                continue;
+            };
+            if let Some(Object::Dictionary(mask)) = gs.get(b"SMask").ok().and_then(deref) {
+                if let Ok(group) = mask.get(b"G") {
+                    visit(group, out);
+                }
+            }
+        }
+    }
+}
+
+/// What [`optimize_structure`] made: the rewritten file and the pages (0-based) whose resource
+/// entries it removed — the only pages whose rendering could change, so the only ones
+/// [`finish`] compares before keeping the pass.
+pub struct Optimized {
+    pub bytes: Vec<u8>,
+    pub pruned_pages: Vec<u16>,
+}
 
 /// v0.3 (X5) 구조 최적화 — lopdf over the finished bytes (unencrypted only):
 ///
-/// 1. resource entries a page's content never uses (`/XObject` names without a `Do`, `/Font`
-///    names without a `Tf`) are removed from the page's own `/Resources` — a resource
-///    dictionary shared by several pages keeps the union of their uses, one shared with a form
-///    XObject or inherited from the page tree is left alone, and a form XObject drawn without
-///    resources of its own counts its content as the page's;
+/// 1. resource entries a page never names (`/XObject` and `/Font` entries whose name appears
+///    nowhere in its content — see [`UsedNames`] — nor in the resourceless streams PDFium
+///    draws with the page's resources: forms, annotation appearances, Type 3 glyphs, patterns,
+///    soft masks) are removed from the page's own `/Resources` — a resource dictionary shared
+///    by several pages keeps the union of their uses, one shared with anything else (a form,
+///    a font, a pattern…) or inherited from the page tree is left alone;
 /// 2. empty content streams are dropped from `/Contents`;
 /// 3. unreferenced objects are pruned;
 /// 4. the file is written with object streams and a cross-reference stream.
 ///
 /// `None` when lopdf cannot read or write the file.
-pub fn optimize_structure(bytes: &[u8]) -> Option<Vec<u8>> {
+pub fn optimize_structure(bytes: &[u8]) -> Option<Optimized> {
     use lopdf::{Dictionary, Object, ObjectId};
     let mut doc = lopdf::Document::load_mem(bytes).ok()?;
     if doc.is_encrypted() {
         return None;
     }
-    // Names used by a content stream, following forms that inherit their resources.
-    fn used_names(
-        doc: &lopdf::Document,
-        content: &[u8],
-        xobjects: Option<&Dictionary>,
-        depth: u8,
-        out: &mut UsedNames,
-    ) {
-        let Ok(ops) = lopdf::content::Content::decode(content) else {
-            // Unparseable: keep every name.
-            out.0.insert(b"*".to_vec());
-            out.1.insert(b"*".to_vec());
-            return;
-        };
-        for op in ops.operations {
-            let name = op.operands.first().and_then(|o| o.as_name().ok());
-            match (op.operator.as_str(), name) {
-                ("Do", Some(n)) => {
-                    out.0.insert(n.to_vec());
-                    // A form without its own /Resources draws with the page's.
-                    let form = xobjects
-                        .and_then(|x| x.get(n).ok())
-                        .and_then(|o| doc.dereference(o).ok())
-                        .and_then(|(_, o)| o.as_stream().ok());
-                    if let Some(form) = form {
-                        let is_form = form
-                            .dict
-                            .get(b"Subtype")
-                            .and_then(|s| s.as_name())
-                            .map(|s| s == b"Form")
-                            .unwrap_or(false);
-                        if is_form && !form.dict.has(b"Resources") && depth < 8 {
-                            if let Ok(inner) = form.decompressed_content() {
-                                used_names(doc, &inner, xobjects, depth + 1, out);
-                            }
-                        }
-                    }
-                }
-                ("Tf", Some(n)) => {
-                    out.1.insert(n.to_vec());
-                }
-                _ => {}
-            }
-        }
-    }
 
-    // Which resource dictionaries (by id) are also a form's resources: left alone.
-    let mut form_resources: HashSet<ObjectId> = HashSet::new();
+    // Resource dictionaries (by id) referenced by anything but a page: left alone.
+    let mut foreign_resources: HashSet<ObjectId> = HashSet::new();
     for object in doc.objects.values() {
-        if let Ok(stream) = object.as_stream() {
-            if let Ok(Object::Reference(id)) = stream.dict.get(b"Resources") {
-                form_resources.insert(*id);
-            }
+        let dict = match object {
+            Object::Stream(s) => &s.dict,
+            Object::Dictionary(d) => d,
+            _ => continue,
+        };
+        let is_page = dict
+            .get(b"Type")
+            .and_then(|t| t.as_name())
+            .map(|t| t == b"Page")
+            .unwrap_or(false);
+        if is_page {
+            continue;
+        }
+        if let Ok(Object::Reference(id)) = dict.get(b"Resources") {
+            foreign_resources.insert(*id);
         }
     }
 
@@ -1051,16 +1219,20 @@ pub fn optimize_structure(bytes: &[u8]) -> Option<Vec<u8>> {
         Shared(ObjectId),
     }
     let mut usage: HashMap<Vec<u8>, UsedNames> = HashMap::new();
-    let mut targets: Vec<(ResourcesAt, Vec<u8>)> = Vec::new();
-    let pages: Vec<ObjectId> = doc.get_pages().values().copied().collect();
-    for page_id in pages {
+    // (where, key, pages using it)
+    let mut targets: Vec<(ResourcesAt, Vec<u8>, Vec<u16>)> = Vec::new();
+    let pages: Vec<(u32, ObjectId)> = doc.get_pages().into_iter().collect();
+    for (number, page_id) in pages {
+        let index = number.saturating_sub(1).min(u16::MAX as u32) as u16;
         let Ok(page) = doc.get_dictionary(page_id) else {
             continue;
         };
         let at = match page.get(b"Resources") {
             Ok(Object::Dictionary(_)) => ResourcesAt::Inline(page_id),
-            Ok(Object::Reference(id)) if !form_resources.contains(id) => ResourcesAt::Shared(*id),
-            // Inherited from the page tree, or shared with a form: left alone.
+            Ok(Object::Reference(id)) if !foreign_resources.contains(id) => {
+                ResourcesAt::Shared(*id)
+            }
+            // Inherited from the page tree, or shared with something else: left alone.
             _ => continue,
         };
         let key = match &at {
@@ -1075,42 +1247,34 @@ pub fn optimize_structure(bytes: &[u8]) -> Option<Vec<u8>> {
             .and_then(|r| r.get(b"XObject").ok())
             .and_then(|o| doc.dereference(o).ok())
             .and_then(|(_, o)| o.as_dict().ok());
+        let entry = usage.entry(key.clone()).or_default();
         // Every content stream decoded, or the page keeps all of its resources.
-        let mut content = Vec::new();
-        let mut readable = true;
         for id in doc.get_page_contents(page_id) {
-            let data = doc
+            match doc
                 .get_object(id)
-                .and_then(Object::as_stream)
-                .and_then(|s| {
-                    if s.dict.has(b"Filter") {
-                        s.decompressed_content()
-                    } else {
-                        Ok(s.content.clone())
-                    }
-                });
-            match data {
-                Ok(data) => {
-                    content.extend_from_slice(&data);
-                    content.push(b'\n');
+                .ok()
+                .and_then(|o| o.as_stream().ok())
+                .and_then(stream_data)
+            {
+                Some(data) => scan_names(&doc, &data, xobjects, 0, entry),
+                None => {
+                    entry.insert(b"*".to_vec());
                 }
-                Err(_) => readable = false,
             }
         }
-        let entry = usage.entry(key.clone()).or_default();
-        if readable {
-            used_names(&doc, &content, xobjects, 0, entry);
-        } else {
-            entry.0.insert(b"*".to_vec());
-            entry.1.insert(b"*".to_vec());
-        }
-        if !targets.iter().any(|(_, k)| *k == key) {
-            targets.push((at, key));
+        scan_page_extras(&doc, page, resources, xobjects, entry);
+        match targets.iter_mut().find(|(_, k, _)| *k == key) {
+            Some((_, _, pages)) => pages.push(index),
+            None => targets.push((at, key, vec![index])),
         }
     }
 
-    for (at, key) in targets {
-        let (xo_used, font_used) = &usage[&key];
+    let mut pruned_pages = Vec::new();
+    for (at, key, pages) in targets {
+        let used = &usage[&key];
+        if used.contains(b"*".as_slice()) {
+            continue;
+        }
         let resources: Option<&mut Dictionary> = match at {
             ResourcesAt::Inline(page_id) => doc
                 .get_dictionary_mut(page_id)
@@ -1120,13 +1284,8 @@ pub fn optimize_structure(bytes: &[u8]) -> Option<Vec<u8>> {
             ResourcesAt::Shared(id) => doc.get_dictionary_mut(id).ok(),
         };
         let Some(resources) = resources else { continue };
-        for (kind, used) in [
-            (b"XObject".as_slice(), xo_used),
-            (b"Font".as_slice(), font_used),
-        ] {
-            if used.contains(b"*".as_slice()) {
-                continue;
-            }
+        let mut removed = false;
+        for kind in [b"XObject".as_slice(), b"Font".as_slice()] {
             // Only a direct sub-dictionary is edited; a referenced one may be shared.
             if let Ok(Object::Dictionary(sub)) = resources.get_mut(kind) {
                 let unused: Vec<Vec<u8>> = sub
@@ -1136,10 +1295,16 @@ pub fn optimize_structure(bytes: &[u8]) -> Option<Vec<u8>> {
                     .collect();
                 for k in unused {
                     sub.remove(&k);
+                    removed = true;
                 }
             }
         }
+        if removed {
+            pruned_pages.extend(pages);
+        }
     }
+    pruned_pages.sort_unstable();
+    pruned_pages.dedup();
 
     // Empty content streams: out of the page's /Contents.
     let pages: Vec<ObjectId> = doc.get_pages().values().copied().collect();
@@ -1170,7 +1335,44 @@ pub fn optimize_structure(bytes: &[u8]) -> Option<Vec<u8>> {
     doc.prune_objects();
     let mut out = Vec::with_capacity(bytes.len());
     doc.save_modern(&mut out).ok()?;
-    Some(out)
+    Some(Optimized {
+        bytes: out,
+        pruned_pages,
+    })
+}
+
+/// Width in px of the renders [`renders_unchanged`] compares.
+const OPTIMIZE_CHECK_PX: Pixels = 160;
+
+/// The safety net of 구조 최적화: `pages` of `before` and `after` rendered small (annotations
+/// included) are identical. Removing entries nothing draws cannot change a pixel, so any
+/// difference — a name the scan missed — discards the pass. Both files are unencrypted.
+pub fn renders_unchanged(st: &EngineState<'_>, before: &[u8], after: &[u8], pages: &[u16]) -> bool {
+    if pages.is_empty() {
+        return true;
+    }
+    let (Ok(a), Ok(b)) = (
+        st.pdfium.load_pdf_from_byte_slice(before, None),
+        st.pdfium.load_pdf_from_byte_slice(after, None),
+    ) else {
+        return false;
+    };
+    let config = PdfRenderConfig::new()
+        .set_target_width(OPTIMIZE_CHECK_PX)
+        .set_maximum_height(OPTIMIZE_CHECK_PX * 4)
+        .render_annotations(true)
+        .render_form_data(false);
+    let render = |doc: &PdfDocument<'_>, page: u16| -> Option<Vec<u8>> {
+        let page = doc.pages().get(page as i32).ok()?;
+        let bitmap = page.render_with_config(&config).ok()?;
+        Some(bitmap.as_raw_bytes())
+    };
+    pages
+        .iter()
+        .all(|&page| match (render(&a, page), render(&b, page)) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        })
 }
 
 /// Serialises and verifies the scratch copy, parks it as the document's [`Pending`] result.
@@ -1209,18 +1411,20 @@ pub fn finish(
         images_downsampled += changed;
         spliced
     };
-    // v0.3 (X5) 구조 최적화: kept only when it is smaller and PDFium still reads it.
+    // v0.3 (X5) 구조 최적화: kept only when it is smaller, PDFium still reads it, and every
+    // page it removed resource entries from renders exactly as before.
     let mut optimized = false;
     let bytes = match (optimize && !encrypted)
         .then(|| optimize_structure(&bytes))
         .flatten()
     {
         Some(smaller)
-            if smaller.len() < bytes.len()
-                && save::verify_bytes(st, &smaller, page_count, password.clone()).is_ok() =>
+            if smaller.bytes.len() < bytes.len()
+                && save::verify_bytes(st, &smaller.bytes, page_count, password.clone()).is_ok()
+                && renders_unchanged(st, &bytes, &smaller.bytes, &smaller.pruned_pages) =>
         {
             optimized = true;
-            smaller
+            smaller.bytes
         }
         _ => bytes,
     };

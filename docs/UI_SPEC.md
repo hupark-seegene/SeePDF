@@ -383,7 +383,10 @@ once the rows differ from the file) → `set_page_labels` (one undo step 페이�
   시스템 인쇄 대화상자 only: **크기** 용지에 맞춤 (default: the page is contained in the sheet and turned 90° when its
   orientation differs from the sheet's) / 실제 크기 (physical size, centred) and **흑백** · when the job has more than
   50 sheets, a hint that it prints in parts of 50, each with its own system dialog (`print.chunkHint`). While a chunked
-  job runs, a small on-screen line bottom centre says `인쇄 준비 중… n / N쪽 (k/m번째 묶음)` (never printed).
+  job runs, a small on-screen line bottom centre says `인쇄 준비 중… n / N쪽 (k/m번째 묶음)` with a **취소** button
+  (never printed). `afterprint` fires for 인쇄 and 취소 alike, so after each part but the last the job pauses (no page
+  images mounted) and the line asks `k/m번째 묶음의 인쇄 대화상자가 닫혔습니다. 다음 묶음을 인쇄할까요?` with
+  **다음 묶음 인쇄 (k+1/m)** (focused) and **중지**; 중지 / 취소 end the job and close an n-up temp document.
   모아찍기 / 소책자 print a temporary n-up document (`make_nup`), opened beside the window's document and closed when
   the job ends; the handler path hands that file (or the 주석-filtered flattened copy) to the PDF app.
 * **내보내기** gains, in the format list: 모아찍기 PDF (N-up) (모아찍기 2/4/6/9 + 순서, 용지 A4 (default) / Letter / 첫 페이지
@@ -1372,6 +1375,9 @@ dead-key cleanup runs after every v0.3 package is merged).
 | `print.grayscale` | 흑백 | Grayscale |
 | `print.chunkHint` | 긴 문서는 {{size}}쪽씩 {{parts}}번에 나누어 인쇄 대화상자가 열립니다. 한 번에 인쇄하려면 'PDF 앱에서 열기'를 쓰세요. | A long document prints in {{parts}} parts of up to {{size}} pages, each with its own print dialog. Use 'Open in the PDF app' to print it in one go. |
 | `print.progress` | 인쇄 준비 중… {{done}} / {{total}}쪽 ({{part}}/{{parts}}번째 묶음) | Preparing to print… {{done}} / {{total}} pages (part {{part}} of {{parts}}) |
+| `print.chunkClosed` | {{part}}/{{parts}}번째 묶음의 인쇄 대화상자가 닫혔습니다. 다음 묶음을 인쇄할까요? | The print panel for part {{part}} of {{parts}} has closed. Print the next part? |
+| `print.nextChunk` | 다음 묶음 인쇄 ({{next}}/{{parts}}) | Print next part ({{next}} of {{parts}}) |
+| `print.stop` | 중지 | Stop |
 | `export.format.nup` | 모아찍기 PDF (N-up) | N-up PDF |
 | `export.format.tiff` | TIFF (여러 페이지) | TIFF (multi-page) |
 | `export.format.embedded` | 이미지 추출 | Extract images |

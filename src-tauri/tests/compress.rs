@@ -1013,7 +1013,9 @@ fn optimize_structure_keeps_what_is_used() {
     let mut bytes = Vec::new();
     doc.save_to(&mut bytes).unwrap();
 
-    let out = compress::optimize_structure(&bytes).expect("optimize");
+    let out = compress::optimize_structure(&bytes)
+        .expect("optimize")
+        .bytes;
     let doc = lopdf::Document::load_mem(&out).unwrap();
     let images = doc
         .objects
@@ -1026,4 +1028,167 @@ fn optimize_structure_keeps_what_is_used() {
         })
         .count();
     assert_eq!(images, 2, "both images are used by one of the two pages");
+}
+
+// ---- verification round 1 (X5): 구조 최적화 must never drop what PDFium still draws ----
+
+/// A 100×100 black DeviceGray image.
+fn black_image(doc: &mut lopdf::Document) -> lopdf::ObjectId {
+    use lopdf::{dictionary, Stream};
+    doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 100, "Height" => 100,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+        vec![0u8; 100 * 100],
+    ))
+}
+
+/// One 612×792 page with `content`, `/XObject` `Im1` (black) + `Unused` (a 300×200 image the
+/// pass may drop), and optionally one annotation.
+fn page_with_image(content: &[u8], annot: Option<lopdf::Stream>) -> Vec<u8> {
+    use lopdf::{dictionary, Object, Stream};
+    let mut doc = lopdf::Document::with_version("1.5");
+    let im = black_image(&mut doc);
+    let unused = image_stream(&mut doc, 300, 200, false);
+    let pages_id = doc.new_object_id();
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content.to_vec()));
+    let mut page = dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "Contents" => content_id,
+        "Resources" => dictionary! {
+            "XObject" => dictionary! { "Im1" => Object::Reference(im), "Unused" => Object::Reference(unused) },
+        },
+    };
+    if let Some(ap) = annot {
+        let ap = doc.add_object(ap);
+        let annot = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Square", "F" => 4,
+            "Rect" => vec![100.into(), 100.into(), 400.into(), 400.into()],
+            "AP" => dictionary! { "N" => Object::Reference(ap) },
+        });
+        page.set("Annots", vec![Object::Reference(annot)]);
+    }
+    let page_id = doc.add_object(page);
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1,
+        }),
+    );
+    let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog);
+    let mut out = Vec::new();
+    doc.save_to(&mut out).unwrap();
+    out
+}
+
+fn dark_pixels(rgba: &[u8]) -> usize {
+    rgba.chunks_exact(4)
+        .filter(|p| p[0] < 64 && p[1] < 64 && p[2] < 64)
+        .count()
+}
+
+/// Estimate with 구조 최적화 at 150 DPI, apply, and check the black square is still there and
+/// the unused image is gone (the pass ran).
+fn assert_optimize_keeps_drawing(bytes: Vec<u8>, name: &str) {
+    let doc = open_bytes(bytes, name);
+    let before = dark_pixels(&render_page(&doc.doc_id, 0));
+    assert!(
+        before > 20_000,
+        "{name}: the black square is drawn before ({before})"
+    );
+    let report = estimate_with(&doc.doc_id, 150, true);
+    apply(&doc.doc_id, report.token).expect("apply");
+    let after = dark_pixels(&render_page(&doc.doc_id, 0));
+    assert_eq!(
+        before, after,
+        "{name}: the black square survives 구조 최적화"
+    );
+    // The pass ran: the unused RGB image is gone (the black one is gray, not listed).
+    let widths = image_widths(&doc.doc_id);
+    assert!(
+        widths.is_empty(),
+        "{name}: the unused image is dropped: {widths:?}"
+    );
+}
+
+/// lopdf's lenient content parser stopped at the form feed and never saw `/Im1 Do`.
+#[test]
+fn optimize_keeps_an_image_drawn_after_a_form_feed() {
+    assert_optimize_keeps_drawing(
+        page_with_image(b"q 300 0 0 300 100 100 cm\x0c/Im1 Do Q", None),
+        "optimize-formfeed.pdf",
+    );
+    assert_optimize_keeps_drawing(
+        page_with_image(b"q 300 0 0 300 100 100 cm\x00/Im1 Do Q", None),
+        "optimize-nul.pdf",
+    );
+}
+
+/// …and at a comment between operands.
+#[test]
+fn optimize_keeps_an_image_drawn_after_a_mid_operand_comment() {
+    assert_optimize_keeps_drawing(
+        page_with_image(b"q 300 % note\n 0 0 300 100 100 cm /Im1 Do Q", None),
+        "optimize-comment.pdf",
+    );
+}
+
+/// A name written with `#xx` escapes is the same name.
+#[test]
+fn optimize_keeps_an_image_named_with_hex_escapes() {
+    assert_optimize_keeps_drawing(
+        page_with_image(b"q 300 0 0 300 100 100 cm /Im#31 Do Q", None),
+        "optimize-hexname.pdf",
+    );
+}
+
+/// An appearance stream without `/Resources` draws with the page's (PDFium falls back), so
+/// its names are the page's too.
+#[test]
+fn optimize_keeps_an_image_drawn_by_a_resourceless_appearance_stream() {
+    use lopdf::{dictionary, Stream};
+    let ap = Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![100.into(), 100.into(), 400.into(), 400.into()],
+        },
+        b"q 300 0 0 300 100 100 cm /Im1 Do Q".to_vec(),
+    );
+    assert_optimize_keeps_drawing(page_with_image(b"", Some(ap)), "optimize-ap.pdf");
+}
+
+/// The safety net: a page that lost a resource it draws does not render the same, and the
+/// structural pass is then discarded.
+#[test]
+fn optimize_render_check_catches_a_lost_resource() {
+    let before = page_with_image(b"q 300 0 0 300 100 100 cm /Im1 Do Q", None);
+    let mut doc = lopdf::Document::load_mem(&before).unwrap();
+    let page = *doc.get_pages().values().next().unwrap();
+    let res = doc
+        .get_dictionary_mut(page)
+        .unwrap()
+        .get_mut(b"Resources")
+        .unwrap()
+        .as_dict_mut()
+        .unwrap();
+    res.get_mut(b"XObject")
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .remove(b"Im1");
+    let mut broken = Vec::new();
+    doc.save_to(&mut broken).unwrap();
+    let (same, lost) = with_state(move |st| {
+        Ok((
+            compress::renders_unchanged(st, &before, &before, &[0]),
+            compress::renders_unchanged(st, &before, &broken, &[0]),
+        ))
+    })
+    .unwrap();
+    assert!(same, "identical files render the same");
+    assert!(!lost, "a page that lost its image is caught");
 }
