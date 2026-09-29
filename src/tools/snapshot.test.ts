@@ -13,6 +13,7 @@ import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import {
   captureSnapshot, copySnapshot, marqueeToPageRect, pageRectToBox, rotatePixels, snapshotScale, SNAPSHOT_MAX_PX,
+  ENGINE_HARD_MAX_PX,
 } from "./snapshot";
 
 const A4: PageGeom = { index: 0, widthPt: 595, heightPt: 842, rotation: 0, crop: { l: 0, b: 0, r: 595, t: 842 }, label: null };
@@ -58,8 +59,30 @@ describe("snapshot geometry", () => {
     const small: Rect = { l: 0, b: 0, r: 200, t: 100 };
     expect(snapshotScale(150, 2, small)).toBeCloseTo(6, 6);
     expect(snapshotScale(100, 1, small)).toBeCloseTo(2, 6);
-    const tall: Rect = { l: 0, b: 0, r: 595, t: 842 };
-    expect(snapshotScale(400, 2, tall) * 842).toBeCloseTo(SNAPSHOT_MAX_PX, 3);
+    // a narrow strip: the edge cap binds (8 192 × ~973 px is well under the area cap)
+    const strip: Rect = { l: 0, b: 0, r: 100, t: 842 };
+    expect(snapshotScale(400, 2, strip) * 842).toBeCloseTo(SNAPSHOT_MAX_PX, 3);
+  });
+
+  // V1 verification round 2: the edge cap alone let 8 000 × 5 320 (42.6 M px) through, and the
+  // engine's render_page_raw refuses anything over geometry::HARD_MAX_PX = 40 M px.
+  it.each([
+    { zoom: 327, dpr: 2, cssW: 2000, cssH: 1330 }, // fit-width letter page on a 'looks like 2560' dpr-2 screen
+    { zoom: 400, dpr: 2, cssW: 1700, cssH: 1700 },
+    { zoom: 400, dpr: 2, cssW: 2380, cssH: 3368 }, // a whole A4 page at 400 %
+    { zoom: 1600, dpr: 3, cssW: 3000, cssH: 3000 },
+  ])("stays under the engine's pixel ceiling: zoom $zoom %, dpr $dpr, $cssW × $cssH CSS px", ({ zoom, dpr, cssW, cssH }) => {
+    const k = zoom / 100;
+    const rect: Rect = { l: 0.3, r: 0.3 + cssW / k, t: 792, b: 792 - cssH / k };
+    const s = snapshotScale(zoom, dpr, rect);
+    // the engine rounds each device-space edge on its own: allow a pixel of growth per edge
+    const w = Math.ceil((rect.r - rect.l) * s) + 1;
+    const h = Math.ceil((rect.t - rect.b) * s) + 1;
+    expect(w).toBeLessThanOrEqual(SNAPSHOT_MAX_PX + 1);
+    expect(h).toBeLessThanOrEqual(SNAPSHOT_MAX_PX + 1);
+    expect(w * h).toBeLessThanOrEqual(ENGINE_HARD_MAX_PX);
+    // still as sharp as the ceiling allows: well over the on-screen device resolution
+    expect(w * h).toBeGreaterThan(cssW * cssH * Math.min(dpr, 2));
   });
 
   it("turns the pixels clockwise by the view rotation", () => {

@@ -5,7 +5,8 @@
  * The viewer owns the drag (`Scroller.tsx`: the marquee works over every layer and every mode, so it
  * cannot live on the 주석 tool surface) and calls {@link captureSnapshot} on release. The region is
  * rendered by the engine through `render_page_raw` (IPC_CONTRACT §5 / §10.2 — it exists for exactly
- * this) at **2× the device scale on screen**, capped so neither edge passes 8 192 px, then turned by
+ * this) at **2× the device scale on screen**, capped so neither edge passes 8 192 px and the area stays
+ * under the engine's 40 M px ceiling, then turned by
  * the view rotation (the engine renders it unrotated), encoded as PNG and written with
  * `navigator.clipboard.write(ClipboardItem{'image/png'})`. The clipboard call is made synchronously,
  * inside the pointer-up gesture, with the PNG as a *promise* — WebKit refuses a clipboard write made
@@ -22,8 +23,16 @@ import type { ToolModule } from "./ToolController";
 
 /** The snapshot is rendered at this multiple of the device scale on screen… */
 export const SNAPSHOT_OVERSAMPLE = 2;
-/** …with neither edge longer than this many pixels. */
+/** …with neither edge longer than this many pixels… */
 export const SNAPSHOT_MAX_PX = 8192;
+/**
+ * …and no more pixels in all than this. The engine refuses a `render_page_raw` region over
+ * `geometry::HARD_MAX_PX` = 40 000 000 px (src-tauri/src/engine/render/geometry.rs) — the edge cap
+ * alone still allows 8 192 × 8 192 ≈ 67 M px — so the area is capped a little below it, leaving room
+ * for the engine's per-edge rounding.
+ */
+export const ENGINE_HARD_MAX_PX = 40_000_000;
+export const SNAPSHOT_MAX_AREA_PX = 36_000_000;
 /** A marquee smaller than this (CSS px, either edge) is a click, not a snapshot. */
 export const SNAPSHOT_MIN_CSS_PX = 4;
 
@@ -59,11 +68,17 @@ export function pageRectToBox(rect: Rect, toDevice: (x: number, y: number) => Po
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
 
-/** Render scale for a region: 2× the on-screen device scale, capped at {@link SNAPSHOT_MAX_PX}. */
+/**
+ * Render scale for a region: 2× the on-screen device scale, capped so neither edge passes
+ * {@link SNAPSHOT_MAX_PX} and the pixel count stays under {@link SNAPSHOT_MAX_AREA_PX}.
+ */
 export function snapshotScale(zoomPercent: number, dpr: number, rect: Rect): number {
   const wanted = SNAPSHOT_OVERSAMPLE * (zoomPercent / 100) * Math.max(1, dpr);
-  const edge = Math.max(rect.r - rect.l, rect.t - rect.b, 1);
-  return Math.max(0.05, Math.min(wanted, SNAPSHOT_MAX_PX / edge));
+  const wPt = Math.max(rect.r - rect.l, 1);
+  const hPt = Math.max(rect.t - rect.b, 1);
+  const byEdge = SNAPSHOT_MAX_PX / Math.max(wPt, hPt);
+  const byArea = Math.sqrt(SNAPSHOT_MAX_AREA_PX / (wPt * hPt));
+  return Math.max(0.05, Math.min(wanted, byEdge, byArea));
 }
 
 /** RGBA pixels (top-left origin, `stride` bytes per row) turned clockwise by the view rotation. */

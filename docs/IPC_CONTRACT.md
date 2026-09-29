@@ -215,7 +215,7 @@ export interface EngineStats {
 
 `render_page_raw` exists for the 스냅샷 tool and the print path (regions the frontend composites itself);
 tiles never use it — v0.3 (V1): 스냅샷 renders the marquee's `rect` at 2× the on-screen device scale (both edges
-≤ 8 192 px) and turns it by the view rotation in the webview. Owner: S0 (render). Features F-02, F-26.
+≤ 8 192 px, ≤ 36 M px in all — the engine refuses a region over 40 M px) and turns it by the view rotation in the webview. Owner: S0 (render). Features F-02, F-26.
 
 `engine_stats` is **dev / diagnostics only** (v0.3, H5): the devtools console and bug reports read it; no UI
 calls it, and its shape may change without notice.
