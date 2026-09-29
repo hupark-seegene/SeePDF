@@ -17,15 +17,30 @@ async fn blocking<T: Send + 'static>(
 
 /// Speaks `text` with the system voice, stopping whatever was speaking. `lang` (`ko`, `en-US`)
 /// picks the voice, default: from the text; `rate` 0.5 … 2.0 (default 1).
+///
+/// v0.3 (V4): with `sentences` the text is read one sentence per utterance from `startIndex`
+/// (default 0) on, and every sentence start is announced as `tts-progress`; `text` is then
+/// ignored and may be omitted.
 #[tauri::command]
 pub async fn tts_speak(
     tts: State<'_, Arc<Tts>>,
-    text: String,
+    text: Option<String>,
     lang: Option<String>,
     rate: Option<f32>,
+    sentences: Option<Vec<String>>,
+    start_index: Option<u32>,
 ) -> Result<TtsStatus, EngineError> {
     let tts = tts.inner().clone();
-    blocking(move || tts.speak(&text, lang.as_deref(), rate)).await
+    blocking(move || match sentences {
+        Some(sentences) => tts.speak_sentences(
+            sentences,
+            start_index.unwrap_or(0) as usize,
+            lang.as_deref(),
+            rate,
+        ),
+        None => tts.speak(text.as_deref().unwrap_or(""), lang.as_deref(), rate),
+    })
+    .await
 }
 
 #[tauri::command]

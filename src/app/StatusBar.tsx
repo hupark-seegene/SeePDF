@@ -17,6 +17,8 @@ const LAYOUTS: { id: ViewLayout; labelKey: string; keyId: string }[] = [
   { id: "single", labelKey: "view.layout.single", keyId: "view.layout.single" },
   { id: "continuous", labelKey: "view.layout.continuous", keyId: "view.layout.continuous" },
   { id: "two", labelKey: "view.layout.twoPage", keyId: "view.layout.twoPage" },
+  // v0.3 pkg6 (V5): 두 쪽 with the cover alone
+  { id: "twoCover", labelKey: "view.layout.twoCoverShort", keyId: "view.layout.twoCover" },
 ];
 
 /** 28 px status bar (UI_SPEC §8): page nav · layout · rotate · zoom · save state + progress slot. */

@@ -14,6 +14,13 @@
 //! `tts_stop`, dropping [`Tts`] and the app's `RunEvent::Exit` kill the process. The frontend
 //! polls `tts_status` while it shows the 읽어 주기 bar, which is how it learns the voice ended.
 //!
+//! **Sentences (v0.3, V4).** `tts_speak` may carry the text already split into sentences (the
+//! frontend splits it, Korean-aware, and keeps each sentence's characters on the page). They
+//! are queued here and spoken one utterance each: a driver thread starts the next one as soon
+//! as the previous ends and reports `tts-progress { sentenceIndex }` through the listener the
+//! app installs ([`Tts::set_progress_listener`]), so the viewer can highlight the sentence
+//! being read and a 속도 change can continue from it (`startIndex`) instead of the beginning.
+//!
 //! No pdfium here, so none of this runs on the engine thread.
 
 use crate::ipc::types::{TtsEngine, TtsStatus};
@@ -21,6 +28,9 @@ use crate::ipc::EngineError;
 use parking_lot::Mutex;
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Longest text one `tts_speak` accepts (a dense page is ~5 000 characters).
 pub const MAX_TEXT_CHARS: usize = 200_000;
@@ -62,13 +72,38 @@ pub trait Speaker: Send + Sync {
 struct Current {
     utterance: Box<dyn Utterance>,
     voice: Option<String>,
+    /// Sentence mode (V4): what is left to read after `utterance`.
+    queue: Option<Queue>,
 }
+
+/// The sentences of one `tts_speak`, and which one is being read.
+struct Queue {
+    sentences: Vec<String>,
+    index: usize,
+    lang: Option<String>,
+    rate: f32,
+}
+
+impl Queue {
+    fn has_next(&self) -> bool {
+        self.index + 1 < self.sentences.len()
+    }
+}
+
+/// How often the sentence driver checks whether the current sentence has ended.
+pub const SENTENCE_POLL: Duration = Duration::from_millis(40);
+
+/// `tts-progress`: `Some(i)` = sentence `i` started, `None` = the queue finished.
+pub type ProgressListener = Arc<dyn Fn(Option<u32>) + Send + Sync>;
 
 /// The app's one voice (Tauri managed state).
 pub struct Tts {
     speaker: Box<dyn Speaker>,
     current: Mutex<Option<Current>>,
     last_voice: Mutex<Option<String>>,
+    /// Bumped by every speak / stop, so a sentence driver of an older queue retires.
+    generation: AtomicU64,
+    progress: Mutex<Option<ProgressListener>>,
 }
 
 impl Tts {
@@ -82,6 +117,20 @@ impl Tts {
             speaker,
             current: Mutex::new(None),
             last_voice: Mutex::new(None),
+            generation: AtomicU64::new(0),
+            progress: Mutex::new(None),
+        }
+    }
+
+    /// Where `tts-progress` goes (the app emits the event from it).
+    pub fn set_progress_listener(&self, listener: impl Fn(Option<u32>) + Send + Sync + 'static) {
+        *self.progress.lock() = Some(Arc::new(listener));
+    }
+
+    fn report(&self, index: Option<usize>) {
+        let listener = self.progress.lock().clone();
+        if let Some(listener) = listener {
+            listener(index.map(|i| i as u32));
         }
     }
 
@@ -99,20 +148,149 @@ impl Tts {
             ));
         }
         let mut current = self.current.lock();
+        self.generation.fetch_add(1, Ordering::SeqCst);
         if let Some(mut previous) = current.take() {
             previous.utterance.stop();
         }
         let (utterance, voice) = self.speaker.start(&request)?;
         *self.last_voice.lock() = voice.clone();
-        *current = Some(Current { utterance, voice });
+        *current = Some(Current {
+            utterance,
+            voice,
+            queue: None,
+        });
         drop(current);
         Ok(self.status())
     }
 
-    /// `tts_stop`: stops the current utterance, if any.
+    /// `tts_speak` with `sentences` (V4): stops whatever is speaking, then reads the sentences
+    /// from `start` on, one utterance each, reporting each start through the progress
+    /// listener. The language is picked once for the whole text (a Korean page keeps its
+    /// Korean voice through an English sentence).
+    pub fn speak_sentences(
+        self: &Arc<Self>,
+        sentences: Vec<String>,
+        start: usize,
+        lang: Option<&str>,
+        rate: Option<f32>,
+    ) -> Result<TtsStatus, EngineError> {
+        if sentences.iter().all(|s| s.trim().is_empty()) {
+            return Err(EngineError::invalid("there is no text to read"));
+        }
+        if start >= sentences.len() {
+            return Err(EngineError::invalid(format!(
+                "startIndex {start} is past the last of {} sentences",
+                sentences.len()
+            )));
+        }
+        let whole = sentences.join(" ");
+        let base = validate(&whole, lang, rate)?;
+        if self.speaker.engine().is_none() {
+            return Err(EngineError::unsupported(
+                "read aloud needs the macOS or Windows system voice",
+            ));
+        }
+        let lang = base.lang.clone().or_else(|| voice_language(&base));
+        let request = SpeakRequest {
+            text: sentences[start].clone(),
+            lang: lang.clone(),
+            rate: base.rate,
+        };
+        let generation = {
+            let mut current = self.current.lock();
+            let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(mut previous) = current.take() {
+                previous.utterance.stop();
+            }
+            let (utterance, voice) = self.speaker.start(&request)?;
+            *self.last_voice.lock() = voice.clone();
+            *current = Some(Current {
+                utterance,
+                voice,
+                queue: Some(Queue {
+                    sentences,
+                    index: start,
+                    lang,
+                    rate: base.rate,
+                }),
+            });
+            generation
+        };
+        self.report(Some(start));
+        let tts = Arc::clone(self);
+        std::thread::Builder::new()
+            .name("seepdf-tts-queue".into())
+            .spawn(move || tts.drive(generation))
+            .map_err(|e| EngineError::io(format!("tts queue thread: {e}")))?;
+        Ok(self.status())
+    }
+
+    /// The sentence driver: starts the next sentence when the current one ends; retires when
+    /// another speak / stop bumped the generation.
+    fn drive(&self, generation: u64) {
+        loop {
+            std::thread::sleep(SENTENCE_POLL);
+            let event = {
+                let mut current = self.current.lock();
+                if self.generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let Some(c) = current.as_mut() else {
+                    return;
+                };
+                if c.utterance.running() {
+                    continue;
+                }
+                let Some(queue) = c.queue.as_mut() else {
+                    return;
+                };
+                if !queue.has_next() {
+                    *current = None;
+                    None
+                } else {
+                    queue.index += 1;
+                    let request = SpeakRequest {
+                        text: queue.sentences[queue.index].clone(),
+                        lang: queue.lang.clone(),
+                        rate: queue.rate,
+                    };
+                    let index = queue.index;
+                    match self.speaker.start(&request) {
+                        Ok((utterance, voice)) => {
+                            c.utterance = utterance;
+                            if voice.is_some() {
+                                c.voice = voice.clone();
+                                *self.last_voice.lock() = voice;
+                            }
+                            Some(index)
+                        }
+                        Err(e) => {
+                            tracing::warn!("read aloud: sentence {index} failed to start: {e}");
+                            *current = None;
+                            None
+                        }
+                    }
+                }
+            };
+            self.report(event);
+            if event.is_none() {
+                return;
+            }
+        }
+    }
+
+    /// `tts_stop`: stops the current utterance (and any queued sentences), if any.
     pub fn stop(&self) -> TtsStatus {
-        if let Some(mut current) = self.current.lock().take() {
-            current.utterance.stop();
+        let stopped = {
+            let mut current = self.current.lock();
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            current.take().map(|mut c| {
+                c.utterance.stop();
+                c.queue.is_some()
+            })
+        };
+        if stopped == Some(true) {
+            self.report(None);
         }
         self.status()
     }
@@ -120,15 +298,22 @@ impl Tts {
     /// `tts_status`. A finished utterance is dropped here, so `speaking` goes false by itself.
     pub fn status(&self) -> TtsStatus {
         let mut current = self.current.lock();
+        // Between two sentences the utterance has ended but the queue has not: still speaking.
         let speaking = match current.as_mut() {
-            Some(c) => c.utterance.running(),
+            Some(c) => c.utterance.running() || c.queue.as_ref().is_some_and(Queue::has_next),
             None => false,
         };
         let voice = match current.as_ref() {
             Some(c) => c.voice.clone(),
             None => self.last_voice.lock().clone(),
         };
-        if !speaking {
+        let sentence_index = current
+            .as_ref()
+            .and_then(|c| c.queue.as_ref())
+            .filter(|_| speaking)
+            .map(|q| q.index as u32);
+        // A finished queue is the driver's to clear: it also reports the end (`tts-progress`).
+        if !speaking && current.as_ref().is_some_and(|c| c.queue.is_none()) {
             *current = None;
         }
         let engine = self.speaker.engine();
@@ -137,6 +322,7 @@ impl Tts {
             speaking,
             engine,
             voice,
+            sentence_index,
         }
     }
 }

@@ -379,13 +379,24 @@ export async function pasteObjects(target: PageIndex = useViewStore.getState().c
 export async function restyleText(page: PageIndex, id: ObjectId, patch: { fontSizePt?: number; color?: Rgb }): Promise<boolean> {
   const doc = docId();
   if (!doc) return false;
+  const write = (allowFontSubstitution: boolean) =>
+    api.editTextObject({ docId: doc, page, objectId: id, expectGeneration: generationFor(page), patch, allowFontSubstitution });
   try {
-    const result = await api.editTextObject({
-      docId: doc, page, objectId: id, expectGeneration: generationFor(page), patch, allowFontSubstitution: false,
-    });
-    useEditStore.getState().setPage(page, result, true);
+    useEditStore.getState().setPage(page, await write(false), true);
     return true;
   } catch (e) {
+    // v0.3 pkg6 (H5): the engine's `fontCoverage` answer is the probe — a substitution is asked
+    // about with the same 글꼴이 대체됩니다 confirm as 문단 편집, never a failure toast
+    if (isFontRefusal(e)) {
+      if (!(await confirmFont())) return false;
+      try {
+        useEditStore.getState().setPage(page, await write(true), true);
+        return true;
+      } catch (again) {
+        fail(again, page);
+        return false;
+      }
+    }
     fail(e, page);
     return false;
   }

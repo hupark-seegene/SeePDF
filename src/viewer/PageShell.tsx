@@ -124,6 +124,11 @@ export interface PageShellProps {
   current: boolean;
   label: string;
   marks?: ReactNode;
+  /**
+   * H9 (v0.3): the page's text for screen readers — a visually hidden `role="document"` region that
+   * carries the page's label (`PageA11yText`). Without it the shell itself is labelled.
+   */
+  a11y?: ReactNode;
   layers?: PageLayers | null;
   onTileLoad(key: string): void;
   onTileError(key: string): void;
@@ -160,9 +165,10 @@ export const PageShell = memo(function PageShell(props: PageShellProps) {
       className="page-shell"
       data-page={ctx.index}
       data-current={props.current || undefined}
-      aria-label={props.label}
+      aria-label={props.a11y ? undefined : props.label}
       style={{ left: props.left, top: props.top, width: ctx.width, height: ctx.height }}
     >
+      {props.a11y}
       <div
         className="page-bitmaps"
         data-night={props.night !== "off" ? props.night : undefined}

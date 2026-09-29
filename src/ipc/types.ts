@@ -485,17 +485,19 @@ export interface TtsStatus {
   speaking: boolean;
   engine: 'say' | 'sapi' | null;
   voice: string | null;        // the voice of the current (or last) utterance, when one was picked
+  /** v0.3 (V4): the sentence being read when `tts_speak` was given `sentences` */
+  sentenceIndex?: number | null;
 }
 
 export interface RecentEntry {
   path: string; name: string; dir: string; pages: number; bytes: number;
   lastOpened: string; lastPage: PageIndex; zoomPercent: number;
-  layout: 'single' | 'continuous' | 'two'; pinned: boolean; thumbId: string | null;
+  layout: 'single' | 'continuous' | 'two' | 'twoCover'; pinned: boolean; thumbId: string | null;
 }
 
 export interface Settings {
   locale: 'ko' | 'en'; theme: 'system' | 'light' | 'dark';
-  defaultLayout: 'single' | 'continuous' | 'two'; defaultZoom: 'fit-width' | 'fit-page' | 'actual' | number;
+  defaultLayout: 'single' | 'continuous' | 'two' | 'twoCover'; defaultZoom: 'fit-width' | 'fit-page' | 'actual' | number;
   restorePosition: boolean; author: string; renderQuality: 'balanced' | 'high';
   tileCacheMb: number; recentsCount: number;   // Stage 2: no longer inside `toolDefaults`
   backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
@@ -523,3 +525,26 @@ export type SavedSignature =
 export type ViewLayout = Settings['defaultLayout'];
 export type ThemePref = Settings['theme'];
 export type ZoomPref = Settings['defaultZoom'];
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg6-viewer-accessibility-settings
+// ---------------------------------------------------------------------------
+
+/** `get_web_links` (V5): a URL PDFium found in the page *text* (not a Link annotation). */
+export interface WebLink {
+  url: string;
+  /** one per line the address spans, PDF user space */
+  rects: Rect[];
+  /** the address in the page's text layer */
+  charStart: number; charCount: number;
+}
+
+/** `get_reading_order` (V6): text-layer char ranges `[start, end)` in reading order. */
+export interface ReadingOrder {
+  /** the page's structure tree decided the order (otherwise: one run, content order) */
+  tagged: boolean;
+  runs: [number, number][];
+}
+
+/** `tts-progress` (V4): the sentence the voice started; `null` = the queue finished. */
+export interface TtsProgressEvent { sentenceIndex: number | null }

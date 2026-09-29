@@ -79,6 +79,39 @@ export interface SplitState {
   sync: boolean;
 }
 
+/** 분할 보기 divider (V3, v0.3): the first pane's share, per orientation, kept within these. */
+export const SPLIT_MIN = 0.2;
+export const SPLIT_MAX = 0.8;
+const SPLIT_RATIO_KEY = "seepdf.splitRatio";
+
+export function clampSplitRatio(ratio: number): number {
+  if (!Number.isFinite(ratio)) return 0.5;
+  return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, Math.round(ratio * 1000) / 1000));
+}
+
+/** The remembered ratios (this machine, both orientations); 50 % where nothing was saved. */
+function loadSplitRatio(): Record<SplitOrientation, number> {
+  const fallback = { side: 0.5, stacked: 0.5 };
+  try {
+    const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(SPLIT_RATIO_KEY);
+    const saved = raw ? (JSON.parse(raw) as Partial<Record<SplitOrientation, number>>) : {};
+    return {
+      side: typeof saved.side === "number" ? clampSplitRatio(saved.side) : fallback.side,
+      stacked: typeof saved.stacked === "number" ? clampSplitRatio(saved.stacked) : fallback.stacked,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSplitRatio(ratio: Record<SplitOrientation, number>): void {
+  try {
+    localStorage.setItem(SPLIT_RATIO_KEY, JSON.stringify(ratio));
+  } catch {
+    /* private mode / no storage: the ratio still holds for this window */
+  }
+}
+
 export interface ViewState extends PaneView {
   layout: ViewLayout;
   night: NightMode;
@@ -88,6 +121,8 @@ export interface ViewState extends PaneView {
   focusedPane: PaneId;
   /** the unfocused pane's state while split; `null` otherwise */
   parked: PaneView | null;
+  /** V3 (v0.3): the first pane's share of the split, per orientation (20–80 %), remembered */
+  splitRatio: Record<SplitOrientation, number>;
 
   /** every per-pane action acts on the focused pane unless `pane` names the other one */
   setZoom(percent: number, pane?: PaneId): void;
@@ -116,6 +151,8 @@ export interface ViewState extends PaneView {
   setSyncScroll(on: boolean): void;
   /** a click in a pane: it becomes the one the keys, menus and tools act on */
   focusPane(pane: PaneId): void;
+  /** the divider moved (V3): clamped to 20–80 % and remembered for that orientation */
+  setSplitRatio(ratio: number, orientation?: SplitOrientation): void;
 }
 
 /** 뒤로 remembers this many jumps. */
@@ -184,6 +221,7 @@ export const useViewStore = create<ViewState>((set, get) => {
     split: null,
     focusedPane: "main",
     parked: null,
+    splitRatio: loadSplitRatio(),
 
     setZoom(percent, pane) {
       write(pane, { zoomPercent: clamp(percent), zoomMode: "custom" });
@@ -300,6 +338,15 @@ export const useViewStore = create<ViewState>((set, get) => {
       const s = get();
       if (pane === s.focusedPane || !s.split || !s.parked) return;
       set({ ...s.parked, parked: pick(s), focusedPane: pane });
+    },
+    setSplitRatio(ratio, orientation) {
+      const s = get();
+      const which = orientation ?? s.split?.orientation ?? "side";
+      const next = clampSplitRatio(ratio);
+      if (s.splitRatio[which] === next) return;
+      const splitRatio = { ...s.splitRatio, [which]: next };
+      set({ splitRatio });
+      saveSplitRatio(splitRatio);
     },
   };
 });

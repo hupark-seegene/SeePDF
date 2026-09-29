@@ -10,7 +10,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useMock } from "./env";
 import { appBus } from "./bus";
 import type {
-  DocChangedEvent, DocSavedEvent, EnginePressureEvent, OpenFileEvent, RecentsChangedEvent,
+  DocChangedEvent, DocSavedEvent, EnginePressureEvent, OpenFileEvent, RecentsChangedEvent, TtsProgressEvent,
 } from "./types";
 
 export type Unsubscribe = () => void;
@@ -79,6 +79,11 @@ export function onRecentsChanged(handler: (e: RecentsChangedEvent) => void): Uns
 /** Budgets halved — the viewer lowers MAX_MOUNTED_TILES until `level` returns to `normal`. */
 export function onEnginePressure(handler: (e: EnginePressureEvent) => void): Unsubscribe {
   return subscribe("engine-pressure", handler);
+}
+
+/** v0.3 (V4): read aloud started a sentence (`sentenceIndex`), or finished its queue (`null`). */
+export function onTtsProgress(handler: (e: TtsProgressEvent) => void): Unsubscribe {
+  return subscribe("tts-progress", handler);
 }
 
 /** Native macOS menu item -> the focused window. `id` matches a keymap id (`src/keys/keymap.ts`). */

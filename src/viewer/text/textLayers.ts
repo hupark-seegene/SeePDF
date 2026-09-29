@@ -15,7 +15,7 @@ import { PageTextLayer } from "./TextLayer";
 const MAX_CACHED_PAGES = 24;
 
 const cache = new Map<string, PageTextLayer>();
-const pending = new Set<string>();
+const pending = new Map<string, Promise<PageTextLayer>>();
 const failed = new Set<string>();
 const listeners = new Set<() => void>();
 let version = 0;
@@ -52,28 +52,44 @@ export function getTextLayer(docId: DocId, gen: DocGeneration, page: PageIndex):
 }
 
 export function ensureTextLayer(docId: DocId, gen: DocGeneration, page: PageIndex): void {
+  void loadTextLayer(docId, gen, page).catch(() => undefined);
+}
+
+/**
+ * The page's layer, fetched if it is not cached (v0.3: 읽어 주기 reads a page that may not be
+ * mounted). Rejects when the page has no text layer.
+ */
+export function loadTextLayer(docId: DocId, gen: DocGeneration, page: PageIndex): Promise<PageTextLayer> {
   const key = keyOf(docId, gen, page);
-  if (cache.has(key) || pending.has(key) || failed.has(key)) return;
-  pending.add(key);
-  void api
+  const hit = cache.get(key);
+  if (hit) return Promise.resolve(hit);
+  const inflight = pending.get(key);
+  if (inflight) return inflight;
+  if (failed.has(key)) return Promise.reject(new Error(`no text layer for page ${page}`));
+  const request = api
     .getTextLayer({ docId, page })
     .then((view) => {
-      cache.set(key, new PageTextLayer(view));
+      const layer = new PageTextLayer(view);
+      cache.set(key, layer);
       while (cache.size > MAX_CACHED_PAGES) {
         const oldest = cache.keys().next().value;
         if (oldest === undefined) break;
         cache.delete(oldest);
       }
       emit();
+      return layer;
     })
-    .catch(() => {
+    .catch((e: unknown) => {
       // A page with no extractable text (a scan) answers with an empty layer or an error; either
       // way there is nothing to select, and retrying on every scroll frame would be worse.
       failed.add(key);
+      throw e;
     })
     .finally(() => {
       pending.delete(key);
     });
+  pending.set(key, request);
+  return request;
 }
 
 export function ensureTextLayers(docId: DocId, gen: DocGeneration, pages: PageIndex[]): void {

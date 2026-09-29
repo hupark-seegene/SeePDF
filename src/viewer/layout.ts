@@ -6,7 +6,8 @@
  * stops the scrollbar from jumping while thumbnails arrive.
  *
  * Rows, not pages, are the unit: 단일 = one row (the current page), 연속 = one page per row,
- * 두 쪽 = spreads of two. Only rows inside `[scrollTop − 1.5·vh, scrollTop + 2.5·vh]` are mounted.
+ * 두 쪽 = spreads of two, 두 쪽 (표지 따로) = the cover alone, then spreads (v0.3). Only rows inside
+ * `[scrollTop − 1.5·vh, scrollTop + 2.5·vh]` are mounted.
  */
 import type { PageGeom, PageIndex, Rotation, ViewLayout } from "../ipc/types";
 import { pageBoxCss, scaleKeyFor, type Size } from "./geometry";
@@ -62,16 +63,25 @@ export interface LayoutOptions {
   padY?: number;
 }
 
-/** Which pages share a row. 두 쪽 pairs from an even index, so page 1 sits left of page 2. */
+/**
+ * Which pages share a row. 두 쪽 pairs from an even index, so page 1 sits left of page 2; 두 쪽
+ * (표지 따로, `twoCover`) shows page 1 alone and pairs from there — [1], [2, 3], [4, 5] … — the way a
+ * printed book opens (V5).
+ */
 export function pageRows(pageCount: number, mode: ViewLayout, currentPage = 0): PageIndex[][] {
   if (pageCount <= 0) return [];
   if (mode === "single") {
     const page = Math.max(0, Math.min(pageCount - 1, currentPage));
     return [[page]];
   }
-  if (mode === "two") {
+  if (mode === "two" || mode === "twoCover") {
     const rows: PageIndex[][] = [];
-    for (let i = 0; i < pageCount; i += 2) {
+    let i = 0;
+    if (mode === "twoCover") {
+      rows.push([0]);
+      i = 1;
+    }
+    for (; i < pageCount; i += 2) {
       rows.push(i + 1 < pageCount ? [i, i + 1] : [i]);
     }
     return rows;
@@ -272,7 +282,7 @@ export function fitZoomPercent(
   const swap = rotation === 90 || rotation === 270;
   const wPt = swap ? page.heightPt : page.widthPt;
   const hPt = swap ? page.widthPt : page.heightPt;
-  const columns = viewLayout === "two" ? 2 : 1;
+  const columns = viewLayout === "two" || viewLayout === "twoCover" ? 2 : 1;
   const availW = Math.max(40, viewport.w - padX * 2 - (columns - 1) * gap) / columns;
   const availH = Math.max(40, viewport.h - padY * 2);
   const widthPct = (availW / wPt) * 100;

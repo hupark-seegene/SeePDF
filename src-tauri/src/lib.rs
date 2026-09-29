@@ -16,7 +16,7 @@ pub mod protocol;
 
 use app::{PendingOpens, WindowDocs};
 use ipc::EngineError;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
@@ -120,9 +120,31 @@ pub fn run() {
                 dir,
                 Some(handle.clone()),
                 app::store::history_spill_dir(Some(&handle)),
-                (settings.tile_cache_mb.clamp(16, 1024) as usize) * 1024 * 1024,
+                commands::app::tile_cache_bytes(settings.tile_cache_mb),
             )?;
+            // v0.3 pkg6 (H5): the tile cache reports memory pressure; the viewer halves its
+            // tile budgets while it is `high` (IPC_CONTRACT §8).
+            {
+                let handle = handle.clone();
+                engine.shared.tiles.start_pressure_monitor(move |level| {
+                    let payload = ipc::types::EnginePressurePayload { level };
+                    if let Err(e) = handle.emit("engine-pressure", payload) {
+                        tracing::warn!("emit engine-pressure failed: {e}");
+                    }
+                });
+            }
             app.manage(engine);
+            // v0.3 pkg6 (V4): read aloud announces each sentence it starts.
+            {
+                let handle = handle.clone();
+                app.state::<std::sync::Arc<app::tts::Tts>>()
+                    .set_progress_listener(move |sentence_index| {
+                        let payload = ipc::types::TtsProgressPayload { sentence_index };
+                        if let Err(e) = handle.emit("tts-progress", payload) {
+                            tracing::warn!("emit tts-progress failed: {e}");
+                        }
+                    });
+            }
 
             // 2. native menu (macOS only; Windows uses the in-window menu bar).
             #[cfg(target_os = "macos")]
@@ -253,6 +275,12 @@ pub fn run() {
             commands::tts::tts_speak,
             commands::tts::tts_stop,
             commands::tts::tts_status,
+            // --- v0.3 pkg6: web links, reading order, settings reset / cache, snapshot save ---
+            commands::text::get_web_links,
+            commands::text::get_reading_order,
+            commands::app::get_default_settings,
+            commands::app::clear_render_cache,
+            commands::app::save_snapshot_png,
             // --- OCR (Stage 1b engine layer, 1f workers) ---
             commands::ocr::ocr_capabilities,
             commands::ocr::ocr_page_status,

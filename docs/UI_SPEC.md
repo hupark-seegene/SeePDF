@@ -130,6 +130,27 @@ reads back with no page and no url and is written back as a title only (IPC_CONT
   user put between them. Esc with nothing else to cancel (no tool armed, no text selection, no annotation
   selected or being edited) closes the split, as do the menu item, the button and opening another document; the
   main pane stays where it was. Both panes share one tile manager (one in-flight budget) and the engine's cache.
+  v0.3 (V3): the panes are divided by a **splitter** (`role="separator"`, 1 px `--border-default` line in a 7 px hit
+  area, `--accent` on hover / focus): drag it, or ← → (↑ ↓ when 위아래) by 5 %, Home / End to 20 % / 80 %,
+  double-click for 50 %; the first pane's share stays within 20–80 % and is remembered per orientation. A press in
+  the other pane with a **drawing tool** armed (주석's drawing tools, 편집's tools other than 선택) focuses that pane
+  **and** reaches the tool — the first click draws.
+* **Screen readers** (H9, v0.3): each mounted page of the focused pane carries a visually hidden `role="document"`
+  region labelled `N쪽` (`a11y.page`) holding the page's text, one paragraph per line, in reading order (the
+  structure tree's on a tagged PDF). A polite live region announces the current page (`a11y.pageOf`,
+  `{{total}}쪽 중 {{n}}쪽`) as it changes.
+* **캐럿 탐색** (H9, v0.3; F7 on both platforms, `view.caret`): a text caret (a 2 px `--text-primary` bar, blinking
+  unless motion is reduced) is put at the selection's end or the top of the page in view, with a toast
+  (`caret.on`). ← → move one character, ↑ ↓ one line keeping the column, Home / End to the line's ends; at a page's
+  edge the caret moves on to the next / previous page (and scrolls there). ⇧ with any of those extends the text
+  selection, so ⌘C, the text-selection menu and the markup tools work on it; with a selection H / U / K make
+  형광펜 / 밑줄 / 취소선; N puts a 메모 at the caret (읽기 switches to 주석). A click moves the caret. The keys are
+  taken only while the canvas (or nothing else) has the focus and no field is being typed in. F7 again turns it off.
+* **Windows High Contrast / forced colours** (H9, v0.3): selection, search hits, the 읽어 주기 sentence, the caret,
+  the snapshot marquee, the focused pane and the splitter use system colours (`Highlight`, `Mark`, `CanvasText`);
+  focus rings become a 2 px `Highlight` outline (the token ring is a box-shadow, which forced colours drop);
+  pressed / selected buttons, segments, chips and tabs are `Highlight` / `HighlightText`. The page bitmaps are the
+  document's own pixels and are not touched.
 
 ---
 
@@ -139,7 +160,7 @@ reads back with no page and no url and is written back as a title only (IPC_CONT
 |---|---|---|---|---|
 | 읽기 | 선택(텍스트) | `text` | drag selects text; click clears. **Links** (P2): every Link annotation is a hit box with the `pointer` cursor, an accent outline + 8 % tint on hover and a tooltip (`{{page}}쪽으로 이동` or the address); a click on a page link scrolls to its destination (page + y); a web link asks 웹 주소 열기 — 브라우저에서 이 주소를 엽니다: {{url}} (열기 / 취소) before the opener plugin hands it to the browser; only `http(s):` and `mailto:` are ever handed over (anything else toasts 이 주소는 열 수 없습니다). A drag that starts on a link does not select text | — |
 | 읽기 | 손 | `grab`/`grabbing` | pans | 선택 |
-| 읽기 | 스냅샷 | `crosshair` | marquee copies the region as an image | 선택 |
+| 읽기 (any mode, v0.3) | 스냅샷 (⌥⌘C / Ctrl+Alt+C, the canvas menu, the V7 tool selector) | `crosshair` | drag a marquee on one page (dashed `--accent`, clamped to the page) → the region is rendered at 2× the on-screen scale (≤ 8 192 px), turned with the view and copied to the clipboard as PNG, toast 스냅샷을 클립보드에 복사했습니다; if the clipboard refuses, the toast offers PNG로 저장… (save panel). One-shot: back to 선택 (채우기 in 양식) | 선택 |
 | 주석 | 형광펜 / 밑줄 / 취소선 / 물결선 | `text` + colour dot | drag over text → markup annotation on the selected line runs | 선택 |
 | 주석 | 메모 | `copy` | click → sticky note, popover opens focused | 선택 |
 | 주석 | 펜 | `crosshair` (1 px dot) | drag → ink stroke; ⇧ constrains to a straight line | 선택 |
@@ -199,13 +220,15 @@ the same list and box, the box focused. Deleting an annotation that has replies 
 `◀ [page input] / [total] ▶` (P2: with page labels the input is 64 px, shows the current page's label and is
 followed by `(n / total)`; it accepts a label — exact, then case-insensitive — or a plain page number, a label
 winning over a number that is also a label; anything else restores the current value) ·
-view layout segmented (단일 / 연속 / 두 쪽) · 왼쪽/오른쪽 회전 ·
+view layout segmented (단일 / 연속 / 두 쪽 / 표지+두 쪽 — v0.3: 두 쪽 with the cover alone, page 1 then 2|3, 4|5 …) · 왼쪽/오른쪽 회전 ·
 야간 모드 `moon` (cycles, pressed while on) · 분할 보기 `columns-2` (pressed while split; while split also 위아래로
 나누기 `rows-2` ⇄ 좌우로 나누기 `columns-2` and 동기화 스크롤 `link-2`, pressed while on — P2; the page field, layout,
 rotation and zoom act on the focused pane) · zoom `− [slider] +` with a numeric combo (25/50/75/100/125/150/200/400 %, 페이지 맞춤, 너비 맞춤,
 실제 크기) · right side: save state (저장됨 / 저장되지 않은 변경 사항 / 저장 중…) and a progress slot used
 by OCR, export, search and save (label + determinate bar + cancel ×). P2: while the system voice reads
 (읽어 주기), a pressed `audio-lines` button at the start of the right side — `읽는 중… — 정지`; a click stops it.
+v0.3 (V4): the page is read **sentence by sentence** (its reading order; Korean-aware splitting), the sentence being
+read is tinted on the page (`--accent` at 18 %, in the marks layer), and a 속도 change continues from that sentence.
 
 ---
 
@@ -379,6 +402,13 @@ once the rows differ from the file) → `set_page_labels` (one undo step 페이�
 문서 분할 ({{n}}쪽마다 / 페이지 범위로, output folder) · 인쇄 (range + the system dialog) ·
 설정 (일반 / 모양 / 주석 / 고급) · 문서 정보 · 여러 파일을 어떻게 열까요? (각각 열기 / 하나로 합치기).
 
+**설정 › 고급 (v0.3, U3).** 렌더링 품질 균형 / 고품질 applies at once (고품질 renders 1.5× denser than the display, at
+most 3×, and skips the low-resolution draft of a whole page; hint 고품질은 화면보다 1.5배 촘촘하게 그립니다). 캐시 크기
+(16–512 MB) applies at once (hint 바꾸면 바로 적용됩니다), with **캐시 비우기** beside it (toast 캐시를 비웠습니다 (12 MB)).
+At the bottom, **기본값으로 되돌리기** asks 모든 설정을 기본값으로 되돌릴까요? — 작성자 이름, 저장한 서명과 도장, 최근
+항목은 그대로 둡니다 — then resets every other setting, applying language, theme and 야간 모드 live. 일반 › 기본 보기
+offers 두 쪽 (표지 따로) too.
+
 All dialogs are rendered in the webview, `--elevation-3`, `--radius-xl`, Esc closes, the primary button
 is the accent one and is 36 px tall.
 
@@ -402,11 +432,19 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
   would (one per page, the tool's remembered style) and clear the selection; 메모 추가 puts a note just after
   the selection's last line and opens it; 영역 표시로 표시 marks the line rects and switches to 편집 · 영역 표시;
   검색 puts the selection (whitespace folded, ≤ 200 characters) into the 검색 panel and runs it
-* **Empty page area**: 붙여넣기 · 메모 추가 · 페이지 회전 · 이미지로 내보내기 · 스냅샷 · 페이지로 이동… · 이 페이지 읽어 주기 (P2)
+* **Empty page area**: 붙여넣기 · 메모 추가 · 페이지 회전 · 이미지로 내보내기 · 스냅샷 · 페이지로 이동… · 이 페이지 읽어 주기 (P2).
+  v0.3 (V2): 붙여넣기 is enabled when the annotation clipboard (복사 / ⌘C in 주석) or, in 편집, the object clipboard
+  holds something — copied annotations keep their arrangement with their top-left at the right-clicked point;
+  objects go onto that page. 메모 추가 puts a note with its top-left at the click (kept on the page) and opens it.
+  스냅샷 arms the marquee.
 * **Annotation**: 편집 · 속성… · 메모 열기 · 복사 · 삭제 · 이 스타일을 기본값으로. P2: a right-click on an annotation
   on the canvas (hit-tested in the pane it happened in; replies are never on the page) opens the canvas menu with
   **답글** (the thread popover / the note's popover, reply box focused; 읽기 switches to 주석) and 삭제 on top; a 주석
-  tab row's menu is 답글 · 삭제
+  tab row's menu is 답글 · 삭제. v0.3 (V2), on the canvas: 편집 (a 메모 opens its popover, a 텍스트 상자 its editor,
+  anything else is selected with its handles) · 속성… (selected, properties panel open) · 메모 열기 (the note's popover /
+  the thread popover without focusing the reply box) · 답글 · — · 복사 · 삭제 · — · 이 스타일을 기본값으로 (the drawing
+  tool's default, as in the panel; disabled for a link). Every one of them works in 주석 (읽기 / 양식 switch; 편집 asks
+  about its pending marks first).
 * **Thumbnail / page cell**: 이 페이지로 이동 · 왼쪽/오른쪽 회전 · 삭제 · 복제 · 추출… · 뒤에 페이지 삽입… ·
   자르기… · 페이지 크기 변경… (P2) · 이미지로 내보내기
 * **Outline item**: 이동 · 하위 항목 모두 펼치기/접기
@@ -430,7 +468,8 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 **View** — 사이드바 ⌃⌘S / Ctrl+F9 · 속성 패널 ⌥⌘P / Ctrl+F10 · 사이드바 탭 ⌘⌥1…4 / Ctrl+Alt+1…4 ·
 확대/축소 ⌘+ / ⌘− · 실제 크기 ⌘0 · 페이지 맞춤 ⌘9 · 너비 맞춤 ⌘8 · 단일/연속/두 쪽 ⌃1/⌃2/⌃3 (Ctrl+Shift+1/2/3) ·
 왼쪽/오른쪽 회전 ⌘L / ⌘R · 야간 모드 ⌃⌘N / Ctrl+Shift+N · 읽기 모드 ⌃⌘R / F8 · 전체 화면 ⌃⌘F / F11 ·
-분할 보기 ⌥⌘S / Ctrl+Alt+S (P2; toggles — Esc with nothing else to cancel closes it)
+분할 보기 ⌥⌘S / Ctrl+Alt+S (P2; toggles — Esc with nothing else to cancel closes it) ·
+두 쪽 (표지 따로) ⌃4 / Ctrl+Shift+4 (v0.3; the native 보기 menu lists all four layouts) · 캐럿 탐색 F7 (v0.3)
 
 > 읽기 모드 (P1-12) hides the title/tool bar, sidebar, 주석 tool strip, properties panel and status bar;
 > only the pages remain, and a toast says "읽기 모드 · Esc 키를 누르면 나갑니다". 전체 화면 is the window's own
@@ -441,7 +480,7 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 
 **Modes and tools** (only while the canvas has focus and no input is editing) — 모드 ⌘1…⌘5 ·
 선택 V · 손 Space(hold) · 형광펜 H · 밑줄 U · 취소선 K · 메모 N · 펜 P · 지우개 E · 사각형 R · 타원 O ·
-선 L · 화살표 A · 텍스트 상자 T · 도장 S · 서명 G · 영역 표시 ⇧R · 도구 해제 Esc
+선 L · 화살표 A · 텍스트 상자 T · 도장 S · 서명 G · 영역 표시 ⇧R · 스냅샷 ⌥⌘C / Ctrl+Alt+C (v0.3) · 도구 해제 Esc
 
 **Pages mode** — 회전 ⌘L / ⌘R · 삭제 ⌫ · 추출 ⌥⌘X / Ctrl+Alt+X · 페이지 삽입 ⌥⌘I / Ctrl+Alt+I · 모두 선택 ⌘A
 
@@ -1311,6 +1350,35 @@ from the same catalogue). The native menu's `view.readAloud` label lives in `app
 | `multiSearch.reason.password` | 암호를 입력하지 않았습니다 | No password was entered |
 | `multiSearch.reason.searchFailed` | 검색하지 못했습니다 | Could not be searched |
 | `multiSearch.openHit` | {{name}} {{page}}쪽 열기 | Open {{name}}, page {{page}} |
+
+### 15.20c v0.3 pkg6 — 스냅샷, canvas menus, 캐럿 탐색, settings, split divider, layouts
+
+| key | ko | en |
+|---|---|---|
+| `view.layout.twoCover` | 두 쪽 (표지 따로) | Two pages (cover alone) |
+| `view.layout.twoCoverShort` | 표지+두 쪽 | Cover + two |
+| `view.caret` | 캐럿 탐색 | Caret browsing |
+| `view.split.divider` | 분할 보기 경계 | Split view divider |
+| `caret.on` | 캐럿 탐색 켜짐 · 화살표로 이동, ⇧+화살표로 선택, N으로 메모 · F7로 끄기 | Caret browsing on · arrows move, ⇧+arrows select, N adds a note · F7 turns it off |
+| `caret.off` | 캐럿 탐색 꺼짐 | Caret browsing off |
+| `a11y.pageOf` | {{total}}쪽 중 {{n}}쪽 | Page {{n}} of {{total}} |
+| `snapshot.copied` | 스냅샷을 클립보드에 복사했습니다 | Snapshot copied to the clipboard |
+| `snapshot.copyFailed` | 클립보드에 이미지를 넣지 못했습니다 | Couldn’t put the image on the clipboard |
+| `snapshot.saveAs` | PNG로 저장… | Save as PNG… |
+| `snapshot.saved` | 스냅샷을 저장했습니다 | Snapshot saved |
+| `snapshot.failed` | 스냅샷을 만들지 못했습니다 | Couldn’t take the snapshot |
+| `canvasMenu.edit` | 편집 | Edit |
+| `canvasMenu.properties` | 속성… | Properties… |
+| `canvasMenu.openNote` | 메모 열기 | Open Note |
+| `settings.renderQuality.hint` | 고품질은 화면보다 1.5배 촘촘하게 그립니다 (메모리를 더 씁니다) | High renders 1.5× denser than the screen (uses more memory) |
+| `settings.cacheSize.hint` | 바꾸면 바로 적용됩니다 | Changes apply immediately |
+| `settings.clearCache.done` | 캐시를 비웠습니다 ({{size}}) | Cache cleared ({{size}}) |
+| `settings.resetDefaults.title` | 모든 설정을 기본값으로 되돌릴까요? | Reset all settings to their defaults? |
+| `settings.resetDefaults.body` | 작성자 이름, 저장한 서명과 도장, 최근 항목은 그대로 둡니다. | Your author name, saved signatures and stamps, and recent files are kept. |
+| `settings.resetDefaults.done` | 설정을 기본값으로 되돌렸습니다 | Settings reset to defaults |
+
+The native 보기 menu's four layout items (단일 페이지 · 연속 스크롤 · 두 쪽 · 두 쪽 (표지 따로)) are compiled into
+`menu.rs` like every native label.
 
 ### 15.21 Notes for the implementer
 

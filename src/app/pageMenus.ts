@@ -6,8 +6,11 @@
  * (frozen in STAGE1C_NOTES §1.2) and the `.thumb` button of the rail. `App.tsx` installs one
  * document-level `contextmenu` listener that calls in here.
  *
- * Items that belong to the annotation tools (붙여넣기 · 메모 추가 · 스냅샷) are deliberately absent:
- * module (d) owns them and can push them into `items` from the same seam.
+ * v0.3 (V2): the annotation menu is UI_SPEC §12's — 편집 · 속성… · 메모 열기 · 답글 · 복사 · 삭제 ·
+ * 이 스타일을 기본값으로 — and the empty page area adds 붙여넣기 (the annotation clipboard at the
+ * click point, or the 편집 object clipboard onto the page) · 메모 추가 (a note at the click point) ·
+ * 스냅샷 (arms the V1 marquee). The annotation clipboard lives in the lazy annotation host, reached
+ * through the `runAnnotCommand` bus (`annot.copy` / `annot.canPaste` / `annot.pasteAt`).
  *
  * While a text selection exists the canvas menu opens with UI_SPEC §12 "Text selection": 복사 ·
  * 형광펜 · 밑줄 · 취소선 · 메모 추가 · 영역 표시로 표시 · 검색 (the actions live in the lazy
@@ -27,7 +30,11 @@ import { shortcutFor } from "../keys/keymap";
 import { annotAt } from "../tools/hit";
 import { GRAB_PX } from "../tools/select";
 import { annotsOnPage, deleteAnnotations, openThread } from "../annot/actions";
-import type { Annot, PageIndex, PageOp } from "../ipc/types";
+import { runAnnotCommand } from "../tools/commands";
+import { toolController } from "../tools/ToolController";
+import { useAnnotStore, type ToolStyle } from "../store/annotStore";
+import { styleFor, toolOfKind } from "../store/toolStyles";
+import type { Annot, PageIndex, PageOp, Point } from "../ipc/types";
 
 /** The page a context-menu event happened on, or `null` when it was not over a page. */
 export function pageFromEvent(target: EventTarget | null): { page: PageIndex; source: "canvas" | "thumbnail" } | null {
@@ -58,10 +65,15 @@ function textMenu(fn: (m: TextMenu) => unknown): void {
 }
 
 /**
- * The annotation under a canvas right-click, in the pane it happened in (분할 보기: each pane has
- * its own zoom and rotation). Replies are never on the page, so they are never under the pointer.
+ * A canvas right-click in PDF user space, in the pane it happened in (분할 보기: each pane has its
+ * own zoom and rotation), with the page's CSS px per point.
  */
-function annotationUnder(page: PageIndex, x: number, y: number, target: EventTarget | null | undefined): Annot | null {
+function pagePointUnder(
+  page: PageIndex,
+  x: number,
+  y: number,
+  target: EventTarget | null | undefined,
+): { at: Point; scale: number } | null {
   const info = useDocStore.getState().info;
   const geom = info?.pages[page];
   const shell = (target as HTMLElement | null)?.closest?.<HTMLElement>(".page-shell");
@@ -78,8 +90,72 @@ function annotationUnder(page: PageIndex, x: number, y: number, target: EventTar
     width: box.width,
     height: box.height,
   });
-  const [px, py] = ctx.toPage(x - box.left, y - box.top);
-  return annotAt(annotsOnPage(page), px, py, GRAB_PX / Math.max(0.01, ctx.scale));
+  return { at: ctx.toPage(x - box.left, y - box.top), scale: ctx.scale };
+}
+
+/**
+ * The annotation under a canvas right-click. Replies are never on the page, so they are never
+ * under the pointer.
+ */
+function annotationUnder(page: PageIndex, x: number, y: number, target: EventTarget | null | undefined): Annot | null {
+  const hit = pagePointUnder(page, x, y, target);
+  if (!hit) return null;
+  return annotAt(annotsOnPage(page), hit.at[0], hit.at[1], GRAB_PX / Math.max(0.01, hit.scale));
+}
+
+/** 메모's icon box (tools/note.ts `NOTE_SIZE_PT`; that module is the lazy tools chunk's). */
+const NOTE_PT = 22;
+
+/** The note placed by 메모 추가: its top-left at the click, kept on the page. */
+export function noteAtPoint(at: Point, crop: { l: number; b: number; r: number; t: number }): Point {
+  return [Math.min(Math.max(at[0], crop.l), crop.r - NOTE_PT), Math.min(Math.max(at[1], crop.b + NOTE_PT), crop.t)];
+}
+
+/** Annotation items act in 주석: 읽기 / 양식 switch; 편집 asks about its pending marks first. */
+function inAnnotate(then: () => void): void {
+  const app = useAppStore.getState();
+  if (app.mode === "annotate") return then();
+  const pending = app.mode === "edit" ? editLeaveGuard() : null;
+  if (!pending) {
+    app.setMode("annotate");
+    return then();
+  }
+  void pending.then((ok) => {
+    if (!ok) return;
+    useAppStore.getState().setMode("annotate");
+    then();
+  });
+}
+
+/** 이 스타일을 기본값으로: the annotation's look becomes its tool's default (P1-12). */
+export function styleOfAnnot(a: Annot): Partial<ToolStyle> {
+  const stroked = a.kind === "ink" || a.kind === "square" || a.kind === "circle" || a.kind === "line" || a.kind === "arrow";
+  const filled = a.kind === "square" || a.kind === "circle" || a.kind === "textbox";
+  return {
+    color: a.color,
+    opacity: a.opacity,
+    ...(stroked && a.borderWidth > 0 ? { width: a.borderWidth } : {}),
+    ...(filled ? { fillColor: a.fillColor } : {}),
+    ...(a.fontSize ? { fontSize: a.fontSize } : {}),
+  };
+}
+
+/**
+ * The 편집 object clipboard lives in the lazy edit chunk; once 편집 has been entered the module is
+ * kept here, so the menu can tell (synchronously) whether there is anything to paste. Before that
+ * the clipboard cannot hold anything — copying needs the module.
+ */
+let editActions: typeof import("../edit/actions") | null = null;
+useAppStore.subscribe((s) => {
+  if (s.mode === "edit" && !editActions) {
+    void import("../edit/actions").then((m) => {
+      editActions = m;
+    });
+  }
+});
+
+function canPasteObjects(): boolean {
+  return useAppStore.getState().mode === "edit" && !!editActions?.hasObjectClipboard();
 }
 
 export function openPageContextMenu(
@@ -94,17 +170,57 @@ export function openPageContextMenu(
   const view = useViewStore.getState();
   const app = useAppStore.getState();
 
-  // UI_SPEC §12 Annotation (P2 threads): 답글 opens the thread with the reply box focused
+  // UI_SPEC §12 Annotation: 편집 · 속성… · 메모 열기 · 답글 (P2) · 복사 · 삭제 · 이 스타일을 기본값으로
   const annot = source === "canvas" ? annotationUnder(page, x, y, target) : null;
+  const annotTool = annot ? toolOfKind(annot.kind) : null;
   const annotItems: MenuEntry[] = annot
     ? [
         {
+          id: "editAnnot",
+          labelKey: "canvasMenu.edit",
+          disabled: annot.locked || annot.editable === "readOnly",
+          onSelect: () =>
+            inAnnotate(() => {
+              const store = useAnnotStore.getState();
+              store.select([annot.id]);
+              // a note opens its popover and a text box its editor; anything else gets its handles
+              if (annot.kind === "note" || annot.kind === "textbox") store.setEditing({ page, id: annot.id });
+              else {
+                useAppStore.getState().setTool("select");
+                toolController.arm("select");
+              }
+            }),
+        },
+        {
+          id: "propsAnnot",
+          labelKey: "canvasMenu.properties",
+          onSelect: () =>
+            inAnnotate(() => {
+              useAnnotStore.getState().select([annot.id]);
+              useAppStore.getState().setTool("select");
+              toolController.arm("select");
+              useAppStore.getState().toggleInspector(true);
+            }),
+        },
+        {
+          id: "noteAnnot",
+          labelKey: "canvasMenu.openNote",
+          onSelect: () =>
+            inAnnotate(() => {
+              if (annot.kind === "note") useAnnotStore.getState().setEditing({ page, id: annot.id });
+              else openThread(page, annot.id, false);
+            }),
+        },
+        {
           id: "replyAnnot",
           labelKey: "annot.thread.reply",
-          onSelect: () => {
-            if (useAppStore.getState().mode === "read") useAppStore.getState().setMode("annotate");
-            openThread(page, annot.id, true);
-          },
+          onSelect: () => inAnnotate(() => openThread(page, annot.id, true)),
+        },
+        { id: "sepAnnot0", separator: true },
+        {
+          id: "copyAnnot",
+          labelKey: "menu.edit.copy",
+          onSelect: () => void runAnnotCommand("annot.copy", { page, ids: [annot.id] }),
         },
         {
           id: "deleteAnnot",
@@ -112,7 +228,49 @@ export function openPageContextMenu(
           danger: true,
           onSelect: () => void deleteAnnotations(page, [annot.id]),
         },
+        { id: "sepAnnot1", separator: true },
+        {
+          id: "defaultStyle",
+          labelKey: "prop.setDefault",
+          disabled: !annotTool,
+          onSelect: () => {
+            if (annotTool) useAnnotStore.getState().setToolDefault(annotTool, styleOfAnnot(annot));
+          },
+        },
         { id: "sepAnnot", separator: true },
+      ]
+    : [];
+
+  // UI_SPEC §12 empty page area: 붙여넣기 · 메모 추가 (at the click point)
+  const point = source === "canvas" && !annot ? pagePointUnder(page, x, y, target) : null;
+  const canPasteAnnots = !!point && runAnnotCommand("annot.canPaste");
+  const canPaste = canPasteAnnots || (!!point && canPasteObjects());
+  const emptyItems: MenuEntry[] = point
+    ? [
+        {
+          id: "pasteHere",
+          labelKey: "menu.edit.paste",
+          shortcut: shortcutFor("edit.paste", app.os),
+          disabled: !canPaste,
+          onSelect: () => {
+            if (canPasteAnnots) runAnnotCommand("annot.pasteAt", { page, at: point.at });
+            else void editActions?.pasteObjects(page);
+          },
+        },
+        {
+          id: "noteHere",
+          labelKey: "textMenu.addNote",
+          onSelect: () =>
+            inAnnotate(() => {
+              const crop = useDocStore.getState().info?.pages[page]?.crop;
+              if (!crop) return;
+              const color = styleFor("note", useAnnotStore.getState().toolDefaults).color;
+              void import("../annot/actions").then((m) =>
+                m.createAnnotation(page, { kind: "note", at: noteAtPoint(point.at, crop), color, contents: "" }, { edit: true }),
+              );
+            }),
+        },
+        { id: "sepEmpty", separator: true },
       ]
     : [];
 
@@ -171,6 +329,15 @@ export function openPageContextMenu(
       },
     },
     {
+      id: "snapshot",
+      labelKey: "tool.snapshot",
+      shortcut: shortcutFor("tool.snapshot", app.os),
+      onSelect: () => {
+        useAppStore.getState().setTool("snapshot");
+        toolController.arm("snapshot");
+      },
+    },
+    {
       id: "organize",
       labelKey: "pages.title",
       onSelect: () => {
@@ -225,6 +392,7 @@ export function openPageContextMenu(
     x,
     y,
     labelKey: source === "thumbnail" ? "sidebar.tab.thumbnails" : "a11y.canvas",
-    items: source === "thumbnail" ? [...shared, ...editing] : [...annotItems, ...textItems, ...shared, ...canvasOnly],
+    items:
+      source === "thumbnail" ? [...shared, ...editing] : [...annotItems, ...textItems, ...emptyItems, ...shared, ...canvasOnly],
   });
 }

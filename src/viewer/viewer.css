@@ -19,13 +19,41 @@
   min-height: 0;
 }
 
-.viewer-panes[data-split] > .canvas.viewer + .canvas.viewer {
-  border-inline-start: 1px solid var(--border-default);
+/* V3 (v0.3): the divider between the panes — a 1 px line inside a 7 px hit area that overlaps the
+   panes (negative margins), keyboard-focusable (role="separator"). */
+.viewer-panes > .split-divider {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 7px;
+  margin-inline: -3px;
+  cursor: col-resize;
+  touch-action: none;
+  background: linear-gradient(
+    to right,
+    transparent 3px,
+    var(--border-default) 3px,
+    var(--border-default) 4px,
+    transparent 4px
+  );
 }
 
-.viewer-panes[data-split="stacked"] > .canvas.viewer + .canvas.viewer {
-  border-inline-start: 0;
-  border-block-start: 1px solid var(--border-default);
+.viewer-panes[data-split="stacked"] > .split-divider {
+  margin-inline: 0;
+  margin-block: -3px;
+  cursor: row-resize;
+  background: linear-gradient(
+    to bottom,
+    transparent 3px,
+    var(--border-default) 3px,
+    var(--border-default) 4px,
+    transparent 4px
+  );
+}
+
+.viewer-panes > .split-divider:hover,
+.viewer-panes > .split-divider:focus-visible {
+  --border-default: var(--accent);
+  outline: none;
 }
 
 /* the pane the keys, menus and tools act on */
@@ -186,4 +214,111 @@
    light page, so its marks keep multiplying. */
 .viewer[data-night="dark"] .mark {
   mix-blend-mode: screen;
+}
+
+/* ------------------------------------------------------------ v0.3 pkg6 */
+
+/* 스냅샷 (V1): the marquee over the page being captured */
+.viewer .snapshot-marquee {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.canvas.viewer[data-tool="snapshot"] {
+  cursor: crosshair;
+}
+
+/* 읽어 주기 (V4): the sentence being read */
+.viewer .mark.tts {
+  background: var(--accent);
+  opacity: 0.18;
+}
+
+/* 캐럿 탐색 (H9): the caret, blinking unless motion is reduced */
+.viewer .caret-bar {
+  position: absolute;
+  background: var(--text-primary);
+  pointer-events: none;
+  animation: seepdf-caret 1.06s steps(1) infinite;
+}
+
+@keyframes seepdf-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewer .caret-bar {
+    animation: none;
+  }
+}
+
+.viewer[data-night="dark"] .caret-bar {
+  background: var(--night-ink);
+}
+
+/* Windows High Contrast / forced colours (H9): the marks, the caret and the pane focus in system
+   colours — blend modes and opacity would make them vanish in a forced palette. */
+@media (forced-colors: active) {
+  .viewer .mark {
+    mix-blend-mode: normal;
+    forced-color-adjust: none;
+  }
+
+  .viewer .mark.sel,
+  .viewer .mark.tts {
+    background: Highlight;
+    opacity: 0.4;
+  }
+
+  .viewer .mark.hit {
+    background: Mark;
+    opacity: 0.5;
+    outline: 1px solid CanvasText;
+  }
+
+  .viewer .mark.hit[data-current] {
+    background: Highlight;
+    opacity: 0.6;
+    box-shadow: none;
+    outline: 2px solid CanvasText;
+  }
+
+  .viewer .caret-bar {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .viewer .snapshot-marquee {
+    border-color: Highlight;
+    background: transparent;
+  }
+
+  .viewer-panes[data-split] > .canvas.viewer[data-focused] {
+    outline: 2px solid Highlight;
+  }
+
+  .viewer-panes > .split-divider {
+    forced-color-adjust: none;
+    background: CanvasText;
+    margin-inline: 0;
+    flex-basis: 2px;
+  }
+
+  .viewer-panes[data-split="stacked"] > .split-divider {
+    margin-block: 0;
+  }
+
+  .viewer-panes > .split-divider:focus-visible {
+    background: Highlight;
+  }
+
+  .canvas.viewer:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }
