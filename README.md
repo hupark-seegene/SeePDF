@@ -174,7 +174,7 @@ cross-preparing resources.
 
 ```sh
 npm run typecheck                    # tsc --noEmit
-npx vitest run                       # ~1040 frontend tests (135 files)
+npx vitest run                       # ~1070 frontend tests (136 files)
 node scripts/check-i18n.mjs --strict # ko/en key + placeholder parity, no dead keys (CI gate)
 npm run build && node scripts/check-bundle-size.mjs   # critical-path budget
 

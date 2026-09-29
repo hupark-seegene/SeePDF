@@ -2103,7 +2103,7 @@ export const mock = {
   async problemReport(): Promise<ProblemReport> {
     const path = "/mock/logs/problem-report.txt";
     writtenFiles.add(path);
-    return { text: "SeePDF 0.2.0\nOS: macos / aarch64\nPDFium: 155.0.8057.0\nLog lines (0):\n", path };
+    return { text: "SeePDF 0.3.0\nOS: macos / aarch64\nPDFium: 155.0.8057.0\nLog lines (0):\n", path };
   },
   async openLogFolder(): Promise<string> {
     return "/mock/logs";

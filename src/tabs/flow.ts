@@ -28,6 +28,7 @@ import { useAnnotStore, type AnnotState } from "../store/annotStore";
 import { useAppStore, type Mode, type ToolId } from "../store/appStore";
 import { useSearchStore, type SearchState } from "../viewer/search/SearchController";
 import { useCompareStore } from "../compare/state";
+import { usePrintStore } from "../print/printStore";
 import { toolController } from "../tools/ToolController";
 import { editLeaveGuard } from "../tools/commands";
 import { whenEditsSettled } from "../annot/dragGate";
@@ -308,7 +309,7 @@ export function closeTab(id: number): Promise<boolean> {
   return serial(async () => {
     const st = useTabStore.getState();
     const tab = st.tabs.find((t) => t.id === id);
-    if (!tab) return false;
+    if (!tab || printing(tab.docId)) return false;
     if (id !== st.activeId) {
       if (!tab.dirty) {
         await closeBackground(tab);
@@ -322,7 +323,18 @@ export function closeTab(id: number): Promise<boolean> {
 
 /** The active document, closed like a tab (파일 › 닫기 while the window has several). */
 export function closeActiveTab(): Promise<boolean> {
-  return serial(() => closeActive());
+  return serial(async () => {
+    const docId = useDocStore.getState().info?.docId;
+    return docId && printing(docId) ? false : closeActive();
+  });
+}
+
+/**
+ * A print job still mounts page images of `docId` (a chunked job waits between chunks with the
+ * window usable): its tab stays open until the job ends, or the images come out blank.
+ */
+function printing(docId: string): boolean {
+  return usePrintStore.getState().job?.docId === docId;
 }
 
 /** 다른 탭 닫기: every other tab, stopping at the first 취소. */

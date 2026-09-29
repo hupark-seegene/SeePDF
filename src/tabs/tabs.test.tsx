@@ -22,6 +22,7 @@ import { AutosaveController, autosave } from "../app/autosave";
 import { lookup, shortcutFor, type KeyContext } from "../keys/keymap";
 import { runCommand } from "../app/useCommands";
 import { TabStrip } from "../app/TabStrip";
+import { usePrintStore } from "../print/printStore";
 import {
   activateTab, closeTab, confirmUnsavedTabs, cycleTab, reopenClosedTab, releaseWindowTabs,
 } from "./flow";
@@ -264,6 +265,26 @@ describe("tabs — closing", () => {
     expect(active().docId).toBe(b.docId);
     expect(tabs()).toHaveLength(1);
     expect(useDialogStore.getState().stack).toHaveLength(0);
+  });
+
+  it("a tab whose document is being printed stays open until the job ends", async () => {
+    const a = (await openPath(A))!;
+    const b = (await openPath(B))!;
+    const close = vi.spyOn(mock, "closeDocument");
+    usePrintStore.setState({ job: { docId: a.docId, generation: a.docGeneration, pages: [0], rotation: 0, scaleKey: 200 } });
+    try {
+      // the background tab (× / ⌘W after a switch) and the active one alike
+      expect(await closeTab(tabOf(a.docId))).toBe(false);
+      await activateTab(tabOf(a.docId));
+      expect(await closeTab(tabOf(a.docId))).toBe(false);
+      expect(close).not.toHaveBeenCalled();
+      expect(tabs()).toHaveLength(2);
+      // the other tab is not held
+      expect(await closeTab(tabOf(b.docId))).toBe(true);
+    } finally {
+      usePrintStore.setState({ job: null });
+    }
+    expect(await closeTab(tabOf(a.docId))).toBe(true);
   });
 
   it("a background tab with changes comes forward and asks; 취소 keeps it", async () => {
