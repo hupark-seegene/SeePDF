@@ -8,7 +8,7 @@
  * away that has already closed by the time the images load.
  *
  * v0.3 (X7/X8/X2): the job also carries the 주석 option (the `print=` flag of every page URL),
- * the page sizes (so a landscape page can be turned to fit a portrait sheet, and 실제 크기 can
+ * the page sizes (the sheet orientation is marked on each sheet, and 실제 크기 can
  * be printed in physical units), 흑백, and the chunk being printed: more than `PRINT_CHUNK`
  * pages are printed as consecutive print jobs of at most that many decoded images each.
  *
@@ -16,10 +16,11 @@
  */
 import { create } from "zustand";
 import type { DocGeneration, DocId, PageIndex, Rotation } from "../ipc/types";
+import type { PaperId } from "./paperChoice";
 
 /** 인쇄 ▸ 주석: 문서와 주석 / 문서만 / 문서와 도장·서명 (the engine's `PrintAnnots`). */
 export type PrintAnnots = "all" | "none" | "stamps";
-/** 인쇄 ▸ 크기: 맞춤 (fit the sheet, turning a page whose orientation differs) / 실제 크기. */
+/** 인쇄 ▸ 크기: 맞춤 (the page as wide as the sheet) / 실제 크기 (on the chosen paper). */
 export type PrintFit = "fit" | "actual";
 /** 인쇄 ▸ 모아찍기. */
 export type PerSheet = 1 | 2 | 4 | 6 | 9;
@@ -33,6 +34,8 @@ export interface PrintOptions {
   perSheet?: PerSheet;
   order?: NupOrder;
   booklet?: boolean;
+  /** v0.3.0: the paper 실제 크기 lays the pages out for (`src/print/paper.ts`). */
+  paper?: PaperId;
 }
 
 export interface PrintJob {
@@ -49,6 +52,10 @@ export interface PrintJob {
   sizes?: [number, number][];
   /** v0.3 (X2): default `fit`. */
   fit?: PrintFit;
+  /** v0.3.0: the paper of a 실제 크기 job; default A4. */
+  paper?: PaperId;
+  /** v0.3.0: the sheet of a 실제 크기 job in points, landscape applied (`paper.ts` paperSize). */
+  sheet?: [number, number];
   grayscale?: boolean;
   /** v0.3 (X2): a temporary n-up document to close once the job is over. */
   tempDocId?: DocId;

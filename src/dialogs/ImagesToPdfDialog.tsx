@@ -107,10 +107,10 @@ export default function ImagesToPdfDialog({ onClose, paths: initial }: { onClose
               <span className="merge-name text-sm" title={path}>
                 {baseName(path)}
               </span>
-              <button type="button" className="icon-btn" aria-label={t("common.moveUp")} onClick={() => move(i, i - 1)}>
+              <button type="button" className="icon-btn" aria-label={t("common.moveUp")} disabled={i === 0} onClick={() => move(i, i - 1)}>
                 <ChevronUp size={16} strokeWidth={1.75} aria-hidden />
               </button>
-              <button type="button" className="icon-btn" aria-label={t("common.moveDown")} onClick={() => move(i, i + 1)}>
+              <button type="button" className="icon-btn" aria-label={t("common.moveDown")} disabled={i === paths.length - 1} onClick={() => move(i, i + 1)}>
                 <ChevronDown size={16} strokeWidth={1.75} aria-hidden />
               </button>
               <button

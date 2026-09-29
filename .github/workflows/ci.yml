@@ -34,7 +34,7 @@ jobs:
           cache: npm
       - name: Install (no pdfium download needed for these checks)
         run: npm ci --ignore-scripts
-      - run: node scripts/check-i18n.mjs
+      - run: node scripts/check-i18n.mjs --strict
       # v0.3 pkg5: installer languages / WebView2 modes / macOS 13 / Intel assets / notices
       - run: node scripts/check-release-config.mjs
       - run: npm run typecheck

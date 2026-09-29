@@ -1,7 +1,7 @@
 {
   "name": "seepdf",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check:i18n": "node scripts/check-i18n.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs --strict",
     "check:size": "node scripts/check-bundle-size.mjs",
     "perf:baseline": "node scripts/perf-baseline.mjs --write",
     "check": "npm run typecheck && npm run test && npm run check:i18n"

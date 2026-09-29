@@ -101,6 +101,20 @@ describe("이미지로 PDF 만들기", () => {
     expect(info.path).toBeNull();
   });
 
+  it("the reorder buttons are disabled at the list ends and do not take the initial focus", async () => {
+    const paths = ["/p/a.png", "/p/b.jpg", "/p/c.jpeg"];
+    act(() => useDialogStore.getState().open("imagesToPdf", { paths }));
+    render(<DialogHost />);
+    const list = await screen.findByRole("list", { name: "페이지 순서" });
+    const up = within(list).getAllByRole("button", { name: "위로 이동" });
+    const down = within(list).getAllByRole("button", { name: "아래로 이동" });
+    expect(up.map((b) => (b as HTMLButtonElement).disabled)).toEqual([true, false, false]);
+    expect(down.map((b) => (b as HTMLButtonElement).disabled)).toEqual([false, false, true]);
+    expect(list.contains(document.activeElement)).toBe(false);
+    fireEvent.click(up[2]);
+    expect(names(list)).toEqual(["a.png", "c.jpeg", "b.jpg"]);
+  });
+
   it("편집 ⌘V with an image on the system clipboard adds it to the page", async () => {
     await useDocStore.getState().open("/tmp/sample.pdf");
     useAppStore.getState().setMode("edit");

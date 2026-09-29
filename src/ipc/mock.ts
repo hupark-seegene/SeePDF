@@ -2095,7 +2095,7 @@ export const mock = {
   // --- v0.3 pkg5-app-shell-release-diagnostics ---
   async appInfo(): Promise<AppInfo> {
     return {
-      version: "0.2.0", os: "macos", arch: "aarch64", debug: false,
+      version: "0.3.0", os: "macos", arch: "aarch64", debug: false,
       pdfiumVersion: "155.0.8057.0", pdfiumDir: "/Applications/SeePDF.app/Contents/Resources/resources/pdfium",
       locale: settings.locale, theme: settings.theme,
     };

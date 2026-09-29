@@ -270,13 +270,21 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      # v0.3.0: the version's CHANGELOG.md section is the release body and the updater's notes
+      # (empty when the section is missing — check-release-config.mjs catches that before a tag).
+      - name: Release notes (CHANGELOG.md)
+        run: |
+          node scripts/changelog-section.mjs "${{ needs.version.outputs.version }}" > release-notes.md
+          cat release-notes.md
+
       - name: latest.json (only with signed updater bundles)
         run: |
           node scripts/release-latest-json.mjs \
             --dir release-assets \
             --version "${{ needs.version.outputs.version }}" \
             --tag "${{ needs.version.outputs.tag }}" \
-            --repo "${{ github.repository }}"
+            --repo "${{ github.repository }}" \
+            --notes-file release-notes.md
           ls -la release-assets
 
       - uses: softprops/action-gh-release@v2
@@ -285,6 +293,7 @@ jobs:
           name: SeePDF ${{ needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
           prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
+          body_path: release-notes.md
           generate_release_notes: true
           fail_on_unmatched_files: false
           files: |

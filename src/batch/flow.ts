@@ -247,7 +247,10 @@ async function runQueue(queue: number[]): Promise<void> {
       } catch (e) {
         outcome = { status: "failed", reasonKey: "error.generic", detail: message(e) };
       }
-      patch(id, outcome);
+      // v0.3.0 QA: a finished file reports all its pages done — the stamp / password / flatten
+      // actions send no page progress, so their rows used to keep `done: 0` beside 완료.
+      const total = itemOf(id)?.total;
+      patch(id, outcome.status === "done" && total !== undefined ? { ...outcome, done: total } : outcome);
       if (outcome.status === "cancelled") break;
       finished += 1;
       useBatch.setState({ runDone: finished });

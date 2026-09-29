@@ -85,7 +85,7 @@ if (Object.keys(platforms).length === 0) {
   process.exit(0);
 }
 
-const notes = notesFile && existsSync(notesFile) ? readFileSync(notesFile, "utf8").trim() : `SeePDF ${version}`;
+const notes = (notesFile && existsSync(notesFile) ? readFileSync(notesFile, "utf8").trim() : "") || `SeePDF ${version}`;
 const manifest = { version, notes, pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), platforms };
 writeFileSync(join(dir, "latest.json"), JSON.stringify(manifest, null, 2) + "\n");
 console.log(`[latest.json] ${Object.keys(platforms).sort().join(", ")}`);

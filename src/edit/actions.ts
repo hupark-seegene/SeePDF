@@ -359,8 +359,14 @@ export async function duplicateSelection(): Promise<boolean> {
  * ⌘V: the copied objects onto `target` (the page in view), one more offset step per paste onto
  * that page. Another page goes through `targetPage`; an object the engine cannot carry there
  * answers `unsupported`, which is a toast, not an error.
+ *
+ * v0.3.0: with `at` (the canvas menu's 붙여넣기, page points, y-up) the copies' top-left corner
+ * lands on that point instead — like the annotation paste — and the cascade does not advance.
  */
-export async function pasteObjects(target: PageIndex = useViewStore.getState().currentPage): Promise<boolean> {
+export async function pasteObjects(
+  target: PageIndex = useViewStore.getState().currentPage,
+  at?: Point,
+): Promise<boolean> {
   const c = clip;
   if (!c || c.docId !== docId() || useEditStore.getState().session) return false;
   const ids = await resolveClip(c);
@@ -369,6 +375,8 @@ export async function pasteObjects(target: PageIndex = useViewStore.getState().c
     toast("edit.clipboard.gone", undefined, { tone: "danger" });
     return false;
   }
+  const box = at ? unionRects(c.items.map((i) => i.rect)) : null;
+  if (at && box) return duplicate(c.page, ids, [at[0] - box.l, at[1] - box.t], target);
   const n = (c.pastes.get(target) ?? 0) + 1;
   const ok = await duplicate(c.page, ids, [PASTE_OFFSET_PT * n, -PASTE_OFFSET_PT * n], target);
   if (ok) c.pastes.set(target, n);

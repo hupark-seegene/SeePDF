@@ -362,7 +362,7 @@ mod mac {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 #[test]
 fn native_ocr_is_unsupported_off_macos() {
     assert!(!ocr::vision_available());
@@ -371,4 +371,37 @@ fn native_ocr_is_unsupported_off_macos() {
     let image = with_state(move |st| ocr::render_page_gray(st, &id, 0, 150)).expect("render");
     let err = ocr::recognize_gray(&image, &[]).expect_err("no Vision here");
     assert_eq!(err.code, seepdf_lib::ipc::ErrorCode::Unsupported);
+}
+
+/// v0.3 O3: on Windows the native path is Windows.Media.Ocr, not Vision — it reads the page with
+/// an installed Korean / English recogniser (the default when no language is asked for) and
+/// refuses with `unsupported` only on a machine that has neither. (The v0.3.0 CI run on main
+/// failed here: this test predated O3 and expected `unsupported` on every non-macOS host.)
+#[cfg(windows)]
+#[test]
+fn native_ocr_off_macos_is_windows_ocr_on_windows() {
+    assert!(!ocr::vision_available());
+    let doc = open("gen/korean-300dpi.pdf");
+    let id = doc.doc_id.clone();
+    let image = with_state(move |st| ocr::render_page_gray(st, &id, 0, 150)).expect("render");
+    let installed = ocr::winocr::win::available_languages();
+    let has_default = installed
+        .iter()
+        .any(|t| matches!(ocr::winocr::app_code(t), Some("kor" | "eng")));
+    match ocr::recognize_gray(&image, &[]) {
+        Ok(page) => {
+            assert!(
+                has_default,
+                "read without a kor / eng recogniser: {installed:?}"
+            );
+            assert_eq!((page.width_px, page.height_px), (image.width, image.height));
+        }
+        Err(err) => {
+            assert!(
+                !has_default,
+                "a kor / eng recogniser is installed ({installed:?}): {err:?}"
+            );
+            assert_eq!(err.code, seepdf_lib::ipc::ErrorCode::Unsupported);
+        }
+    }
 }
