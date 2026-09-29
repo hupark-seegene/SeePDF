@@ -2237,6 +2237,27 @@ pub struct Settings {
     /// last. Lenient like `signatures`: a malformed entry is dropped on its own.
     #[serde(default, deserialize_with = "lenient_stamps")]
     pub stamps: Vec<CustomStamp>,
+    /// v0.3 DR1: 설정 › 일반 › 파일 열기 — a file opened while the window already shows a
+    /// document goes to a new tab (the default) or a new window. Lenient like `night`.
+    #[serde(default, deserialize_with = "lenient_open_files_in")]
+    pub open_files_in: OpenFilesIn,
+}
+
+/// `Settings.openFilesIn` (v0.3 DR1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenFilesIn {
+    #[default]
+    Tab,
+    Window,
+}
+
+fn lenient_open_files_in<'de, D>(deserializer: D) -> Result<OpenFilesIn, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// v0.3 pkg4: the 내 도장 cap.
@@ -2390,6 +2411,7 @@ impl Default for Settings {
             night: NightMode::Off,
             check_updates: true,
             stamps: Vec::new(),
+            open_files_in: OpenFilesIn::Tab,
         }
     }
 }

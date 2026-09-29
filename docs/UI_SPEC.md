@@ -9,7 +9,8 @@ component against the Korean string first, then check English.
 ## 1. Window and layout
 
 Single-window, **mode-switcher** shell (PDF Expert's model — not a ribbon, not an icon rail).
-One document per window; the first window shows the welcome screen.
+A window shows one document at a time; since v0.3 (DR1) it can hold more in **document tabs** (§2.2). The
+first window shows the welcome screen.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
@@ -49,7 +50,7 @@ One document per window; the first window shows the welcome screen.
 |---|---|
 | left gutter | 78 px (macOS) / 8 px (Windows), drag region |
 | left group | `☰` sidebar toggle · `↶` undo · `↷` redo (undo/redo only when a document is open) |
-| centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty. v0.3: after it, the **서명됨 (n)** pill (accent) when the document has digital signatures and the **제한됨** pill (warning) when its permissions restrict this open — see §2.1 |
+| centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty. v0.3 (DR1): with two or more documents open in the window, the **tab strip** takes the title's place (§2.2). v0.3: after it, the **서명됨 (n)** pill (accent) when the document has digital signatures and the **제한됨** pill (warning) when its permissions restrict this open — see §2.1 |
 | centre | **mode switcher**: 읽기 · 주석 · 편집 · 페이지 · 양식 (segmented, ⌘1–⌘5) |
 | right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일 처리 (v0.3 pkg8), 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정, 업데이트 확인…, 손 도구; then 도움말 — 단축키, 문제 보고…, 로그 폴더 열기, SeePDF 정보 — which is where Windows, with no menu bar, finds them (v0.3 pkg5); under 900 px 찾기 / 내보내기 come first) |
 
@@ -74,6 +75,51 @@ panel content, and what a click on the page does.
   mode is always one the document permits: opening (or switching to) a document that forbids it falls back to
   읽기, and any other attempt to enter a forbidden mode keeps the previous one — both toast the reason.
 * Esc or a click outside closes a popover. Both popovers are one lazy chunk (`BadgePopover`).
+
+### 2.2 Document tabs (v0.3, DR1)
+
+```
+│ ⌃ traffic lights │ ☰ ↶ ↷  [• 계약서.pdf ×][보고서.pdf][견적서.pdf] ⌄   [읽기][주석]…  🔍 ⤓ ⋯ │
+```
+
+* **Where**: the centre-left zone of the title bar, in place of the document title, once the window holds two
+  or more documents (one document keeps the plain title and its `⌄` menu, like macOS window tabs). The strip
+  is `data-tauri-drag-region="false"`; the rest of the title bar still drags the window.
+* **A tab**: 28 px (`--control-compact`) high, 88–180 px wide (it shrinks before it overflows), radius-md,
+  `--text-secondary` on the chrome; the active tab is `--bg-panel` with `--elevation-1`, `--text-primary`, 500
+  weight. Content: the `•` dirty dot (the same 6 px dot as the title), the file name (end-truncated, the path as
+  its tooltip), and a 18 px `×` (lucide `x`, 12 px) shown on the active and the hovered tab.
+* **Mouse**: click shows the tab · `×` or a middle click closes it · a drag (6 px threshold) reorders the tabs
+  live · right click opens the tab menu: 탭 닫기 · 다른 탭 닫기 · 새 창으로 이동 (a tab with a file: it closes here
+  — 저장 / 저장 안 함 / 취소 first when it has changes — and opens in a new window) · — · 경로 복사 ·
+  Finder에서 보기 / 파일 탐색기에서 보기. Tabs are **not** dragged out of the window (새 창으로 이동 is the way).
+* **Narrow**: when the tabs do not fit at their minimum width the strip scrolls (no scrollbar) to keep the active
+  tab in view and a `⌄` (lucide `chevron-down`) at its end lists every tab (`✓` the active one, `•` the dirty
+  ones); picking one shows it.
+* **Keys** (§13): ⌘T / Ctrl+T 새 탭에서 열기… (the open panel; always a new tab) · ⌘W / Ctrl+W closes the tab —
+  the window when it is the last · ⌃Tab / ⌃⇧Tab and ⌥⌘→ / ⌥⌘← (Windows: Ctrl+Tab / Ctrl+Shift+Tab and
+  Ctrl+PgDn / Ctrl+PgUp) the next / previous tab, wrapping · ⇧⌘T / Ctrl+Shift+T 닫은 탭 다시 열기 (by path, the
+  last 20). macOS menus: 파일 ▸ 새 탭에서 열기… / 닫은 탭 다시 열기, 윈도우 ▸ 다음 탭 보기 / 이전 탭 보기.
+* **Opening**: with a document on screen, a file opened from anywhere — ⌘O, 최근 항목, a drop, the OS, 복구,
+  여러 파일에서 검색 results, 각각 열기 — opens in a **new tab** at the end of the strip; 설정 › 일반 › **파일 열기:
+  새 탭 (기본) / 새 창** switches that to a new window (합치기 and 이미지로 PDF 만들기, which have no file yet,
+  then replace the document as before). A file one of the window's tabs already has brings that tab forward; one
+  another window has (in any tab) brings that window and tab forward (H8). A new tab starts on page 1 with one
+  pane, no search and nothing selected, in the current mode.
+* **Switching** keeps each tab's own view — zoom, layout, rotation, page and scroll position, 뒤로 / 앞으로,
+  분할 보기 with both panes — its 페이지 selection, annotation selection and filter, mode and tool, and 검색
+  results. An open 편집 session is committed and pending 영역 표시 marks ask first (취소 stays on the tab), as
+  when leaving 편집 mode. The native 편집 menu's 실행 취소 / 다시 실행 names follow the tab shown.
+* **Closing**: a background tab without changes closes silently; one with changes comes forward and asks
+  저장 / 저장 안 함 / 취소. The neighbour to the right (else the left) comes forward; the last tab leaves the
+  welcome screen (파일 ▸ 닫기) or closes the window (⌘W).
+* **Closing the window / 종료** with changes in more than one tab — or only in a tab that is not on screen —
+  asks once: **변경 사항을 저장하시겠습니까?** · "문서 N개에 저장하지 않은 변경 사항이 있습니다…" · the names ·
+  **모두 저장** (each tab in turn comes forward and saves; a Save As panel, a changed-on-disk question or any
+  취소 stops the close) · **저장 안 함** · **취소**. A single changed tab on screen keeps the §10 prompt.
+* **In the background** a tab's document stays open: it gets its 자동 저장 recovery copy, its `•` follows
+  `doc-changed`, an engine crash reopens it in place (H4), and a save checks its file for outside changes as usual.
+* 문서 비교 covers the window; tabs do not switch while it is open.
 
 ---
 
@@ -579,7 +625,8 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 
 `⌘` → Ctrl on Windows, `⌥` → Alt, unless a row says otherwise.
 
-**File** — 열기 ⌘O / Ctrl+O · 최근 항목 열기 ⇧⌘O / Ctrl+Shift+O · 닫기 ⌘W / Ctrl+W · 저장 ⌘S / Ctrl+S ·
+**File** — 열기 ⌘O / Ctrl+O · 새 탭에서 열기 ⌘T / Ctrl+T (v0.3) · 최근 항목 열기 ⇧⌘O / Ctrl+Shift+O ·
+닫기 ⌘W / Ctrl+W (the tab; the window when it is the last, v0.3) · 저장 ⌘S / Ctrl+S ·
 다른 이름으로 저장 ⇧⌘S / Ctrl+Shift+S · 내보내기 ⌥⌘E / Ctrl+Alt+E · 인쇄 ⌘P / Ctrl+P ·
 문서 정보 ⌘I / Ctrl+D · 설정 ⌘, / Ctrl+, · 종료 ⌘Q / Alt+F4
 
@@ -599,6 +646,9 @@ Empty state: a large dashed drop zone with `PDF 파일을 여기에 놓으세요
 
 **Navigation** — 다음/이전 페이지 ↓ ↑ PageDown PageUp Space ⇧Space · 첫/마지막 페이지 ⌘↑ / ⌘↓
 (Ctrl+Home / Ctrl+End) · 페이지로 이동 ⌥⌘G / Ctrl+G · 뒤로/앞으로 ⌘[ / ⌘] (Alt+← / Alt+→)
+
+**Tabs** (v0.3 DR1, §2.2; need a document) — 다음 탭 ⌃Tab or ⌥⌘→ / Ctrl+Tab or Ctrl+PgDn · 이전 탭 ⌃⇧Tab
+or ⌥⌘← / Ctrl+Shift+Tab or Ctrl+PgUp · 닫은 탭 다시 열기 ⇧⌘T / Ctrl+Shift+T (always)
 
 **Help** (v0.3 pkg5) — 단축키 ⌘/ / F1 (always; the Welcome screen's 도움말 and ⋯ open the same sheet)
 
@@ -1832,6 +1882,31 @@ dead-key cleanup runs after every v0.3 package is merged).
 | `batch.running` | 여러 파일 처리 중… | Processing files… |
 | `batch.finished` | 여러 파일 처리를 마쳤습니다: 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | Finished processing files: {{done}} done · {{skipped}} skipped · {{failed}} failed |
 | `batch.cancelled` | 여러 파일 처리를 취소했습니다: 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | Stopped processing files: {{done}} done · {{skipped}} skipped · {{failed}} failed |
+
+### 15.20h v0.3 DR1 — document tabs
+
+`menu.tab.*` are also the macOS 윈도우 / 파일 menu items (`menu.rs` carries the same strings).
+
+| key | ko | en |
+|---|---|---|
+| `menu.file.openInNewTab` | 새 탭에서 열기… | Open in New Tab… |
+| `menu.tab.next` | 다음 탭 보기 | Show Next Tab |
+| `menu.tab.previous` | 이전 탭 보기 | Show Previous Tab |
+| `menu.tab.reopenClosed` | 닫은 탭 다시 열기 | Reopen Closed Tab |
+| `tabs.label` | 문서 탭 | Document tabs |
+| `tabs.close` | 탭 닫기 | Close Tab |
+| `tabs.closeOthers` | 다른 탭 닫기 | Close Other Tabs |
+| `tabs.moveToNewWindow` | 새 창으로 이동 | Move to New Window |
+| `tabs.copyPath` | 경로 복사 | Copy Path |
+| `tabs.all` | 모든 탭 | All Tabs |
+| `tabs.unsaved.title` | 변경 사항을 저장하시겠습니까? | Save your changes? |
+| `tabs.unsaved.body` | 문서 {{count}}개에 저장하지 않은 변경 사항이 있습니다. 저장하지 않으면 변경 사항이 사라집니다. | {{count}} documents have unsaved changes. If you don't save, the changes will be lost. |
+| `tabs.unsaved.list` | 문서: {{names}} | Documents: {{names}} |
+| `tabs.unsaved.saveAll` | 모두 저장 | Save All |
+| `settings.openFilesIn` | 파일 열기 | Open files in |
+| `settings.openFilesIn.hint` | 이미 문서가 열린 창에서 다른 파일을 열 때 어디에 열지 정합니다. 새 탭에서 열기는 항상 새 탭을 씁니다. | Where another file opens when the window already shows a document. Open in New Tab always uses a new tab. |
+| `settings.openFilesIn.tab` | 새 탭 (기본) | New tab (default) |
+| `settings.openFilesIn.window` | 새 창 | New window |
 
 ### 15.21 Notes for the implementer
 

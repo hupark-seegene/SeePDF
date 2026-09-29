@@ -254,6 +254,8 @@ describe("S1 / S5 × pkg2: form authoring and pages from another window", () => 
 
 describe("H8 × D1: a PDF dropped with images", () => {
   it("is focused in the window that already shows it instead of opening twice", async () => {
+    // 설정 › 파일 열기 = 새 창 (v0.3 DR1; with 새 탭 the new PDF opens in a tab — tabs.test.ts)
+    await useAppStore.getState().patchSettings({ openFilesIn: "window" });
     const newWindow = vi.spyOn(mock, "openInNewWindow");
     mockOpenInOtherWindow("/p/already-open.pdf", "doc-7");
     const { routeDroppedPaths } = await import("../dialogs/imagesFlow");

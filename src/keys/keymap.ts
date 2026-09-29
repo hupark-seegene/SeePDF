@@ -38,6 +38,12 @@ export const KEYMAP: KeyBinding[] = [
   { id: "file.open", labelKey: "menu.file.open", mac: ["Cmd+O"], win: ["Ctrl+O"], when: "always", group: "file" },
   { id: "file.openRecent", labelKey: "menu.file.openRecent", mac: ["Cmd+Shift+O"], win: ["Ctrl+Shift+O"], when: "always", group: "file" },
   { id: "file.close", labelKey: "menu.file.close", mac: ["Cmd+W"], win: ["Ctrl+W"], when: "doc", group: "file" },
+  // v0.3 DR1 문서 탭: ⌘T opens into a new tab, ⌃Tab / ⌃⇧Tab (and ⌥⌘→ / ⌥⌘←, Ctrl+PgDn / Ctrl+PgUp)
+  // cycle, ⌘⇧T reopens the last closed tab
+  { id: "file.openInNewTab", labelKey: "menu.file.openInNewTab", mac: ["Cmd+T"], win: ["Ctrl+T"], when: "always", group: "file" },
+  { id: "tab.next", labelKey: "menu.tab.next", mac: ["Ctrl+Tab", "Alt+Cmd+ArrowRight"], win: ["Ctrl+Tab", "Ctrl+PageDown"], when: "doc", group: "file" },
+  { id: "tab.previous", labelKey: "menu.tab.previous", mac: ["Ctrl+Shift+Tab", "Alt+Cmd+ArrowLeft"], win: ["Ctrl+Shift+Tab", "Ctrl+PageUp"], when: "doc", group: "file" },
+  { id: "tab.reopenClosed", labelKey: "menu.tab.reopenClosed", mac: ["Cmd+Shift+T"], win: ["Ctrl+Shift+T"], when: "always", group: "file" },
   { id: "file.save", labelKey: "menu.file.save", mac: ["Cmd+S"], win: ["Ctrl+S"], when: "doc", group: "file" },
   { id: "file.saveAs", labelKey: "menu.file.saveAs", mac: ["Cmd+Shift+S"], win: ["Ctrl+Shift+S"], when: "doc", group: "file" },
   { id: "file.export", labelKey: "menu.file.export", mac: ["Alt+Cmd+E"], win: ["Ctrl+Alt+E"], when: "doc", group: "file" },

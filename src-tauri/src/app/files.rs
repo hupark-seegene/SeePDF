@@ -62,6 +62,24 @@ pub fn pick_idle_window(
         .cloned()
 }
 
+/// v0.3 DR1: an idle window first; with 설정 › 파일 열기 = 새 탭 (`into_tab`) every window
+/// takes files, so the preferred one (focused, then `main`) opens it in a new tab; `None`: a new
+/// window.
+pub fn pick_open_window(
+    candidates: &[String],
+    bound: &HashSet<String>,
+    pending: &HashSet<String>,
+    into_tab: bool,
+) -> Option<String> {
+    pick_idle_window(candidates, bound, pending).or_else(|| {
+        if into_tab {
+            candidates.first().cloned()
+        } else {
+            None
+        }
+    })
+}
+
 pub fn is_pdf(path: &Path) -> bool {
     path.extension()
         .map(|e| e.eq_ignore_ascii_case("pdf"))
@@ -116,7 +134,7 @@ pub fn open_from_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String
 /// in a new window. Returns the label of the window it went to.
 pub fn open_from_os(app: &AppHandle, path: PathBuf, source: OpenSource) -> Option<String> {
     let text = path.display().to_string();
-    if let Some(label) = crate::app::windows::focus_window_for_path(app, &text) {
+    if let Some(label) = crate::app::windows::focus_window_for_path(app, &text, None) {
         tracing::info!(path = %text, %label, "already open; focused");
         return Some(label);
     }
@@ -143,7 +161,9 @@ pub fn open_from_os(app: &AppHandle, path: PathBuf, source: OpenSource) -> Optio
         .map(|(label, _)| label)
         .collect();
     let pending = app.state::<PendingOpens>().labels();
-    match pick_idle_window(&candidates, &bound, &pending) {
+    let into_tab =
+        crate::app::store::get_settings(app).open_files_in == crate::ipc::types::OpenFilesIn::Tab;
+    match pick_open_window(&candidates, &bound, &pending, into_tab) {
         Some(label) => {
             push_open(app, &label, path, source);
             Some(label)
@@ -223,6 +243,25 @@ mod tests {
         assert_eq!(
             pick_idle_window(&candidates, &set(&["doc-2", "main"]), &set(&["doc-1"])),
             None
+        );
+    }
+
+    /// v0.3 DR1: with 새 탭, a file the OS hands over while every window has a document goes to
+    /// the preferred window's tabs instead of a new window; an idle window still comes first.
+    #[test]
+    fn open_files_in_a_tab_of_the_preferred_window() {
+        let candidates = vec!["doc-1".to_string(), "main".to_string()];
+        let bound = set(&["doc-1", "main"]);
+        let none = HashSet::new();
+        assert_eq!(pick_open_window(&candidates, &bound, &none, false), None);
+        assert_eq!(
+            pick_open_window(&candidates, &bound, &none, true).as_deref(),
+            Some("doc-1")
+        );
+        let bound = set(&["doc-1"]);
+        assert_eq!(
+            pick_open_window(&candidates, &bound, &none, true).as_deref(),
+            Some("main")
         );
     }
 

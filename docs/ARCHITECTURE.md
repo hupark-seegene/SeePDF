@@ -541,6 +541,30 @@ public/ocr/  public/fonts/
 
 * **State**: zustand slices. What is *not* in the store: scroll position, in-gesture zoom scale, tile
   inventory, ink points, pointer state — all refs/classes, so React never re-renders per frame.
+* **Document tabs (v0.3 DR1) — per-tab state.** The per-document stores (`docStore`, `viewStore`,
+  `pagesStore`, `annotStore`, `editStore`, the search store) stay singletons and always describe the **active
+  tab**, so nothing that reads them knows about tabs. `store/tabStore.ts` (entry) holds the strip — `{id, docId,
+  name, path, dirty}` per tab — and a `parked` snapshot per background tab; a `docStore` subscription keeps the
+  strip in step (a document not in a tab becomes one, a replaced one updates its tab in place, a closed one
+  leaves) and binds the window (`window_bind_document { docId, tabs }`). `tabs/flow.ts` (lazy) does the rest,
+  borrowing 분할 보기's idea (`PANE_FIELDS`, `focusPane`): a switch runs the 편집 leave guard, flushes coalesced
+  annotation patches, **captures** the active tab (the `PaneView` fields plus layout / split / focused pane /
+  the parked pane, `currentViewTarget()` for the exact scroll position, 페이지 and annotation selection +
+  filter, mode / tool, 검색 results — a running pass is stopped and re-run on return) and **restores** the
+  other: view first, then `docStore` (the canvas is keyed by `docId`, so a fresh scroller mounts and consumes
+  the restored `scrollRequest`; `annot/sync`, `editStore.bind`, the form sync and `permissions.ts` react to the
+  document change exactly as they do to an open; the mode passes through 읽기 so the permission check never sees
+  one tab's mode against another's document), then a `get_document` refresh. Background tabs receive
+  `doc-changed` through `tabDocChanged` (dot + parked `DocInfo`); autosave walks the active document and
+  `backgroundDocs()`; window close / 종료 asks about every dirty tab at once and releases every tab's document.
+* **Memory with many tabs**: every tab keeps its engine document open (PDFium's parsed document, its loaded
+  page objects, ~5 kB/page of plain text for the document's lifetime) — that, not the UI, is what a tab costs.
+  Everything else is shared and budgeted app-wide, not per tab: the one tile LRU (설정 › 캐시 크기, 64 MB default),
+  the 32 MiB text-layer LRU and the webview's ≤ 120 mounted tiles all belong to the tab on screen, and a
+  background tab's entries age out as the active one renders (they are keyed by `docId`, so coming back
+  re-renders from the LRU while it still holds them). A parked tab holds only its snapshot (a few kB; the
+  annotation lists, text layers and thumbnails are re-read on return). There is no cap on the number of tabs;
+  closing a tab (or its window) closes its engine document.
 * **Virtual scroller**: layout comes from `DocInfo.pages[]` alone (no pixels needed), one absolutely
   positioned `PageShell` per page in `[scrollTop − 1.5vh, scrollTop + 2.5vh]`. Zoom during a gesture is a
   CSS `transform: scale()` on the tile container (≤ 1 ms); on settle (120 ms) the layout is recomputed,

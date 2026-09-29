@@ -155,6 +155,7 @@ function seedSettings(): Settings {
     night: lenientNight(seed.night),
     checkUpdates: seed.checkUpdates ?? true,
     stamps: seed.stamps ?? [],   // v0.3 T2 (serde default)
+    openFilesIn: seed.openFilesIn === "window" ? "window" : "tab",   // v0.3 DR1 (lenient)
   } as Settings;
 }
 
@@ -728,7 +729,7 @@ export const mock = {
   async openInNewWindow(_a: { path?: string }): Promise<string> {
     return `doc-${nextDoc}`;
   },
-  async windowBindDocument(_a: { label: string; docId: DocId | null }): Promise<void> {},
+  async windowBindDocument(_a: { label: string; docId: DocId | null; tabs?: DocId[] }): Promise<void> {},
 
   // 5. view / stats ----------------------------------------------------------
   async setViewport(_a: ViewportHint): Promise<void> {},

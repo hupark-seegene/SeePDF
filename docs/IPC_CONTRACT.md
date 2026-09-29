@@ -179,7 +179,7 @@ get_document(a: { docId: DocId }): Promise<DocInfo>
 get_outline(a: { docId: DocId }): Promise<OutlineNode[]>
 take_pending_opens(): Promise<OpenRequest[]>   // the calling window's queue only, each request once (v0.3 integration)
 open_in_new_window(a: { path?: string }): Promise<string>              // returns the window label
-window_bind_document(a: { label: string; docId: DocId | null }): Promise<void>
+window_bind_document(a: { label: string; docId: DocId | null; tabs?: DocId[] }): Promise<void>   // tabs: v0.3 DR1
 ```
 
 ```rust
@@ -208,6 +208,11 @@ pub async fn open_document(engine: State<'_, EngineHandle>, path: String, passwo
 `undo.*` step name, e.g. `실행 취소: 워터마크` / `Undo Watermark`), updated on every `doc-changed`, on window
 focus and on bind; the strings come from `src/i18n/{ko,en}.json` (compiled in). A window that is never bound
 shows the last document that changed.
+
+v0.3 DR1 (document tabs): `docId` is the window's **active tab** — the frontend binds on every tab switch, so the
+menu names follow the tab shown — and `tabs` lists every document open in the window's tabs (the active one
+included; omitted, the list announced before is kept; `[]` forgets it). `focus_document_window` and the OS
+hand-off search all of them; a destroyed window forgets both.
 
 ---
 
@@ -1687,6 +1692,8 @@ key order) and valid for the generation it was listed in; unknown index → `not
 **H8 — one window per file / file changed on disk.** `focus_document_window` canonicalises `path`, finds the
 window bound (`window_bind_document`) to a document with that path, un-minimises, shows and focuses it, and
 returns its label (`null` when none). `openPath` calls it first and opens nothing when another window answers.
+v0.3 DR1: a document in a background tab counts too, and the owning window — unless it is the caller, which
+switches tabs itself — is sent `focus-document { docId }` (§8) so that tab comes forward.
 The engine records the file's size and modification time at open and after every save; `save_document` over the
 document's own file compares them first and answers `fileChangedOnDisk` on a mismatch (nothing written);
 `force: true` overwrites and re-records. `save_document_as` never checks — not even onto the document's own
@@ -1859,6 +1866,7 @@ spaces per level), Markdown nests it as a sub-item.
 // v0.3 pkg5
 'engine-crashed'   { docIds: DocId[]; label: string }   // H4: a panicking command closed these; their windows reopen them
 'theme-changed'    { theme: 'system' | 'light' | 'dark' } // U4: emitted by the window that changed 테마; every window follows
+'focus-document'   { docId: DocId }  // v0.3 DR1: to one window (emit_to) — another window opened a file this one has in a tab; show it
 // v0.3 pkg2 (P3), emitted by the frontend to every window: pages released outside their window
 'pages-drop'       { srcDocId: DocId; pages: PageIndex[]; from: string /* window label */; screen: { x: number; y: number } }
 ```
@@ -2019,6 +2027,9 @@ export interface Settings {
   signatures: SavedSignature[]; // Stage 6b (P1-9): 서명 보관함, ≤ 10, newest last; absent in old files → []
   night: 'off' | 'dark' | 'sepia';   // Stage 8 (P1-10): persisted 야간 모드; absent (or unknown) in old files → 'off'
   checkUpdates: boolean;        // v0.2.0: 시작할 때 업데이트 확인; absent in old files → true
+  openFilesIn: 'tab' | 'window';  // v0.3 DR1: 파일 열기 — a file opened over a document goes to a new tab or window;
+                                  // absent (or unknown) → 'tab'. `open_from_os` reads it: with 'tab' a window that
+                                  // already shows a document takes the file (focused, then main) instead of a new window
 }
 export type SavedSignature =
   | { kind: 'drawn'; id: string; paths: number[][]; aspect: number; createdAt: string }  // unit space, y-down

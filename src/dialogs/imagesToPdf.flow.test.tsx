@@ -63,6 +63,8 @@ describe("이미지로 PDF 만들기", () => {
   });
 
   it("a PDF dropped together with images opens in a new window, not silently dropped", async () => {
+    // 설정 › 파일 열기 = 새 창 (v0.3 DR1; with 새 탭 the PDF opens in a tab — tabs.test.ts)
+    await useAppStore.getState().patchSettings({ openFilesIn: "window" });
     const open = vi.spyOn(mock, "openDocument");
     const newWindow = vi.spyOn(mock, "openInNewWindow");
     useToastStore.setState({ toasts: [] });

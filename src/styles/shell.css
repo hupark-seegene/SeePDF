@@ -107,6 +107,78 @@
   background: var(--bg-hover);
 }
 
+/* ------------------------------------------------ document tabs (v0.3 DR1) */
+
+.tabstrip {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 2px;
+}
+
+.tabs {
+  display: flex;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 1 180px;
+  min-width: 88px;
+  height: var(--control-compact);
+  padding-inline: var(--space-2) 2px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  cursor: default;
+  user-select: none;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+}
+
+.tab[aria-selected="true"] {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-weight: 500;
+  box-shadow: var(--elevation-1);
+}
+
+.tab-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+}
+
+.tab:hover .tab-close,
+.tab[aria-selected="true"] .tab-close,
+.tab-close:focus-visible {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--bg-hover);
+}
+
 /* -------------------------------------------------------- shared primitives */
 
 .icon-btn {

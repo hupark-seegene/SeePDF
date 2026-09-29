@@ -192,6 +192,27 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                 />
                 <span>{t("settings.checkUpdates")}</span>
               </label>
+              {/* v0.3 DR1: where a file opens while the window shows a document */}
+              <Row labelKey="settings.openFilesIn" hintKey="settings.openFilesIn.hint">
+                <div className="segmented" role="radiogroup" aria-label={t("settings.openFilesIn")}>
+                  {(["tab", "window"] as const).map((where) => {
+                    const on = (settings?.openFilesIn ?? "tab") === where;
+                    return (
+                      <button
+                        key={where}
+                        type="button"
+                        role="radio"
+                        className="segment"
+                        aria-checked={on}
+                        data-active={on || undefined}
+                        onClick={() => void patch({ openFilesIn: where })}
+                      >
+                        {t(where === "tab" ? "settings.openFilesIn.tab" : "settings.openFilesIn.window")}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Row>
               <Row labelKey="settings.autosave" hintKey="settings.autosave.hint">
                 <div className="segmented" role="radiogroup" aria-label={t("settings.autosave")}>
                   {AUTOSAVE_CHOICES.map((sec) => (

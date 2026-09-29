@@ -5,6 +5,7 @@ import DialogHost from "../dialogs/DialogHost";
 import { openPaths } from "../dialogs/flows";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
+import { useTabStore } from "../store/tabStore";
 import { useContextMenuStore } from "../app/contextMenuStore";
 import { useDialogStore } from "../dialogs/dialogState";
 
@@ -57,13 +58,14 @@ describe("welcome.recents", () => {
     expect(useDocStore.getState().info?.path).toBeNull();
   });
 
-  it("각각 열기 opens the first file in this window", async () => {
+  it("각각 열기 opens every file in a tab of this window (v0.3 DR1)", async () => {
     render(<DialogHost />);
     const done = openPaths(["/tmp/one.pdf", "/tmp/two.pdf"]);
     await screen.findByText("여러 파일을 어떻게 열까요?");
     fireEvent.click(screen.getByRole("button", { name: "각각 열기" }));
     await done;
-    await waitFor(() => expect(useDocStore.getState().info?.name).toBe("one.pdf"));
+    await waitFor(() => expect(useDocStore.getState().info?.name).toBe("two.pdf"));
+    expect(useTabStore.getState().tabs.map((t) => t.name)).toEqual(["one.pdf", "two.pdf"]);
   });
 
   it("a single dropped file opens directly, with no prompt", async () => {
