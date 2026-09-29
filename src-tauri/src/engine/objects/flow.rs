@@ -918,6 +918,273 @@ pub fn move_annots(
     Ok(moved)
 }
 
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg1 (R5): the edited paragraph keeps its place in the reading order
+// ---------------------------------------------------------------------------------------
+
+/// Content mark on the placeholder `paragraph::edit` leaves where the old paragraph was: an
+/// emptied copy of its first run, moved out of a second parse of the page, so it keeps that
+/// run's content stream (a new object always goes to a new stream at the end).
+pub const ORDER_ANCHOR: &str = "SeePDFOrderAnchor";
+/// Content mark on every text object of the new paragraph.
+pub const ORDER_PARA: &str = "SeePDFOrderPara";
+
+/// PDFium writes the objects of an edited paragraph into a **new content stream at the end
+/// of the page** (`CPDF_PageContentGenerator` gives every new object its own stream, and
+/// `FPDFPage_InsertObjectAtIndex` does not change that), so copy, search order and 읽어 주기
+/// found the paragraph last. This `lopdf` pass over the serialised file moves the marked
+/// paragraph blocks (`/SeePDFOrderPara BMC … EMC`, marks stripped) to where the placeholder
+/// block (`/SeePDFOrderAnchor BMC … EMC`, dropped) sits, and drops a content stream that is
+/// left with nothing drawn. Both places start from the same graphics state — PDFium writes
+/// each object as `q … Q` after resetting the CTM at the top of every regenerated stream —
+/// so nothing moves on the page.
+///
+/// `None` when there is nothing to do: an encrypted file (lopdf would need the key to write
+/// it back), no placeholder, or no marked paragraph block.
+pub fn restore_reading_order(
+    bytes: &[u8],
+    page_index: u16,
+) -> Result<Option<Vec<u8>>, EngineError> {
+    use lopdf::content::{Content, Operation};
+    use lopdf::{Document, Object};
+
+    let lopdf_error = |what: &str, e: lopdf::Error| {
+        EngineError::new(
+            crate::ipc::ErrorCode::Pdfium,
+            format!("reading order: {what}: {e}"),
+        )
+    };
+    let mut doc = Document::load_mem(bytes).map_err(|e| lopdf_error("parse", e))?;
+    if doc.is_encrypted() {
+        return Ok(None);
+    }
+    let Some(&page_id) = doc.get_pages().get(&(page_index as u32 + 1)) else {
+        return Ok(None);
+    };
+    let contents = doc
+        .get_dictionary(page_id)
+        .and_then(|d| d.get(b"Contents"))
+        .map_err(|e| lopdf_error("page /Contents", e))?
+        .clone();
+    // `/Contents` is a stream, an array of streams, or (as PDFium writes it once a page has a
+    // second stream) a reference to an indirect array.
+    let mut indirect_array = None;
+    let stream_ids: Vec<lopdf::ObjectId> = match &contents {
+        Object::Reference(id) => match doc.get_object(*id) {
+            Ok(Object::Array(items)) => {
+                indirect_array = Some(*id);
+                items.iter().filter_map(|o| o.as_reference().ok()).collect()
+            }
+            Ok(Object::Stream(_)) => vec![*id],
+            _ => return Ok(None),
+        },
+        Object::Array(items) => items.iter().filter_map(|o| o.as_reference().ok()).collect(),
+        _ => return Ok(None),
+    };
+
+    let is_mark = |op: &Operation, name: &str| {
+        matches!(op.operator.as_str(), "BMC" | "BDC")
+            && op.operands.first().and_then(|o| o.as_name().ok()) == Some(name.as_bytes())
+    };
+    // Every stream's operations, the paragraph blocks lifted out (marks stripped), and where
+    // the anchor block was.
+    // Only the streams that hold a marker are decoded and written back: a stream PDFium did
+    // not regenerate can hold an inline image, which `lopdf` does not round-trip.
+    let mut streams: Vec<Option<Vec<Operation>>> = Vec::with_capacity(stream_ids.len());
+    let mut paragraph: Vec<Operation> = Vec::new();
+    let mut anchor: Option<(usize, usize)> = None;
+    for id in &stream_ids {
+        let stream = doc
+            .get_object(*id)
+            .and_then(Object::as_stream)
+            .map_err(|e| lopdf_error("content stream", e))?;
+        let data = stream
+            .decompressed_content()
+            .unwrap_or_else(|_| stream.content.clone());
+        let marked = |name: &str| data.windows(name.len()).any(|w| w == name.as_bytes());
+        if !marked(ORDER_ANCHOR) && !marked(ORDER_PARA) {
+            streams.push(None);
+            continue;
+        }
+        let ops = Content::decode(&data)
+            .map_err(|e| lopdf_error("decode content", e))?
+            .operations;
+        let mut kept: Vec<Operation> = Vec::with_capacity(ops.len());
+        let mut i = 0;
+        while i < ops.len() {
+            let para = is_mark(&ops[i], ORDER_PARA);
+            if para || is_mark(&ops[i], ORDER_ANCHOR) {
+                // The matching EMC.
+                let mut depth = 0usize;
+                let mut end = None;
+                for (j, op) in ops.iter().enumerate().skip(i) {
+                    match op.operator.as_str() {
+                        "BMC" | "BDC" => depth += 1,
+                        "EMC" => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(j);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(end) = end else {
+                    return Ok(None);
+                };
+                if para {
+                    paragraph.extend(ops[i + 1..end].iter().cloned());
+                } else if anchor.is_none() {
+                    anchor = Some((streams.len(), kept.len()));
+                }
+                i = end + 1;
+                continue;
+            }
+            kept.push(ops[i].clone());
+            i += 1;
+        }
+        streams.push(Some(kept));
+    }
+    let (Some((at_stream, at_op)), false) = (anchor, paragraph.is_empty()) else {
+        return Ok(None);
+    };
+    if let Some(ops) = streams[at_stream].as_mut() {
+        ops.splice(at_op..at_op, paragraph);
+    }
+
+    // Write every stream back; one left with nothing drawn (the new stream PDFium added for
+    // the paragraph) leaves `/Contents`.
+    const DRAWS: [&str; 16] = [
+        "Tj", "TJ", "'", "\"", "Do", "sh", "f", "F", "f*", "S", "s", "B", "B*", "b", "b*", "BI",
+    ];
+    let mut keep_ids = Vec::new();
+    for (id, ops) in stream_ids.iter().zip(streams) {
+        let Some(ops) = ops else {
+            keep_ids.push(*id);
+            continue;
+        };
+        let draws = ops.iter().any(|op| DRAWS.contains(&op.operator.as_str()));
+        if !draws && stream_ids.len() > 1 {
+            doc.objects.remove(id);
+            continue;
+        }
+        let encoded = Content { operations: ops }
+            .encode()
+            .map_err(|e| lopdf_error("encode content", e))?;
+        let stream = doc
+            .get_object_mut(*id)
+            .and_then(Object::as_stream_mut)
+            .map_err(|e| lopdf_error("content stream", e))?;
+        stream.dict.remove(b"DecodeParms");
+        stream.set_plain_content(encoded);
+        let _ = stream.compress();
+        keep_ids.push(*id);
+    }
+    if keep_ids.is_empty() {
+        return Ok(None);
+    }
+    let page = doc
+        .get_dictionary_mut(page_id)
+        .map_err(|e| lopdf_error("page", e))?;
+    page.set(
+        "Contents",
+        Object::Array(keep_ids.into_iter().map(Object::Reference).collect()),
+    );
+    if let Some(id) = indirect_array {
+        doc.objects.remove(&id);
+    }
+    let mut out = Vec::new();
+    doc.save_to(&mut out).map_err(|e| {
+        EngineError::new(
+            crate::ipc::ErrorCode::Pdfium,
+            format!("reading order: save: {e}"),
+        )
+    })?;
+    Ok(Some(out))
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    use lopdf::content::{Content, Operation};
+    use lopdf::{dictionary, Document, Object, Stream};
+
+    fn page_ops(bytes: &[u8]) -> Vec<String> {
+        let doc = Document::load_mem(bytes).unwrap();
+        let page = doc.get_pages()[&1];
+        let data = doc.get_page_content(page);
+        Content::decode(&data)
+            .unwrap()
+            .operations
+            .into_iter()
+            .map(|op| op.operator)
+            .collect()
+    }
+
+    fn two_streams(first: &str, second: &str) -> Vec<u8> {
+        let mut doc = Document::with_version("1.7");
+        let pages = doc.new_object_id();
+        let s1 = doc.add_object(Stream::new(dictionary! {}, first.as_bytes().to_vec()));
+        let s2 = doc.add_object(Stream::new(dictionary! {}, second.as_bytes().to_vec()));
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages,
+            "MediaBox" => vec![0.into(), 0.into(), 200.into(), 200.into()],
+            "Contents" => vec![s1.into(), s2.into()],
+        });
+        doc.objects.insert(
+            pages,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        doc.trailer.set("Root", catalog);
+        let mut out = Vec::new();
+        doc.save_to(&mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn the_paragraph_moves_to_the_anchor_and_the_empty_stream_goes() {
+        let bytes = two_streams(
+            "q BT (one) Tj ET Q /SeePDFOrderAnchor BMC q BT () Tj ET Q EMC q BT (three) Tj ET Q",
+            "q 0 0 0 rg /SeePDFOrderPara BMC q BT (two) Tj ET Q q BT (two b) Tj ET Q EMC Q",
+        );
+        let out = restore_reading_order(&bytes, 0)
+            .unwrap()
+            .expect("reordered");
+        let doc = Document::load_mem(&out).unwrap();
+        let page = doc.get_pages()[&1];
+        let content = String::from_utf8_lossy(&doc.get_page_content(page)).to_string();
+        let one = content.find("(one)").unwrap();
+        let two = content.find("(two)").unwrap();
+        let three = content.find("(three)").unwrap();
+        assert!(one < two && two < three, "{content}");
+        assert!(!content.contains("SeePDF"), "the marks are gone: {content}");
+        assert!(content.contains("(two b)"));
+        // Only the first stream is left.
+        assert!(matches!(
+            doc.get_dictionary(page).unwrap().get(b"Contents").unwrap(),
+            Object::Array(a) if a.len() == 1
+        ));
+        let ops = page_ops(&out);
+        assert_eq!(ops.iter().filter(|o| *o == "BT").count(), 4);
+        let _ = Operation::new("q", vec![]);
+    }
+
+    #[test]
+    fn nothing_to_do_without_an_anchor() {
+        let bytes = two_streams(
+            "q BT (one) Tj ET Q",
+            "/SeePDFOrderPara BMC BT (x) Tj ET EMC",
+        );
+        assert!(restore_reading_order(&bytes, 0).unwrap().is_none());
+        let bytes = two_streams("/SeePDFOrderAnchor BMC EMC", "q Q");
+        assert!(restore_reading_order(&bytes, 0).unwrap().is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,8 +12,8 @@ use seepdf_lib::engine::registry;
 use seepdf_lib::engine::save;
 use seepdf_lib::engine::text::layer;
 use seepdf_lib::ipc::types::{
-    NotEditableReason, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphFlow,
-    ParagraphProbe, TextEditStrategy,
+    ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphFlow, ParagraphProbe,
+    TextEditStrategy,
 };
 use seepdf_lib::ipc::{EngineError, ErrorCode};
 
@@ -211,10 +211,12 @@ fn paragraph_detects_generated_paragraphs() {
     // Empty area → null.
     assert!(probe(&doc.doc_id, 0, 300.0, 200.0).is_none());
 
-    // Rotated text → refused.
+    // Rotated text: v0.3 (R5) probes it in its own rotated frame instead of refusing it
+    // (`tests/paragraph_order.rs` edits one).
     let r = probe(&doc.doc_id, 0, 555.0, 350.0).expect("rotated text is text");
-    assert_eq!(r.strategy, TextEditStrategy::Refused);
-    assert_eq!(r.reason, Some(NotEditableReason::RotatedText));
+    assert_eq!(r.strategy, TextEditStrategy::InPlace, "{r:?}");
+    assert!(r.reason.is_none());
+    assert!(r.text.starts_with("Rotated"), "{:?}", r.text);
 
     // The probe never mutates.
     assert_eq!(generation(&doc.doc_id), a.doc_generation);

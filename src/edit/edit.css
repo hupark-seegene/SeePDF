@@ -234,6 +234,26 @@
 .btn.redact-apply { background: var(--danger); border-color: transparent; color: #fff; font-weight: 500; }
 .btn.redact-apply:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* v0.3 pkg1: 검색해서 표시 (R3), 표시 목록, image / group lines of the preview */
+.redact-find { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-2); }
+.redact-find-patterns { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0; padding: 0; border: none; }
+.redact-find-patterns legend { padding: 0; margin-bottom: var(--space-1); }
+.redact-find-scope { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); align-items: center; }
+.redact-find label { display: inline-flex; align-items: center; gap: 4px; }
+.redact-review { margin-top: var(--space-2); }
+.redact-review-list { max-height: 180px; margin: var(--space-1) 0 0; padding: 0; overflow: auto; list-style: none; }
+.redact-review-list li { display: flex; align-items: center; gap: var(--space-1); }
+.redact-review-item {
+  display: flex; flex: 1; min-width: 0; gap: var(--space-2); align-items: baseline;
+  padding: 2px var(--space-1); border: none; border-radius: var(--radius-sm);
+  background: none; color: var(--text-primary); text-align: left; cursor: pointer;
+}
+.redact-review-item:hover { background: var(--bg-hover, color-mix(in srgb, var(--text-primary) 6%, transparent)); }
+.redact-review-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.redact-review-remove { flex: none; width: 20px; height: 20px; }
+.redact-list li[data-blank] { color: var(--text-secondary); }
+.redact-groups-note { margin-top: var(--space-1); color: var(--warning); }
+
 /* 선택 marquee (Stage 8): a drag on empty space selects the objects wholly inside */
 .edit-marquee {
   position: absolute;

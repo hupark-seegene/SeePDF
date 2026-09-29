@@ -318,15 +318,21 @@ export interface RedactBatchMark { page: PageIndex; rects: Rect[] }
 /** Stage 8 `apply_redactions_batch`: every page in ONE undo step (`undo.redact`). */
 export interface RedactBatchResult {
   removedObjects: number; verified: boolean; docGeneration: DocGeneration; pages: PageIndex[];
+  collateral?: string[];             // v0.3: runs that could not be split after all and went whole
 }
 export interface RedactPreview {
   page: PageIndex;
-  textObjects: { objectId: ObjectId; text: string; rect: Rect; fullyInside: boolean }[];
-  imageObjects: { objectId: ObjectId; rect: Rect; fullyInside: boolean }[];
+  // v0.3 (R2): split = partly marked, only the marked characters go (no collateral)
+  textObjects: { objectId: ObjectId; text: string; rect: Rect; fullyInside: boolean; split?: boolean }[];
+  // v0.3 (R1): blank = partly marked, the pixels under the marks are blanked; otherwise removed whole
+  imageObjects: { objectId: ObjectId; rect: Rect; fullyInside: boolean; blank?: boolean }[];
   annotations: AnnotId[];
   formFields: string[];              // non-empty ⇒ the apply will refuse
   collateral: string[];              // text that will be removed although it is outside the marks
+  groups?: ObjectId[];               // v0.3 (R4): Form XObjects under the marks — apply needs { ungroup: true }
 }
+/** v0.3 pkg1 (R4) `ungroup_object`: the page after the group became its children. */
+export interface UngroupResult { docGeneration: DocGeneration; objects: PageObject[]; newObjectIds: ObjectId[] }
 
 // ---------------------------------------------------------------------------
 // 7.5b Stamp (P1-4 워터마크 / 머리글·바닥글) and compress (P1-5 압축) — Stage 4 contract

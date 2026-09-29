@@ -269,6 +269,8 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
             aria-label={t("sign.typePlaceholder")}
             onChange={(e) => setTyped(e.currentTarget.value)}
             onKeyDown={(e) => {
+              // v0.3 pkg1 (I1): Enter that ends a Hangul composition is not a confirm
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "Enter" && canConfirm) void confirm();
             }}
           />

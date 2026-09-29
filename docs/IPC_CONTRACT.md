@@ -579,8 +579,9 @@ Engine: `engine/objects/paragraph.rs`. Detection: upright visible text objects (
 → paragraph around the hit: same size ± 8 %, leading ≤ 2.2·size and ± 20 % of the first leading, overlapping
 x-range; a short left-flush line whose successor's first word would have fitted ends it; a line indented
 by > 0.5·size starts a new one (not when centred, or flush right with an inset > 3·size). Alignment from edge
-variance (justify needs ≥ 3 lines). A click on rotated text → `refused/rotatedText`, on a Form XObject with
-text → `refused/insideXObject`, on the invisible OCR layer → `refused/invisible`; a `noUnicode` run refuses
+variance (justify needs ≥ 3 lines). A click on rotated text → `refused/rotatedText` (v0.3: probed in its
+own frame instead, see below), on a Form XObject with text → `refused/insideXObject` (v0.3: the UI offers
+`ungroup_object`, §7.4c), on the invisible OCR layer → `refused/invisible`; a `noUnicode` run refuses
 the paragraph. SeePDF's own stamps (`SeePDF:Stamp`: headers, footers, watermarks) never join a paragraph —
 a header 4 pt above a first line used to be folded into it and deleted by the edit — and an edit naming a
 stamp's object is `invalidArgument`. Coverage + advance widths come from one **trial object** in the candidate font (every distinct
@@ -595,10 +596,28 @@ would need more stays short of the right edge, so it never reads back as two lin
 1 × size); a paragraph whose non-last lines are ≥ 75 % flush right still detects as justify, and a line
 whose word gaps are all ≥ 0.55 × size counts as flush (a justified line that stopped short at the cap,
 long words), so a justified paragraph stays justified edit after edit. New objects
-are appended, the old ones removed (PDFium writes objects it did not parse into a new content stream at
-the end of the page, so the edited paragraph is read — copied, searched — after the rest of the page; the
-public API cannot place it back in its stream); one `registry::mutate` = one undo step `undo.paragraphEdit` (text **and** every flow
-move). `fontSizePt` scales the line height proportionally. Known gaps: hanging indents / bulleted lists detect
+are appended, the old ones removed; one `registry::mutate` = one undo step `undo.paragraphEdit` (text **and** every flow
+move).
+
+**v0.3 (pkg1, R5) — reading order.** PDFium writes objects it did not parse into a new content stream at
+the end of the page, so the edited paragraph used to be read (copied, searched, read aloud) after the rest
+of the page. Now the write leaves a placeholder in the old paragraph's stream — an emptied copy of its first
+run, moved out of a second parse of the page (so it keeps that run's stream), marked `/SeePDFOrderAnchor` —
+and marks the new objects `/SeePDFOrderPara`; after the mutation a `lopdf` pass over the serialised file
+(`flow::restore_reading_order`) moves the marked blocks to the placeholder (marks stripped, placeholder
+dropped, a stream left with nothing drawn removed), PDFium re-verifies the bytes and the document is
+replaced **without** a history entry of its own — still one undo step, and the page renders pixel-identical.
+Only streams holding a marker are decoded and rewritten (an inline image elsewhere is never touched).
+Skipped (the paragraph stays last, as before) for an encrypted document (lopdf cannot write it back), a
+deleted paragraph, and whenever the pass fails (logged; the edit itself stands). Cost: one serialise +
+lopdf round trip + reload per committed edit (dry runs are unaffected).
+
+**v0.3 (pkg1, R5) — rotated text.** A click on text whose baseline is rotated by θ (a caption up the
+margin, a landscape table on a portrait page) probes again in a frame rotated by θ, where that text is
+upright: detection, `analyze` and the layout run unchanged there, `rect` is the page-aligned box around the
+frame rect, and the new objects are drawn rotated back onto the page (`[cos θ, sin θ, −sin θ, cos θ, x, y]`).
+The flow never moves anything for a rotated paragraph (`shiftedPt` 0; the content "below" it is not below
+it on the page). Runs at another angle inside that frame stay obstacles. `fontSizePt` scales the line height proportionally. Known gaps: hanging indents / bulleted lists detect
 line by line; kerning, horizontal scaling, shear (synthetic italic), stroke colour and per-run styles are
 not preserved (mixedStyles merges to the dominant style); right-aligned paragraphs with small ragged-left
 insets may split.
@@ -761,26 +780,52 @@ already the stamp *annotation*; the wire shape is the one above). One `mutate` =
   missing → `notFound`; undecodable image → `invalidArgument`; Hangul outside the bundled subset →
   `fontCoverage`. Encrypted documents are stamped like any edit (the password survives the save).
 
+### 7.4c Groups — `ungroup_object` (v0.3, pkg1 R4)
+
+```ts
+export interface UngroupResult { docGeneration: DocGeneration; objects: PageObject[]; newObjectIds: ObjectId[] }
+ungroup_object(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration }):
+  Promise<UngroupResult>
+```
+
+Engine: `engine/objects/ungroup.rs`. Replaces the Form XObject `objectId` (a top-level `type: 'form'` object)
+by its children, in place: each child is detached (`FPDFFormObj_RemoveObject`), transformed by the form
+matrix (form ∘ child, clip path included), its fill / stroke colour re-set as RGB (PDFium's content writer
+only writes DeviceRGB / DeviceGray colours and drops an ICC / `/CalRGB` / `/Separation` one, which would
+paint it black), and inserted at the form's index (`FPDFPage_InsertObjectAtIndex`); the emptied form object
+is removed and the page regenerated — one undo step `undo.ungroup`. `newObjectIds` = the children, in drawing
+order (`objectId … objectId + n − 1`). Errors: `stale` on generation mismatch; `notFound` for an index past
+the end; `invalidArgument` (detail `notAGroup`) for anything else; `unsupported` (detail
+`groupTransparency`) for a form drawn with transparency (group alpha, blend mode, soft mask), whose children
+would come out opaque. Not carried over (PDFium limits): the text-state operators `Tc` / `Tw` / `Tz` of the
+children (PDFium never writes them for text it did not create — a line justified by character spacing
+tightens; `TAMReview.pdf` p.2 has three) and a clip path set on the page before `/Form Do` (the form's
+`/BBox` clip is kept, it is part of every child's clip path).
+
 ### 7.5 Redaction and security
 
 ```ts
 export interface RedactPreview {
   page: PageIndex;
-  textObjects: { objectId: ObjectId; text: string; rect: Rect; fullyInside: boolean }[];
-  imageObjects: { objectId: ObjectId; rect: Rect; fullyInside: boolean }[];
+  textObjects: { objectId: ObjectId; text: string; rect: Rect; fullyInside: boolean;
+    split: boolean }[];              // v0.3 (R2): partly marked, only the marked characters go
+  imageObjects: { objectId: ObjectId; rect: Rect; fullyInside: boolean;
+    blank: boolean }[];              // v0.3 (R1): partly marked, its pixels under the marks are blanked
   annotations: AnnotId[];
   formFields: string[];              // non-empty ⇒ the apply will refuse
   collateral: string[];              // text that will be removed although it is outside the marks
+  groups: ObjectId[];                // v0.3 (R4): Form XObjects holding marked text / images under a mark
 }
 redact_preview(a: { docId: DocId; page: PageIndex; rects: Rect[] }): Promise<RedactPreview>
 apply_redactions(a: { docId: DocId; page: PageIndex; rects: Rect[];
-  options: { fill: Rgb; overlayText?: string } }):
+  options: { fill: Rgb; overlayText?: string; ungroup?: boolean } }):
   Promise<{ removedObjects: number; verified: boolean; docGeneration: DocGeneration }>
 // Stage 8: every marked page in ONE undo step (`undo.redact`); a verifyFailed on any page rolls back all.
 export interface RedactBatchMark { page: PageIndex; rects: Rect[] }
-export interface RedactBatchResult { removedObjects: number; verified: boolean; docGeneration: DocGeneration; pages: PageIndex[] }
-apply_redactions_batch(a: { docId: DocId; marks: RedactBatchMark[]; options: { fill: Rgb; overlayText?: string } }):
-  Promise<RedactBatchResult>
+export interface RedactBatchResult { removedObjects: number; verified: boolean; docGeneration: DocGeneration; pages: PageIndex[];
+  collateral?: string[] }            // v0.3: runs the preview promised to split that went whole after all
+apply_redactions_batch(a: { docId: DocId; marks: RedactBatchMark[];
+  options: { fill: Rgb; overlayText?: string; ungroup?: boolean } }): Promise<RedactBatchResult>
 
 remove_password(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }>                 // P1, implemented
 set_password(a: { docId: DocId; outPath: string; userPassword?: string; ownerPassword: string;
@@ -797,6 +842,41 @@ page in ascending order inside one `mutate`: one generation, one undo step `undo
 redacted. Any failure — `verifyFailed` on a later page included — restores the whole document. No rects at all or
 a page out of range → `invalidArgument`.
 Owner (a) for redaction, (b) for the metadata and security file rewrites. Features F-22, P1-1, P1-2, P1-3.
+
+**v0.3 (pkg1) redaction** (`engine/redact/`: `mod.rs`, `split.rs`, `image.rs`, `raw.rs`). A character is
+*marked* when its tight box overlaps a mark with positive area (every step uses this one rule).
+* **Text (R2)** — a text object the marks cover only partly is **split**: its characters are read from a
+  text page (`FPDFText_GetTextObject`), cut into runs of unmarked characters; the object is rewritten to the
+  first run (`set_text` through the font's own `/ToUnicode`, origin moved to the run's first glyph, every
+  glyph pinned with `FPDFText_SetPositions`, which PDFium then writes as a `TJ` — kerning and `Tc` / `Tw`
+  spacing survive the save) and keeps its place in the stream; each further run is a copy moved out of a
+  second parse of the page (clip path, colours, marks kept), inserted right after it. Every run must read
+  back from a fresh text page with the same characters at the same tight boxes (± 0.5 pt) before the
+  content is regenerated, and again from a re-parse after it; a run that fails afterwards makes the whole
+  batch roll back and retry once with that object removed whole (its text then in `collateral`).
+  `split: false` (whole-run removal, `collateral` named first) for Type3 fonts (no font program — PDFium's
+  writer drops Type3 text), fonts without a usable `/ToUnicode`, and runs not on one baseline.
+* **Images (R1)** — entirely inside a mark: removed. Partly covered: every image pixel whose footprint on
+  the page (the unit-square pixel mapped through the image matrix — rotated / flipped images included)
+  overlaps a mark is set to black in the object's own bitmap, written back into the same object (matrix,
+  clip, graphics state kept): `/DCTDecode` / `/JPXDecode` re-encoded as JPEG q 92 via
+  `FPDFImageObj_LoadJpegFileInline` (as `compress.rs`), anything else via `FPDFImageObj_SetBitmap` (Flate).
+  Verified on the data read back: exactly 0 for Flate, ≤ 96 per channel and mean ≤ 16 for JPEG, else
+  `verifyFailed` (rendering the rect would prove nothing, the fill box is on top). A rasterisation of the
+  image alone (mask applied, one pixel per image pixel) before and after may differ in about as many pixels
+  as were blanked; more ⇒ PDFium handed back palette indices or an inverted `/Decode`, and the image is
+  removed whole instead. `blank: false` (removed whole) for images with an `/SMask` / `/Mask` (found through
+  that rasterisation's alpha — `FPDFPageObj_HasTransparency` does not see an image's own mask), stencil
+  masks, 1-bit images that are not gray, `/Indexed`, `/Separation`, `/DeviceN` and pattern images. The old
+  stream is not written to the saved file.
+* **Paths** — entirely inside: removed; partly covered: removed when small (≥ ¼ of its box under the marks,
+  or no side > 36 pt) or curved (outlined glyphs, logos); a large straight-segment path (table grid, frame,
+  background) stays under the fill box — PDFium has no per-object clip, and a rule carries no content.
+* **Groups (R4)** — marked text or an image under a mark inside a top-level Form XObject: listed in
+  `groups`. Without `options.ungroup` the apply refuses as before (`verifyFailed`, the stuck text named; detail
+  `groups` when only images are inside); with it those groups are ungrouped first (§7.4c, lossy: a group's
+  transparency is not a reason to refuse here), nested groups up to 8 levels, inside the same undo step.
+* `removedObjects` counts objects removed, split or blanked.
 
 Stage 3 semantics (`docs/STAGE3_SECURITY_NOTES.md`):
 * `set_password.permissions` may be partial: a missing flag means **allowed**; `revision` is ignored.
@@ -1343,6 +1423,7 @@ ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors:
 | `list_form_fields`, `set_form_field_value`, `reset_form` | (a) backend forms | F-20 |
 | `redact_preview`, `apply_redactions` | (a) backend redaction | F-22 |
 | `apply_redactions_batch` | Stage 8, `engine/redact` | F-22 |
+| `ungroup_object` | v0.3 pkg1, `engine/objects/ungroup.rs` | F-17, F-22 |
 | `page_ops`, `extract_pages`, `split_document`, `merge_documents` | (b) backend pages | F-16 |
 | `list_page_objects`, `probe_text_edit`, `edit_text_object`, `add_text_object`, `add_image_object`, `transform_object`, `delete_objects` | (b) backend objects | F-17, F-18, F-19 |
 | `probe_paragraph`, `edit_paragraph` | Stage 7, `engine/objects/paragraph.rs` | F-17 |

@@ -235,3 +235,23 @@ pub async fn edit_paragraph(
         })
         .await
 }
+
+// v0.3 pkg1-redaction-and-text-objects -----------------------------------------------------
+
+/// R4 그룹 해제: replaces the Form XObject `objectId` by its children, in place — one undo step
+/// `undo.ungroup`. `unsupported` (detail `groupTransparency`) for a group drawn with
+/// transparency; `invalidArgument` (detail `notAGroup`) for any other object.
+#[tauri::command]
+pub async fn ungroup_object(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    object_id: ObjectId,
+    expect_generation: DocGeneration,
+) -> Result<crate::ipc::types::UngroupResult, EngineError> {
+    engine
+        .call(Lane::Edit, "ungroup_object", move |st| {
+            objects::ungroup::ungroup(st, &doc_id, page, object_id, expect_generation)
+        })
+        .await
+}

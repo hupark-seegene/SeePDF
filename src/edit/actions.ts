@@ -439,6 +439,11 @@ export async function beginParagraphEdit(page: PageIndex, at: Point): Promise<bo
   }
   if (!probe) return false;
   if (probe.strategy === "refused") {
+    // v0.3 pkg1 (R4): text inside a group — 그룹 해제 후 편집할까요? → ungroup, then probe again
+    if (probe.reason === "insideXObject") {
+      const { confirmUngroup } = await import("./ungroup");
+      return (await confirmUngroup(doc, page, probe)) ? beginParagraphEdit(page, at) : false;
+    }
     toast(reasonKey(probe.reason), undefined, { tone: "danger" });
     return false;
   }

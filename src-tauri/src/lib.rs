@@ -258,6 +258,8 @@ pub fn run() {
             commands::ocr::ocr_page_status,
             commands::ocr::ocr_apply,
             commands::ocr::ocr_recognize_native,
+            // --- v0.3 pkg1-redaction-and-text-objects (R4 그룹 해제) ---
+            commands::objects::ungroup_object,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the tauri application")

@@ -8,6 +8,9 @@
  * indent / reorder, then 완료 writes the whole tree with `set_outline` (one undo step). Page numbers
  * show the document's page labels when it has them, and a node written closed (`open: false`)
  * starts collapsed.
+ *
+ * v0.3 (pkg1, R6): an item's context menu (UI_SPEC §12 "Outline item") — 이동 · 하위 항목 모두 펼치기 ·
+ * 하위 항목 모두 접기 (the item and everything under it).
  */
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Globe } from "lucide-react";
@@ -16,6 +19,7 @@ import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
 import { useViewStore } from "../store/viewStore";
 import { displayLabel } from "../viewer/pageLabel";
+import { openContextMenu } from "../app/contextMenuStore";
 import "./sidebar.css";
 
 const OutlineEditor = lazy(() => import("./OutlineEditor"));
@@ -35,6 +39,11 @@ function flatten(nodes: OutlineNode[], depth = 0, parentKey: string | null = nul
     if (node.children.length) flatten(node.children, depth + 1, key, out);
   });
   return out;
+}
+
+/** `key` and the keys of every node below it that has children (what 모두 펼치기 / 접기 touch). */
+function branchKeys(flat: Flat[], key: string): string[] {
+  return flat.filter((row) => row.hasChildren && (row.key === key || row.key.startsWith(`${key}.`))).map((row) => row.key);
 }
 
 /** The keys of the nodes the file says start closed (`/Count` < 0). */
@@ -116,6 +125,32 @@ export function Outline() {
     else if (node.url) void import("../annot/links").then((m) => m.openWebLink(node.url!));
   };
 
+  const setBranch = (key: string, expanded: boolean) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      for (const k of branchKeys(flat, key)) {
+        if (expanded) next.delete(k);
+        else next.add(k);
+      }
+      return next;
+    });
+
+  const menu = (e: React.MouseEvent, row: Flat) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      labelKey: "sidebar.tab.outline",
+      items: [
+        { id: "go", labelKey: "outline.menu.go", disabled: row.node.page === null && !row.node.url, onSelect: () => open(row.node) },
+        { id: "sep", separator: true },
+        { id: "expandAll", labelKey: "outline.menu.expandAll", disabled: !row.hasChildren, onSelect: () => setBranch(row.key, true) },
+        { id: "collapseAll", labelKey: "outline.menu.collapseAll", disabled: !row.hasChildren, onSelect: () => setBranch(row.key, false) },
+      ],
+    });
+  };
+
   return (
     <>
       {head}
@@ -123,7 +158,12 @@ export function Outline() {
         {visible.map((row) => {
           const isCollapsed = collapsed.has(row.key);
           return (
-            <li key={row.key} role="treeitem" aria-expanded={row.hasChildren ? !isCollapsed : undefined}>
+            <li
+              key={row.key}
+              role="treeitem"
+              aria-expanded={row.hasChildren ? !isCollapsed : undefined}
+              onContextMenu={(e) => menu(e, row)}
+            >
               <div className="outline-row" style={{ paddingInlineStart: row.depth * 12 }}>
                 {row.hasChildren ? (
                   <button

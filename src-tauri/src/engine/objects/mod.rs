@@ -40,6 +40,8 @@ use pdfium_render::prelude::*;
 
 pub mod flow;
 pub mod paragraph;
+// v0.3 pkg1-redaction-and-text-objects (R4): 그룹 해제.
+pub mod ungroup;
 
 /// Line spacing of a multi-line `add_text_object`, as a multiple of the font size.
 const LINE_HEIGHT: f32 = 1.2;

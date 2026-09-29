@@ -442,11 +442,23 @@ export function applyRedactions(
   return call("apply_redactions", a, (mock) => mock.applyRedactions(a));
 }
 
-/** Stage 8: every marked page in ONE undo step; `verifyFailed` rolls all of them back. */
+/**
+ * Stage 8: every marked page in ONE undo step; `verifyFailed` rolls all of them back.
+ * v0.3: `ungroup` ungroups the Form XObjects the preview lists in `groups` first (same step).
+ */
 export function applyRedactionsBatch(
-  a: { docId: DocId; marks: RedactBatchMark[]; options: { fill: Rgb; overlayText?: string } },
+  a: { docId: DocId; marks: RedactBatchMark[]; options: { fill: Rgb; overlayText?: string; ungroup?: boolean } },
 ): Promise<RedactBatchResult> {
   return call("apply_redactions_batch", a, (mock) => mock.applyRedactionsBatch(a));
+}
+
+// v0.3 pkg1-redaction-and-text-objects ------------------------------------------------------
+
+/** R4 그룹 해제: the Form XObject `objectId` becomes its children, in place — one undo step. */
+export function ungroupObject(a: {
+  docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration;
+}): Promise<import("./types").UngroupResult> {
+  return call("ungroup_object", a, (mock) => mock.ungroupObject(a));
 }
 
 export function removePassword(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }> {

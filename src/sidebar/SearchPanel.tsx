@@ -4,6 +4,10 @@
  * Enter / ⇧Enter (= ⌘G / ⇧⌘G) to walk the hits. Esc clears.
  *
  * The streaming itself is `SearchController`; this file is the panel.
+ *
+ * v0.3 (pkg1): 모든 결과를 영역 표시 turns every hit into a 영역 표시 mark (R3); a result's context menu
+ * offers 이동 · 복사 · 이 결과 형광펜 · 영역 표시 (R6, UI_SPEC §12); Enter that ends a Hangul composition
+ * neither runs the search nor steps to the next hit (I1).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, X } from "lucide-react";
@@ -16,6 +20,8 @@ import { useViewStore } from "../store/viewStore";
 import { useSearchStore } from "../viewer/search/SearchController";
 import { openDialog } from "../dialogs/dialogState";
 import type { SearchHit } from "../ipc/types";
+import { openContextMenu } from "../app/contextMenuStore";
+import { toast } from "../app/toastStore";
 import "./sidebar.css";
 
 const DEBOUNCE_MS = 220;
@@ -111,6 +117,8 @@ export function SearchPanel() {
           aria-label={t("sidebar.search.placeholder")}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            // v0.3 (I1): the Enter that commits a Hangul syllable is not a search / next hit
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Enter") {
               e.preventDefault();
               if (draft !== query && info) {
@@ -193,6 +201,13 @@ export function SearchPanel() {
 
       {query && !running && total === 0 && <p className="empty">{t("sidebar.search.empty")}</p>}
 
+      {/* v0.3 (R3): every hit becomes a 영역 표시 mark, reviewed in 편집 before 적용 */}
+      {!running && total > 0 && (
+        <button type="button" className="btn quiet search-mark-all text-sm" onClick={() => void markHits(hits)}>
+          {t("sidebar.search.markAll")}
+        </button>
+      )}
+
       <ol className="search-results">
         {groups.map((group) => (
           <li key={group.page}>
@@ -205,6 +220,7 @@ export function SearchPanel() {
                     className="search-result"
                     data-current={entry.index === current || undefined}
                     onClick={() => select(entry.index)}
+                    onContextMenu={(e) => resultMenu(e, entry.hit, () => select(entry.index))}
                   >
                     <Context hit={entry.hit} />
                   </button>
@@ -222,6 +238,52 @@ export function SearchPanel() {
       )}
     </div>
   );
+}
+
+/** 영역 표시 for `hits` (lazy: the 편집 code is not part of the sidebar chunk); toasts the count. */
+async function markHits(hits: SearchHit[]): Promise<void> {
+  const { markSearchHits } = await import("../edit/redact");
+  const count = markSearchHits(hits);
+  toast(count ? "redact.find.found" : "redact.find.none", count ? { count } : undefined, { tone: count ? "success" : "info" });
+}
+
+/** 이 결과 형광펜: the same markup the 형광펜 tool makes, over the hit's line rects. */
+async function highlightHit(hit: SearchHit): Promise<void> {
+  const [{ markupSpec }, { styleFor }, { useAnnotStore }, { createAnnotation }] = await Promise.all([
+    import("../tools/markup"),
+    import("../store/toolStyles"),
+    import("../store/annotStore"),
+    import("../annot/actions"),
+  ]);
+  const style = styleFor("highlight", useAnnotStore.getState().toolDefaults);
+  const spec = markupSpec("highlight", hit.rects, { style } as Parameters<typeof markupSpec>[2]);
+  if (spec) await createAnnotation(hit.page, spec, { select: false });
+}
+
+/** UI_SPEC §12 "Search result": 이동 · 복사 · 이 결과 형광펜 · 영역 표시. */
+function resultMenu(e: React.MouseEvent, hit: SearchHit, go: () => void): void {
+  e.preventDefault();
+  e.stopPropagation();
+  const [start, length] = hit.contextMatch;
+  const text = hit.context.slice(start, start + length);
+  const permissions = useDocStore.getState().info?.permissions;
+  openContextMenu({
+    x: e.clientX,
+    y: e.clientY,
+    labelKey: "sidebar.tab.search",
+    items: [
+      { id: "go", labelKey: "sidebar.search.menu.go", onSelect: go },
+      {
+        id: "copy",
+        labelKey: "menu.edit.copy",
+        // written inside the click's gesture, before anything is awaited
+        onSelect: () => void navigator.clipboard?.writeText(text).catch(() => undefined),
+      },
+      { id: "sep", separator: true },
+      { id: "highlight", labelKey: "sidebar.search.menu.highlight", disabled: permissions?.annotate === false, onSelect: () => void highlightHit(hit) },
+      { id: "mark", labelKey: "sidebar.search.menu.mark", disabled: permissions?.modify === false, onSelect: () => void markHits([hit]) },
+    ],
+  });
 }
 
 /** pdfium's page text carries generated control characters; they render as tofu in a list. */
