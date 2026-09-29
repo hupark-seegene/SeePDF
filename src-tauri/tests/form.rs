@@ -303,16 +303,8 @@ fn form_reset_clears_text_fields() {
 
     let cleared = {
         let doc_id = doc.doc_id.clone();
-        with_state(move |st| {
-            let pages: Vec<u16> = (0..st.doc(&doc_id)?.page_count()).collect();
-            registry::mutate(
-                st,
-                &doc_id,
-                MutateOpts::new("undo.formReset", ChangeReason::Edit).pages(pages),
-                form::reset,
-            )
-        })
-        .expect("reset")
+        // v0.3: `form::reset_form` (to /DV, one undo step) replaced `form::reset`.
+        with_state(move |st| form::reset_form(st, &doc_id)).expect("reset")
     };
     assert!(cleared >= 1, "at least the field we filled was cleared");
 

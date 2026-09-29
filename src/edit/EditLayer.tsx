@@ -37,6 +37,7 @@ import type { Annot } from "../ipc/types";
 import { useAnnotStore } from "../store/annotStore";
 import { createLink, MIN_LINK_PT, useLinkStore } from "./linkActions";
 import { LinkTargetForm } from "./LinkTargetForm";
+import { selectionRectsForPage } from "../annot/selectionQuads";
 
 const EMPTY: ObjectId[] = [];
 const NO_OBJECTS: PageObject[] = [];
@@ -199,6 +200,12 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
       const rect = rectFromPoints(drag.start, drag.end);
       const big = rect.r - rect.l >= MIN_LINK_PT && rect.t - rect.b >= MIN_LINK_PT;
       if (drag.moved && big) useLinkStore.getState().setDraft({ page: ctx.index, rect });
+      // v0.3 pkg2 (P5): a click with text selected on this page links the selection, one quad per line
+      else if (!drag.moved && selectionRectsForPage(ctx.index).length) {
+        const quads = selectionRectsForPage(ctx.index);
+        const union = quads.reduce((a, q) => ({ l: Math.min(a.l, q.l), b: Math.min(a.b, q.b), r: Math.max(a.r, q.r), t: Math.max(a.t, q.t) }));
+        useLinkStore.getState().setDraft({ page: ctx.index, rect: union, quads });
+      }
       else useLinkStore.getState().select(null);
     } else if (drag.kind === "marquee") {
       const store = useEditStore.getState();
@@ -393,8 +400,9 @@ function LinkPopover({ ctx, rect }: { ctx: PageLayerContext; rect: Rect }) {
           autoFocus
           onCancel={close}
           onSubmit={(target) => {
+            const quads = useLinkStore.getState().draft?.quads;
             close();
-            void createLink(ctx.index, rect, target);
+            void createLink(ctx.index, rect, target, quads);
           }}
         />
       </div>

@@ -11,13 +11,20 @@
  *   목적지 = 현재 보기  re-points the selection at the current view
  *   들여쓰기 / 내어쓰기 Tab / ⇧Tab — into the previous sibling, out after the parent
  *   위로 / 아래로      ⌥↑ / ⌥↓ among the siblings; or drag a row onto another (top quarter = before,
- *                    bottom quarter = after, the middle = inside)
+ *                    bottom quarter = after, the middle = inside; dragged 32 px right = inside,
+ *                    32 px left = out after the target's parent). v0.3 H7: pointer events, not HTML5
+ *                    drag and drop, which never fires in the Windows webview.
  *   삭제              Delete / ⌫, the node and everything under it
+ *   제목에서 목차 만들기 (v0.3 P4) — `headings.ts` over the text layer; the proposals are reviewed
+ *                    (tick / untick) and 목차에 추가 appends them to the draft, nothing is written yet
  */
-import { useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
-  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Globe, IndentDecrease, IndentIncrease, LocateFixed, Pencil, Plus, Trash2,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Globe, IndentDecrease, IndentIncrease, ListTree, LocateFixed, Pencil, Plus,
+  Trash2,
 } from "lucide-react";
+import { startPointerDrag, type DragMove } from "../dialogs/pointerDrag";
+import { detectHeadings, linesFromLayer, toOutlineNodes, type HeadingLine, type HeadingProposal } from "./headings";
 import * as api from "../ipc/api";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
@@ -31,6 +38,11 @@ import {
 } from "./outlineEdit";
 import "./outlineEditor.css";
 
+/** A pointer dragged this far sideways nests (→) or un-nests (←) the dragged node. */
+const NEST_DX = 32;
+/** 제목에서 목차 만들기 reads at most this many pages. */
+const MAX_SCAN_PAGES = 500;
+
 export default function OutlineEditor({ onDone }: { onDone(): void }) {
   const t = useT();
   const info = useDocStore((s) => s.info);
@@ -43,6 +55,9 @@ export default function OutlineEditor({ onDone }: { onDone(): void }) {
   const [drag, setDrag] = useState<number | null>(null);
   const [drop, setDrop] = useState<{ id: number; position: DropPosition } | null>(null);
   const [busy, setBusy] = useState(false);
+  // v0.3 P4: 제목에서 목차 만들기 — the scan, then the proposals under review
+  const [scanning, setScanning] = useState(false);
+  const [proposals, setProposals] = useState<(HeadingProposal & { keep: boolean })[] | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
   const rows = useMemo(() => flattenEdit(tree, collapsed), [tree, collapsed]);
@@ -129,13 +144,93 @@ export default function OutlineEditor({ onDone }: { onDone(): void }) {
     if (e.key === "Tab" && selected !== null) return claim(), apply(e.shiftKey ? outdent : indent);
   }
 
-  function dropPosition(e: DragEvent<HTMLElement>): DropPosition {
-    const r = e.currentTarget.getBoundingClientRect();
-    const y = e.clientY - r.top;
-    if (!r.height) return "after";
-    if (y < r.height / 4) return "before";
-    if (y > (r.height * 3) / 4) return "after";
-    return "inside";
+  /** The row under the pointer and where the dragged node goes relative to it. */
+  function dropTarget(m: DragMove, dragged: number): { id: number; position: DropPosition } | null {
+    const items = [...(listRef.current?.querySelectorAll<HTMLElement>("li[data-node-id]") ?? [])];
+    let hit: HTMLElement | null = null;
+    for (const li of items) {
+      const r = li.getBoundingClientRect();
+      if (m.clientY >= r.top && m.clientY < r.bottom) {
+        hit = li;
+        break;
+      }
+    }
+    // above the first row / below the last one
+    if (!hit && items.length) {
+      const first = items[0].getBoundingClientRect();
+      hit = m.clientY < first.top ? items[0] : items[items.length - 1];
+    }
+    if (!hit) return null;
+    const id = Number(hit.dataset.nodeId);
+    const r = hit.getBoundingClientRect();
+    const y = m.clientY - r.top;
+    let position: DropPosition = !r.height ? "after" : y < r.height / 4 ? "before" : y > (r.height * 3) / 4 ? "after" : "inside";
+    let target = id;
+    if (m.dx >= NEST_DX && id !== dragged) position = "inside";
+    else if (m.dx <= -NEST_DX) {
+      const row = rows.find((x) => x.node.id === id);
+      if (row?.parentId != null) {
+        target = row.parentId;
+        position = "after";
+      }
+    }
+    if (target === dragged) return null;
+    return { id: target, position };
+  }
+
+  function beginDrag(e: React.PointerEvent, id: number) {
+    if (renaming !== null || busy) return;
+    startPointerDrag(e, {
+      onStart: () => {
+        setDrag(id);
+        setSelected(id);
+      },
+      onMove: (m) => {
+        const t = dropTarget(m, id);
+        setDrop((prev) => (prev?.id === t?.id && prev?.position === t?.position ? prev : t));
+      },
+      onDrop: (m) => {
+        const t = dropTarget(m, id);
+        if (t) setTree((prev) => moveNode(prev, id, t.id, t.position));
+        setDrag(null);
+        setDrop(null);
+        focusList();
+      },
+      onCancel: () => {
+        setDrag(null);
+        setDrop(null);
+      },
+    });
+  }
+
+  /** 제목에서 목차 만들기: read the pages' text, propose headings for review. */
+  async function proposeHeadings() {
+    if (!info) return;
+    setScanning(true);
+    const lines: HeadingLine[] = [];
+    const last = Math.min(info.pageCount, MAX_SCAN_PAGES);
+    try {
+      for (let page = 0; page < last; page++) {
+        const view = await api.getTextLayer({ docId: info.docId, page });
+        lines.push(...linesFromLayer(view, page));
+      }
+      const found = detectHeadings(lines);
+      setProposals(found.map((p) => ({ ...p, keep: true })));
+      if (!found.length) toast("outline.headings.none", undefined, { tone: "info" });
+    } catch (e) {
+      toast("error.generic", undefined, { tone: "danger", detail: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  function acceptHeadings() {
+    if (!proposals) return;
+    const nodes = toOutlineNodes(proposals.filter((p) => p.keep));
+    const added = toEditTree(nodes);
+    setTree((prev) => [...prev, ...added]);
+    setProposals(null);
+    if (added[0]) setSelected(added[0].id);
   }
 
   return (
@@ -149,7 +244,53 @@ export default function OutlineEditor({ onDone }: { onDone(): void }) {
         <IconButton icon={ArrowUp} label={t("outline.moveUp")} size={16} disabled={!current || busy} onClick={() => apply((n, id) => moveBy(n, id, -1))} />
         <IconButton icon={ArrowDown} label={t("outline.moveDown")} size={16} disabled={!current || busy} onClick={() => apply((n, id) => moveBy(n, id, 1))} />
         <IconButton icon={Trash2} label={t("outline.delete")} size={16} tone="danger" disabled={!current || busy} onClick={() => remove()} />
+        {/* v0.3 P4 */}
+        <IconButton
+          icon={ListTree}
+          label={t("outline.headings")}
+          size={16}
+          disabled={busy || scanning || proposals !== null}
+          onClick={() => void proposeHeadings()}
+        />
       </div>
+
+      {scanning && <p className="outline-editor-hint text-xs dim" role="status">{t("outline.headings.scanning")}</p>}
+      {proposals && (
+        <section className="outline-proposals" aria-label={t("outline.headings")}>
+          <p className="text-xs dim">{t("outline.headings.review", { count: proposals.length })}</p>
+          <ul className="outline-proposal-list">
+            {proposals.map((p, i) => (
+              <li key={`${p.page}:${i}`} style={{ paddingInlineStart: (p.level - 1) * 12 }}>
+                <label className="dlg-check text-sm">
+                  <input
+                    type="checkbox"
+                    checked={p.keep}
+                    onChange={(e) => {
+                      const keep = e.currentTarget.checked;
+                      setProposals((prev) => prev && prev.map((q, j) => (j === i ? { ...q, keep } : q)));
+                    }}
+                  />
+                  <span className="outline-edit-title">{p.title}</span>
+                  <span className="outline-page text-xs mono dim">{displayLabel(labels, p.page)}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <div className="outline-editor-foot">
+            <button type="button" className="btn quiet" onClick={() => setProposals(null)}>
+              {t("common.cancel")}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={!proposals.some((p) => p.keep)}
+              onClick={acceptHeadings}
+            >
+              {t("outline.headings.add")}
+            </button>
+          </div>
+        </section>
+      )}
 
       {rows.length === 0 ? (
         <p className="empty">{t("outline.emptyEdit")}</p>
@@ -172,34 +313,11 @@ export default function OutlineEditor({ onDone }: { onDone(): void }) {
                 role="treeitem"
                 aria-selected={node.id === selected}
                 aria-expanded={node.children.length ? !isCollapsed : undefined}
-                draggable={renaming !== node.id}
+                data-node-id={node.id}
                 data-drop={target}
                 data-dragging={drag === node.id || undefined}
-                onDragStart={(e) => {
-                  setDrag(node.id);
-                  setSelected(node.id);
-                  e.dataTransfer?.setData("text/plain", String(node.id));
-                  if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-                }}
-                onDragOver={(e) => {
-                  if (drag === null || drag === node.id) return;
-                  e.preventDefault();
-                  const position = dropPosition(e);
-                  if (drop?.id !== node.id || drop.position !== position) setDrop({ id: node.id, position });
-                }}
-                onDragLeave={() => drop?.id === node.id && setDrop(null)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (drag !== null && drag !== node.id) {
-                    const position = dropPosition(e);
-                    setTree((prev) => moveNode(prev, drag, node.id, position));
-                  }
-                  setDrag(null);
-                  setDrop(null);
-                }}
-                onDragEnd={() => {
-                  setDrag(null);
-                  setDrop(null);
+                onPointerDown={(e) => {
+                  if (renaming !== node.id) beginDrag(e, node.id);
                 }}
               >
                 <div

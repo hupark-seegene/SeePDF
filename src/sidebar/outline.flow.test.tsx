@@ -33,6 +33,16 @@ function row(tree: HTMLElement, title: string): HTMLElement {
   return item;
 }
 
+/** jsdom has no layout: give every row a 24 px band, top to bottom, like the real tree. */
+function layOutRows(tree: HTMLElement): void {
+  within(tree)
+    .getAllByRole("treeitem")
+    .forEach((li, i) => {
+      li.getBoundingClientRect = () =>
+        ({ top: i * 24, bottom: i * 24 + 24, height: 24, left: 0, right: 200, width: 200, x: 0, y: i * 24 }) as DOMRect;
+    });
+}
+
 function titlesOf(tree: HTMLElement): string[] {
   return within(tree)
     .getAllByRole("treeitem")
@@ -63,10 +73,14 @@ describe("목차 편집", () => {
     fireEvent.keyDown(tree, { key: "Delete" });
     expect(titlesOf(tree)).toEqual(["1. 시작하기", "1.1 문서 열기", "1.2 화면 구성", "3. 양식과 OCR", "4. 부록"]);
 
-    // drag 4. 부록 onto 1. 시작하기 (jsdom rows have no height: a drop lands "after")
-    fireEvent.dragStart(row(tree, "4. 부록"));
-    fireEvent.dragOver(row(tree, "1. 시작하기"));
-    fireEvent.drop(row(tree, "1. 시작하기"));
+    // drag 4. 부록 onto the bottom quarter of 1. 시작하기 ("after") — v0.3 H7: pointer events, since
+    // HTML5 drag and drop never fires in the Windows webview
+    layOutRows(tree);
+    const from = row(tree, "4. 부록").getBoundingClientRect();
+    const onto = row(tree, "1. 시작하기").getBoundingClientRect();
+    fireEvent.pointerDown(row(tree, "4. 부록"), { button: 0, clientX: 40, clientY: from.top + 12 });
+    fireEvent.pointerMove(window, { clientX: 40, clientY: onto.top + 20 });
+    fireEvent.pointerUp(window, { clientX: 40, clientY: onto.top + 20 });
     expect(titlesOf(tree)).toEqual(["1. 시작하기", "1.1 문서 열기", "4. 부록", "1.2 화면 구성", "3. 양식과 OCR"]);
 
     fireEvent.click(screen.getByRole("button", { name: "완료" }));

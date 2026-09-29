@@ -6,7 +6,7 @@
  * with a selection it edits the selection. `patch.ts` owns that mapping and is unit-tested; this
  * file is the markup around it.
  */
-import { useMemo } from "react";
+import { lazy, Suspense, useMemo } from "react";
 import type { Annot, AnnotKind } from "../../ipc/types";
 import { formatRelativeDay } from "../../i18n";
 import { useT } from "../../i18n/useT";
@@ -20,6 +20,8 @@ import { EditPanel } from "./EditPanel";
 import { LinkPanel } from "../../edit/LinkPanel";
 import { Swatches } from "../Swatches";
 import type { PropertyId } from "./patch";
+// v0.3 pkg2 (F1): 필드 속성, its own chunk
+const FieldProperties = lazy(() => import("../../forms/FieldProperties"));
 
 const WIDTHS = [1, 2, 4, 8, 12];
 const FONT_SIZES = [8, 10, 12, 14, 18, 24, 36];
@@ -94,10 +96,10 @@ function AnnotMeta({ annot }: { annot: Annot }) {
 
 function FormPanel() {
   const t = useT();
-  const focused = useFormStore((s) => s.focused);
+  const focused = useFormStore((s) => s.focused ?? s.selected);
   const fields = useFormStore((s) => s.fields);
   const field = useMemo(() => fields.find((f) => `${f.page}:${f.index}` === focused), [fields, focused]);
-  if (!field) return <p className="empty">{t("form.fieldCount", { count: fields.length })}</p>;
+  if (!field) return <p className="empty">{fields.length ? t("form.fieldCount", { count: fields.length }) : t("form.noFields")}</p>;
   return (
     <section className="field-group">
       <dl className="inspector-meta">
@@ -119,6 +121,9 @@ function FormPanel() {
       >
         {t("form.clearField")}
       </button>
+      <Suspense fallback={null}>
+        <FieldProperties field={field} />
+      </Suspense>
     </section>
   );
 }

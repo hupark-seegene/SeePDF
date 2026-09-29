@@ -153,3 +153,122 @@ pub async fn redo(engine: State<'_, EngineHandle>, doc_id: String) -> Result<Doc
         })
         .await
 }
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg2-pages-structure-forms — 이미지로 PDF 만들기 (D1)
+// ---------------------------------------------------------------------------------------
+
+/// D1: a new untitled, dirty document with one page per PNG / JPEG in `paths` (in order).
+///
+/// The images are read and measured on a blocking worker (no PDFium there), one `progress`
+/// event each, then one engine call builds the document; `cancel_job` with the `started`
+/// event's id stops it between images (`cancelled`). `margin` is in points (default 0),
+/// `fit` defaults to `contain`.
+#[tauri::command]
+pub async fn create_from_images(
+    engine: State<'_, EngineHandle>,
+    paths: Vec<String>,
+    page_size: crate::ipc::types::ImagePageSize,
+    margin: Option<f32>,
+    fit: Option<crate::ipc::types::ImageFit>,
+    on_progress: tauri::ipc::Channel<crate::ipc::types::JobEvent>,
+) -> Result<DocInfo, EngineError> {
+    use crate::engine::export::job::JobReporter;
+    use crate::engine::pages::create;
+
+    let options =
+        create::ImagesToPdfOptions::new(page_size, margin.unwrap_or(0.0), fit.unwrap_or_default())?;
+    if paths.is_empty() {
+        return Err(EngineError::invalid("no image was given"));
+    }
+    if paths.len() > create::MAX_IMAGES {
+        return Err(EngineError::invalid(format!(
+            "at most {} images per document",
+            create::MAX_IMAGES
+        )));
+    }
+    let token = engine.jobs.create();
+    // One unit per image, plus one for building the document.
+    let reporter = JobReporter::start(
+        on_progress,
+        engine.jobs.clone(),
+        token.id,
+        paths.len() as u32 + 1,
+    );
+    let cancel = token.cancel.clone();
+    let worker = reporter.clone();
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        let mut out = Vec::with_capacity(paths.len());
+        for path in &paths {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(EngineError::cancelled("create_from_images"));
+            }
+            out.push(create::prepare_image(std::path::Path::new(path))?);
+            worker.step(None, None);
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| EngineError::io(format!("read images: {e}")))
+    .and_then(|r| r);
+    let prepared = match prepared {
+        Ok(p) => p,
+        Err(e) => {
+            if e.code == crate::ipc::ErrorCode::Cancelled {
+                reporter.cancel();
+            } else {
+                reporter.fail(e.clone());
+            }
+            return Err(e);
+        }
+    };
+    let built = engine
+        .call(Lane::Edit, "create_from_images", move |st| {
+            create::build(st, &prepared, &options)
+        })
+        .await;
+    match &built {
+        Ok(_) => {
+            reporter.step(None, None);
+            reporter.finish_if_complete();
+        }
+        Err(e) => reporter.fail(e.clone()),
+    }
+    built
+}
+
+/// D1: writes a clipboard image (PNG or JPEG bytes, sent as the raw request body) to a temp
+/// file and returns its path — for 클립보드에서 새로 만들기 and pasting an image in 편집.
+/// Anything that is not a PNG or JPEG is `unsupported`.
+#[tauri::command]
+pub async fn write_temp_image(request: tauri::ipc::Request<'_>) -> Result<String, EngineError> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(EngineError::invalid(
+            "expected the image bytes as the request body",
+        ));
+    };
+    let bytes = bytes.clone();
+    tauri::async_runtime::spawn_blocking(move || write_temp_image_bytes(&bytes))
+        .await
+        .map_err(|e| EngineError::io(format!("write image: {e}")))?
+        .map(|p| p.display().to_string())
+}
+
+/// [`write_temp_image`]'s file half: `$TMPDIR/seepdf-clipboard/<uuid>.png|jpg`.
+pub fn write_temp_image_bytes(bytes: &[u8]) -> Result<PathBuf, EngineError> {
+    let ext = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpg"
+    } else {
+        return Err(EngineError::new(
+            crate::ipc::ErrorCode::Unsupported,
+            "the clipboard image is not a PNG or JPEG",
+        ));
+    };
+    let dir = std::env::temp_dir().join("seepdf-clipboard");
+    std::fs::create_dir_all(&dir).map_err(EngineError::from)?;
+    let path = dir.join(format!("{}.{ext}", uuid::Uuid::new_v4()));
+    crate::engine::pages::write_atomic(&path, bytes)?;
+    Ok(path)
+}

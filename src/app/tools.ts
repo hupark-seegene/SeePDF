@@ -5,6 +5,8 @@
 import {
   Circle, Eraser, Highlighter, ImagePlus, Minus, MessageSquarePlus, MousePointer2, MoveUpRight, PenLine,
   Signature, Square, SquareDashed, SquarePen, Stamp, Strikethrough, Type, Underline, Waves, Eye, Trash2, Link2,
+  // v0.3 pkg2: 필드 만들기
+  TextCursorInput, SquareCheck, CircleDot, ChevronsUpDown, FileDown, FileUp, Layers,
 } from "lucide-react";
 import type { Mode, ToolId } from "../store/appStore";
 import type { IconProps } from "./IconButton";
@@ -18,6 +20,10 @@ export interface ToolDef {
   keyId?: string;
   /** a toggle (양식 필드 강조) or a one-shot action rather than an armed tool */
   kind?: "tool" | "toggle" | "action";
+  /** v0.3: which `forms/formActions` action a `kind: "action"` button runs (default: 모든 필드 지우기) */
+  action?: "clearAll" | "flatten" | "exportData" | "importData";
+  /** v0.3: a strip section (a divider is drawn where the group changes); the i18n key names it */
+  group?: string;
 }
 
 const SELECT: ToolDef = { id: "select", labelKey: "tool.select", icon: MousePointer2, keyId: "tool.select" };
@@ -55,6 +61,15 @@ export const TOOL_STRIP: Record<Mode, ToolDef[]> = {
     SELECT,
     { id: "highlightFields", labelKey: "form.highlightFields", icon: Eye, kind: "toggle" },
     { id: "fillForm", labelKey: "form.clearAll", icon: Trash2, kind: "action" },
+    // v0.3 pkg2-pages-structure-forms: 필드 만들기 (draw a rectangle), then the form's data and 평면화
+    { id: "fieldText", labelKey: "form.author.text", icon: TextCursorInput, group: "form.author.section" },
+    { id: "fieldCheckbox", labelKey: "form.author.checkbox", icon: SquareCheck, group: "form.author.section" },
+    { id: "fieldRadio", labelKey: "form.author.radio", icon: CircleDot, group: "form.author.section" },
+    { id: "fieldCombo", labelKey: "form.author.combo", icon: ChevronsUpDown, group: "form.author.section" },
+    { id: "fieldSignature", labelKey: "form.author.signature", icon: Signature, group: "form.author.section" },
+    { id: "formExport", labelKey: "form.data.export", icon: FileDown, kind: "action", action: "exportData", group: "form.data.section" },
+    { id: "formImport", labelKey: "form.data.import", icon: FileUp, kind: "action", action: "importData", group: "form.data.section" },
+    { id: "formFlatten", labelKey: "form.flatten", icon: Layers, kind: "action", action: "flatten", group: "form.data.section" },
   ],
 };
 

@@ -137,6 +137,13 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
           void navigator.clipboard.writeText(info.path).catch(() => undefined);
         }
         return;
+      // v0.3 pkg2-pages-structure-forms: 이미지로 PDF 만들기… / 클립보드에서 새로 만들기
+      case "file.imagesToPdf":
+        void import("../dialogs/imagesFlow").then((m) => m.imagesToPdfFlow());
+        return;
+      case "file.newFromClipboard":
+        void import("../dialogs/imagesFlow").then((m) => m.newFromClipboardFlow());
+        return;
 
       // App ------------------------------------------------------------------
       // `settings` is the id of the native app menu's 설정… item (`menu:settings`).
@@ -441,6 +448,9 @@ function openOverflowMenu(): void {
       { id: "batchOcr", labelKey: "menu.tools.batchOcr", onSelect: () => openDialog("batchOcr") },
       { id: "findInFiles", labelKey: "menu.edit.findInFiles", onSelect: () => openDialog("multiSearch") },
       { id: "merge", labelKey: "menu.tools.merge", onSelect: () => openDialog("merge") },
+      // v0.3 pkg2: new documents from images
+      { id: "imagesToPdf", labelKey: "menu.file.imagesToPdf", onSelect: () => void import("../dialogs/imagesFlow").then((m) => m.imagesToPdfFlow()) },
+      { id: "newFromClipboard", labelKey: "menu.file.newFromClipboard", onSelect: () => void import("../dialogs/imagesFlow").then((m) => m.newFromClipboardFlow()) },
       { id: "split", labelKey: "pages.split", disabled: !info, onSelect: () => openDialog("split") },
       {
         id: "readAloud",

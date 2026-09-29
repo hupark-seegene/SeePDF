@@ -17,7 +17,9 @@ export type ToolId =
   | "highlight" | "underline" | "strikeout" | "squiggly" | "note" | "pen" | "eraser"
   | "rectangle" | "ellipse" | "line" | "arrow" | "textbox" | "stamp" | "signature"
   | "editText" | "addText" | "addImage" | "redact" | "link"
-  | "fillForm" | "highlightFields";
+  | "fillForm" | "highlightFields"
+  // v0.3 pkg2-pages-structure-forms: 양식 ▸ 필드 만들기
+  | "fieldText" | "fieldCheckbox" | "fieldRadio" | "fieldCombo" | "fieldSignature" | "formFlatten" | "formExport" | "formImport";
 
 export interface AppState {
   os: OsName;

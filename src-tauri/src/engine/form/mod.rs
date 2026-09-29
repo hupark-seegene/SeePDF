@@ -17,13 +17,28 @@
 //! The first line was the `WORKPLAN.md` §6 unverified item; [`TextEntryMethod`] records which
 //! of the two actually ran, the probe result is asserted by `form_text_value_persists` and
 //! written up in `STAGE1A_NOTES.md`.
+//!
+//! v0.3 (pkg2): `/MaxLen` and `/DV` are read with lopdf ([`extras`]); [`reset_form`] applies
+//! `/DV`; a radio group is cleared (`/V /Off`, every kid `/AS /Off`) by a lopdf rewrite, since no
+//! click can switch the last button of a group off ([`clear_radio`]); authoring ([`author`]),
+//! data exchange ([`data`]) and flattening ([`flatten`]) live in their own modules.
+
+pub mod author;
+pub mod data;
+pub mod extras;
+pub mod flatten;
 
 use crate::engine::annot::ScratchPage;
 use crate::engine::raw::{self, annot::AnnotRef, consts};
-use crate::engine::registry::OpenDoc;
-use crate::ipc::types::{FieldType, FieldValue, FormField, FormOption, PageIndex, Rect};
+use crate::engine::registry::{self, MutateOpts, OpenDoc};
+use crate::engine::types::EngineState;
+use crate::ipc::types::{
+    ChangeReason, DocInfo, FieldType, FieldValue, FormField, FormOption, PageIndex, Rect,
+};
 use crate::ipc::{EngineError, ErrorCode};
-use pdfium_render::prelude::FPDF_FORMHANDLE;
+use extras::{DefaultValue, Extras};
+use pdfium_render::prelude::{PdfPage, PdfPageIndex, PdfiumLibraryBindings, FPDF_FORMHANDLE};
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::raw::c_int;
 
 /// Which of the two text-entry paths was used for the last write.
@@ -70,25 +85,45 @@ pub fn list(doc: &mut OpenDoc<'_>, page: Option<PageIndex>) -> Result<Vec<FormFi
         None => (0..doc.page_count()).collect(),
     };
     let bindings = doc.bindings();
+    let extras = extras::of(doc);
     let mut out = Vec::new();
     for page_index in pages {
         // The LRU page already ran `FORM_OnAfterLoadPage` (`page_lru.rs`), and listing is a
         // read path, so no `ScratchPage` here.
         let page = doc.page(page_index)?;
-        for i in 0..raw::annot::count(bindings, page) {
-            // A bad `/Annots` slot (null, dangling) is skipped, not fatal for the page.
-            let Some(a) = raw::annot::slot(bindings, page, i) else {
-                continue;
-            };
-            if a.subtype() != consts::FPDF_ANNOT_WIDGET {
-                continue;
-            }
-            if let Some(field) = read_field(&a, form, page_index, i as u32) {
-                out.push(field);
-            }
-        }
+        out.extend(list_on_page(
+            bindings,
+            form,
+            page,
+            page_index,
+            Some(&extras),
+        ));
     }
     Ok(out)
+}
+
+/// The widgets of one loaded page (a page of the open document or of a scratch copy).
+fn list_on_page(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    form: FPDF_FORMHANDLE,
+    page: &PdfPage<'_>,
+    page_index: PageIndex,
+    extras: Option<&Extras>,
+) -> Vec<FormField> {
+    let mut out = Vec::new();
+    for i in 0..raw::annot::count(bindings, page) {
+        // A bad `/Annots` slot (null, dangling) is skipped, not fatal for the page.
+        let Some(a) = raw::annot::slot(bindings, page, i) else {
+            continue;
+        };
+        if a.subtype() != consts::FPDF_ANNOT_WIDGET {
+            continue;
+        }
+        if let Some(field) = read_field(&a, form, page_index, i as u32, extras) {
+            out.push(field);
+        }
+    }
+    out
 }
 
 fn read_field(
@@ -96,6 +131,7 @@ fn read_field(
     form: FPDF_FORMHANDLE,
     page: PageIndex,
     index: u32,
+    extras: Option<&Extras>,
 ) -> Option<FormField> {
     let raw_type = a.form_field_type(form);
     if raw_type < 0 {
@@ -121,12 +157,21 @@ fn read_field(
         FieldType::Checkbox | FieldType::Radio => Some(a.is_checked(form)),
         _ => None,
     };
+    let name = a.form_field_name(form).unwrap_or_default();
+    let rect = a.rect().unwrap_or(Rect::ZERO);
+    // v0.3: PDFium has no `/MaxLen` reader; lopdf has (`extras`).
+    let max_len = match field_type {
+        FieldType::Text => extras
+            .and_then(|e| e.get(&name, rect))
+            .and_then(|x| x.max_len),
+        _ => None,
+    };
     Some(FormField {
         page,
         index,
-        name: a.form_field_name(form).unwrap_or_default(),
+        name,
         field_type,
-        rect: a.rect().unwrap_or(Rect::ZERO),
+        rect,
         value: a.form_field_value(form),
         checked,
         options,
@@ -140,19 +185,13 @@ fn read_field(
             FieldType::Text => Some(flags & consts::FPDF_FORMFLAG_TEXT_COMB != 0),
             _ => None,
         },
-        // PDFium exposes no `/MaxLen` reader; the comb cell count is not available either.
-        max_len: None,
+        max_len,
         font_size_pt: a.form_font_size(form),
     })
 }
 
-/// `set_form_field_value`. One call = one `registry::mutate` = one undo step.
-pub fn set_value(
-    doc: &mut OpenDoc<'_>,
-    page_index: PageIndex,
-    index: u32,
-    value: &FieldValue,
-) -> Result<WriteOutcome, EngineError> {
+/// The form handle of a document whose fields may be written, or why not.
+fn writable_form(doc: &OpenDoc<'_>) -> Result<FPDF_FORMHANDLE, EngineError> {
     let Some(form) = doc.form_handle() else {
         return Err(EngineError::new(
             ErrorCode::Unsupported,
@@ -171,9 +210,35 @@ pub fn set_value(
             "this document's permission bits forbid filling forms",
         ));
     }
+    Ok(form)
+}
+
+/// `set_form_field_value`. One call = one `registry::mutate` = one undo step.
+pub fn set_value(
+    doc: &mut OpenDoc<'_>,
+    page_index: PageIndex,
+    index: u32,
+    value: &FieldValue,
+) -> Result<WriteOutcome, EngineError> {
+    let form = writable_form(doc)?;
     let bindings = doc.bindings();
     let scratch = ScratchPage::open_with_form(doc, page_index)?;
-    let page = &scratch.page;
+    let outcome = write_on_page(bindings, form, &scratch.page, page_index, index, value)?;
+    drop(scratch);
+    doc.annots.remove(&page_index);
+    Ok(outcome)
+}
+
+/// The write itself, on a page opened with `FORM_OnAfterLoadPage` — of the open document or of
+/// a scratch copy ([`write_fields`]).
+fn write_on_page(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    form: FPDF_FORMHANDLE,
+    page: &PdfPage<'_>,
+    page_index: PageIndex,
+    index: u32,
+    value: &FieldValue,
+) -> Result<WriteOutcome, EngineError> {
     let a = raw::annot::get(bindings, page, index as usize)?;
     if a.subtype() != consts::FPDF_ANNOT_WIDGET {
         return Err(
@@ -234,11 +299,8 @@ pub fn set_value(
 
     // Commits `/V` *and* writes the appearance stream the form layer just built.
     raw::form::force_to_kill_focus(bindings, form);
-    let field = read_field(&a, form, page_index, index)
+    let field = read_field(&a, form, page_index, index, None)
         .ok_or_else(|| EngineError::not_found(format!("form field {index} disappeared")))?;
-    drop(a);
-    drop(scratch);
-    doc.annots.remove(&page_index);
     Ok(WriteOutcome {
         field,
         previous,
@@ -311,14 +373,14 @@ fn set_checked(
     if a.is_checked(form) == want {
         return Ok(());
     }
-    // A radio button in a group cannot be switched off by clicking it: another button of the
-    // group has to be switched on instead.
+    // A radio button in a group cannot be switched off by clicking it: `clear_radio` does it
+    // with a lopdf rewrite instead.
     Err(EngineError::new(
         ErrorCode::Unsupported,
         if want {
             "the widget did not accept the click"
         } else {
-            "a radio button cannot be cleared; select another button of its group"
+            "a radio button cannot be cleared by a click"
         },
     ))
 }
@@ -346,40 +408,317 @@ fn set_selected(
     Ok(())
 }
 
-/// `reset_form` (P1) — clears every writable field.
+// ---------------------------------------------------------------------------------------
+// v0.3: writes that may need a radio group cleared — reset to /DV, data import, 값 지우기
+// ---------------------------------------------------------------------------------------
+
+/// One field write of a batch.
+#[derive(Debug, Clone)]
+pub enum FieldWrite {
+    Set {
+        page: PageIndex,
+        index: u32,
+        value: FieldValue,
+    },
+    /// Switch every button of this widget's radio group off (`/V /Off`, `/AS /Off`).
+    ClearRadio { page: PageIndex, index: u32 },
+}
+
+/// Applies `writes` as **one** undo step `label`, returning how many were applied.
 ///
-/// PDFium has no `FORM_Reset`, so each field is cleared the same way the user would: text and
-/// choice fields are emptied, checkboxes are unticked. **Radio groups keep their selection**
-/// (a radio cannot be cleared by clicking it), and this resets to *empty*, not to the `/DV`
-/// default value, which PDFium does not expose.
-pub fn reset(doc: &mut OpenDoc<'_>) -> Result<usize, EngineError> {
+/// Without a [`FieldWrite::ClearRadio`] this is one `registry::mutate` through the form-fill
+/// environment, like `set_form_field_value`. With one it is a `registry::mutate_bytes`: the
+/// sets run through the form-fill environment of a scratch copy, which is saved (appearance
+/// streams included) and then rewritten with lopdf to switch the groups off — refused on an
+/// encrypted document, which lopdf cannot write. A write that fails on its own (a read-only
+/// field) is skipped, not fatal.
+pub fn write_fields(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    label: &'static str,
+    writes: Vec<FieldWrite>,
+) -> Result<usize, EngineError> {
+    if writes.is_empty() {
+        return Ok(0);
+    }
+    writable_form(st.doc(doc_id)?)?;
+    let pages: Vec<PageIndex> = writes
+        .iter()
+        .map(|w| match w {
+            FieldWrite::Set { page, .. } | FieldWrite::ClearRadio { page, .. } => *page,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let clears: Vec<(PageIndex, u32)> = writes
+        .iter()
+        .filter_map(|w| match w {
+            FieldWrite::ClearRadio { page, index } => Some((*page, *index)),
+            _ => None,
+        })
+        .collect();
+    let sets: Vec<(PageIndex, u32, FieldValue)> = writes
+        .into_iter()
+        .filter_map(|w| match w {
+            FieldWrite::Set { page, index, value } => Some((page, index, value)),
+            _ => None,
+        })
+        .collect();
+    let applied = sets.len() + clears.len();
+    if applied == 0 {
+        return Ok(0);
+    }
+    if clears.is_empty() {
+        let opts = MutateOpts::new(label, ChangeReason::Edit).pages(pages);
+        return registry::mutate(st, doc_id, opts, |doc| {
+            let mut done = 0usize;
+            for (page, index, value) in &sets {
+                if set_value(doc, *page, *index, value).is_ok() {
+                    done += 1;
+                }
+            }
+            Ok(done)
+        });
+    }
+    crate::engine::structure::refuse_encrypted(st, doc_id)?;
+    let pdfium = st.pdfium;
+    let bindings = raw::bindings(pdfium);
+    let opts = MutateOpts::new(label, ChangeReason::Edit).all_pages();
+    registry::mutate_bytes(st, doc_id, opts, move |bytes, doc| {
+        let scratch = pdfium
+            .load_pdf_from_byte_vec(bytes.to_vec(), doc.password.as_deref())
+            .map_err(|e| EngineError::pdfium("reload for form writes", e))?;
+        let form = scratch.form().map(|f| f.raw_handle()).ok_or_else(|| {
+            EngineError::new(ErrorCode::Unsupported, "this document has no AcroForm")
+        })?;
+        let mut by_page: BTreeMap<PageIndex, Vec<(u32, &FieldValue)>> = BTreeMap::new();
+        for (page, index, value) in &sets {
+            by_page.entry(*page).or_default().push((*index, value));
+        }
+        for (page_index, list) in by_page {
+            let page = scratch
+                .pages()
+                .get(page_index as PdfPageIndex)
+                .map_err(|e| EngineError::pdfium("load page", e))?;
+            raw::form::on_after_load_page(bindings, &page, form);
+            for (index, value) in list {
+                let _ = write_on_page(bindings, form, &page, page_index, index, value);
+            }
+            raw::form::force_to_kill_focus(bindings, form);
+            raw::form::on_before_close_page(bindings, &page, form);
+        }
+        let written =
+            raw::save::save_as_copy(bindings, &scratch, raw::save::SaveFlags::NoIncremental)?;
+        drop(scratch);
+        clear_radios_in(&written, &clears)
+    })?;
+    Ok(applied)
+}
+
+/// The lopdf half of [`FieldWrite::ClearRadio`]: for each `(page, annotation index)` widget,
+/// its field (the nearest ancestor with `/FT`) gets `/V /Off` and every widget under that field
+/// `/AS /Off`.
+fn clear_radios_in(bytes: &[u8], widgets: &[(PageIndex, u32)]) -> Result<Vec<u8>, EngineError> {
+    use lopdf::Object;
+    let mut doc = crate::engine::structure::load(bytes)?;
+    let pages = crate::engine::structure::page_ids(&doc);
+    for &(page, index) in widgets {
+        let widget = author::widget_id(&doc, &pages, page, index)?;
+        let field = author::field_of(&doc, widget);
+        if let Ok(dict) = doc.get_dictionary_mut(field) {
+            dict.set("V", Object::Name(b"Off".to_vec()));
+        }
+        let mut stack = vec![field];
+        let mut seen = BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let kids: Vec<lopdf::ObjectId> = doc
+                .get_dictionary(id)
+                .ok()
+                .and_then(|d| d.get(b"Kids").ok())
+                .and_then(|k| doc.dereference(k).ok())
+                .and_then(|(_, k)| k.as_array().ok().cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|o| o.as_reference().ok())
+                .collect();
+            if let Ok(dict) = doc.get_dictionary_mut(id) {
+                if dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Widget") {
+                    dict.set("AS", Object::Name(b"Off".to_vec()));
+                }
+            }
+            stack.extend(kids);
+        }
+    }
+    crate::engine::structure::write(doc)
+}
+
+/// `set_form_field_value { checked: false }` on a radio button that is on (v0.3 F2): the group
+/// is switched off. One undo step `undo.formFill`.
+pub fn clear_radio(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page: PageIndex,
+    index: u32,
+) -> Result<WriteOutcome, EngineError> {
+    let previous = field_at(st, doc_id, page, index)?.value;
+    write_fields(
+        st,
+        doc_id,
+        "undo.formFill",
+        vec![FieldWrite::ClearRadio { page, index }],
+    )?;
+    let field = field_at(st, doc_id, page, index)?;
+    Ok(WriteOutcome {
+        field,
+        previous,
+        method: TextEntryMethod::NotText,
+    })
+}
+
+/// The field at `(page, index)`, or `notFound`.
+pub fn field_at(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page: PageIndex,
+    index: u32,
+) -> Result<FormField, EngineError> {
+    let doc = st.doc_mut(doc_id)?;
+    if page >= doc.page_count() {
+        return Err(EngineError::not_found(format!("page {page}")).with_page(page));
+    }
+    list(doc, Some(page))?
+        .into_iter()
+        .find(|f| f.index == index)
+        .ok_or_else(|| {
+            EngineError::not_found(format!("no form field at index {index}")).with_page(page)
+        })
+}
+
+/// `reset_form` — every writable field back to its default value (`/DV`), one undo step
+/// `undo.formReset`:
+///
+/// * text and combo fields get their `/DV` string, or become empty;
+/// * a list box selects the options its `/DV` names, or none;
+/// * a checkbox is on only when its `/DV` names its on-state;
+/// * a radio group turns on the button whose export value its `/DV` names, and is switched
+///   off entirely when it has no `/DV` (or `/DV /Off`).
+///
+/// Returns how many fields were changed.
+pub fn reset_form(st: &mut EngineState<'_>, doc_id: &str) -> Result<usize, EngineError> {
+    let writes = reset_writes(st, doc_id)?;
+    write_fields(st, doc_id, "undo.formReset", writes)
+}
+
+fn reset_writes(st: &mut EngineState<'_>, doc_id: &str) -> Result<Vec<FieldWrite>, EngineError> {
+    let doc = st.doc_mut(doc_id)?;
+    let extras = extras::of(doc);
     let fields = list(doc, None)?;
-    let mut cleared = 0usize;
-    for field in fields {
+    // The on-state of each radio widget, decoded like `/DV` (both read with lopdf).
+    let exports: BTreeMap<(PageIndex, u32), String> = fields
+        .iter()
+        .filter(|f| f.field_type == FieldType::Radio)
+        .filter_map(|f| {
+            let on = extras.get(&f.name, f.rect)?.on_state.clone()?;
+            Some(((f.page, f.index), on))
+        })
+        .collect();
+    let mut writes = Vec::new();
+    let mut groups_done: BTreeSet<String> = BTreeSet::new();
+    for field in &fields {
         if field.read_only {
             continue;
         }
-        let value = match field.field_type {
+        let default = extras
+            .get(&field.name, field.rect)
+            .and_then(|x| x.default.clone());
+        let set = |value: FieldValue| FieldWrite::Set {
+            page: field.page,
+            index: field.index,
+            value,
+        };
+        match field.field_type {
             FieldType::Text | FieldType::Combo => {
-                if field.value.as_deref().unwrap_or("").is_empty() {
-                    continue;
+                let want = match default {
+                    Some(DefaultValue::Text(t)) | Some(DefaultValue::State(t)) => t,
+                    Some(DefaultValue::Many(v)) => v.into_iter().next().unwrap_or_default(),
+                    None => String::new(),
+                };
+                if field.value.as_deref().unwrap_or("") != want {
+                    writes.push(set(FieldValue::Text { text: want }));
                 }
-                FieldValue::Text {
-                    text: String::new(),
+            }
+            FieldType::List => {
+                let wanted: Vec<String> = match default {
+                    Some(DefaultValue::Text(t)) | Some(DefaultValue::State(t)) => vec![t],
+                    Some(DefaultValue::Many(v)) => v,
+                    None => Vec::new(),
+                };
+                let options = field.options.clone().unwrap_or_default();
+                let selected: Vec<u32> = options
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| wanted.contains(&o.label))
+                    .map(|(i, _)| i as u32)
+                    .collect();
+                let current: Vec<u32> = options
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| o.selected)
+                    .map(|(i, _)| i as u32)
+                    .collect();
+                if current != selected {
+                    writes.push(set(FieldValue::Selected { selected }));
                 }
             }
             FieldType::Checkbox => {
-                if !field.checked.unwrap_or(false) {
+                let want = matches!(&default, Some(DefaultValue::State(s)) if s != "Off");
+                if field.checked.unwrap_or(false) != want {
+                    writes.push(set(FieldValue::Checked { checked: want }));
+                }
+            }
+            FieldType::Radio => {
+                if !groups_done.insert(field.name.clone()) {
                     continue;
                 }
-                FieldValue::Checked { checked: false }
+                let group: Vec<&FormField> = fields
+                    .iter()
+                    .filter(|f| f.field_type == FieldType::Radio && f.name == field.name)
+                    .collect();
+                let target = match &default {
+                    Some(DefaultValue::State(s)) if s != "Off" => group
+                        .iter()
+                        .find(|f| exports.get(&(f.page, f.index)) == Some(s))
+                        .copied(),
+                    _ => None,
+                };
+                match target {
+                    Some(t) if !t.checked.unwrap_or(false) => writes.push(FieldWrite::Set {
+                        page: t.page,
+                        index: t.index,
+                        value: FieldValue::Checked { checked: true },
+                    }),
+                    Some(_) => {}
+                    None => {
+                        if let Some(on) = group.iter().find(|f| f.checked.unwrap_or(false)) {
+                            writes.push(FieldWrite::ClearRadio {
+                                page: on.page,
+                                index: on.index,
+                            });
+                        }
+                    }
+                }
             }
-            FieldType::List => FieldValue::Selected { selected: vec![] },
-            _ => continue,
-        };
-        if set_value(doc, field.page, field.index, &value).is_ok() {
-            cleared += 1;
+            _ => {}
         }
     }
-    Ok(cleared)
+    Ok(writes)
+}
+
+/// `reset_form` result helper for the command: the fresh `DocInfo`.
+pub fn reset_form_info(st: &mut EngineState<'_>, doc_id: &str) -> Result<DocInfo, EngineError> {
+    reset_form(st, doc_id)?;
+    Ok(st.doc(doc_id)?.info())
 }

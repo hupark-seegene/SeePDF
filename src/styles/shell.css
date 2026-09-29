@@ -811,3 +811,12 @@
   border-radius: var(--radius-xl);
   color: var(--text-secondary);
 }
+
+/* v0.3 pkg2-pages-structure-forms: a section divider in the tool strip (양식 ▸ 필드 만들기) */
+.toolstrip-sep {
+  flex: none;
+  width: 1px;
+  height: 20px;
+  margin: 0 var(--space-1);
+  background: var(--border-subtle);
+}

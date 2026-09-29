@@ -258,6 +258,16 @@ pub fn run() {
             commands::ocr::ocr_page_status,
             commands::ocr::ocr_apply,
             commands::ocr::ocr_recognize_native,
+            // --- v0.3 pkg2-pages-structure-forms ---
+            commands::documents::create_from_images,
+            commands::documents::write_temp_image,
+            commands::pages::import_pages_from_doc,
+            commands::forms::create_form_field,
+            commands::forms::update_form_field,
+            commands::forms::delete_form_field,
+            commands::forms::export_form_data,
+            commands::forms::import_form_data,
+            commands::forms::flatten_form,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the tauri application")

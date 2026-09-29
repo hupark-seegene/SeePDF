@@ -9,7 +9,7 @@
  */
 import { create } from "zustand";
 import * as api from "../ipc/api";
-import type { AnnotId, AnnotResult, LinkTarget, PageIndex, Rect } from "../ipc/types";
+import type { AnnotId, AnnotResult, LinkBorder, LinkTarget, PageIndex, Rect } from "../ipc/types";
 import { useAnnotStore } from "../store/annotStore";
 import { useDocStore } from "../store/docStore";
 import { toast, type ToastAction } from "../app/toastStore";
@@ -23,9 +23,9 @@ interface LinkToolState {
   /** the link the inspector edits */
   selected: LinkRef | null;
   /** a rectangle just drawn with the 링크 tool, waiting for its target (the popover) */
-  draft: { page: PageIndex; rect: Rect } | null;
+  draft: { page: PageIndex; rect: Rect; quads?: Rect[] } | null;
   select(link: LinkRef | null): void;
-  setDraft(draft: { page: PageIndex; rect: Rect } | null): void;
+  setDraft(draft: { page: PageIndex; rect: Rect; quads?: Rect[] } | null): void;
   reset(): void;
 }
 
@@ -80,11 +80,12 @@ export function normalizeUrl(input: string): string {
   return url.replace(/[^\x21-\x7e]+/g, (run) => encodeURIComponent(run));
 }
 
-export async function createLink(page: PageIndex, rect: Rect, target: LinkTarget): Promise<boolean> {
+// v0.3 pkg2 (P5): `quads` — a link made from a text selection, one quad per line
+export async function createLink(page: PageIndex, rect: Rect, target: LinkTarget, quads?: Rect[]): Promise<boolean> {
   const doc = docId();
   if (!doc) return false;
   try {
-    const result = await api.createLink({ docId: doc, page, rect, target });
+    const result = await api.createLink({ docId: doc, page, rect, target, ...(quads?.length ? { quads } : null) });
     store(result);
     useLinkStore.getState().select(result.annot ? { page, id: result.annot.id } : null);
     toast("link.created", undefined, { tone: "success", actions: [undoAction] });
@@ -95,7 +96,12 @@ export async function createLink(page: PageIndex, rect: Rect, target: LinkTarget
   }
 }
 
-export async function updateLink(page: PageIndex, id: AnnotId, patch: { target?: LinkTarget; rect?: Rect }): Promise<boolean> {
+export async function updateLink(
+  page: PageIndex,
+  id: AnnotId,
+  // v0.3 pkg2 (P5): `border` shows / hides the link box
+  patch: { target?: LinkTarget; rect?: Rect; border?: LinkBorder },
+): Promise<boolean> {
   const doc = docId();
   if (!doc) return false;
   try {

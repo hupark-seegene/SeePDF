@@ -823,6 +823,11 @@ pub enum SplitMode {
     Ranges {
         ranges: Vec<String>,
     },
+    /// v0.3 P4: one file per outline node of `level` (1 = top level), named after its title.
+    ByOutline {
+        #[serde(rename = "byOutline")]
+        by_outline: OutlineSplit,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2073,6 +2078,130 @@ pub struct AppInfo {
     pub pdfium_dir: String,
     pub locale: Locale,
     pub theme: Theme,
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg2-pages-structure-forms — images → PDF, split by outline, form authoring, form
+// data, link borders
+// ---------------------------------------------------------------------------------------
+
+/// D1 `create_from_images`: the page each image goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImagePageSize {
+    /// The image's own size at its resolution (plus the margin).
+    Original,
+    A4,
+    Letter,
+}
+
+/// D1: how an image sits on an A4 / Letter page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImageFit {
+    /// Scaled (up or down) to fill the page less its margins, aspect kept, centred.
+    #[default]
+    Contain,
+    /// Its own size at its resolution, scaled down only when it does not fit, centred.
+    Actual,
+}
+
+/// P4 `SplitMode::ByOutline`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlineSplit {
+    /// 1 = the top-level nodes, 2 = their children, …
+    pub level: u8,
+}
+
+/// F1 `create_form_field`: the kinds of field that can be authored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NewFieldType {
+    Text,
+    Checkbox,
+    Radio,
+    Combo,
+    Signature,
+}
+
+/// F1 `create_form_field`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormFieldSpec {
+    pub page: PageIndex,
+    pub rect: Rect,
+    #[serde(rename = "type")]
+    pub field_type: NewFieldType,
+    /// `/T`. A radio button whose name is taken by a radio group joins that group.
+    pub name: String,
+    /// Combo: the choices (`/Opt`). Radio: the export value of this button (first entry).
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_len: Option<u32>,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub multiline: bool,
+}
+
+/// F1 `update_form_field`: every member optional; absent = unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormFieldPatch {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub options: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub required: Option<bool>,
+    /// 0 removes `/MaxLen`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_len: Option<u32>,
+}
+
+/// F1: the document and its fields after an authoring edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormEditResult {
+    pub info: DocInfo,
+    pub fields: Vec<FormField>,
+    /// The field the edit created or changed, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub field: Option<FormField>,
+}
+
+/// F1 form data export / import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FormDataFormat {
+    /// `name,value` rows, UTF-8 with a BOM.
+    Csv,
+    /// ISO 19444-1 XFDF.
+    Xfdf,
+}
+
+/// F1 `import_form_data` / `export_form_data`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormDataResult {
+    /// Fields written (export) or set (import).
+    pub fields: u32,
+    /// Import: names in the file that match no field of the document.
+    #[serde(default)]
+    pub unknown: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub doc_generation: Option<DocGeneration>,
+}
+
+/// P5: a visible link border (`/Border [0 0 w]` + `/C`). `width: 0` = no border.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkBorder {
+    pub width: f32,
+    #[serde(default)]
+    pub color: Rgb,
 }
 
 #[cfg(test)]

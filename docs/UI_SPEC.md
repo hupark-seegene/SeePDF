@@ -58,7 +58,7 @@ panel content, and what a click on the page does.
 |---|---|
 | 주석 | 선택 · 형광펜 · 밑줄 · 취소선 · 물결선 · 메모 · 펜 · 지우개 · 사각형 · 타원 · 선 · 화살표 · 텍스트 상자 · 도장 · 서명 |
 | 편집 | 선택 · 텍스트 수정 · 텍스트 추가 · 이미지 추가 · 영역 표시(redact) |
-| 양식 | 선택 · 필드 강조 표시 (toggle) · 모든 필드 지우기 |
+| 양식 | 선택 · 필드 강조 표시 (toggle) · 모든 필드 지우기 │ v0.3 필드 만들기: 텍스트 필드 (`text-cursor-input`) · 확인란 (`square-check`) · 라디오 단추 (`circle-dot`) · 목록 상자 (`chevrons-up-down`) · 서명 필드 (`signature`) │ 양식 데이터 내보내기… (`file-down`) · 가져오기… (`file-up`) · 양식 평면화 (`layers`) |
 
 Icon-only buttons, 28×28 with a 20 px `lucide-react` glyph, tooltip after 500 ms with the shortcut in a
 dimmer weight. The active tool has an `--accent-subtle` background and a 1 px accent border.
@@ -93,7 +93,15 @@ double-click renames.
   Delete / ⌫ removes the node **and its children** · Tab / ⇧Tab indents into the previous sibling / outdents
   to right after the parent · ⌥↑ / ⌥↓ moves among the siblings.
 * **Drag** a row onto another: top quarter = before, bottom quarter = after, the middle = inside (last child);
-  a 2 px accent line or an accent ring shows where; a node never drops into its own subtree.
+  a 2 px accent line or an accent ring shows where; a node never drops into its own subtree. v0.3 (H7): the
+  drag is **pointer events** (4 px threshold, Esc cancels) — HTML5 drag and drop never fires in the Windows
+  webview under Tauri's file drop — and a sideways pull nests: ≥ 32 px right = inside the row under the
+  pointer, ≥ 32 px left = out, after that row's parent.
+* **제목에서 목차 만들기** (v0.3 P4, `list-tree`): reads the text layer of the first 500 pages and proposes
+  headings — lines set ≥ 1.15 × the body size, or numbered (`제1장` / `제2편` → 1, `제1절` → 2, `Ⅰ.` / `1.` → 1,
+  `1.2` → 2, `1.2.3` / `가.` → 3; unnumbered ones ranked by size), without running headers, page numbers or
+  sentences. The proposals are listed (indented by level, ticked) under the tree; 목차에 추가 appends the ticked
+  ones to the draft (destinations at the heading's line), 취소 drops them. Nothing is written until 완료.
 * **완료** writes the whole tree with `set_outline` (one undo step 목차 편집), reloads the sidebar from
   `get_outline` and toasts 목차를 저장했습니다 + 실행 취소; an unchanged draft just closes. **취소** throws the
   draft away. An `unsupported` answer toasts `structure.encrypted`.
@@ -224,6 +232,14 @@ by OCR, export, search and save (label + determinate bar + cancel ×). P2: while
   페이지 레이블… (P2, `tags`, §10). The page-number chip shows the page label when there is one.
 * Everything is undoable and lives in the in-memory document until save. The status bar shows
   `변경됨 · 페이지 148 → 143`.
+* v0.3 (pkg2): **위치 이동…** (`move-right`, rail and cell menu) — 맨 앞으로 / 맨 뒤로 / 지정한 페이지 위치로 (the
+  block starts at page N), one `move` op, the block stays selected. A **file dropped from the OS** lands at the
+  caret under the pointer: a PDF through 파일에서 삽입 (its bookmarks under its name, labels and fields come
+  along), images through 이미지로 PDF 만들기 (A4, fitted) and then an import. The **변경됨 · 페이지 N → M** chip
+  appears in the status bar whenever the page count differs from the one at open or at the last save. A
+  **marquee** held within 32 px of the grid's top or bottom edge scrolls it (faster the closer). A cell — or a
+  축소판 thumbnail — dragged **out of the window** and released over another SeePDF window's 축소판 or grid is
+  copied there at the caret under the pointer (`import_pages_from_doc`, one undo step on the target).
 
 ---
 
@@ -375,8 +391,8 @@ once the rows differ from the file) → `set_page_labels` (one undo step 페이�
 적용했습니다 / 제거했습니다 + 실행 취소. On an encrypted document everything is read-only with `structure.encrypted`.
 
 **Others**: 암호 입력 (on `passwordRequired`, retries in place) · 저장하지 않은 변경 사항 (저장 / 저장 안 함 /
-취소) · 파일 합치기 (ordered list with drag, per-file range field, warnings for forms/outline) ·
-문서 분할 ({{n}}쪽마다 / 페이지 범위로, output folder) · 인쇄 (range + the system dialog) ·
+취소) · 파일 합치기 (ordered list with pointer drag — v0.3; per-file range field; bookmarks, labels and fields come along) ·
+문서 분할 ({{n}}쪽마다 / 페이지 범위로 / v0.3 책갈피로 + level, output folder) · 인쇄 (range + the system dialog) ·
 설정 (일반 / 모양 / 주석 / 고급) · 문서 정보 · 여러 파일을 어떻게 열까요? (각각 열기 / 하나로 합치기).
 
 All dialogs are rendered in the webview, `--elevation-3`, `--radius-xl`, Esc closes, the primary button
@@ -1311,6 +1327,59 @@ from the same catalogue). The native menu's `view.readAloud` label lives in `app
 | `multiSearch.reason.password` | 암호를 입력하지 않았습니다 | No password was entered |
 | `multiSearch.reason.searchFailed` | 검색하지 못했습니다 | Could not be searched |
 | `multiSearch.openHit` | {{name}} {{page}}쪽 열기 | Open {{name}}, page {{page}} |
+
+### 15.20c v0.3 pkg2 — 이미지로 PDF 만들기, 필드 만들기, 양식 데이터, pages between windows
+
+**이미지로 PDF 만들기** (파일 ▸ 이미지로 PDF 만들기…, the ⋯ menu, the native 파일 menu; any PNG / JPEG dropped on
+the window or the welcome screen opens it instead of `open_document`): the images in page order (pointer drag,
+↑ / ↓, ×, 이미지 추가…), 페이지 크기 원본 크기 / A4 / 레터 (radio), 여백 없음 / 좁게 6 mm / 보통 13 mm / 넓게 25 mm,
+and on A4 / 레터 배치 페이지에 맞춤 / 실제 크기; 만들기 opens the new, unsaved document named after the first image
+(status-bar progress past 5 images). **클립보드에서 새로 만들기** (파일 menu, ⋯): the clipboard's image as a
+one-page document at its own size (WebKit shows its 붙여넣기 button first; 클립보드에 이미지가 없습니다 otherwise).
+In **편집**, ⌘V with nothing copied in the app and an image on the system clipboard places the image centred on
+the page in view, at most half the page each way (one undo step).
+
+**양식 ▸ 필드 만들기** — with a field tool armed the page is a crosshair drawing surface under the existing
+controls: drag a rectangle (a click places a default-sized field: text 160 × 20, check / radio 14 × 14, combo
+120 × 20, signature 150 × 40 pt). The field is created with the next free default name (텍스트1, 확인란1, 라디오1,
+목록1, 서명1; a radio button starts a group) and selected; the inspector's **필드 속성** (under the field summary)
+edits 필드 이름, 필수 항목, 최대 글자 수 (text), 선택 항목 (combo, one per line) and 필드 삭제 — each one undo
+step, committed on blur / Enter. 양식 데이터 내보내기… / 가져오기… use the save / open panel (XFDF or CSV by
+extension); an import names fields the document does not have. **양식 평면화** asks first (danger button,
+`form.flattenWarning`) and toasts 양식을 평면화했습니다 + 실행 취소.
+
+**Fill-in polish**: 모든 필드 지우기 resets each field to its default value (`/DV`); 값 지우기 on a radio button
+switches the whole group off; a text field's 최대 글자 수 limits typing; a push button shows its own caption
+(its rectangle of the page rendered with the widgets); a document with no field shows 이 문서에는 입력 가능한 양식이
+없습니다 in the inspector; right-clicking a field opens 값 지우기 · 모든 필드 지우기 · 필드 강조 표시 · 필드 속성 ·
+필드 삭제.
+
+**링크 패널** (P5): 테두리 표시 (checkbox) — a 1 pt box, blue by default — and 테두리 색 (the 8 swatches) when on.
+With the 링크 tool, a click (no drag) on a page where text is selected links the selection, one quad per line.
+
+**Welcome** (H7): the drop zone's highlight follows the native drag state (Windows never sends HTML5
+`dragover` under Tauri's file drop).
+
+| Key | 한국어 | English |
+|---|---|---|
+| `menu.file.imagesToPdf` | 이미지로 PDF 만들기… | Create PDF from Images… |
+| `menu.file.newFromClipboard` | 클립보드에서 새로 만들기 | New from Clipboard |
+| `imagesToPdf.title` / `.create` / `.add` | 이미지로 PDF 만들기 / 만들기 / 이미지 추가… | Create PDF from Images / Create / Add Images… |
+| `imagesToPdf.size.*` / `.margin.*` / `.fit.*` | 원본 크기 · A4 · 레터 / 없음 · 좁게 · 보통 · 넓게 / 페이지에 맞춤 · 실제 크기 | Image size · A4 · Letter / None · Narrow · Normal · Wide / Fit to page · Actual size |
+| `imagesToPdf.done` | 이미지 {{count}}개로 새 PDF를 만들었습니다 | Created a PDF from {{count}} images |
+| `pages.merge.carries` | 책갈피, 페이지 레이블, 양식 필드도 함께 합쳐집니다. … | Bookmarks, page labels and form fields come along; … |
+| `pages.moveTo.*` | 위치 이동 · 이동 · 맨 앞으로 · 맨 뒤로 · 지정한 페이지 위치로 | Move Pages · Move · To the beginning · To the end · To page number |
+| `pages.split.byOutline` / `.outlineLevelN` | 책갈피로 / {{n}}단계 책갈피마다 | By bookmarks / Each level-{{n}} bookmark |
+| `pages.importedFromWindow` | 다른 창에서 {{count}}쪽을 가져왔습니다 | Copied {{count}} pages from another window |
+| `outline.headings` / `.add` | 제목에서 목차 만들기 / 목차에 추가 | Build from Headings / Add to Outline |
+| `form.author.section` / `.text` … `.signature` | 필드 만들기 / 텍스트 필드 · 확인란 · 라디오 단추 · 목록 상자 · 서명 필드 | Create Fields / Text Field · Check Box · Radio Button · Combo Box · Signature Field |
+| `form.author.properties` / `.delete` / `.maxLen` / `.options` | 필드 속성 / 필드 삭제 / 최대 글자 수 / 선택 항목 (한 줄에 하나) | Field Properties / Delete Field / Max length / Choices (one per line) |
+| `form.data.export` / `.import` | 양식 데이터 내보내기… / 양식 데이터 가져오기… | Export Form Data… / Import Form Data… |
+| `form.flattened` | 양식을 평면화했습니다 | The form was flattened |
+| `link.border` / `link.borderColor` | 테두리 표시 / 테두리 색 | Show border / Border colour |
+| `undo.pageImport`, `undo.formFieldCreate` / `Edit` / `Delete`, `undo.formImport`, `undo.formFlatten` | 다른 문서에서 페이지 가져오기, 필드 만들기 / 필드 속성 / 필드 삭제, 양식 데이터 가져오기, 양식 평면화 | Pages from Another Document, Create Field / Field Properties / Delete Field, Import Form Data, Flatten Form |
+
+(Full list: the 75 keys appended to `src/i18n/ko.json` / `en.json` in v0.3 pkg2.)
 
 ### 15.21 Notes for the implementer
 

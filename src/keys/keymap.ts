@@ -143,6 +143,8 @@ export const MENU_ONLY_IDS: readonly string[] = [
   "view.readAloud",
   // P2 여러 파일에서 검색… (편집 menu, ⋯, the 검색 panel)
   "edit.findInFiles",
+  // v0.3 pkg2-pages-structure-forms: 파일 ▸ 이미지로 PDF 만들기… / 클립보드에서 새로 만들기
+  "file.imagesToPdf", "file.newFromClipboard",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 

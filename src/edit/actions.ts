@@ -849,3 +849,36 @@ export async function addImageFlow(page: PageIndex, rect: Rect): Promise<boolean
     return false;
   }
 }
+
+/**
+ * v0.3 pkg2-pages-structure-forms (D1): ⌘V with an **image on the system clipboard** (and nothing
+ * on the in-app object clipboard) places it on the page in view, centred, at most half the page on
+ * each side (aspect kept by the engine) — one `add_image_object`, one undo step. `data` is the
+ * DOM `paste` event's clipboard (macOS menu route); without it the async clipboard is read (the
+ * Windows keydown route). `false` when there is no image.
+ */
+export async function pasteSystemImage(data?: DataTransfer | null): Promise<boolean> {
+  const doc = docId();
+  if (!doc || useEditStore.getState().session) return false;
+  const { readClipboardImage } = await import("../dialogs/imagesFlow");
+  const bytes = await readClipboardImage(data);
+  if (!bytes) return false;
+  const page = useViewStore.getState().currentPage;
+  const geom = useDocStore.getState().info?.pages[page];
+  if (!geom) return false;
+  const crop = geom.crop;
+  const w = (crop.r - crop.l) / 2;
+  const h = (crop.t - crop.b) / 2;
+  const cx = (crop.l + crop.r) / 2;
+  const cy = (crop.b + crop.t) / 2;
+  const rect: Rect = { l: cx - w / 2, b: cy - h / 2, r: cx + w / 2, t: cy + h / 2 };
+  try {
+    const path = await api.writeTempImage(bytes);
+    const result = await api.addImageObject({ docId: doc, page, rect, path, keepAspect: true });
+    useEditStore.getState().setPage(page, result);
+    return true;
+  } catch (e) {
+    fail(e, page);
+    return false;
+  }
+}

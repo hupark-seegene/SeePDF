@@ -1,0 +1,43 @@
+/* v0.3 pkg2-pages-structure-forms — 필드 만들기 and pushbutton captions */
+
+/* a field tool is armed: the page is a drawing surface under the existing controls */
+.form-author {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.form-author-draft {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: var(--accent-subtle);
+  pointer-events: none;
+}
+
+/* a pushbutton shows its own appearance, cropped from the page rendered with its widgets */
+.form-button {
+  background-repeat: no-repeat;
+  border-style: solid;
+  border-color: transparent;
+}
+
+.field-properties {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.field-properties h3 {
+  margin: 0;
+  font-weight: 600;
+}
+
+.field-properties .prop-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}

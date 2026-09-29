@@ -12,11 +12,16 @@ import { toast } from "../app/toastStore";
 import { Dialog, Row } from "./Dialog";
 import { dirName, message, revealAction } from "./flows";
 import { parsePageRange } from "./pageRange";
+import type { OutlineNode } from "../ipc/types";
 
 export function SplitDialog({ onClose }: { onClose(): void }) {
   const t = useT();
   const info = useDocStore((s) => s.info);
-  const [mode, setMode] = useState<"everyN" | "ranges">("everyN");
+  const [mode, setMode] = useState<"everyN" | "ranges" | "outline">("everyN");
+  // v0.3 P4: 책갈피로 분할 — one file per bookmark of this level
+  const [level, setLevel] = useState(1);
+  const outline = useDocStore((s) => s.outline);
+  const depth = outlineDepth(outline);
   const [everyN, setEveryN] = useState(1);
   const [ranges, setRanges] = useState("");
   const [outDir, setOutDir] = useState(() => (info?.path ? dirName(info.path) : ""));
@@ -39,7 +44,11 @@ export function SplitDialog({ onClose }: { onClose(): void }) {
     const jobs = useJobStore.getState();
     try {
       await api.splitDocument(
-        { docId: info.docId, mode: mode === "everyN" ? { everyN } : { ranges: rangeList }, outDir },
+        {
+          docId: info.docId,
+          mode: mode === "everyN" ? { everyN } : mode === "outline" ? { byOutline: { level } } : { ranges: rangeList },
+          outDir,
+        },
         (e) => {
           jobs.apply("split", "pages.split.title", e);
           if (e.type === "done") {
@@ -95,6 +104,32 @@ export function SplitDialog({ onClose }: { onClose(): void }) {
             onChange={(e) => setRanges(e.target.value)}
           />
         )}
+        {/* v0.3 P4: one file per bookmark, named after it */}
+        <label className="dlg-radio text-base">
+          <input
+            type="radio"
+            name="split"
+            checked={mode === "outline"}
+            disabled={depth === 0}
+            onChange={() => setMode("outline")}
+          />
+          <span>{t("pages.split.byOutline")}</span>
+        </label>
+        {mode === "outline" && (
+          <select
+            className="field"
+            value={level}
+            aria-label={t("pages.split.outlineLevel")}
+            onChange={(e) => setLevel(Number(e.target.value))}
+          >
+            {Array.from({ length: Math.max(1, Math.min(depth, 5)) }, (_, i) => (
+              <option key={i + 1} value={i + 1}>
+                {t("pages.split.outlineLevelN", { n: i + 1 })}
+              </option>
+            ))}
+          </select>
+        )}
+        {depth === 0 && <p className="dlg-hint text-xs">{t("pages.split.noOutline")}</p>}
       </div>
 
       <Row labelKey="pages.split.outDir">
@@ -108,4 +143,9 @@ export function SplitDialog({ onClose }: { onClose(): void }) {
       </Row>
     </Dialog>
   );
+}
+
+/** How many levels deep the outline goes (0 = none). */
+function outlineDepth(nodes: OutlineNode[]): number {
+  return nodes.reduce((d, n) => Math.max(d, 1 + outlineDepth(n.children ?? [])), 0);
 }

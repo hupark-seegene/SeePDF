@@ -727,6 +727,33 @@ pub fn mutate_bytes_checked(
     f: impl FnOnce(&[u8], &OpenDoc<'_>) -> Result<Vec<u8>, EngineError>,
     check: impl FnOnce(&'static dyn PdfiumLibraryBindings, &PdfDocument<'_>) -> Result<(), EngineError>,
 ) -> Result<DocInfo, EngineError> {
+    mutate_bytes_inner(st, doc_id, opts, None, f, check)
+}
+
+// v0.3 pkg2-pages-structure-forms: a byte-level rewrite that changes the page count (insert
+// from a file or from another open document, carrying the source's outline / labels / fields).
+/// [`mutate_bytes_checked`] for a rewrite that **changes the page count**: step 4 expects
+/// `expected_pages` instead of the current count. Everything else — one undo step, rollback,
+/// [`replace`], `doc-changed` — is identical; pass [`MutateOpts::structural`].
+pub fn mutate_bytes_resized(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    opts: MutateOpts,
+    expected_pages: u16,
+    f: impl FnOnce(&[u8], &OpenDoc<'_>) -> Result<Vec<u8>, EngineError>,
+    check: impl FnOnce(&'static dyn PdfiumLibraryBindings, &PdfDocument<'_>) -> Result<(), EngineError>,
+) -> Result<DocInfo, EngineError> {
+    mutate_bytes_inner(st, doc_id, opts, Some(expected_pages), f, check)
+}
+
+fn mutate_bytes_inner(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    opts: MutateOpts,
+    expected_pages: Option<u16>,
+    f: impl FnOnce(&[u8], &OpenDoc<'_>) -> Result<Vec<u8>, EngineError>,
+    check: impl FnOnce(&'static dyn PdfiumLibraryBindings, &PdfDocument<'_>) -> Result<(), EngineError>,
+) -> Result<DocInfo, EngineError> {
     let doc = st
         .docs
         .get_mut(doc_id)
@@ -737,7 +764,8 @@ pub fn mutate_bytes_checked(
     let rewritten = (|| {
         let current = super::save::serialize(st, doc_id)?;
         let doc = st.doc(doc_id)?;
-        let (pages, password) = (doc.page_count(), doc.password.clone());
+        let pages = expected_pages.unwrap_or(doc.page_count());
+        let password = doc.password.clone();
         let out = f(&current, doc)?;
         super::save::verify_bytes_with(st, &out, pages, password, check)?;
         replace(st, doc_id, Arc::from(out.into_boxed_slice()))

@@ -24,7 +24,7 @@ import { toolController } from "../tools/ToolController";
 import { useEditStore } from "./editStore";
 import {
   cancelSession, clearObjectClipboard, commitSession, copySelection, deleteSelection, duplicateSelection,
-  hasObjectClipboard, moveObjects, pasteObjects,
+  hasObjectClipboard, moveObjects, pasteObjects, pasteSystemImage,
 } from "./actions";
 import { EditLayer } from "./EditLayer";
 import { confirmLeave, dropMarks, onDocChangedForMarks, watchMarks } from "./redact";
@@ -153,6 +153,10 @@ function onClipboardEvent(e: ClipboardEvent): void {
   } else if (e.type === "paste" && hasObjectClipboard()) {
     e.preventDefault();
     void pasteObjects();
+  } else if (e.type === "paste" && [...(e.clipboardData?.items ?? [])].some((i) => i.type.startsWith("image/"))) {
+    // v0.3 pkg2 (D1): an image on the system clipboard goes on the page
+    e.preventDefault();
+    void pasteSystemImage(e.clipboardData);
   }
 }
 
@@ -200,6 +204,11 @@ function start(): () => void {
     }
     if (id === "edit.paste" && hasObjectClipboard() && !store.session) {
       void pasteObjects();
+      return true;
+    }
+    // v0.3 pkg2 (D1): nothing copied in the app — try an image on the system clipboard
+    if (id === "edit.paste" && !store.session) {
+      void pasteSystemImage();
       return true;
     }
     return false;

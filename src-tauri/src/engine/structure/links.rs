@@ -27,8 +27,8 @@ use crate::engine::raw;
 use crate::engine::registry::{self, MutateOpts};
 use crate::engine::types::EngineState;
 use crate::ipc::types::{
-    Annot, AnnotId, AnnotKind, AnnotList, AnnotResult, ChangeReason, LinkDest, LinkTarget,
-    OutlineDest, PageIndex, Rect,
+    Annot, AnnotId, AnnotKind, AnnotList, AnnotResult, ChangeReason, LinkBorder, LinkDest,
+    LinkTarget, OutlineDest, PageIndex, Rect,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use lopdf::{Dictionary, Document, Object, ObjectId};
@@ -58,12 +58,39 @@ pub fn create_link(
     rect: Rect,
     target: &LinkTarget,
 ) -> Result<AnnotResult, EngineError> {
+    create_link_styled(st, doc_id, page, rect, target, &[], None)
+}
+
+/// v0.3 P5: `create_link` with `quads` (one per selected text line: `/QuadPoints`, the click
+/// area is their union and `rect` is ignored) and an optional visible `border` (`/Border
+/// [0 0 w]` + `/C`; absent or `width: 0` = invisible, as before).
+pub fn create_link_styled(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page: PageIndex,
+    rect: Rect,
+    target: &LinkTarget,
+    quads: &[Rect],
+    border: Option<LinkBorder>,
+) -> Result<AnnotResult, EngineError> {
     let page_count = st.doc(doc_id)?.page_count();
     check_page(page, page_count)?;
-    let rect = normalize_rect(rect)?;
+    let quads: Vec<Rect> = quads
+        .iter()
+        .map(|q| normalize_rect(*q))
+        .collect::<Result<_, _>>()?;
+    let rect = match quads.iter().copied().reduce(|a, b| a.union(&b)) {
+        Some(union) => union,
+        None => normalize_rect(rect)?,
+    };
+    let border = border.map(check_border).transpose()?.flatten();
     let id = match resolve(target, page_count)? {
         Target::Url(url) => registry::mutate(st, doc_id, opts("undo.linkCreate", page), |doc| {
-            annot::create::create_link(doc, page, rect, &[], &url)
+            let id = annot::create::create_link(doc, page, rect, &quads, &url)?;
+            if let Some(b) = border {
+                style_with_pdfium(doc, page, &id, Some(b))?;
+            }
+            Ok(id)
         })?,
         Target::Page(dest) => {
             refuse_encrypted(st, doc_id)?;
@@ -75,13 +102,73 @@ pub fn create_link(
                 st,
                 doc_id,
                 opts("undo.linkCreate", page),
-                move |bytes, _| add_link(bytes, page, rect, &new_id, dest),
+                move |bytes, _| add_link(bytes, page, rect, &new_id, dest, &quads, border),
                 check,
             )?;
             id
         }
     };
     result_for(st, doc_id, page, Some(id), None)
+}
+
+/// A border as it will be written: finite, 0–12 pt; `width: 0` means none (`Ok(None)`).
+fn check_border(b: LinkBorder) -> Result<Option<LinkBorder>, EngineError> {
+    if !b.width.is_finite() || !(0.0..=12.0).contains(&b.width) {
+        return Err(EngineError::invalid("a link border is 0–12 pt wide"));
+    }
+    Ok((b.width > 0.0).then_some(b))
+}
+
+/// `/Border [0 0 w]` and `/C` through PDFium (`None` = `/Border [0 0 0]`).
+fn style_with_pdfium(
+    doc: &mut crate::engine::registry::OpenDoc<'_>,
+    page: PageIndex,
+    id: &str,
+    border: Option<LinkBorder>,
+) -> Result<(), EngineError> {
+    let bindings = doc.bindings();
+    let scratch = ScratchPage::open(doc, page)?;
+    let index = annot::index_of(bindings, &scratch.page, id)?;
+    let mut a = raw::annot::get(bindings, &scratch.page, index)?;
+    let ok = match border {
+        Some(b) => {
+            a.set_border_width(b.width) && a.set_color(raw::annot::ColorKind::Stroke, b.color, 255)
+        }
+        None => a.set_no_border(),
+    };
+    if !ok {
+        return Err(EngineError::new(
+            ErrorCode::Pdfium,
+            "FPDFAnnot_SetBorder / SetColor failed",
+        ));
+    }
+    Ok(())
+}
+
+fn border_objects(border: Option<LinkBorder>) -> (Object, Option<Object>) {
+    match border {
+        Some(b) => (
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Real(b.width),
+            ]),
+            Some(Object::Array(
+                b.color
+                    .iter()
+                    .map(|c| Object::Real(*c as f32 / 255.0))
+                    .collect(),
+            )),
+        ),
+        None => (
+            Object::Array(vec![
+                Object::Integer(0),
+                Object::Integer(0),
+                Object::Integer(0),
+            ]),
+            None,
+        ),
+    }
 }
 
 /// `update_link` — a new click area and / or a new target for the link `id` on `page`.
@@ -94,13 +181,30 @@ pub fn update_link(
     rect: Option<Rect>,
     target: Option<&LinkTarget>,
 ) -> Result<AnnotResult, EngineError> {
+    update_link_styled(st, doc_id, page, id, rect, target, None)
+}
+
+/// v0.3 P5: `update_link` that can also change the border (`Some({ width: 0 })` removes it,
+/// `None` leaves it).
+pub fn update_link_styled(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page: PageIndex,
+    id: &str,
+    rect: Option<Rect>,
+    target: Option<&LinkTarget>,
+    border: Option<LinkBorder>,
+) -> Result<AnnotResult, EngineError> {
     let page_count = st.doc(doc_id)?.page_count();
     check_page(page, page_count)?;
     let previous = find_link(st, doc_id, page, id)?;
     let rect = rect.map(normalize_rect).transpose()?;
     let target = target.map(|t| resolve(t, page_count)).transpose()?;
-    if rect.is_none() && target.is_none() {
-        return Err(EngineError::invalid("update_link needs a rect or a target"));
+    let restyle: Option<Option<LinkBorder>> = border.map(check_border).transpose()?;
+    if rect.is_none() && target.is_none() && restyle.is_none() {
+        return Err(EngineError::invalid(
+            "update_link needs a rect, a target or a border",
+        ));
     }
 
     let has_dest = {
@@ -144,6 +248,11 @@ pub fn update_link(
                 }
             }
             a.set_string("M", &annot::pdf_date_now());
+            drop(a);
+            drop(scratch);
+            if let Some(border) = restyle {
+                style_with_pdfium(doc, page, &id_owned, border)?;
+            }
             Ok(())
         })?;
     } else {
@@ -155,7 +264,7 @@ pub fn update_link(
             st,
             doc_id,
             opts("undo.linkEdit", page),
-            move |bytes, _| rewrite_link(bytes, page, &id_owned, rect, &target),
+            move |bytes, _| rewrite_link(bytes, page, &id_owned, rect, &target, restyle),
             check,
         )?;
     }
@@ -313,6 +422,8 @@ fn add_link(
     rect: Rect,
     id: &str,
     dest: LinkDest,
+    quads: &[Rect],
+    border: Option<LinkBorder>,
 ) -> Result<Vec<u8>, EngineError> {
     let mut doc = super::load(bytes)?;
     let pages = page_ids(&doc);
@@ -324,14 +435,25 @@ fn add_link(
     dict.set("Type", Object::Name(b"Annot".to_vec()));
     dict.set("Subtype", Object::Name(b"Link".to_vec()));
     dict.set("Rect", rect_object(rect));
-    dict.set(
-        "Border",
-        Object::Array(vec![
-            Object::Integer(0),
-            Object::Integer(0),
-            Object::Integer(0),
-        ]),
-    );
+    let (border_array, color) = border_objects(border);
+    dict.set("Border", border_array);
+    if let Some(c) = color {
+        dict.set("C", c);
+    }
+    if !quads.is_empty() {
+        // ISO 32000 §12.5.6.5: x1 y1 x2 y2 x3 y3 x4 y4 per quad — top-left, top-right,
+        // bottom-left, bottom-right (the order PDFium and Acrobat write).
+        dict.set(
+            "QuadPoints",
+            Object::Array(
+                quads
+                    .iter()
+                    .flat_map(|q| [q.l, q.t, q.r, q.t, q.l, q.b, q.r, q.b])
+                    .map(Object::Real)
+                    .collect(),
+            ),
+        );
+    }
     // /F 4: Print (FLAT_PRINT and printing keep it).
     dict.set(
         "F",
@@ -388,6 +510,7 @@ fn rewrite_link(
     id: &str,
     rect: Option<Rect>,
     target: &Target,
+    restyle: Option<Option<LinkBorder>>,
 ) -> Result<Vec<u8>, EngineError> {
     let mut doc = super::load(bytes)?;
     let pages = page_ids(&doc);
@@ -400,6 +523,16 @@ fn rewrite_link(
     let edit = |dict: &mut Dictionary| {
         if let Some(r) = rect {
             dict.set("Rect", rect_object(r));
+        }
+        if let Some(border) = restyle {
+            let (border_array, color) = border_objects(border);
+            dict.set("Border", border_array);
+            match color {
+                Some(c) => dict.set("C", c),
+                None => {
+                    dict.remove(b"C");
+                }
+            }
         }
         match (target, &dest) {
             (Target::Page(_), Some(dest)) => {
