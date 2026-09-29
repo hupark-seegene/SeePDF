@@ -173,6 +173,45 @@ describe("S5 — permission flags", () => {
       .rejects.toMatchObject({ code: "permissionDenied", detail: "assemble" });
   });
 
+  // verification round 1: entry points that changed mode without asking
+  it("도구 › 영역 표시 says why instead of entering 편집", async () => {
+    await useDocStore.getState().open(RESTRICTED);
+    const { useCommands } = await import("./useCommands");
+    let run: ((id: string) => void) | null = null;
+    function Probe() {
+      run = useCommands();
+      return null;
+    }
+    render(<Probe />);
+    act(() => run!("tools.redact"));
+    expect(useAppStore.getState().mode).toBe("read");
+    expect(useAppStore.getState().tool).not.toBe("redact");
+    expect(toastKeys()).toContain("security.restricted.reason.modify");
+  });
+
+  it("the canvas menu's 페이지 정리 is disabled with the reason", async () => {
+    await useDocStore.getState().open(RESTRICTED);
+    const { openPageContextMenu } = await import("./pageMenus");
+    const { useContextMenuStore } = await import("./contextMenuStore");
+    openPageContextMenu(0, "canvas", 10, 10);
+    const organize = useContextMenuStore.getState().menu?.items.find((i) => i.id === "organize");
+    expect(organize).toMatchObject({ disabled: true, hintKey: "security.restricted.reason.assemble" });
+    useContextMenuStore.getState().close();
+  });
+
+  it("a mode the document forbids never stays active", async () => {
+    // kept from the previous document
+    useAppStore.setState({ mode: "edit" });
+    await useDocStore.getState().open(RESTRICTED);
+    expect(useAppStore.getState().mode).toBe("read");
+    expect(toastKeys()).toContain("security.restricted.reason.modify");
+    // set by a caller that did not ask: back to the previous (allowed) mode
+    act(() => useAppStore.getState().setMode("annotate"));
+    act(() => useAppStore.getState().setMode("pages"));
+    expect(useAppStore.getState().mode).toBe("annotate");
+    expect(toastKeys()).toContain("security.restricted.reason.assemble");
+  });
+
   it("an unrestricted document shows no badge and blocks nothing", async () => {
     const info = (await useDocStore.getState().open("/Users/veri/Documents/SeePDF-샘플.pdf"))!;
     const { container } = render(<DocBadges />);

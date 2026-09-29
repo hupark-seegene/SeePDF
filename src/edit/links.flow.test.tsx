@@ -20,6 +20,7 @@ import { LinkLayer } from "../annot/LinkLayer";
 import { useEditStore } from "./editStore";
 import { EditLayer } from "./EditLayer";
 import { LinkPanel } from "./LinkPanel";
+import { LinkTargetForm } from "./LinkTargetForm";
 import { normalizeUrl, useLinkStore } from "./linkActions";
 import { editHost } from "./index";
 
@@ -172,19 +173,11 @@ describe("편집 · 링크", () => {
     const info = await useDocStore.getState().open("/tmp/restricted.pdf");
     if (!info) throw new Error("mock open failed");
     expect(info.permissions.modify).toBe(false);
-    const page = info.pages[0];
-    const ctx = makePageLayerContext({
-      docId: info.docId, docGeneration: info.docGeneration, page, rotation: 0, zoomPercent: 100,
-      width: page.widthPt, height: page.heightPt,
-    });
+    // 편집 is never the mode of such a document (verification round 1: the permission mode guard)…
     useAppStore.setState({ mode: "edit", tool: "link" });
-    stop = editHost.start();
-    const view = render(<EditLayer ctx={ctx} />);
-    const surface = view.container.querySelector(".edit-surface") as HTMLElement;
-    fireEvent.pointerDown(surface, at(ctx, 100, 700));
-    fireEvent.pointerMove(surface, at(ctx, 200, 650));
-    fireEvent.pointerUp(surface, at(ctx, 200, 650));
-    await screen.findByRole("dialog", { name: "새 링크" });
+    expect(useAppStore.getState().mode).toBe("read");
+    // …and the link form still refuses a /Dest on its own
+    render(<LinkTargetForm submitKey="link.create" onSubmit={() => undefined} />);
     expect(screen.getByRole("radio", { name: "웹 주소" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("radio", { name: "페이지로 이동" }));
     expect(screen.getByText("이 문서는 편집이 제한되어 있습니다. 권한 암호로 잠금을 해제하세요.")).toBeInTheDocument();

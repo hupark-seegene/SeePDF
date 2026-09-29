@@ -726,6 +726,66 @@ fn signed_document_after_a_rewrite_saves_in_full() {
     assert_eq!(info_of(&doc.doc_id).incremental_save, Some(true));
 }
 
+/// Verification round 1: the viewer lists annotations on open, which stamps `/NM` on the
+/// signature widget (`ids_stamped`). The first edit's undo snapshot is then serialised, and it
+/// must still start with the signed bytes, or one edit + undo turns saving into a rewrite.
+#[test]
+fn signed_document_viewed_edited_and_undone_stays_incremental() {
+    let original = signed_pdf();
+    let (doc, path) = open_written("signed-viewed-undo.pdf", &original, None);
+    let id = doc.doc_id.clone();
+    let undo = |redo: bool| {
+        let d = id.clone();
+        with_state(move |st| registry::undo(st, &d, redo)).expect("undo / redo");
+    };
+    let widgets = annot_count(&id); // the signature widgets, now stamped with an /NM
+    assert!(widgets >= 1);
+    assert_eq!(info_of(&id).incremental_save, Some(true));
+
+    // One edit + undo.
+    highlight(&id).expect("annotate");
+    undo(false);
+    assert_eq!(
+        info_of(&id).incremental_save,
+        Some(true),
+        "one edit + undo on a viewed signed document"
+    );
+    assert_eq!(annot_count(&id), widgets);
+
+    // Edit, edit, undo, redo.
+    highlight(&id).expect("annotate");
+    highlight(&id).expect("annotate again");
+    undo(false);
+    assert_eq!(
+        info_of(&id).incremental_save,
+        Some(true),
+        "after edit, edit, undo"
+    );
+    undo(true);
+    assert_eq!(info_of(&id).incremental_save, Some(true), "after redo");
+    assert_eq!(annot_count(&id), widgets + 2);
+
+    // A lopdf rewrite is a full save; undoing it restores the appended snapshot.
+    set_metadata(&id, korean_meta()).expect("a lopdf rewrite");
+    assert_eq!(info_of(&id).incremental_save, Some(false));
+    undo(false);
+    assert_eq!(
+        info_of(&id).incremental_save,
+        Some(true),
+        "undo of a rewrite"
+    );
+
+    save_in_place(&id).expect("save");
+    let saved = std::fs::read(&path).unwrap();
+    assert!(
+        saved.starts_with(&original),
+        "the signed revision must stay byte-identical"
+    );
+    let (again, _) = open_written("signed-viewed-undo-reopen.pdf", &saved, None);
+    assert_eq!(again.info.signatures.len(), 1);
+    assert_eq!(annot_count(&again.doc_id), widgets + 2);
+}
+
 // ---------------------------------------------------------------------------------------
 // S5
 // ---------------------------------------------------------------------------------------

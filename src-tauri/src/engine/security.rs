@@ -313,7 +313,7 @@ pub fn unlock(
     let (encrypted, current) = {
         let doc = st.doc(doc_id)?;
         let current = if doc.dirty() || doc.ids_stamped || doc.history.undo_depth() > 0 {
-            doc.to_bytes()?
+            doc.snapshot_bytes()?
         } else {
             doc.bytes.clone()
         };

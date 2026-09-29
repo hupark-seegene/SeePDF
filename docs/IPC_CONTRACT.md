@@ -1149,8 +1149,10 @@ backup_folder(): Promise<string>                                                
 signature (`FPDF_GetSignatureCount` / `FPDFSignatureObj_*`; an empty signature field is not listed), with the
 field's `/T` (read with lopdf, best effort), `/Reason`, `/M` (raw `D:` string) and `/SubFilter`. Nothing is
 validated. The engine keeps a signed file's bytes (`OpenDoc::incremental_base`) and whether the in-memory
-document still derives from them by PDFium edits alone (`pristine`: any lopdf rewrite, or an undo / redo /
-rollback to a re-serialised snapshot, clears it; an undo back to the file's own bytes restores it).
+document still derives from them by PDFium edits alone (`pristine`: any lopdf rewrite clears it). The undo /
+redo snapshots of a pristine signed document are written with `FPDF_INCREMENTAL` (`OpenDoc::snapshot_bytes`),
+so they start with the signed bytes and an undo / redo / rollback to one keeps (or restores) `pristine` —
+including the first edit after `list_annotations` stamped `/NM` ids.
 `incrementalSave` reports it. `save_document` / `save_document_as` of a signed, pristine document use
 `FPDF_INCREMENTAL`: the output **starts with the signed file byte for byte** (checked; a full rewrite is the
 fallback) and the saved file becomes the new base. Anything else is a full rewrite, which the UI announces

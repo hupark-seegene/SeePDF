@@ -62,8 +62,11 @@ panel content, and what a click on the page does.
   양식 · 페이지) and **권한 암호로 잠금 해제…** — the password prompt (retried in place on a wrong password);
   success reopens the document with full rights (same window, same undo history) and the pill disappears.
   A forbidden action is disabled where it lives with the reason as its tooltip — 편집 / 페이지 / 주석 / 양식 in
-  the mode switcher, 인쇄 in the ⋯ menu — and a shortcut for it toasts the reason instead of running; ⌘C /
-  복사 on a copy-forbidden document toasts the reason and the clipboard mirror stays empty.
+  the mode switcher, 인쇄 in the ⋯ menu, 페이지 정리 / 답글 / 삭제 / 형광펜… / 영역 표시로 표시 in the context
+  menus — and a shortcut or menu command for it (도구 › 영역 표시 included) toasts the reason instead of running;
+  ⌘C / 복사 on a copy-forbidden document toasts the reason and the clipboard mirror stays empty. The current
+  mode is always one the document permits: opening (or switching to) a document that forbids it falls back to
+  읽기, and any other attempt to enter a forbidden mode keeps the previous one — both toast the reason.
 * Esc or a click outside closes a popover. Both popovers are one lazy chunk (`BadgePopover`).
 
 ---

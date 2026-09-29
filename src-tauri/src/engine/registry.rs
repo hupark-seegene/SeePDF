@@ -325,6 +325,31 @@ impl<'p> OpenDoc<'p> {
         Ok(Arc::from(bytes.into_boxed_slice()))
     }
 
+    /// The undo / redo snapshot of the document as it is now. A signed document that only
+    /// PDFium has changed since its signed bytes were loaded (`pristine`) is serialised with
+    /// `FPDF_INCREMENTAL`, so the snapshot still **starts with** `incremental_base` and
+    /// [`replace`] keeps the document pristine when it is loaded again (v0.3 S1: an undo — or
+    /// the first edit after `list_annotations` stamped `/NM` ids — must not turn the next save
+    /// into a full rewrite). Everything else is [`Self::to_bytes`].
+    pub fn snapshot_bytes(&self) -> Result<Arc<[u8]>, EngineError> {
+        if let (true, false, Some(base)) = (
+            self.pristine,
+            self.signatures.is_empty(),
+            self.incremental_base.as_ref(),
+        ) {
+            let out = raw::save::save_as_copy(
+                self.bindings,
+                &self.doc,
+                raw::save::SaveFlags::Incremental,
+            )?;
+            if out.starts_with(base) {
+                return Ok(Arc::from(out.into_boxed_slice()));
+            }
+            tracing::warn!(doc_id = %self.doc_id, "incremental snapshot did not keep the signed bytes");
+        }
+        self.to_bytes()
+    }
+
     /// The document's outline as the contract's nested node list, depth-first.
     ///
     /// Read with the raw `FPDFBookmark_*` API (`raw::outline::read`) because pdfium-render
@@ -678,7 +703,7 @@ fn pre_edit_bytes(doc: &OpenDoc<'_>) -> Result<Arc<[u8]>, EngineError> {
     if doc.generation == doc.saved_generation && doc.history.undo_depth() == 0 && !doc.ids_stamped {
         Ok(doc.bytes.clone())
     } else {
-        doc.to_bytes()
+        doc.snapshot_bytes()
     }
 }
 
@@ -779,7 +804,7 @@ pub fn mutate_bytes_checked(
     let base = pre_edit_bytes(doc)?;
     let pushed = doc.history.push(opts.label, base.clone(), opts.coalesce)?;
 
-    let rewritten = (|| {
+    let rewritten = (|| -> Result<(), EngineError> {
         let current = super::save::serialize(st, doc_id)?;
         let doc = st.doc(doc_id)?;
         let (pages, password) = (doc.page_count(), doc.password.clone());
@@ -814,7 +839,10 @@ pub fn mutate_bytes_checked(
             }
             check(bindings, reopened)
         })?;
-        replace(st, doc_id, Arc::from(out.into_boxed_slice()))
+        replace(st, doc_id, Arc::from(out.into_boxed_slice()))?;
+        // v0.3 S1: a lopdf rewrite never keeps the signed bytes, whatever it starts with.
+        st.doc_mut(doc_id)?.pristine = false;
+        Ok(())
     })();
     if let Err(e) = rewritten {
         let doc = st.doc_mut(doc_id)?;
@@ -886,10 +914,12 @@ pub fn replace<'p>(
             );
         }
     }
+    // An incremental snapshot (`OpenDoc::snapshot_bytes`) is the signed bytes plus PDFium's
+    // appended updates: it still starts with them, so the next save can append again.
     doc.pristine = doc
         .incremental_base
         .as_ref()
-        .is_some_and(|base| Arc::ptr_eq(base, &bytes) || **base == *bytes);
+        .is_some_and(|base| Arc::ptr_eq(base, &bytes) || bytes.starts_with(base));
 
     let old = std::mem::replace(&mut doc.doc, loaded);
     drop(old);
@@ -933,7 +963,7 @@ pub fn undo(st: &mut EngineState<'_>, doc_id: &str, redo: bool) -> Result<DocInf
         .docs
         .get_mut(doc_id)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))?;
-    let current = doc.to_bytes()?;
+    let current = doc.snapshot_bytes()?;
     let Some(step) = doc.history.prepare(redo, current)? else {
         return Err(EngineError::invalid(if redo {
             "nothing to redo"

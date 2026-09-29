@@ -1,11 +1,15 @@
 /**
- * v0.3 pkg3 (S5): the document's permission flags, as the UI uses them. Pure and tiny — it sits in
- * the entry chunk because the dispatcher, the mode switcher and the title bar all read it.
+ * v0.3 pkg3 (S5): the document's permission flags, as the UI uses them. Tiny — it sits in the entry
+ * chunk because the dispatcher, the mode switcher and the title bar all read it.
  *
  * The engine enforces the same flags (`engine::security::ensure_permitted`); the UI only disables
- * the entry and says why, so nobody hits a `permissionDenied` toast by surprise.
+ * the entry and says why, so nobody hits a `permissionDenied` toast by surprise. The one side effect
+ * is the mode guard at the bottom: the current mode is always one the open document permits.
  */
 import type { DocInfo, Permissions } from "../ipc/types";
+import { useAppStore, type Mode } from "../store/appStore";
+import { useDocStore } from "../store/docStore";
+import { toast } from "./toastStore";
 
 export type PermKey = keyof Omit<Permissions, "revision">;
 
@@ -25,6 +29,8 @@ const NEEDS: Record<string, PermKey> = {
   "mode.pages": "assemble",
   "mode.annotate": "annotate",
   "mode.form": "fillForms",
+  // 도구 › 영역 표시 arms the redaction tool in 편집 mode
+  "tools.redact": "modify",
 };
 
 /** The i18n key of the reason `id` is not allowed on this document, or `null` when it is. */
@@ -47,3 +53,31 @@ export function structureLocked(info: DocInfo | null | undefined): boolean {
 export function copyForbidden(info: DocInfo | null | undefined): boolean {
   return !!info && !info.permissions.extractText;
 }
+
+/** The reason `mode` is not allowed on this document, or `null` (읽기 always is). */
+export function modeBlock(mode: Mode, info: DocInfo | null | undefined): string | null {
+  return permissionBlock(`mode.${mode}`, info);
+}
+
+/**
+ * The mode invariant. Every entry point that changes mode (the switcher, 도구 › 영역 표시, the context
+ * menus, the annotation list) is gated on its own, but a mode kept from the previous document — or one
+ * a future caller sets without asking — must not leave a forbidden tool armed: when the open document
+ * forbids the current mode, fall back to the previous mode (when a mode change caused it and that one
+ * is allowed) or 읽기, and say why.
+ */
+function enforceMode(fallback: Mode): void {
+  const info = useDocStore.getState().info;
+  const app = useAppStore.getState();
+  const blocked = modeBlock(app.mode, info);
+  if (!blocked) return;
+  app.setMode(modeBlock(fallback, info) ? "read" : fallback);
+  toast(blocked, undefined, { tone: "info" });
+}
+
+useDocStore.subscribe((s, prev) => {
+  if (s.info !== prev.info) enforceMode("read");
+});
+useAppStore.subscribe((s, prev) => {
+  if (s.mode !== prev.mode) enforceMode(prev.mode);
+});

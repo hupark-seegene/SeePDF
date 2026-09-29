@@ -28,6 +28,7 @@ import { annotAt } from "../tools/hit";
 import { GRAB_PX } from "../tools/select";
 import { annotsOnPage, deleteAnnotations, openThread } from "../annot/actions";
 import type { Annot, PageIndex, PageOp } from "../ipc/types";
+import { permissionBlock } from "./permissions";
 
 /** The page a context-menu event happened on, or `null` when it was not over a page. */
 export function pageFromEvent(target: EventTarget | null): { page: PageIndex; source: "canvas" | "thumbnail" } | null {
@@ -94,6 +95,11 @@ export function openPageContextMenu(
   const view = useViewStore.getState();
   const app = useAppStore.getState();
 
+  // v0.3 pkg3 (S5): entries the document's permissions forbid are disabled, with the reason
+  const annotBlock = permissionBlock("mode.annotate", info);
+  const pagesBlock = permissionBlock("mode.pages", info);
+  const redactBlock = permissionBlock("tools.redact", info);
+
   // UI_SPEC §12 Annotation (P2 threads): 답글 opens the thread with the reply box focused
   const annot = source === "canvas" ? annotationUnder(page, x, y, target) : null;
   const annotItems: MenuEntry[] = annot
@@ -101,6 +107,8 @@ export function openPageContextMenu(
         {
           id: "replyAnnot",
           labelKey: "annot.thread.reply",
+          disabled: !!annotBlock,
+          hintKey: annotBlock ?? undefined,
           onSelect: () => {
             if (useAppStore.getState().mode === "read") useAppStore.getState().setMode("annotate");
             openThread(page, annot.id, true);
@@ -110,6 +118,8 @@ export function openPageContextMenu(
           id: "deleteAnnot",
           labelKey: "common.delete",
           danger: true,
+          disabled: !!annotBlock,
+          hintKey: annotBlock ?? undefined,
           onSelect: () => void deleteAnnotations(page, [annot.id]),
         },
         { id: "sepAnnot", separator: true },
@@ -173,6 +183,8 @@ export function openPageContextMenu(
     {
       id: "organize",
       labelKey: "pages.title",
+      disabled: !!pagesBlock,
+      hintKey: pagesBlock ?? undefined,
       onSelect: () => {
         const pending = app.mode === "edit" ? editLeaveGuard() : null;
         if (!pending) return app.setMode("pages");
@@ -195,13 +207,15 @@ export function openPageContextMenu(
           onSelect: () => void copyToClipboard(selectedText),
         },
         { id: "sepText1", separator: true },
-        { id: "highlightSelection", labelKey: "tool.highlight", onSelect: () => textMenu((m) => m.markupSelection("highlight")) },
-        { id: "underlineSelection", labelKey: "tool.underline", onSelect: () => textMenu((m) => m.markupSelection("underline")) },
-        { id: "strikeoutSelection", labelKey: "tool.strikeout", onSelect: () => textMenu((m) => m.markupSelection("strikeout")) },
-        { id: "noteSelection", labelKey: "textMenu.addNote", onSelect: () => textMenu((m) => m.noteOnSelection()) },
+        { id: "highlightSelection", labelKey: "tool.highlight", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => textMenu((m) => m.markupSelection("highlight")) },
+        { id: "underlineSelection", labelKey: "tool.underline", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => textMenu((m) => m.markupSelection("underline")) },
+        { id: "strikeoutSelection", labelKey: "tool.strikeout", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => textMenu((m) => m.markupSelection("strikeout")) },
+        { id: "noteSelection", labelKey: "textMenu.addNote", disabled: !!annotBlock, hintKey: annotBlock ?? undefined, onSelect: () => textMenu((m) => m.noteOnSelection()) },
         {
           id: "redactSelection",
           labelKey: "redact.markSelection",
+          disabled: !!redactBlock,
+          hintKey: redactBlock ?? undefined,
           onSelect: () => void import("../edit/redact").then((m) => m.markTextSelection()),
         },
         { id: "sepText2", separator: true },
