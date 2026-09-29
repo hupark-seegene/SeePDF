@@ -1192,3 +1192,187 @@ fn optimize_render_check_catches_a_lost_resource() {
     assert!(same, "identical files render the same");
     assert!(!lost, "a page that lost its image is caught");
 }
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg8 (X5), verification round 2: a page range never splices a stream drawn elsewhere
+// ---------------------------------------------------------------------------------------
+
+/// Three pages sharing one 1200² image (`/Im`, optionally soft-masked), also reachable through
+/// a Form XObject `/Fm` (drawing it into its unit square). `annot` puts a Square annotation
+/// on page 0 whose appearance stream draws `/Im` too.
+fn shared_image_pdf(draws: [&str; 3], smask: bool, annot: bool) -> Vec<u8> {
+    use lopdf::{dictionary, Object, Stream};
+    let mut doc = lopdf::Document::with_version("1.5");
+    let im = image_stream(&mut doc, 1200, 1200, smask);
+    let form = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 1.into(), 1.into()],
+            "Resources" => dictionary! { "XObject" => dictionary! { "Im" => Object::Reference(im) } },
+        },
+        b"/Im Do".to_vec(),
+    ));
+    let pages_id = doc.new_object_id();
+    let mut kids = Vec::new();
+    for (i, draw) in draws.iter().enumerate() {
+        let content = doc.add_object(Stream::new(dictionary! {}, draw.as_bytes().to_vec()));
+        let mut page = dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Contents" => content,
+            "Resources" => dictionary! { "XObject" => dictionary! {
+                "Im" => Object::Reference(im), "Fm" => Object::Reference(form),
+            } },
+        };
+        if annot && i == 0 {
+            let ap = doc.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject", "Subtype" => "Form",
+                    "BBox" => vec![0.into(), 0.into(), 300.into(), 300.into()],
+                    "Resources" => dictionary! { "XObject" => dictionary! { "Im" => Object::Reference(im) } },
+                },
+                b"q 300 0 0 300 0 0 cm /Im Do Q".to_vec(),
+            ));
+            let annot = doc.add_object(dictionary! {
+                "Type" => "Annot", "Subtype" => "Square", "F" => 4,
+                "Rect" => vec![100.into(), 100.into(), 400.into(), 400.into()],
+                "AP" => dictionary! { "N" => Object::Reference(ap) },
+            });
+            page.set("Annots", vec![Object::Reference(annot)]);
+        }
+        kids.push(Object::Reference(doc.add_object(page)));
+    }
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => 3 }),
+    );
+    let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog);
+    let mut out = Vec::new();
+    doc.save_to(&mut out).unwrap();
+    out
+}
+
+/// Page 0 draws the image 612 pt wide (~141 DPI, below a 150 target); pages 1–2 at 72 pt
+/// (1200 DPI).
+const LOW_HIGH_HIGH: [&str; 3] = [
+    "q 612 0 0 612 0 90 cm /Im Do Q",
+    "q 72 0 0 72 72 600 cm /Im Do Q",
+    "q 72 0 0 72 72 600 cm /Im Do Q",
+];
+
+/// Estimates at 150 DPI over `pages`, applies, and returns the report.
+fn compress_range(doc_id: &str, pages: Option<Vec<u16>>) -> CompressReport {
+    let report = report_of(
+        &estimate(
+            doc_id,
+            CompressOptions {
+                target_dpi: 150,
+                pages,
+                optimize: None,
+            },
+        )
+        .expect("estimate"),
+    );
+    apply(doc_id, report.token).expect("apply");
+    report
+}
+
+/// X5: compressing pages 2–3 must not splice the image page 1 also draws (it went from 1200 to
+/// 150 px there, ~18 DPI). Page 2 alone still downsamples its own occurrence in place.
+#[test]
+fn compress_range_keeps_a_shared_image_drawn_outside_the_range() {
+    let whole = open_bytes(
+        shared_image_pdf(LOW_HIGH_HIGH, false, false),
+        "range-whole.pdf",
+    );
+    let report = compress_range(&whole.doc_id, None);
+    assert_eq!(report.images_downsampled, 0, "page 1 is below the target");
+    assert_eq!(images(&whole.doc_id, 0)[0].0, 1200);
+
+    let range = open_bytes(
+        shared_image_pdf(LOW_HIGH_HIGH, false, false),
+        "range-2-3.pdf",
+    );
+    let report = compress_range(&range.doc_id, Some(vec![1, 2]));
+    assert_eq!(report.images_downsampled, 0, "{report:?}");
+    assert_eq!(
+        images(&range.doc_id, 0)[0].0,
+        1200,
+        "page 1 keeps its image"
+    );
+    assert!(image_widths(&range.doc_id).iter().all(|w| w.0 == 1200));
+
+    let single = open_bytes(shared_image_pdf(LOW_HIGH_HIGH, false, false), "range-2.pdf");
+    let report = compress_range(&single.doc_id, Some(vec![1]));
+    assert_eq!(report.images_downsampled, 1, "{report:?}");
+    assert_eq!(
+        images(&single.doc_id, 0)[0].0,
+        1200,
+        "page 1 keeps its image"
+    );
+    assert_eq!(
+        images(&single.doc_id, 2)[0].0,
+        1200,
+        "page 3 keeps its image"
+    );
+    // Page 2 gets a small copy of its own, but the shared original stays for pages 1 and 3,
+    // so the file grows: the result saves nothing and `apply` leaves the document alone.
+    assert!(report.after_bytes >= report.before_bytes, "{report:?}");
+    assert_eq!(images(&single.doc_id, 1)[0].0, 1200);
+}
+
+/// X5: the same for the soft-masked (`masked_plan`) and nested (`/Fm`) splices.
+#[test]
+fn compress_range_keeps_masked_and_nested_images_drawn_outside_the_range() {
+    let masked = open_bytes(
+        shared_image_pdf(LOW_HIGH_HIGH, true, false),
+        "range-masked.pdf",
+    );
+    let report = compress_range(&masked.doc_id, Some(vec![1, 2]));
+    assert_eq!(report.images_downsampled, 0, "{report:?}");
+    assert_eq!(image_widths(&masked.doc_id), vec![(1200, Some(1200))]);
+
+    let nested = open_bytes(
+        shared_image_pdf(
+            [
+                LOW_HIGH_HIGH[0],
+                "q 72 0 0 72 72 600 cm /Fm Do Q",
+                "q 72 0 0 72 72 600 cm /Fm Do Q",
+            ],
+            false,
+            false,
+        ),
+        "range-nested.pdf",
+    );
+    let report = compress_range(&nested.doc_id, Some(vec![1, 2]));
+    assert_eq!(report.images_downsampled, 0, "{report:?}");
+    assert_eq!(
+        images(&nested.doc_id, 0)[0].0,
+        1200,
+        "page 1 keeps its image"
+    );
+    assert!(image_widths(&nested.doc_id).iter().all(|w| w.0 == 1200));
+}
+
+/// X5: an image an annotation's appearance stream also draws is never spliced — the scan
+/// does not see appearance streams, so their DPI is unknown. Without the annotation the same
+/// document's shared image is spliced (the control).
+#[test]
+fn compress_never_splices_an_image_an_annotation_draws() {
+    let draws = [
+        "q 72 0 0 72 72 600 cm /Im Do Q",
+        "q 72 0 0 72 72 600 cm /Im Do Q",
+        "",
+    ];
+    let control = open_bytes(shared_image_pdf(draws, false, false), "annot-control.pdf");
+    let report = compress_range(&control.doc_id, None);
+    assert_eq!(report.images_downsampled, 2, "{report:?}");
+    assert!(image_widths(&control.doc_id).iter().all(|w| w.0 < 200));
+
+    let annotated = open_bytes(shared_image_pdf(draws, false, true), "annot-draws.pdf");
+    let report = compress_range(&annotated.doc_id, None);
+    assert_eq!(report.images_downsampled, 0, "{report:?}");
+    assert!(image_widths(&annotated.doc_id).iter().all(|w| w.0 == 1200));
+}

@@ -584,6 +584,11 @@ use seepdf_lib::engine::render::cache::{Night, PrintAnnots, RenderKind, TileKey}
 
 /// One whole-page render at 1× through `tiles::render` with the given kind (RGBA).
 fn render_kind(doc_id: &str, page: u16, kind: RenderKind) -> (u32, u32, Vec<u8>) {
+    render_kind_hl(doc_id, page, kind, false)
+}
+
+/// [`render_kind`] with the form-field highlight (`hl=1`) on or off.
+fn render_kind_hl(doc_id: &str, page: u16, kind: RenderKind, hl: bool) -> (u32, u32, Vec<u8>) {
     let doc_id = doc_id.to_string();
     let raw = with_state(move |st| {
         let generation = st.doc(&doc_id)?.generation;
@@ -597,7 +602,7 @@ fn render_kind(doc_id: &str, page: u16, kind: RenderKind) -> (u32, u32, Vec<u8>)
             tx: 0,
             ty: 0,
             night: Night::Off,
-            hl: false,
+            hl,
             forms: true,
         };
         tiles::render(st, &tiles::RenderRequest::new(key))
@@ -787,6 +792,42 @@ fn print_variant_stamps_mode_keeps_only_signatures() {
             .all(|f| f & raw::consts::FPDF_ANNOT_FLAG_HIDDEN == 0),
         "{flags:?}"
     );
+}
+
+/// X7 (verification round 2): an `hl=1` screen render (양식 mode) sets PDFium's field wash on
+/// the document's form handle; it must not leak into a later print render (or an `hl=0`
+/// screen render) — the fields printed blue-tinted after form mode.
+#[test]
+fn print_variant_after_a_highlighted_render_has_no_field_wash() {
+    let doc = open("160F-2019.pdf");
+    let bluish = |px: &[u8]| {
+        px.chunks_exact(4)
+            .filter(|p| p[2] as i32 > p[0] as i32 + 30)
+            .count()
+    };
+    let print = RenderKind::Print(PrintAnnots::All);
+    let before = render_kind(&doc.doc_id, 0, print);
+    let screen = render_kind(&doc.doc_id, 0, RenderKind::Page);
+    let highlighted = render_kind_hl(&doc.doc_id, 0, RenderKind::Page, true);
+    assert!(
+        bluish(&highlighted.2) > bluish(&screen.2) + 10_000,
+        "the hl=1 render shows the wash ({} vs {})",
+        bluish(&highlighted.2),
+        bluish(&screen.2)
+    );
+    let after = render_kind(&doc.doc_id, 0, print);
+    assert!(
+        after.2 == before.2,
+        "print after hl: {} bluish px (before: {})",
+        bluish(&after.2),
+        bluish(&before.2)
+    );
+    assert!(
+        render_kind(&doc.doc_id, 0, RenderKind::Page).2 == screen.2,
+        "an hl=0 screen render after hl=1 is unchanged"
+    );
+    // And the wash still comes back when asked for.
+    assert!(render_kind_hl(&doc.doc_id, 0, RenderKind::Page, true).2 == highlighted.2);
 }
 
 /// X7: the handler path flattens with `FLAT_PRINT` and the 주석 option: a NoView | Print

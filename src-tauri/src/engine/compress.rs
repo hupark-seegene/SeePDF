@@ -44,13 +44,20 @@
 //! scale). Skipped on an encrypted document (the serialised streams are encrypted), and a
 //! re-encode that is not smaller than the original is dropped.
 //!
+//! The scan only sees the pages of the chosen range, so a splice is refused for any stream
+//! something the scan did not look at can draw: a page outside the range, or an annotation's
+//! appearance stream on any page ([`image_masks`] collects those hashes with lopdf — resource
+//! reachability, which over-counts but never misses). Otherwise compressing pages 2–3 would
+//! shrink a logo page 1 draws at full size too.
+//!
 //! ## What is skipped
 //!
 //! Images with a `/Mask` or drawn with transparent graphics state
 //! (`FPDFPageObj_HasTransparency`), 1-bit images and stencil masks (CCITT / JBIG2 are already
 //! small, and resampling would turn them into 8-bit), shared, soft-masked or nested images of
 //! an encrypted document (no splice there), shared ones with an occurrence at or below the
-//! target, and bitmaps PDFium cannot hand back in a format we can re-encode. They count in
+//! target, spliceable ones something outside the scan can draw (a page outside the range, an
+//! annotation), and bitmaps PDFium cannot hand back in a format we can re-encode. They count in
 //! `imagesTotal` but not in `imagesDownsampled`.
 //!
 //! ## Encoding
@@ -174,26 +181,30 @@ pub struct Work<'p> {
 pub struct ImageMasks {
     pub soft: HashSet<u64>,
     pub other: HashSet<u64>,
+    /// The images something the scan does not see can draw — a page outside the scanned
+    /// range, or any page's annotations ([`drawn_elsewhere`]). Such a stream is never spliced:
+    /// the splice rewrites the one stream object for every user. `None` when lopdf cannot read
+    /// the file: nothing is spliced then.
+    pub outside: Option<HashSet<u64>>,
 }
 
-pub fn image_masks(bytes: &[u8], password: Option<&str>) -> ImageMasks {
+/// Reads the image dictionaries of `bytes` with lopdf; `scanned` is the page range the job
+/// visits (every page for the whole document).
+pub fn image_masks(bytes: &[u8], password: Option<&str>, scanned: &[PageIndex]) -> ImageMasks {
     let options = lopdf::LoadOptions::with_password(password.unwrap_or(""));
     let Ok(doc) = lopdf::Document::load_mem_with_options(bytes, options) else {
         tracing::warn!("compress: lopdf could not read the document; image masks unknown");
         return ImageMasks::default();
     };
-    let mut masks = ImageMasks::default();
+    let mut masks = ImageMasks {
+        outside: Some(drawn_elsewhere(&doc, scanned)),
+        ..ImageMasks::default()
+    };
     for object in doc.objects.values() {
         let Ok(stream) = object.as_stream() else {
             continue;
         };
-        let is_image = stream
-            .dict
-            .get(b"Subtype")
-            .and_then(|s| s.as_name())
-            .map(|n| n == b"Image")
-            .unwrap_or(false);
-        if !is_image {
+        if !is_image_stream(stream) {
             continue;
         }
         if stream.dict.has(b"Mask") {
@@ -203,6 +214,98 @@ pub fn image_masks(bytes: &[u8], password: Option<&str>) -> ImageMasks {
         }
     }
     masks
+}
+
+fn is_image_stream(stream: &lopdf::Stream) -> bool {
+    stream
+        .dict
+        .get(b"Subtype")
+        .and_then(|s| s.as_name())
+        .map(|n| n == b"Image")
+        .unwrap_or(false)
+}
+
+/// v0.3 (X5, verification round 2): the encoded-stream hashes of every image reachable from
+/// what the scan does not look at — each page outside `scanned` (its whole dictionary, with
+/// inherited `/Resources`) and the `/Annots` of the scanned pages. A reference walk that never
+/// enters another page or page-tree node, so a link's destination does not pull in its page.
+fn drawn_elsewhere(doc: &lopdf::Document, scanned: &[PageIndex]) -> HashSet<u64> {
+    use lopdf::Object;
+    let is_page_node = |dict: &lopdf::Dictionary| {
+        matches!(
+            dict.get(b"Type").and_then(|t| t.as_name()),
+            Ok(b"Page") | Ok(b"Pages")
+        )
+    };
+    let scanned: HashSet<PageIndex> = scanned.iter().copied().collect();
+    let mut stack: Vec<&Object> = Vec::new();
+    for (number, page_id) in doc.get_pages() {
+        let Ok(page) = doc.get_dictionary(page_id) else {
+            continue;
+        };
+        let index = (number - 1).min(PageIndex::MAX as u32) as PageIndex;
+        if scanned.contains(&index) {
+            if let Ok(annots) = page.get(b"Annots") {
+                stack.push(annots);
+            }
+            continue;
+        }
+        stack.extend(
+            page.iter()
+                .filter(|(key, _)| key.as_slice() != b"Parent")
+                .map(|(_, value)| value),
+        );
+        // Inherited resources: every ancestor's `/Resources`, direct or referenced.
+        let mut parent = page.get(b"Parent").and_then(|p| p.as_reference()).ok();
+        let mut depth = 0;
+        while let Some(id) = parent.filter(|_| depth < 64) {
+            let Ok(node) = doc.get_dictionary(id) else {
+                break;
+            };
+            if let Ok(resources) = node.get(b"Resources") {
+                stack.push(resources);
+            }
+            parent = node.get(b"Parent").and_then(|p| p.as_reference()).ok();
+            depth += 1;
+        }
+    }
+    let mut visited: HashSet<lopdf::ObjectId> = HashSet::new();
+    let mut hashes = HashSet::new();
+    while let Some(object) = stack.pop() {
+        match object {
+            Object::Reference(id) => {
+                if !visited.insert(*id) {
+                    continue;
+                }
+                let Ok(target) = doc.get_object(*id) else {
+                    continue;
+                };
+                let dict = match target {
+                    Object::Dictionary(d) => Some(d),
+                    Object::Stream(s) => Some(&s.dict),
+                    _ => None,
+                };
+                if dict.map(is_page_node).unwrap_or(false) {
+                    continue;
+                }
+                stack.push(target);
+            }
+            Object::Array(items) => stack.extend(items.iter()),
+            Object::Dictionary(dict) => {
+                if !is_page_node(dict) {
+                    stack.extend(dict.iter().map(|(_, v)| v));
+                }
+            }
+            Object::Stream(stream) => {
+                if is_image_stream(stream) {
+                    hashes.insert(hash_of(&stream.content));
+                }
+                stack.extend(stream.dict.iter().map(|(_, v)| v));
+            }
+            _ => {}
+        }
+    }
+    hashes
 }
 
 /// An `/SMask` whose every sample is 255 changes nothing (PDFium writes one next to any image
@@ -304,7 +407,7 @@ pub fn begin(
     }
     let bytes = save::serialize(st, doc_id)?;
     let before_bytes = bytes.len() as u64;
-    let masks = image_masks(&bytes, st.doc(doc_id)?.password.as_deref());
+    let masks = image_masks(&bytes, st.doc(doc_id)?.password.as_deref(), &pages);
     let pdfium = st.pdfium;
     let doc = st.doc_mut(doc_id)?;
     let scratch = pdfium
@@ -335,6 +438,19 @@ pub fn begin(
         masks,
     });
     Ok(pages)
+}
+
+impl Work<'_> {
+    /// Whether the one stream object with this hash may be rewritten by the splice: never on
+    /// an encrypted document, and never when something the scan did not see draws it too.
+    fn may_splice(&self, hash: u64) -> bool {
+        !self.encrypted
+            && self
+                .masks
+                .outside
+                .as_ref()
+                .is_some_and(|outside| !outside.contains(&hash))
+    }
 }
 
 fn work<'a, 'p>(
@@ -608,8 +724,9 @@ pub fn process_page(
         }
         // v0.3 (X5): a shared stream — re-encoded once, spliced into its one stream object by
         // `finish`, so every page that draws it gets the smaller image. Only when every
-        // occurrence is above the target (the lowest sets the scale), never encrypted.
-        if work.encrypted || work.nested_done.contains(&c.hash) {
+        // occurrence is above the target (the lowest sets the scale), never encrypted, and
+        // never when a page outside the range (or an annotation) draws it too.
+        if !work.may_splice(c.hash) || work.nested_done.contains(&c.hash) {
             continue;
         }
         let Some(plan) = work.nested_plan.get(&c.hash).copied() else {
@@ -628,7 +745,7 @@ pub fn process_page(
     // v0.3 (X5): images with transparency, re-encoded here; the splice keeps only those
     // whose dictionary has an `/SMask` and downsamples that mask by the same factor.
     for c in masked {
-        if work.nested_done.contains(&c.hash) {
+        if !work.may_splice(c.hash) || work.nested_done.contains(&c.hash) {
             continue;
         }
         let Some(plan) = work.masked_plan.get(&c.hash).copied() else {
@@ -647,7 +764,7 @@ pub fn process_page(
     }
     // Stage 8: nested images are re-encoded here and spliced in by `finish`.
     for n in work.nested.remove(&page).unwrap_or_default() {
-        if work.encrypted || work.nested_done.contains(&n.hash) {
+        if !work.may_splice(n.hash) || work.nested_done.contains(&n.hash) {
             continue;
         }
         let Some(plan) = work.nested_plan.get(&n.hash).copied() else {
@@ -852,12 +969,7 @@ fn splice_nested(bytes: &[u8], replacements: &[NestedReplacement]) -> (Vec<u8>, 
         let lopdf::Object::Stream(stream) = object else {
             continue;
         };
-        let is_image = stream
-            .dict
-            .get(b"Subtype")
-            .and_then(|s| s.as_name())
-            .map(|n| n == b"Image")
-            .unwrap_or(false);
+        let is_image = is_image_stream(stream);
         let smask = stream
             .dict
             .get(b"SMask")

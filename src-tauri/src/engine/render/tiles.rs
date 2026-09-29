@@ -166,6 +166,7 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
         .get_mut(&key.doc)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{}'", key.doc)))?;
     let bindings = doc.bindings();
+    let form = doc.form_handle();
     let page = doc.page(page_index)?;
 
     let t0 = Instant::now();
@@ -204,6 +205,15 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
         )
     };
     restore_flags(bindings, page, &hidden);
+    // `highlight_all_form_fields` sets the wash on the document's form handle
+    // (`FPDF_SetFormFieldHighlightColor/Alpha`), where it would stay for every later render —
+    // a print, an export, a compare, a screen render with `hl=0`. The invariant (set at open
+    // and reload) is alpha 0 outside an `hl=1` render, so put it back right after this one.
+    if key.hl {
+        if let Some(form) = form {
+            crate::engine::raw::form::set_field_highlight_alpha(bindings, form, 0);
+        }
+    }
     let pixels = rendered?;
     let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
     st.shared.stats.record_tile_ms(render_ms);

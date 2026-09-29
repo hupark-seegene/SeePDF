@@ -877,7 +877,9 @@ page, then `done{elapsedMs, report}` — or `cancelled` / `error`. The open docu
 * **v0.3 pkg8 (X5)** — `CompressOptions.optimize?: boolean` (default `false`) and three changes:
   * **Shared top-level images** (one stream drawn by several objects / pages) are no longer skipped: when every
     occurrence is above the threshold they go through the Stage 8 splice (re-encoded once, written into the one
-    stream object; every occurrence counts in `imagesDownsampled`). Never on an encrypted document.
+    stream object; every occurrence counts in `imagesDownsampled`). Never on an encrypted document, and never
+    for a stream something the scan does not see can draw — a page outside `pages`, or an annotation's appearance
+    stream (lopdf resource reachability) — so a page range cannot shrink an image on the other pages.
   * **Masks**: PDFium's `FPDFPageObj_HasTransparency` does not see an image's own `/SMask` / `/Mask`, and
     `FPDFImageObj_SetBitmap` drops them, so the image dictionaries are read with lopdf first. An `/SMask` image is
     spliced and its 8-bit gray mask resampled by the same factor (kept at its resolution when lopdf cannot decode
