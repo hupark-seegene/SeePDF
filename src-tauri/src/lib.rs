@@ -407,6 +407,8 @@ pub fn run() {
             commands::forms::export_form_data,
             commands::forms::import_form_data,
             commands::forms::flatten_form,
+            // v0.3 pkg7-ocr (O2): 페이지 회전 자동 감지 with the native recogniser
+            commands::ocr::ocr_detect_orientation,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

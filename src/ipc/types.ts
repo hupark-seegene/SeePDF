@@ -465,7 +465,25 @@ export interface OcrPage {
 }
 export type OcrEngine = 'tesseract' | 'vision' | 'windows';
 /** One element of `ocr_apply.pages`: the page itself, or the Stage 8 `{ page, ocr }` form (same batch). */
-export type OcrApplyPage = OcrPage | { page: PageIndex; ocr: OcrPage };
+export type OcrApplyPage = OcrPage | {
+  page: PageIndex; ocr: OcrPage;
+  /** v0.3 pkg7-ocr (O2): set the page's `/Rotate` to this first, in the same undo step; `ocr.rotation` must equal it */
+  setRotation?: Rotation;
+};
+
+// --- v0.3 pkg7-ocr --------------------------------------------------------------------
+/** O1: the languages (`kor`, `eng`, `jpn`, `chi_sim`) each engine reads; empty for an engine not listed. */
+export interface OcrEngineLanguages { tesseract: string[]; vision: string[]; windows: string[] }
+export interface OcrCapabilities {
+  engines: OcrEngine[];
+  /** the tesseract baseline (`kor`, `eng`), kept for older callers */
+  languages: string[];
+  engineLanguages?: OcrEngineLanguages;
+}
+/** O2: one trial of 페이지 회전 자동 감지 — `rotation` is the clockwise turn tried. */
+export interface OrientationScore { rotation: Rotation; confidence: number; words: number }
+/** O2: `rotation` = the clockwise turn that makes the page upright (0 = leave it). */
+export interface OrientationResult { rotation: Rotation; scores: OrientationScore[] }
 
 // ---------------------------------------------------------------------------
 // 8. Events and progress

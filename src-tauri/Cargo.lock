@@ -3654,6 +3654,7 @@ dependencies = [
  "tracing-subscriber",
  "ttf-parser",
  "uuid",
+ "windows",
 ]
 
 [[package]]

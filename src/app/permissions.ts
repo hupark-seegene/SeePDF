@@ -41,6 +41,9 @@ const NEEDS: Record<string, PermKey> = {
   "tool.fieldCombo": "modify",
   "tool.fieldSignature": "modify",
   "tool.formFlatten": "modify",
+  // v0.3 integration (pkg7 × S5): 텍스트 인식 writes a text layer, a modification (the engine's
+  // `perm_for`); pkg7's 스캔 문서 banner and 검색 hint offer the same command
+  "tools.ocr": "modify",
 };
 
 /** The i18n key of the reason `id` is not allowed on this document, or `null` when it is. */

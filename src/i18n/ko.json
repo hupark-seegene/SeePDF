@@ -1182,5 +1182,16 @@
   "undo.formFieldEdit": "필드 속성",
   "undo.formFieldDelete": "필드 삭제",
   "undo.formImport": "양식 데이터 가져오기",
-  "undo.formFlatten": "양식 평면화"
+  "undo.formFlatten": "양식 평면화",
+  "ocr.engine.windows": "Windows OCR",
+  "ocr.engine.autoHintWindows": "이 PC에서는 Windows OCR로 더 빠르게 인식합니다",
+  "ocr.rotatedCount": "{{count}}쪽의 방향을 바로잡았습니다",
+  "ocr.rotatedCount_other": "{{count}}쪽의 방향을 바로잡았습니다",
+  "ocr.needsOcr.banner": "이 문서에는 검색 가능한 텍스트가 없습니다",
+  "ocr.needsOcr.hint": "스캔한 문서로 보입니다. 텍스트 인식(OCR)을 실행하면 검색하고 선택할 수 있습니다.",
+  "ocr.needsOcr.run": "OCR 실행…",
+  "ocr.needsOcr.searchHint": "이 문서에는 검색 가능한 텍스트가 없습니다. OCR을 실행하면 검색할 수 있습니다.",
+  "ocr.engine.autoFallback": "선택한 언어를 Apple Vision이 모두 읽지 못해 Tesseract로 인식합니다",
+  "ocr.engine.autoFallbackWindows": "선택한 언어를 이 PC의 Windows OCR이 모두 읽지 못해 Tesseract로 인식합니다",
+  "ocr.engine.windowsOneLanguage": "Windows OCR은 한 번에 한 언어(영어 포함)만 읽어, 선택한 언어 중 일부는 인식하지 않습니다"
 }

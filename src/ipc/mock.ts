@@ -28,6 +28,8 @@ import type {
   FormDataFormat, FormDataResult, FormEditResult, FormFieldPatch, FormFieldSpec, ImageFit, ImagePageSize, LinkBorder,
   OutlineSplitMode,
 } from "./types";
+// v0.3 pkg7-ocr
+import type { OcrCapabilities, OrientationResult, Rotation } from "./types";
 import { labelsFor, normalizeRanges } from "../dialogs/pageLabels";
 
 import documentFixture from "../test/ipc-samples/document.json";
@@ -1658,15 +1660,22 @@ export const mock = {
   },
 
   // 7.9 OCR ------------------------------------------------------------------
-  async ocrCapabilities() {
+  async ocrCapabilities(): Promise<OcrCapabilities> {
     // The browser mock plays a Mac with Vision, so 인식 엔진 can be exercised without a backend.
-    return { engines: ["tesseract", "vision"] as ("tesseract" | "vision" | "windows")[], languages: ["kor", "eng"] };
+    return {
+      engines: ["tesseract", "vision"], languages: ["kor", "eng"],
+      // v0.3 pkg7-ocr (O1): Vision reads Japanese and Chinese too
+      engineLanguages: { tesseract: ["kor", "eng"], vision: ["kor", "eng", "jpn", "chi_sim"], windows: [] },
+    };
   },
-  /** A canned one-line Vision result in the `/ocr` image's geometry (P1-11). */
-  async ocrRecognizeNative(a: { docId: DocId; page: PageIndex; dpi: number; languages: string[] }): Promise<OcrPage> {
+  /** A canned one-line Vision result in the `/ocr` image's geometry (P1-11); `rotate` turns it (v0.3 O2). */
+  async ocrRecognizeNative(
+    a: { docId: DocId; page: PageIndex; dpi: number; languages: string[]; rotate?: Rotation },
+  ): Promise<OcrPage> {
     const d = doc(a.docId);
-    const geom = d.info.pages[a.page];
-    if (!geom) throw err("invalidArgument", `page ${a.page} of ${d.info.pageCount}`);
+    const pageGeom = d.info.pages[a.page];
+    if (!pageGeom) throw err("invalidArgument", `page ${a.page} of ${d.info.pageCount}`);
+    const geom = { ...pageGeom, rotation: ((pageGeom.rotation + (a.rotate ?? 0)) % 360) as Rotation };
     const turned = geom.rotation === 90 || geom.rotation === 270;
     const widthPx = Math.round(((turned ? geom.heightPt : geom.widthPt) * a.dpi) / 72);
     const heightPx = Math.round(((turned ? geom.widthPt : geom.heightPt) * a.dpi) / 72);
@@ -1686,6 +1695,17 @@ export const mock = {
       }],
     }, 150);
   },
+  // v0.3 pkg7-ocr (O2): every mock page reads upright
+  async ocrDetectOrientation(a: { docId: DocId; page: PageIndex; languages: string[] }): Promise<OrientationResult> {
+    const d = doc(a.docId);
+    if (!d.info.pages[a.page]) throw err("invalidArgument", `page ${a.page} of ${d.info.pageCount}`);
+    return delay({
+      rotation: 0 as Rotation,
+      scores: ([0, 90, 180, 270] as Rotation[]).map((rotation) => ({
+        rotation, confidence: rotation === 0 ? 100 : 0, words: rotation === 0 ? 12 : 0,
+      })),
+    }, 30);
+  },
   async ocrPageStatus(a: { docId: DocId; pages: PageIndex[] }) {
     const d = doc(a.docId);
     return a.pages.map((page) => {
@@ -1701,7 +1721,32 @@ export const mock = {
     await new Promise<void>((resolve) => {
       runJob(Math.max(1, a.pages.length), onProgress, { stepMs: 120, onDone: resolve });
     });
-    return mutate(d, { reason: "ocr", pages: "all", undoLabel: "undo.ocrApply" }, () => structuredClone(d.info));
+    // v0.3 pkg7-ocr (O2): `setRotation` turns the page in the same step, as the engine does
+    const turns: { page: PageIndex; rotation: Rotation }[] = [];
+    for (const p of a.pages) {
+      if (!("ocr" in p) || p.setRotation === undefined) continue;
+      if (p.ocr.rotation !== p.setRotation) {
+        throw err("invalidArgument", `page ${p.page}: setRotation ${p.setRotation} needs an OCR result at ${p.setRotation}`);
+      }
+      turns.push({ page: p.page, rotation: p.setRotation });
+    }
+    const structure = turns.some((t) => d.info.pages[t.page] && d.info.pages[t.page].rotation !== t.rotation);
+    // v0.3 integration (O2 × S5): a turning OCR is structural ("assemble"), and its layer still a
+    // modification — the engine checks "modify" first
+    if (structure) refuseEncrypted(d);
+    mutate(d, { reason: "ocr", pages: "all", structure, undoLabel: "undo.ocrApply" }, () => {
+      for (const t of turns) {
+        const geom = d.info.pages[t.page];
+        if (!geom) continue;
+        const sideways = ((geom.rotation - t.rotation) / 90) % 2 !== 0;
+        d.info.pages[t.page] = {
+          ...geom, rotation: t.rotation,
+          ...(sideways ? { widthPt: geom.heightPt, heightPt: geom.widthPt } : null),
+        };
+      }
+    });
+    // The engine answers the DocInfo *after* the edit (its new generation).
+    return structuredClone(d.info);
   },
 
   // 11a. read aloud (P2) --------------------------------------------------------

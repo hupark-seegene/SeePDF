@@ -511,7 +511,8 @@ function openOverflowMenu(): void {
       {
         id: "ocr",
         labelKey: "menu.tools.ocr",
-        disabled: !info,
+        disabled: !info || !!permissionBlock("tools.ocr", info),
+        hintKey: permissionBlock("tools.ocr", info) ?? undefined,
         onSelect: () => void import("../ocr").then((m) => m.openOcrDialog()),
       },
       { id: "batchOcr", labelKey: "menu.tools.batchOcr", onSelect: () => openDialog("batchOcr") },

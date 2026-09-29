@@ -17,11 +17,18 @@
  * `--with-fallback-core` adds `tesseract-core-lstm.wasm.js` (+3.90 MB) for WebViews without WASM SIMD
  * (Safari < 16.4, i.e. macOS 12). See docs/STAGE1F_NOTES.md.
  *
+ * `--langs jpn,chi_sim` (v0.3 O1, opt-in) stages more traineddata beside `kor` + `eng` — 日本語 1.94 MB
+ * and 中文(简体) 1.64 MB gz. The release keeps `kor` + `eng`: Apple Vision reads ja/zh on every Mac
+ * SeePDF supports, Windows OCR with the language pack (docs/V03_OCR_NOTES.md). A language staged
+ * before and not asked for now is removed, so the bundle is exactly what the flags say.
+ * `tessdata/languages.json` lists what is staged; the OCR sheet reads it to offer the chips.
+ *
  * Usage:
  *   node scripts/prepare-ocr.mjs                 # idempotent; re-runs are a no-op
  *   node scripts/prepare-ocr.mjs --force         # rebuild every file
  *   node scripts/prepare-ocr.mjs --with-fallback-core
  *   node scripts/prepare-ocr.mjs --quiet         # only warnings/errors (postinstall)
+ *   node scripts/prepare-ocr.mjs --langs jpn,chi_sim   # + Japanese and Simplified Chinese
  *
  * Traineddata sources, in order: the spike cache (`fixtures/out/ocr/tessdata-cache/best_int`, gzipped
  * here), then jsdelivr `@tesseract.js-data/<lang>/4.0.0_best_int`, then GitHub `tessdata_best` raw.
@@ -51,7 +58,33 @@ const WITH_PROBE = argv.includes("--probe");
 const PRIMARY_CORE = "tesseract-core-simd-lstm.wasm.js";
 /** Non-SIMD core for Safari < 16.4; opt-in because it is another 3.9 MB. */
 const FALLBACK_CORE = "tesseract-core-lstm.wasm.js";
-const LANGS = ["eng", "kor"];
+/** Always staged: `kor` alone reads English as digits, so the Korean preset is `kor+eng`. */
+const BASE_LANGS = ["eng", "kor"];
+/** `--langs` may add these (the OCR sheet's 日本語 / 中文 chips); anything else is refused. */
+const OPTIONAL_LANGS = ["jpn", "chi_sim"];
+
+/** `--langs a,b` or `--langs=a,b` → the extra languages, validated. */
+function parseLangsFlag(args) {
+  const i = args.findIndex((a) => a === "--langs" || a.startsWith("--langs="));
+  if (i < 0) return [];
+  const raw = args[i].includes("=") ? args[i].slice("--langs=".length) : args[i + 1] ?? "";
+  const langs = raw.split(/[,+\s]+/).map((l) => l.trim()).filter(Boolean);
+  for (const l of langs) {
+    if (!BASE_LANGS.includes(l) && !OPTIONAL_LANGS.includes(l)) {
+      throw new Error(`--langs: unknown language "${l}" (choose from ${OPTIONAL_LANGS.join(", ")})`);
+    }
+  }
+  return langs.filter((l) => !BASE_LANGS.includes(l));
+}
+
+const LANGS = (() => {
+  try {
+    return [...BASE_LANGS, ...parseLangsFlag(argv)];
+  } catch (e) {
+    console.error(`[ocr] ERROR ${e.message}`);
+    process.exit(1);
+  }
+})();
 /** A traineddata file smaller than this is a 404 page or a truncated download. */
 const MIN_TRAINEDDATA_BYTES = 1_000_000;
 
@@ -155,7 +188,7 @@ function writeLicense(coreFiles) {
     "   https://github.com/naptha/tesseract.js",
     `2. ${coreFiles.join(", ")} — tesseract.js-core 7.0.0 (Tesseract OCR compiled to WebAssembly), Apache License 2.0`,
     "   https://github.com/naptha/tesseract.js-core  https://github.com/tesseract-ocr/tesseract",
-    "3. tessdata/eng.traineddata.gz, tessdata/kor.traineddata.gz — Tesseract 4.0.0_best_int trained models,",
+    `3. ${LANGS.map((l) => `tessdata/${l}.traineddata.gz`).join(", ")} — Tesseract 4.0.0_best_int trained models,`,
     "   Apache License 2.0, https://github.com/tesseract-ocr/tessdata_best",
     "",
     "Apache License 2.0: http://www.apache.org/licenses/LICENSE-2.0",
@@ -195,6 +228,24 @@ function prepareProbe() {
   return "staged";
 }
 
+/** Remove traineddata that is staged but not requested (a previous `--langs` run), and list what is. */
+function writeLanguageManifest() {
+  for (const name of readdirSync(TESSDATA)) {
+    const m = /^(.+)\.traineddata\.gz$/.exec(name);
+    if (m && !LANGS.includes(m[1])) {
+      rmSync(join(TESSDATA, name));
+      log(`  removed tessdata/${name} (pass --langs ${m[1]} to keep it)`);
+    }
+  }
+  const order = [...BASE_LANGS.slice().reverse(), ...OPTIONAL_LANGS];   // kor, eng, jpn, chi_sim
+  const languages = order.filter((l) => LANGS.includes(l));
+  const body = JSON.stringify({ languages }, null, 2) + "\n";
+  const dest = join(TESSDATA, "languages.json");
+  if (existsSync(dest) && readFileSync(dest, "utf8") === body) return "skipped";
+  writeFileSync(dest, body);
+  return "written";
+}
+
 /** Remove the opt-in fallback core when it is present but not requested, so the listing stays honest. */
 function pruneFallbackCore() {
   const p = join(OUT, FALLBACK_CORE);
@@ -229,6 +280,7 @@ async function main() {
     const r = await prepareTraineddata(lang);
     log(`  ${`${lang}.traineddata.gz`.padEnd(28)} ${r.status} (${r.source})`);
   }
+  log(`  tessdata/languages.json      ${writeLanguageManifest()} (${LANGS.join(", ")})`);
   log(`  LICENSE.txt                  ${writeLicense(coreFiles)}`);
   log(`  probe/                       ${prepareProbe()}`);
 
@@ -238,7 +290,8 @@ async function main() {
   for (const r of rows) log(`  ${mb(r.bytes).padStart(9)}  ${r.hash}  ${r.file}`);
   log(`  ${mb(total).padStart(9)}  ${rows.length} files total`);
 
-  const expectedMb = WITH_FALLBACK_CORE ? 12.0 : 8.1;
+  // ~2 MB per optional language (jpn 1.94, chi_sim 1.64).
+  const expectedMb = (WITH_FALLBACK_CORE ? 12.0 : 8.1) + 1.8 * (LANGS.length - BASE_LANGS.length);
   if (Math.abs(total / 1048576 - expectedMb) > 1.5) {
     console.warn(`[ocr] WARNING: expected ~${expectedMb} MB, got ${mb(total)} — check the asset list above`);
   }

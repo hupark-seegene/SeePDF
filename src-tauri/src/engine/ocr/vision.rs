@@ -293,6 +293,15 @@ pub fn words_are_degenerate(line: VisionRect, words: &[VisionWord]) -> bool {
     words.len() > 1 && line.width > 0.0 && words.iter().all(|w| w.bbox.width >= line.width * 0.9)
 }
 
+/// One line's reading direction (v0.3 O2): the baseline's angle in degrees, counter-clockwise
+/// in image pixels with y up (0 = upright, 90 = the line reads bottom to top).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextDirection {
+    pub angle: f64,
+    pub words: u32,
+    pub chars: u32,
+}
+
 // ---------------------------------------------------------------------------------------
 // Vision itself (macOS only)
 // ---------------------------------------------------------------------------------------
@@ -302,6 +311,7 @@ pub mod mac {
     //! The only `unsafe` Objective-C in the project. Every call happens inside an autorelease
     //! pool: this runs on a tokio blocking thread, which has none of its own.
 
+    use super::TextDirection;
     use super::{word_ranges, words_are_degenerate, VisionObservation, VisionRect, VisionWord};
     use crate::ipc::{EngineError, ErrorCode};
     use objc2::rc::{autoreleasepool, Retained};
@@ -316,8 +326,8 @@ pub mod mac {
         NSArray, NSDictionary, NSOperatingSystemVersion, NSProcessInfo, NSRange, NSString,
     };
     use objc2_vision::{
-        VNImageOption, VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText, VNRequest,
-        VNRequestTextRecognitionLevel,
+        VNImageOption, VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText,
+        VNRecognizedTextObservation, VNRequest, VNRequestTextRecognitionLevel,
     };
     use std::sync::OnceLock;
 
@@ -351,6 +361,12 @@ pub mod mac {
     /// `ocr_capabilities`: Vision is offered only where it reads Korean.
     pub fn available() -> bool {
         supported_languages().is_some()
+    }
+
+    /// Vision's own language list on this Mac (`ko-KR`, `ja-JP`, `zh-Hans`…); empty where
+    /// Vision is not offered (v0.3 O1: the 日本語 / 中文 chips follow it).
+    pub fn supported() -> &'static [String] {
+        supported_languages().unwrap_or(&[])
     }
 
     fn vision_error(what: &str, detail: impl std::fmt::Display) -> EngineError {
@@ -437,13 +453,15 @@ pub mod mac {
     }
 
     /// Runs `VNRecognizeTextRequest` (accurate, language correction on) over an 8-bit
-    /// grayscale image. Blocking — call it from a blocking thread, never the engine thread.
-    pub fn recognize(
+    /// grayscale image and hands every observation to `each`. Blocking — call it from a blocking
+    /// thread, never the engine thread.
+    fn perform<T>(
         gray: &[u8],
         width: u32,
         height: u32,
         languages: &[String],
-    ) -> Result<Vec<VisionObservation>, EngineError> {
+        mut each: impl FnMut(&VNRecognizedTextObservation) -> Option<T>,
+    ) -> Result<Vec<T>, EngineError> {
         let Some(supported) = supported_languages() else {
             return Err(EngineError::unsupported(
                 "ocr_recognize_native: Vision cannot read Korean before macOS 13",
@@ -488,27 +506,74 @@ pub mod mac {
                 return Ok(out);
             };
             for observation in results.iter() {
-                let candidates = observation.topCandidates(1);
-                let Some(candidate) = candidates.firstObject() else {
-                    continue;
-                };
-                let raw = candidate.string();
-                let text = raw.to_string();
-                if text.trim().is_empty() {
-                    continue;
+                if let Some(item) = each(&observation) {
+                    out.push(item);
                 }
-                let confidence = candidate.confidence();
-                // SAFETY: a plain property read.
-                let line = rect(unsafe { observation.boundingBox() });
-                let words = words_of(&candidate, &text, line, confidence);
-                out.push(VisionObservation {
-                    text: nfc(&raw),
-                    confidence,
-                    bbox: line,
-                    words,
-                });
             }
             Ok(out)
+        })
+    }
+
+    /// Vision's lines with their word boxes. Blocking — call it from a blocking thread, never
+    /// the engine thread.
+    pub fn recognize(
+        gray: &[u8],
+        width: u32,
+        height: u32,
+        languages: &[String],
+    ) -> Result<Vec<VisionObservation>, EngineError> {
+        perform(gray, width, height, languages, |observation| {
+            let candidates = observation.topCandidates(1);
+            let candidate = candidates.firstObject()?;
+            let raw = candidate.string();
+            let text = raw.to_string();
+            if text.trim().is_empty() {
+                return None;
+            }
+            let confidence = candidate.confidence();
+            // SAFETY: a plain property read.
+            let line = rect(unsafe { observation.boundingBox() });
+            let words = words_of(&candidate, &text, line, confidence);
+            Some(VisionObservation {
+                text: nfc(&raw),
+                confidence,
+                bbox: line,
+                words,
+            })
+        })
+    }
+
+    /// v0.3 O2: the reading direction of every line Vision finds, as `(angle, words, chars)`.
+    ///
+    /// Vision reads text at any angle — a sideways scan comes back with the same confidence as
+    /// an upright one — so the confidence of four turned reads cannot tell which way is up.
+    /// Its quadrilateral can: the baseline runs from `bottomLeft` to `bottomRight` in the
+    /// text's own frame, so its angle (counter-clockwise, in image pixels with y up) is the
+    /// clockwise turn that makes the line upright.
+    pub fn text_directions(
+        gray: &[u8],
+        width: u32,
+        height: u32,
+        languages: &[String],
+    ) -> Result<Vec<TextDirection>, EngineError> {
+        let (w, h) = (width as f64, height as f64);
+        perform(gray, width, height, languages, |observation| {
+            let candidates = observation.topCandidates(1);
+            let candidate = candidates.firstObject()?;
+            let text = candidate.string().to_string();
+            let chars = text.chars().filter(|c| !c.is_whitespace()).count();
+            if chars == 0 {
+                return None;
+            }
+            // SAFETY: plain property reads.
+            let (bl, br) = unsafe { (observation.bottomLeft(), observation.bottomRight()) };
+            let dx = (br.x - bl.x) * w;
+            let dy = (br.y - bl.y) * h;
+            Some(TextDirection {
+                angle: dy.atan2(dx).to_degrees(),
+                words: text.split_whitespace().count() as u32,
+                chars: chars as u32,
+            })
         })
     }
 }

@@ -123,6 +123,19 @@ objc2-vision = { version = "0.3", default-features = false, features = [
   "VNTypes",
 ] }
 
+# v0.3 pkg7-ocr (O3): native Windows OCR (`Windows.Media.Ocr`) behind `ocr_recognize_native`.
+# 0.61 is the `windows` Tauri already links on Windows, so this adds WinRT bindings, not a
+# second copy of the crate.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage_Streams",
+] }
+
 # The only fork in the project: five additive `raw_handle()` / `raw_bindings()`
 # accessors (ARCHITECTURE §1.3). The diff is kept in `docs/pdfium-patch.diff`.
 [dev-dependencies]

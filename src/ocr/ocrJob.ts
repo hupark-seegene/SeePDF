@@ -30,13 +30,26 @@
  *                      run. 여러 파일 OCR uses it: a cancelled file is closed unsaved anyway, so
  *                      all-or-nothing costs nothing there and a 300-page file stops paying 300
  *                      snapshots.
+ *
+ * v0.3 (pkg7-ocr):
+ *
+ *   engine: "windows"  Windows.Media.Ocr through the same `ocr_recognize_native` (O3)
+ *   autoRotate: true   페이지 회전 자동 감지 (O2): each page is first read at 100 DPI four ways
+ *                      (`orientation.ts`), recognised turned the winning way, and applied as
+ *                      `{ page, ocr, setRotation }` — `/Rotate` and text layer in one undo step
  */
 import * as api from "../ipc/api";
 import { ocrImageUrl } from "../ipc/protocol";
-import type { DocGeneration, DocId, DocInfo, JobEvent, JobId, OcrPage, PageGeom, PageIndex, Rotation } from "../ipc/types";
+import type {
+  DocGeneration, DocId, DocInfo, JobEvent, JobId, OcrApplyPage, OcrPage, PageGeom, PageIndex, Rotation,
+} from "../ipc/types";
 import { localJobId, registerCanceller, useJobStore } from "../store/jobStore";
 import { countWords, meanConfidence, normalizeTesseract } from "./normalize";
-import { VISION_CONCURRENCY, VISION_SECONDS_PER_PAGE, visionLanguages, type OcrRunEngine } from "./engine";
+import {
+  VISION_CONCURRENCY, VISION_SECONDS_PER_PAGE, isNativeEngine, visionLanguages, type OcrRunEngine,
+} from "./engine";
+import { DETECT_DPI, addRotation, detectWithTesseract, turnImage } from "./orientation";
+import { BASELINE_LANGUAGES, langsFor as joinLangs, parseLangs } from "./languages";
 import {
   DEFAULT_DPI, DEFAULT_LANGS, DEFAULT_LAYOUT, OcrCancelledError, TesseractPool,
   defaultWorkerCount, type OcrLayout,
@@ -134,6 +147,8 @@ export interface OcrRunOptions {
   applyOnce?: boolean;
   /** called once the pages to recognise are known (after "skip pages that already have text") */
   onPlan?: (todo: PageIndex[], skipped: PageIndex[]) => void;
+  /** v0.3 O2 페이지 회전 자동 감지: detect each page's orientation and turn it upright. Default `false`. */
+  autoRotate?: boolean;
 }
 
 export interface OcrJobResult {
@@ -143,6 +158,8 @@ export interface OcrJobResult {
   applied: PageIndex[];
   /** pages that already had text and were skipped */
   skipped: PageIndex[];
+  /** v0.3 O2: applied pages whose `/Rotate` was changed by 페이지 회전 자동 감지 */
+  rotated?: PageIndex[];
   words: number;
   /** mean word confidence over every applied page, 0..100 */
   confidence: number;
@@ -160,13 +177,15 @@ export interface OcrJobResult {
 const SECONDS_PER_PAGE = 1.6;
 const INIT_SECONDS = 0.3;
 
-/** `ocr.estimate` — "예상 시간: 약 {{seconds}}초". Vision does not scale with workers (`engine.ts`). */
+/** `ocr.estimate` — "예상 시간: 약 {{seconds}}초". Native engines do not scale with workers (`engine.ts`). */
 export function estimateSeconds(
-  pageCount: number, workers = defaultWorkerCount(), engine: OcrRunEngine = "tesseract",
+  pageCount: number, workers = defaultWorkerCount(), engine: OcrRunEngine = "tesseract", autoRotate = false,
 ): number {
   if (pageCount <= 0) return 0;
-  if (engine === "vision") return Math.max(1, Math.round(pageCount * VISION_SECONDS_PER_PAGE));
-  return Math.max(1, Math.round(INIT_SECONDS + (pageCount * SECONDS_PER_PAGE) / Math.max(1, workers)));
+  // 페이지 회전 자동 감지: four reads at 100 DPI ≈ half a 300 DPI read (a ninth of the pixels each).
+  const detect = autoRotate ? 0.5 : 0;
+  if (isNativeEngine(engine)) return Math.max(1, Math.round(pageCount * VISION_SECONDS_PER_PAGE * (1 + detect)));
+  return Math.max(1, Math.round(INIT_SECONDS + (pageCount * SECONDS_PER_PAGE * (1 + detect)) / Math.max(1, workers)));
 }
 
 /** `'auto'` has no native-DPI signal in the frontend, so it is 300 (spike §6 "rendering DPI"). */
@@ -244,6 +263,9 @@ export function bitmapScaleMismatch(bitmap: PageBitmap, geom: PageGeom | undefin
 // The job
 // ---------------------------------------------------------------------------
 
+/** One recognised page and, with 자동 회전, the `/Rotate` it must get (O2). */
+interface Recognised { ocrPage: OcrPage; setRotation?: Rotation }
+
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += Math.max(1, size)) out.push(items.slice(i, i + Math.max(1, size)));
@@ -269,7 +291,9 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
   const replaceExisting = options.replaceExisting ?? false;
   const engine = options.engine ?? "tesseract";
   const applyOnce = options.applyOnce ?? false;
-  const inFlight = engine === "vision" ? VISION_CONCURRENCY : workers;
+  const autoRotate = options.autoRotate ?? false;
+  const native = isNativeEngine(engine);
+  const inFlight = native ? VISION_CONCURRENCY : workers;
 
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -283,6 +307,7 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
 
   const applied: PageIndex[] = [];
   const skipped: PageIndex[] = [];
+  const rotated: PageIndex[] = [];
   let words = 0;
   let confidenceSum = 0;
   let gen = options.docGeneration;
@@ -291,7 +316,7 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
   const ownsPool = !options.pool;
 
   const finish = (r: Omit<OcrJobResult, "jobId" | "elapsedMs">): OcrJobResult => ({
-    ...r, jobId, elapsedMs: Date.now() - startedAt,
+    ...r, rotated: [...rotated], jobId, elapsedMs: Date.now() - startedAt,
   });
 
   jobs.start({ id: jobId, kind: "ocr", labelKey: "status.ocr", total: options.pages.length });
@@ -317,9 +342,15 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
       return finish({ status: "done", applied, skipped, words: 0, confidence: 0, messageKey: "ocr.noImagePages" });
     }
 
-    if (engine === "tesseract") {
+    // Tesseract recognises; with 자동 회전 it also detects for every engine but Vision (O2). A pool
+    // that only detects (Windows OCR) loads the bundled traineddata alone: the native engine may read
+    // a language tesseract has no data for.
+    const detectLangs = engine === "tesseract"
+      ? langs
+      : joinLangs(parseLangs(langs).filter((l) => BASELINE_LANGUAGES.includes(l)));
+    if (engine === "tesseract" || (autoRotate && engine !== "vision")) {
       pool = options.pool ?? new TesseractPool({
-        langs, layout, dpi, workers,
+        langs: detectLangs, layout, dpi, workers,
         onProgress: (e) => {
           if (e.status === "recognizing text") options.onPageProgress?.(-1, e.progress);
         },
@@ -327,27 +358,67 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
     }
     const languages = visionLanguages(langs);
 
-    /** One page → `OcrPage`: Vision in the backend, or `/ocr` + the tesseract pool here. */
-    const recognise = async (page: PageIndex, batchGen: DocGeneration): Promise<OcrPage> => {
-      if (engine === "vision") {
-        // The command cannot be interrupted mid-page (0.1–3 s); the checks around it stop the run.
-        const ocrPage = await api.ocrRecognizeNative({ docId: options.docId, page, dpi, languages });
+    /**
+     * 페이지 회전 자동 감지 (O2): the clockwise turn that makes `page` upright. Vision answers in the
+     * backend; every other engine asks tesseract for four 100 DPI reads here. A failed detection is
+     * "leave the page as it is", never a failed page.
+     */
+    const detect = async (page: PageIndex, batchGen: DocGeneration): Promise<Rotation> => {
+      try {
+        if (engine === "vision") {
+          return (await api.ocrDetectOrientation({ docId: options.docId, page, languages })).rotation;
+        }
+        const small = await fetchPageBitmap({
+          docId: options.docId, gen: batchGen, page, dpi: DETECT_DPI, signal: controller.signal,
+        });
+        const found = await detectWithTesseract({
+          page, image: small.blob, widthPx: small.widthPx, heightPx: small.heightPx, turn: turnImage,
+          signal: controller.signal,
+          recognize: (image, detectDpi) =>
+            pool!.recognize(image, { langs: detectLangs, layout, dpi: detectDpi, signal: controller.signal }),
+        });
+        return found.rotation;
+      } catch (e) {
+        if (controller.signal.aborted || e instanceof OcrCancelledError) throw e;
+        console.warn(`[ocr] page ${page + 1}: orientation detection failed; leaving it as it is`, e);
+        return 0;
+      }
+    };
+
+    /** One page → `OcrPage` (+ the `/Rotate` to set): native in the backend, or `/ocr` + the pool here. */
+    const recognise = async (page: PageIndex, batchGen: DocGeneration): Promise<Recognised> => {
+      let turn: Rotation = 0;
+      if (autoRotate) {
+        turn = await detect(page, batchGen);
         if (controller.signal.aborted) throw new OcrCancelledError();
-        return ocrPage;
+      }
+      if (native) {
+        // The command cannot be interrupted mid-page (0.1–3 s); the checks around it stop the run.
+        const ocrPage = await api.ocrRecognizeNative(
+          turn ? { docId: options.docId, page, dpi, languages, rotate: turn } : { docId: options.docId, page, dpi, languages },
+        );
+        if (controller.signal.aborted) throw new OcrCancelledError();
+        return { ocrPage, setRotation: turn ? ocrPage.rotation : undefined };
       }
       const bitmap = await fetchPageBitmap({ docId: options.docId, gen: batchGen, page, dpi, signal: controller.signal });
       const mismatch = bitmapScaleMismatch(bitmap, options.pageGeom?.[page], dpi);
       if (mismatch !== null) {
         console.warn(`[ocr] page ${page + 1}: /ocr bitmap is ${mismatch.toFixed(3)}× the expected size at ${dpi} DPI`);
       }
-      const raw = await pool!.recognize(bitmap.blob, { langs, layout, dpi, signal: controller.signal });
-      const rotation: Rotation = options.pageGeom?.[page]?.rotation ?? 0;
-      return normalizeTesseract(raw, {
-        page, dpi, widthPx: bitmap.widthPx, heightPx: bitmap.heightPx, rotation,
+      const image = await turnImage(bitmap.blob, bitmap.widthPx, bitmap.heightPx, turn);
+      const raw = await pool!.recognize(image.blob, { langs, layout, dpi, signal: controller.signal });
+      const rotation: Rotation = addRotation(options.pageGeom?.[page]?.rotation ?? 0, turn);
+      const ocrPage = normalizeTesseract(raw, {
+        page, dpi, widthPx: image.widthPx, heightPx: image.heightPx, rotation,
       });
+      return { ocrPage, setRotation: turn ? rotation : undefined };
     };
 
-    const apply = async (ocrPages: OcrPage[]) => {
+    /** A recognised page in `ocr_apply`'s form: plain, or wrapped with the `/Rotate` to set (O2). */
+    const applyForm = (r: Recognised): OcrApplyPage =>
+      r.setRotation === undefined ? r.ocrPage : { page: r.ocrPage.page, ocr: r.ocrPage, setRotation: r.setRotation };
+
+    const apply = async (ocrPages: OcrApplyPage[]) => {
       info = await api.ocrApply(
         { docId: options.docId, pages: ocrPages, replaceExisting },
         (e: JobEvent) => {
@@ -365,22 +436,24 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
     };
 
     // 2. Batch of `inFlight` pages: recognise in parallel, then apply strictly in order.
-    const pending: OcrPage[] = [];
+    const pending: Recognised[] = [];
     for (const batch of chunk(todo, inFlight)) {
       if (controller.signal.aborted) throw new OcrCancelledError();
       const batchGen = gen;
       const recognised = await Promise.all(batch.map((page) => recognise(page, batchGen)));
 
-      for (const ocrPage of recognised) {
+      for (const r of recognised) {
+        const { ocrPage } = r;
         if (controller.signal.aborted) throw new OcrCancelledError();
         if (applyOnce) {
-          pending.push(ocrPage);
+          pending.push(r);
           options.onPageDone?.(ocrPage.page, ocrPage);
           jobs.update(jobId, { done: pending.length, total: todo.length, note: String(ocrPage.page + 1) });
           continue;
         }
-        await apply([ocrPage]);
+        await apply([applyForm(r)]);
         applied.push(ocrPage.page);
+        if (r.setRotation !== undefined) rotated.push(ocrPage.page);
         tally(ocrPage);
         options.onPageDone?.(ocrPage.page, ocrPage);
         jobs.update(jobId, { done: applied.length, total: todo.length, note: String(ocrPage.page + 1) });
@@ -390,10 +463,11 @@ export async function runOcrJob(options: OcrRunOptions): Promise<OcrJobResult> {
     // 3. `applyOnce`: the whole run as one `ocr_apply` = one undo step.
     if (pending.length > 0) {
       if (controller.signal.aborted) throw new OcrCancelledError();
-      await apply(pending);
-      for (const ocrPage of pending) {
-        applied.push(ocrPage.page);
-        tally(ocrPage);
+      await apply(pending.map(applyForm));
+      for (const r of pending) {
+        applied.push(r.ocrPage.page);
+        if (r.setRotation !== undefined) rotated.push(r.ocrPage.page);
+        tally(r.ocrPage);
       }
     }
 

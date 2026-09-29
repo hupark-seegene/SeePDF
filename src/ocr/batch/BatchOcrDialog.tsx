@@ -5,17 +5,26 @@
  *
  * 시작 runs the queue (`flow.ts`); 취소 stops the current file and the queue; 닫기 only hides the
  * dialog — a running batch carries on in the status bar. Lazy-loaded from `DialogHost`.
+ *
+ * v0.3 (pkg7-ocr): options seeded from 설정 (U1), the engine's language chips (O1), 페이지 회전 자동
+ * 감지 (O2), Windows OCR as the native engine (O3).
  */
+import { useEffect } from "react";
 import { X } from "lucide-react";
 import * as api from "../../ipc/api";
 import { useT } from "../../i18n/useT";
 import { useAppStore } from "../../store/appStore";
 import { Dialog, Row } from "../../dialogs/Dialog";
 import type { OcrDpi } from "../ocrJob";
-import { ENGINE_CHOICES, useVisionAvailable, type OcrEngineChoice } from "../engine";
 import {
-  addFiles, cancelBatch, clearFiles, firstOutput, removeFile, resetBatch, revealOutputs, setOptions,
-  startBatch, useBatchOcr,
+  choosableLanguages, engineChoices, engineHintKey, nativeEngineOf, pickEngine, runLanguages,
+  toggleLanguageFor, useOcrCapabilities,
+  type OcrEngineChoice,
+} from "../engine";
+import { OCR_LANGUAGES } from "../languages";
+import {
+  addFiles, cancelBatch, clearFiles, firstOutput, removeFile, resetBatch, revealOutputs, seedFromSettings,
+  setOptions, startBatch, useBatchOcr,
 } from "./flow";
 import { baseName, isActive, isRunnable, summarize, type BatchItem } from "./queue";
 import "./batchOcr.css";
@@ -30,8 +39,17 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
   const runnable = items.filter(isRunnable).length;
   const summary = summarize(items);
   const output = firstOutput(items);
-  const canStart = !running && runnable > 0 && (options.ko || options.en);
-  const visionAvailable = useVisionAvailable();
+  const caps = useOcrCapabilities();
+  const native = caps ? nativeEngineOf(caps) : null;
+  // O3 (verification round 1): 자동 picks the engine from the selected languages, as the OCR sheet does.
+  const engine = pickEngine(options.engine, caps, options.langs);
+  const offered = choosableLanguages(options.engine, caps, engine);
+  // Round 2: Windows OCR reads one language per run, so its chips are what that run reads.
+  const langs = runLanguages(caps, engine, options.langs);
+  const canStart = !running && runnable > 0 && langs.length > 0;
+
+  // U1: an empty, idle list starts from 설정 each time the dialog opens.
+  useEffect(() => { seedFromSettings(); }, []);
 
   const add = async () => {
     const picked = await api.openFileDialog({ multiple: true, title: t("batchOcr.pick") });
@@ -118,31 +136,24 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
 
       <Row labelKey="ocr.language">
         <div className="chip-row">
-          <button
-            type="button"
-            className="chip"
-            data-active={options.ko || undefined}
-            aria-pressed={options.ko}
-            disabled={running}
-            onClick={() => setOptions({ ko: options.en ? !options.ko : true })}
-          >
-            {t("ocr.language.ko")}
-          </button>
-          <button
-            type="button"
-            className="chip"
-            data-active={options.en || undefined}
-            aria-pressed={options.en}
-            disabled={running}
-            onClick={() => setOptions({ en: options.ko ? !options.en : true })}
-          >
-            {t("ocr.language.en")}
-          </button>
+          {OCR_LANGUAGES.filter((l) => offered.includes(l.code)).map((l) => (
+            <button
+              key={l.code}
+              type="button"
+              className="chip"
+              data-active={langs.includes(l.code) || undefined}
+              aria-pressed={langs.includes(l.code)}
+              disabled={running}
+              onClick={() => setOptions({ langs: toggleLanguageFor(options.engine, engine, langs, l.code) })}
+            >
+              {t(l.labelKey)}
+            </button>
+          ))}
         </div>
       </Row>
 
-      {visionAvailable && (
-        <Row labelKey="ocr.engine" hintKey={options.engine === "auto" ? "ocr.engine.autoHint" : undefined}>
+      {native && (
+        <Row labelKey="ocr.engine" hintKey={engineHintKey(options.engine, caps, engine, options.langs)}>
           <select
             className="field"
             value={options.engine}
@@ -150,7 +161,7 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
             aria-label={t("ocr.engine")}
             onChange={(e) => setOptions({ engine: e.target.value as OcrEngineChoice })}
           >
-            {ENGINE_CHOICES.map((c) => <option key={c.id} value={c.id}>{t(c.labelKey)}</option>)}
+            {engineChoices(native).map((c) => <option key={c.id} value={c.id}>{t(c.labelKey)}</option>)}
           </select>
         </Row>
       )}
@@ -179,6 +190,15 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
           onChange={(e) => setOptions({ skipPagesWithText: e.target.checked })}
         />
         <span>{t("ocr.option.skipText")}</span>
+      </label>
+      <label className="dlg-check text-base">
+        <input
+          type="checkbox"
+          checked={options.autoRotate}
+          disabled={running}
+          onChange={(e) => setOptions({ autoRotate: e.target.checked })}
+        />
+        <span>{t("ocr.option.autoRotate")}</span>
       </label>
 
       <Row labelKey="batchOcr.output" hintKey="batchOcr.output.hint">

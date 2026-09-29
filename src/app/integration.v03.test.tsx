@@ -13,6 +13,11 @@
  *   dragged into another one.
  * - pkg3 H8 × pkg2 D1: a PDF dropped together with images that another window already shows is
  *   focused there, not opened a second time.
+ * - pkg3 S5 × pkg7 O6 / O2: 텍스트 인식 writes a text layer (a modification), so on a document that
+ *   forbids changes the 스캔 문서 banner's and the 검색 hint's 'OCR 실행…', the ⋯ menu item and the
+ *   command are off with the reason, and the OCR sheet cannot start; 페이지 회전 자동 감지 also turns
+ *   pages, so it is off where page assembly is forbidden. The mock refuses a turning OCR as
+ *   "modify" first, like the engine (whose structural guard alone would only check "assemble").
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -31,6 +36,11 @@ import { onCaretKey } from "../viewer/text/caretKeys";
 import { useCaretStore } from "../viewer/text/caret";
 import { mock, mockEvents, mockOpenInOtherWindow } from "../ipc/mock";
 import * as api from "../ipc/api";
+import { t as tr } from "../i18n";
+import { NeedsOcrBanner, NeedsOcrSearchHint } from "../ocr/NeedsOcrBanner";
+import { resetNeedsOcr } from "../ocr/needsOcr";
+import { OcrDialog } from "../ocr/OcrDialog";
+import { closeOcrDialog, openOcrDialog, useOcrDialogStore } from "../ocr/dialogState";
 
 const SAMPLE = "/Users/veri/Documents/SeePDF-샘플.pdf";
 /** pkg3's mock fixture: print, copy, modify and assemble are forbidden; comments are allowed. */
@@ -237,5 +247,75 @@ describe("H8 × D1: a PDF dropped with images", () => {
     expect(newWindow).toHaveBeenCalledTimes(1);
     expect(newWindow).toHaveBeenCalledWith({ path: "/p/new.pdf" });
     expect(useToastStore.getState().toasts.at(-1)?.params).toEqual({ count: 1 });
+  });
+});
+
+describe("S5 × pkg7: OCR on a document that forbids changes", () => {
+  function scanPages() {
+    return vi.spyOn(mock, "ocrPageStatus").mockImplementation(async (a) =>
+      a.pages.map((page) => ({ page, hasText: false, charCount: 0 })));
+  }
+
+  beforeEach(() => {
+    resetNeedsOcr();
+    closeOcrDialog();
+  });
+
+  it("the banner and the 검색 hint keep saying why, with 'OCR 실행…' off; the command refuses", async () => {
+    scanPages();
+    const info = await useDocStore.getState().open(RESTRICTED);
+    const reason = tr("security.restricted.reason.modify");
+    expect(permissionBlock("tools.ocr", info)).toBe("security.restricted.reason.modify");
+    render(
+      <>
+        <NeedsOcrBanner />
+        <NeedsOcrSearchHint docId={info!.docId} />
+      </>,
+    );
+    const banner = await screen.findByTestId("needs-ocr-banner", {}, { timeout: 4000 });
+    const runs = screen.getAllByRole("button", { name: tr("ocr.needsOcr.run") });
+    expect(runs).toHaveLength(2);
+    for (const run of runs) {
+      expect(run).toBeDisabled();
+      expect(run).toHaveAttribute("title", reason);
+    }
+    expect(banner).toHaveTextContent(tr("ocr.needsOcr.banner"));
+
+    const { runCommand } = await import("./useCommands");
+    act(() => runCommand("tools.ocr"));
+    expect(toastKeys()).toContain("security.restricted.reason.modify");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useOcrDialogStore.getState().open).toBe(false);
+  });
+
+  it("an unrestricted scan keeps 'OCR 실행…'", async () => {
+    scanPages();
+    const info = await useDocStore.getState().open(SAMPLE);
+    expect(permissionBlock("tools.ocr", info)).toBeNull();
+    render(<NeedsOcrBanner />);
+    await screen.findByTestId("needs-ocr-banner", {}, { timeout: 4000 });
+    const run = screen.getByRole("button", { name: tr("ocr.needsOcr.run") });
+    expect(run).toBeEnabled();
+    fireEvent.click(run);
+    expect(useOcrDialogStore.getState().open).toBe(true);
+  });
+
+  it("the OCR sheet cannot start, and 페이지 회전 자동 감지 is off, on that document", async () => {
+    await useDocStore.getState().open(RESTRICTED);
+    render(<OcrDialog />);
+    act(() => openOcrDialog());
+    expect(screen.getByRole("button", { name: tr("ocr.start") })).toBeDisabled();
+    expect(screen.getByText(tr("security.restricted.reason.modify"))).toBeInTheDocument();
+    const rotate = screen.getByLabelText(tr("ocr.option.autoRotate"));
+    expect(rotate).toBeDisabled();
+    expect(rotate).not.toBeChecked();
+  });
+
+  it("the mock refuses a turning OCR as 'modify', as the engine does", async () => {
+    const info = (await useDocStore.getState().open(RESTRICTED))!;
+    const ocr = { page: 0, dpi: 150, widthPx: 100, heightPx: 100, rotation: 90 as const, lines: [] };
+    await expect(
+      mock.ocrApply({ docId: info.docId, pages: [{ page: 0, ocr, setRotation: 90 }], replaceExisting: false }, () => {}),
+    ).rejects.toMatchObject({ code: "permissionDenied", detail: "modify" });
   });
 });

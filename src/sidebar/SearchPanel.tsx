@@ -22,6 +22,7 @@ import { openDialog } from "../dialogs/dialogState";
 import type { SearchHit } from "../ipc/types";
 import { openContextMenu } from "../app/contextMenuStore";
 import { toast } from "../app/toastStore";
+import { NeedsOcrSearchHint } from "../ocr/NeedsOcrBanner"; // v0.3 pkg7-ocr (O6)
 import "./sidebar.css";
 import { copyForbidden, permissionBlock, reasonKey } from "../app/permissions";
 
@@ -203,6 +204,8 @@ export function SearchPanel() {
       </div>
 
       {query && !running && total === 0 && <p className="empty">{t("sidebar.search.empty")}</p>}
+      {/* v0.3 pkg7-ocr (O6): an image-only document says why, and offers OCR */}
+      {query && !running && total === 0 && <NeedsOcrSearchHint docId={info?.docId} />}
 
       {/* v0.3 (R3): every hit becomes a 영역 표시 mark, reviewed in 편집 before 적용 */}
       {!running && total > 0 && (

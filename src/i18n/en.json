@@ -1182,5 +1182,16 @@
   "undo.formFieldEdit": "Field Properties",
   "undo.formFieldDelete": "Delete Field",
   "undo.formImport": "Import Form Data",
-  "undo.formFlatten": "Flatten Form"
+  "undo.formFlatten": "Flatten Form",
+  "ocr.engine.windows": "Windows OCR",
+  "ocr.engine.autoHintWindows": "On this PC, Windows OCR recognizes text faster",
+  "ocr.rotatedCount": "Turned {{count}} page upright",
+  "ocr.rotatedCount_other": "Turned {{count}} pages upright",
+  "ocr.needsOcr.banner": "This document has no searchable text",
+  "ocr.needsOcr.hint": "It looks like a scan. Run text recognition (OCR) to search and select its text.",
+  "ocr.needsOcr.run": "Run OCR…",
+  "ocr.needsOcr.searchHint": "This document has no searchable text. Run OCR to make it searchable.",
+  "ocr.engine.autoFallback": "Apple Vision can't read all the selected languages here, so Tesseract will be used",
+  "ocr.engine.autoFallbackWindows": "Windows OCR on this PC can't read all the selected languages, so Tesseract will be used",
+  "ocr.engine.windowsOneLanguage": "Windows OCR reads one language at a time (plus English), so some of the selected languages are left out"
 }

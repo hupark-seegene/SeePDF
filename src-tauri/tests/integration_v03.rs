@@ -15,6 +15,14 @@
 //! a signed file that still saves incrementally (pkg3 S1). pkg2 (P3) imports pages from
 //! another open document; pkg3 (S5)'s rule that a restricted source cannot hand its pages to
 //! an unrestricted document applies to it as to a file source.
+//!
+//! pkg7 (O2) turns a sideways page in the same `mutate` as its OCR layer, which makes that
+//! mutate structural; pkg3 (S5)'s guard reads a structural mutate as "assemble" alone. A
+//! turning OCR needs "modify" as well, or a document that forbids changes but allows page
+//! assembly would gain a text layer.
+//!
+//! pkg7 (O5) writes the OCR layer in a glyphless CID font; pkg1 (R2) splits a partly redacted
+//! text object and re-sets its text through the font's `/ToUnicode`, which must work on it.
 
 mod common;
 
@@ -25,10 +33,10 @@ use seepdf_lib::engine::registry;
 use seepdf_lib::engine::render::tiles;
 use seepdf_lib::engine::save;
 use seepdf_lib::engine::text::{layer, structtree};
-use seepdf_lib::engine::{form, pages};
+use seepdf_lib::engine::{form, ocr, pages, security};
 use seepdf_lib::ipc::types::{
-    PageIndex, PageOp, ParagraphEdit, ParagraphFlow, ReadingOrder, Rect, RedactBatchMark,
-    RedactOptions,
+    OcrLine, OcrPage, OcrWord, PageIndex, PageOp, ParagraphEdit, ParagraphFlow, PermissionsRequest,
+    ReadingOrder, Rect, RedactBatchMark, RedactOptions,
 };
 use seepdf_lib::ipc::ErrorCode;
 
@@ -630,4 +638,210 @@ fn pages_from_a_restricted_open_document_are_refused() {
         before,
         "the target is untouched"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// pkg7 (O2 페이지 회전 자동 감지) × pkg3 (S5 permission flags)
+// ---------------------------------------------------------------------------------------
+
+/// tracemonkey.pdf written with an owner password and `permissions`, reopened without one.
+fn restricted_copy(name: &str, permissions: PermissionsRequest) -> String {
+    let dir = fixture("out").join("v03-integration");
+    std::fs::create_dir_all(&dir).expect("create fixtures/out/v03-integration");
+    let target = dir.join(format!("{name}-{}.pdf", std::process::id()));
+    let _ = std::fs::remove_file(&target);
+    let src = open("tracemonkey.pdf");
+    let path = target.display().to_string();
+    let d = src.doc_id.clone();
+    with_state(move |st| security::set_password(st, &d, &path, None, "owner-pw", permissions))
+        .expect("set_password");
+    drop(src);
+    let bytes = std::fs::read(&target).expect("read the protected file");
+    open_bytes(bytes)
+}
+
+/// One English word recognised on page 0 at `rotation` (150 DPI image of a Letter page).
+fn one_word_ocr(rotation: u16) -> OcrPage {
+    let (w, h) = if rotation % 180 == 0 {
+        (1275, 1650)
+    } else {
+        (1650, 1275)
+    };
+    let word = OcrWord {
+        text: "Scanned".to_string(),
+        bbox: [200.0, 200.0, 420.0, 250.0],
+        confidence: 92.0,
+    };
+    OcrPage {
+        page: 0,
+        dpi: 150,
+        width_px: w,
+        height_px: h,
+        rotation,
+        lines: vec![OcrLine {
+            text: word.text.clone(),
+            bbox: word.bbox,
+            baseline: None,
+            row_height_px: Some(50.0),
+            words: vec![word],
+        }],
+    }
+}
+
+fn ocr_apply(
+    doc_id: &str,
+    page: OcrPage,
+    set_rotation: Option<u16>,
+) -> Result<(), seepdf_lib::ipc::EngineError> {
+    let doc_id = doc_id.to_string();
+    with_state(move |st| {
+        let mut progress = |_: usize, _: u16| {};
+        ocr::apply_rotated_cancellable(
+            st,
+            &doc_id,
+            &[page],
+            &[set_rotation],
+            false,
+            &mut progress,
+            &|| false,
+        )
+    })
+    .map(|_| ())
+}
+
+fn rotation_of(doc_id: &str) -> u16 {
+    with_doc(doc_id, |d| Ok(d.geom(0)?.rotation)).unwrap()
+}
+
+/// "assemble" allowed, "modify" forbidden: OCR is refused whether or not it turns the page,
+/// and the page keeps its rotation. "modify" allowed, "assemble" forbidden: the layer alone
+/// goes in, a layer that would turn the page is refused as "assemble".
+#[test]
+fn a_turning_ocr_needs_both_modify_and_assemble() {
+    let no_modify = restricted_copy(
+        "ocr-no-modify",
+        PermissionsRequest {
+            modify: false,
+            ..PermissionsRequest::default()
+        },
+    );
+    for turn in [None, Some(90)] {
+        let err = ocr_apply(&no_modify, one_word_ocr(turn.unwrap_or(0)), turn)
+            .expect_err("a document that forbids changes gains no OCR layer");
+        assert_eq!(err.code, ErrorCode::PermissionDenied, "{turn:?}");
+        assert_eq!(err.detail.as_deref(), Some("modify"), "{turn:?}");
+    }
+    assert_eq!(rotation_of(&no_modify), 0, "the page did not turn");
+    assert!(
+        !page_text(&no_modify).contains("Scanned"),
+        "and has no OCR layer"
+    );
+    close(no_modify);
+
+    let no_assemble = restricted_copy(
+        "ocr-no-assemble",
+        PermissionsRequest {
+            assemble: false,
+            ..PermissionsRequest::default()
+        },
+    );
+    let err = ocr_apply(&no_assemble, one_word_ocr(90), Some(90))
+        .expect_err("turning the page needs assemble");
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(err.detail.as_deref(), Some("assemble"));
+    assert_eq!(rotation_of(&no_assemble), 0);
+    ocr_apply(&no_assemble, one_word_ocr(0), None).expect("the layer alone is a modification");
+    assert!(page_text(&no_assemble).contains("Scanned"));
+    close(no_assemble);
+}
+
+// ---------------------------------------------------------------------------------------
+// pkg7 (O5 glyphless OCR font) × pkg1 (R2 word-level redaction)
+// ---------------------------------------------------------------------------------------
+
+/// A Korean OCR line written in pkg7's glyphless CID font (CID = code point, identity
+/// `/ToUnicode`, text set through `FPDFText_SetCharcodes`) meets pkg1's word-level redaction,
+/// which splits a partly marked object and re-sets its text through the font's `/ToUnicode`:
+/// only the marked word goes, the rest of the line still extracts — in memory and after save.
+#[test]
+fn a_word_redacted_out_of_a_glyphless_ocr_line_leaves_the_rest() {
+    let doc = open("tracemonkey.pdf");
+    let (w, h) = with_doc(&doc.doc_id, |d| {
+        let g = d.geom(0)?;
+        Ok((g.width_pt, g.height_pt))
+    })
+    .unwrap();
+    // 150 DPI image of the page; the line sits in the top margin, clear of the page's text.
+    let (wpx, hpx) = ((w * 150.0 / 72.0) as u32, (h * 150.0 / 72.0) as u32);
+    let words = [
+        ("검색", [200.0, 40.0, 300.0, 90.0]),
+        ("가능한", [320.0, 40.0, 470.0, 90.0]),
+        ("한글", [490.0, 40.0, 590.0, 90.0]),
+        ("문서", [610.0, 40.0, 710.0, 90.0]),
+    ];
+    let words: Vec<OcrWord> = words
+        .iter()
+        .map(|(text, bbox)| OcrWord {
+            text: text.to_string(),
+            bbox: *bbox,
+            confidence: 92.0,
+        })
+        .collect();
+    let page = OcrPage {
+        page: 0,
+        dpi: 150,
+        width_px: wpx,
+        height_px: hpx,
+        rotation: 0,
+        lines: vec![OcrLine {
+            text: "검색 가능한 한글 문서".into(),
+            bbox: [200.0, 40.0, 710.0, 90.0],
+            baseline: None,
+            row_height_px: Some(50.0),
+            words,
+        }],
+    };
+    ocr_apply(&doc.doc_id, page, None).expect("ocr_apply");
+    assert!(page_text(&doc.doc_id).contains("한글"));
+
+    let mark = word_rect(&doc.doc_id, "한글");
+    let d = doc.doc_id.clone();
+    let plan = with_state(move |st| redact::preview_checked(st, &d, 0, &[mark])).expect("preview");
+    // The OCR layer is one object per word ("한글 " with its space); the half-point margin of
+    // the mark reaches into its neighbour's trailing space, so that glyphless object is split
+    // (R2 re-sets its text through the identity `/ToUnicode`) rather than removed.
+    assert!(
+        plan.text_objects.iter().any(|o| o.split) && plan.collateral.is_empty(),
+        "{plan:?}"
+    );
+    let d = doc.doc_id.clone();
+    let result = with_state(move |st| {
+        redact::apply_batch(
+            st,
+            &d,
+            &[RedactBatchMark {
+                page: 0,
+                rects: vec![mark],
+            }],
+            &RedactOptions {
+                fill: [0, 0, 0],
+                overlay_text: None,
+                ungroup: false,
+            },
+        )
+    })
+    .expect("apply");
+    assert!(result.verified, "{result:?}");
+
+    let check = |doc_id: &str, when: &str| {
+        let text = page_text(doc_id);
+        assert!(!text.contains("한글"), "{when}: redacted: {text:?}");
+        for kept in ["검색", "가능한", "문서"] {
+            assert!(text.contains(kept), "{when}: '{kept}' survives: {text:?}");
+        }
+    };
+    check(&doc.doc_id, "in memory");
+    let saved = open_bytes(save_bytes(&doc.doc_id));
+    check(&saved, "after save");
+    close(saved);
 }

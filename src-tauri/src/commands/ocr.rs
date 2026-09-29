@@ -5,14 +5,16 @@
 //! never from a command. `ocr_apply` is **one** `registry::mutate` for the whole batch = one
 //! undo step, so cancelling a 14-page run and undoing it are both a single step.
 //!
-//! `ocr_recognize_native` (P1-11, macOS Vision) renders that same image on the engine thread and
-//! recognises it on a blocking thread — Vision never runs on the engine thread, PDFium never
-//! runs off it.
+//! `ocr_recognize_native` (P1-11 macOS Vision, v0.3 O3 Windows.Media.Ocr) renders that same
+//! image on the engine thread and recognises it on a blocking thread — the recogniser never
+//! runs on the engine thread, PDFium never runs off it. `ocr_detect_orientation` (v0.3 O2) does
+//! the same at 100 DPI, four times.
 
 use crate::engine::ocr;
+use crate::engine::ocr::orientation::{self, OrientationResult};
 use crate::engine::{EngineHandle, Lane};
 use crate::ipc::types::{
-    DocInfo, JobEvent, OcrApplyPage, OcrCapabilities, OcrPage, OcrPageStatus, PageIndex,
+    DocInfo, JobEvent, OcrApplyPage, OcrCapabilities, OcrPage, OcrPageStatus, PageIndex, Rotation,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use tauri::ipc::Channel;
@@ -48,11 +50,13 @@ pub async fn ocr_apply(
     replace_existing: bool,
     on_progress: Channel<JobEvent>,
 ) -> Result<DocInfo, EngineError> {
-    // `OcrPage[]` and the Stage 8 `{ page, ocr }[]` form are the same batch.
-    let pages = pages
+    // `OcrPage[]` and the Stage 8 `{ page, ocr, setRotation? }[]` form are the same batch.
+    let (pages, rotations): (Vec<OcrPage>, Vec<Option<Rotation>>) = pages
         .into_iter()
-        .map(OcrApplyPage::into_page)
-        .collect::<Result<Vec<OcrPage>, EngineError>>()?;
+        .map(OcrApplyPage::into_page_and_rotation)
+        .collect::<Result<Vec<_>, EngineError>>()?
+        .into_iter()
+        .unzip();
     let token = engine.jobs.create();
     let job_id = token.id;
     let total = pages.len() as u32;
@@ -75,10 +79,11 @@ pub async fn ocr_apply(
             };
             // `cancel_job` is honoured between pages; the batch then rolls back whole.
             let cancelled = || token.is_cancelled();
-            ocr::apply_cancellable(
+            ocr::apply_rotated_cancellable(
                 st,
                 &doc_id,
                 &pages,
+                &rotations,
                 replace_existing,
                 &mut report,
                 &cancelled,
@@ -110,9 +115,14 @@ pub async fn ocr_apply(
     result
 }
 
-/// P1-11, macOS only (Vision, accurate level, `ko-KR` + `en-US`, language correction). Returns
-/// the same `OcrPage` the tesseract path builds — image pixels, origin top-left — for
-/// `ocr_apply`. `unsupported` where `ocr_capabilities` does not list `vision`.
+/// P1-11 macOS Vision (accurate level, `ko-KR` + `en-US`, language correction), v0.3 O3
+/// Windows.Media.Ocr. Returns the same `OcrPage` the tesseract path builds — image pixels,
+/// origin top-left — for `ocr_apply`. `unsupported` where `ocr_capabilities` lists neither
+/// `vision` nor `windows`.
+///
+/// `rotate` (v0.3 O2, default 0) turns the image that many degrees clockwise before it is
+/// read; the `OcrPage` then says `rotation = (page /Rotate + rotate) % 360`, which is what
+/// `ocr_apply`'s `setRotation` expects.
 #[tauri::command]
 pub async fn ocr_recognize_native(
     engine: State<'_, EngineHandle>,
@@ -120,18 +130,58 @@ pub async fn ocr_recognize_native(
     page: PageIndex,
     dpi: u32,
     languages: Vec<String>,
+    rotate: Option<Rotation>,
 ) -> Result<OcrPage, EngineError> {
-    if !ocr::vision_available() {
+    if !ocr::native_available() {
         return Err(EngineError::unsupported("ocr_recognize_native"));
     }
+    let rotate = check_turn(rotate.unwrap_or(0))?;
     // The `/ocr` image, on the engine thread (the only thread that may touch PDFium)…
     let image = engine
         .call(Lane::Background, "ocr_recognize_native", move |st| {
             ocr::render_page_gray(st, &doc_id, page, dpi)
         })
         .await?;
-    // …and Vision on a blocking thread, so tiles keep flowing while it reads (0.1–3 s a page).
-    tauri::async_runtime::spawn_blocking(move || ocr::recognize_gray(&image, &languages))
+    // …and the recogniser on a blocking thread, so tiles keep flowing while it reads
+    // (0.1–3 s a page).
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = orientation::rotate_gray(&image, rotate);
+        ocr::recognize_gray(&image, &languages)
+    })
+    .await
+    .map_err(|e| EngineError::new(ErrorCode::Pdfium, format!("OCR thread: {e}")))?
+}
+
+/// v0.3 O2 페이지 회전 자동 감지 with Apple Vision: the page at 100 DPI, every line voting with
+/// its reading direction; `rotation` is the clockwise turn that makes it upright, 0 when none
+/// wins clearly. `unsupported` where `ocr_capabilities` has no `vision` (the frontend then
+/// detects with tesseract).
+#[tauri::command]
+pub async fn ocr_detect_orientation(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    languages: Vec<String>,
+) -> Result<OrientationResult, EngineError> {
+    if !ocr::vision_available() {
+        return Err(EngineError::unsupported("ocr_detect_orientation"));
+    }
+    let image = engine
+        .call(Lane::Background, "ocr_detect_orientation", move |st| {
+            ocr::render_page_gray(st, &doc_id, page, orientation::DETECT_DPI)
+        })
+        .await?;
+    tauri::async_runtime::spawn_blocking(move || ocr::detect_orientation(&image, &languages))
         .await
-        .map_err(|e| EngineError::new(ErrorCode::Pdfium, format!("Vision thread: {e}")))?
+        .map_err(|e| EngineError::new(ErrorCode::Pdfium, format!("OCR thread: {e}")))?
+}
+
+fn check_turn(rotate: Rotation) -> Result<Rotation, EngineError> {
+    if matches!(rotate, 0 | 90 | 180 | 270) {
+        Ok(rotate)
+    } else {
+        Err(EngineError::invalid(format!(
+            "rotate {rotate} is not 0, 90, 180 or 270"
+        )))
+    }
 }

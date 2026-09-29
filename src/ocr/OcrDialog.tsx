@@ -9,6 +9,10 @@
  *
  * The dialogs module (e) owns dialog hosting, so this component renders nothing until
  * `openOcrDialog()` (src/ocr/dialogState.ts) is called. Everything below the button is `ocrJob.ts`.
+ *
+ * v0.3 (pkg7-ocr): 언어 and 해상도 start from 설정 (`Settings.ocrLanguages` / `ocrDpi`, U1); the language
+ * chips are the ones the chosen engine reads (日本語 / 中文 with Vision, Windows OCR or staged traineddata,
+ * O1); 페이지 회전 자동 감지 (O2); Windows OCR as the native engine on Windows (O3).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
@@ -17,6 +21,8 @@ import { thumbUrl } from "../ipc/protocol";
 import type { PageIndex } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
+import { permissionBlock, reasonKey } from "../app/permissions";
+import { useAppStore } from "../store/appStore";
 import { useViewStore } from "../store/viewStore";
 import { etaMs, localJobId, useJobStore } from "../store/jobStore";
 import { useOcrDialogStore, type OcrDialogContext } from "./dialogState";
@@ -25,8 +31,10 @@ import {
 } from "./ocrJob";
 import { DEFAULT_LAYOUT, defaultWorkerCount, type OcrLayout } from "./tesseractPool";
 import {
-  ENGINE_CHOICES, isVisionAvailable, resolveEngine, useVisionAvailable, type OcrEngineChoice,
+  choosableLanguages, engineChoices, engineHintKey, loadOcrCapabilities, nativeEngineOf, pickEngine,
+  runLanguages, toggleLanguageFor, useOcrCapabilities, type OcrEngineChoice,
 } from "./engine";
+import { OCR_LANGUAGES, isOcrLanguage, langsFor, type OcrLanguage } from "./languages";
 import "./OcrDialog.css";
 
 type RangeMode = "all" | "current" | "custom";
@@ -39,11 +47,16 @@ const LAYOUTS: { id: OcrLayout; labelKey: string }[] = [
   { id: "block", labelKey: "ocr.layout.block" },
 ];
 
-/** UI language chips → the tesseract language string. `kor` alone garbles English (spike §4.2). */
-function langsFor(ko: boolean, en: boolean): string {
-  if (ko && en) return "kor+eng";
-  if (ko) return "kor+eng";   // Korean documents always carry Latin; never ship `kor` alone
-  return "eng";
+/** 설정's default resolution (U1), when it is one the sheet offers. */
+function settingsDpi(): OcrDpi {
+  const dpi = useAppStore.getState().settings?.ocrDpi;
+  return DPI_CHOICES.includes(dpi as OcrDpi) ? (dpi as OcrDpi) : "auto";
+}
+
+/** 설정's default languages (U1); availability is applied later, when the engine is known. */
+function settingsLanguages(): OcrLanguage[] {
+  const langs = (useAppStore.getState().settings?.ocrLanguages ?? []).filter(isOcrLanguage);
+  return langs.length ? langs : ["kor", "eng"];
 }
 
 export function OcrDialog() {
@@ -72,15 +85,29 @@ function OcrDialogBody(
   const [rangeText, setRangeText] = useState(
     context.selectedPages?.length ? formatPageRange(context.selectedPages) : "",
   );
-  const [ko, setKo] = useState(true);
-  const [en, setEn] = useState(true);
+  const [selectedLangs, setSelectedLangs] = useState<OcrLanguage[]>(settingsLanguages);
   const [skipText, setSkipText] = useState(true);
-  const [dpi, setDpi] = useState<OcrDpi>("auto");
+  const [autoRotateChoice, setAutoRotate] = useState(false);
+  // v0.3 integration (pkg7 × pkg3 S5): the layer is a modification, and turning a page is page
+  // assembly — the engine refuses either on a document whose permissions forbid it.
+  const permInfo = !context.docId || context.docId === info?.docId ? info : null;
+  const modifyBlock = permissionBlock("tools.ocr", permInfo);
+  const rotateBlock = permInfo?.permissions?.assemble === false ? reasonKey("assemble") : null;
+  const autoRotate = autoRotateChoice && !rotateBlock;
+  const [dpi, setDpi] = useState<OcrDpi>(settingsDpi);
   const [layout, setLayout] = useState<OcrLayout>(DEFAULT_LAYOUT);
   const [advanced, setAdvanced] = useState(false);
   const [engineChoice, setEngineChoice] = useState<OcrEngineChoice>("auto");
-  const visionAvailable = useVisionAvailable();
-  const engine = resolveEngine(engineChoice, visionAvailable === true);
+  const caps = useOcrCapabilities();
+  const native = caps ? nativeEngineOf(caps) : null;
+  // O3 (verification round 1): 자동 picks the engine from the selected languages.
+  const engine = pickEngine(engineChoice, caps, selectedLangs);
+  // O1: the chips on offer (under 자동, what either engine reads); a selected language the engine that
+  // will run cannot read is dropped.
+  const offered = choosableLanguages(engineChoice, caps, engine);
+  // Round 2: Windows OCR reads one language per run, so its chips are what that run reads.
+  const langs = runLanguages(caps, engine, selectedLangs);
+  const engineHint = engineHintKey(engineChoice, caps, engine, selectedLangs);
 
   const [phase, setPhase] = useState<Phase>("setup");
   const [jobId, setJobId] = useState<number | null>(null);
@@ -108,8 +135,9 @@ function OcrDialogBody(
 
   const rangeInvalid = rangeMode === "custom" && pages === null;
   const workers = defaultWorkerCount();
-  const seconds = estimateSeconds(pages?.length ?? 0, workers, engine);
-  const canStart = !!docId && !!pages && pages.length > 0 && (ko || en) && phase === "setup";
+  const seconds = estimateSeconds(pages?.length ?? 0, workers, engine, autoRotate);
+  const canStart =
+    !!docId && !!pages && pages.length > 0 && langs.length > 0 && phase === "setup" && !modifyBlock;
 
   const start = useCallback(async () => {
     if (!docId || !pages) return;
@@ -119,16 +147,18 @@ function OcrDialogBody(
     setActivePage(pages[0] ?? null);
     startedAt.current = Date.now();
     // The capability answer may still be in flight on a very fast click: ask the cached promise.
-    const runEngine = resolveEngine(engineChoice, await isVisionAvailable());
+    const loaded = await loadOcrCapabilities();
+    const runEngine = pickEngine(engineChoice, loaded, selectedLangs);
     const r = await runOcrJob({
       docId,
       docGeneration,
       pages,
       pageGeom,
-      langs: langsFor(ko, en),
+      langs: langsFor(runLanguages(loaded, runEngine, selectedLangs)),
       layout,
       dpi,
       skipPagesWithText: skipText,
+      autoRotate,
       workers,
       engine: runEngine,
       jobId: id,
@@ -139,7 +169,7 @@ function OcrDialogBody(
     });
     setResult(r);
     setPhase("finished");
-  }, [docId, docGeneration, pages, pageGeom, ko, en, layout, dpi, skipText, workers, engineChoice]);
+  }, [docId, docGeneration, pages, pageGeom, selectedLangs, layout, dpi, skipText, autoRotate, workers, engineChoice]);
 
   const undoAll = useCallback(async () => {
     if (!docId || !result) return;
@@ -221,24 +251,18 @@ function OcrDialogBody(
             <section className="ocr-section">
               <h3 className="ocr-label">{t("ocr.language")}</h3>
               <div className="ocr-chips">
-                <button
-                  type="button"
-                  className="chip"
-                  data-active={ko || undefined}
-                  aria-pressed={ko}
-                  onClick={() => setKo((v) => (en ? !v : true))}
-                >
-                  {t("ocr.language.ko")}
-                </button>
-                <button
-                  type="button"
-                  className="chip"
-                  data-active={en || undefined}
-                  aria-pressed={en}
-                  onClick={() => setEn((v) => (ko ? !v : true))}
-                >
-                  {t("ocr.language.en")}
-                </button>
+                {OCR_LANGUAGES.filter((l) => offered.includes(l.code)).map((l) => (
+                  <button
+                    key={l.code}
+                    type="button"
+                    className="chip"
+                    data-active={langs.includes(l.code) || undefined}
+                    aria-pressed={langs.includes(l.code)}
+                    onClick={() => setSelectedLangs(toggleLanguageFor(engineChoice, engine, langs, l.code))}
+                  >
+                    {t(l.labelKey)}
+                  </button>
+                ))}
               </div>
             </section>
 
@@ -250,7 +274,7 @@ function OcrDialogBody(
 
             <section className="ocr-section">
               <h3 className="ocr-label">{t("ocr.options")}</h3>
-              {visionAvailable && (
+              {native && (
                 <>
                   <label className="ocr-row">
                     <span className="ocr-row-label">{t("ocr.engine")}</span>
@@ -259,15 +283,24 @@ function OcrDialogBody(
                       value={engineChoice}
                       onChange={(e) => setEngineChoice(e.target.value as OcrEngineChoice)}
                     >
-                      {ENGINE_CHOICES.map((c) => <option key={c.id} value={c.id}>{t(c.labelKey)}</option>)}
+                      {engineChoices(native).map((c) => <option key={c.id} value={c.id}>{t(c.labelKey)}</option>)}
                     </select>
                   </label>
-                  {engineChoice === "auto" && <p className="ocr-hint">{t("ocr.engine.autoHint")}</p>}
+                  {engineHint && <p className="ocr-hint">{t(engineHint)}</p>}
                 </>
               )}
               <label className="ocr-check">
                 <input type="checkbox" checked={skipText} onChange={(e) => setSkipText(e.target.checked)} />
                 <span>{t("ocr.option.skipText")}</span>
+              </label>
+              <label className="ocr-check">
+                <input
+                  type="checkbox"
+                  checked={autoRotate}
+                  disabled={!!rotateBlock}
+                  onChange={(e) => setAutoRotate(e.target.checked)}
+                />
+                <span title={rotateBlock ? t(rotateBlock) : undefined}>{t("ocr.option.autoRotate")}</span>
               </label>
               <label className="ocr-row">
                 <span className="ocr-row-label">{t("ocr.option.dpi")}</span>
@@ -348,6 +381,9 @@ function OcrDialogBody(
               {result.skipped.length > 0 && (
                 <p className="ocr-hint">{t("ocr.skipped", { count: result.skipped.length })}</p>
               )}
+              {(result.rotated?.length ?? 0) > 0 && (
+                <p className="ocr-hint">{t("ocr.rotatedCount", { count: result.rotated!.length })}</p>
+              )}
               {result.detailKey && <p className="ocr-hint">{t(result.detailKey)}</p>}
             </div>
           </div>
@@ -356,7 +392,7 @@ function OcrDialogBody(
         <footer className="ocr-footer">
           {phase === "setup" && (
             <span className="ocr-estimate">
-              {pages && pages.length > 0 ? t("ocr.estimate", { seconds }) : ""}
+              {modifyBlock ? t(modifyBlock) : pages && pages.length > 0 ? t("ocr.estimate", { seconds }) : ""}
             </span>
           )}
           {phase === "running" && <span className="ocr-estimate">{t("status.ocr")}</span>}
