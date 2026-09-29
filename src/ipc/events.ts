@@ -5,12 +5,13 @@
  * `useEffect(() => onDocChanged(fn), [])` — `listen()` resolves later and is unlistened on cleanup.
  * In mock mode the same helpers are wired to the mock adapter's in-process bus.
  */
-import { listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, type Event as TauriEvent, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useMock } from "./env";
 import { appBus } from "./bus";
 import type {
   DocChangedEvent, DocSavedEvent, EnginePressureEvent, OpenFileEvent, RecentsChangedEvent,
+  EngineCrashedEvent, ThemeChangedEvent,
 } from "./types";
 
 export type Unsubscribe = () => void;
@@ -79,6 +80,27 @@ export function onRecentsChanged(handler: (e: RecentsChangedEvent) => void): Uns
 /** Budgets halved — the viewer lowers MAX_MOUNTED_TILES until `level` returns to `normal`. */
 export function onEnginePressure(handler: (e: EnginePressureEvent) => void): Unsubscribe {
   return subscribe("engine-pressure", handler);
+}
+
+// --- v0.3 pkg5-app-shell-release-diagnostics ---
+
+/** H4: a panicking engine command closed these documents; their windows reopen them. */
+export function onEngineCrashed(handler: (e: EngineCrashedEvent) => void): Unsubscribe {
+  return subscribe("engine-crashed", handler);
+}
+
+/** U4: another window (or this one) changed the theme. */
+export function onThemeChanged(handler: (e: ThemeChangedEvent) => void): Unsubscribe {
+  return subscribe("theme-changed", handler);
+}
+
+/** U4: tell every window — this one included — that the theme changed. */
+export function emitThemeChanged(e: ThemeChangedEvent): void {
+  if (useMock()) {
+    appBus.emit("theme-changed", e);
+    return;
+  }
+  void emit("theme-changed", e).catch(() => undefined);
 }
 
 /** Native macOS menu item -> the focused window. `id` matches a keymap id (`src/keys/keymap.ts`). */

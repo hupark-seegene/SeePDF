@@ -48,7 +48,8 @@ export type ErrorCode =
   | 'fontCoverage'       // the requested text cannot be rendered by the target font
   | 'verifyFailed'       // save or redaction post-condition failed; the document was rolled back
   | 'pdfium'             // PdfiumError that maps to nothing more specific
-  | 'io';                // filesystem error
+  | 'io'                 // filesystem error
+  | 'engineCrashed';     // v0.3 pkg5 (H4): the command panicked on the engine thread (see below)
 
 export interface EngineError { code: ErrorCode; message: string; page?: number; detail?: string }
 ```
@@ -62,6 +63,17 @@ pub struct EngineError { pub code: ErrorCode, pub message: String, pub page: Opt
 
 `message` is an English developer string. The UI never shows it directly: it maps `code` to an i18n key
 (`error.*` in `UI_SPEC.md` §12) and puts `message` behind 자세히.
+
+**`open_document`'s `detail`** (v0.3 pkg5, H3): a failed open says why — `notPdf` (no `%PDF-` in the first
+1 KiB: a renamed text or image file), `corrupted` (PDFium's `FPDF_ERR_FORMAT`), `outOfMemory` (the file read ran
+out of memory; any `io` error from `std::io::ErrorKind::OutOfMemory` carries it). Password errors carry none.
+`api.openErrorKey` maps them to `error.notPdf` / `error.corrupted` / `error.outOfMemory`.
+
+**`engineCrashed`** (v0.3 pkg5, H4): the release profile unwinds, and the engine loop runs every command under
+`catch_unwind`. A panicking command answers its caller `engineCrashed` (`message`: `<label> panicked: …`); every
+document the command looked up (`EngineState::doc` / `doc_mut`) is closed — its PDFium state may be half-edited
+— and `engine-crashed` (§8) names them; the engine thread keeps serving every other document. A crash inside
+PDFium's own C++ is not a panic and still ends the process.
 
 ---
 
@@ -962,6 +974,12 @@ Engine: `engine/recovery.rs`, commands `commands/recovery.rs`. The directory is 
   now (any window) are live autosaves and are left out.
 * `discard_recovery`: deletes one pair; unknown id → no-op; an id that is not a uuid → `invalidArgument`
   (it would otherwise name a path).
+* **Owners** (v0.3 pkg5, H2): the sidecar also records `owner: { pid, started }` (the writing process; `started`
+  = Unix ms of its first recovery write), and that process holds an exclusive lock on
+  `.owner-<pid>-<started>.lock` in the directory while it runs. `list_recovery` skips a copy whose owner is
+  another process that still holds its lock (a second SeePDF's live autosave); the OS drops the lock with the
+  process, so a crashed owner's copies are offered and its stale lock file is removed. Sidecars without an
+  owner (written before v0.3) are always listed. `RecoveryEntry` itself is unchanged.
 
 ### 7.7 Export and print
 
@@ -1132,6 +1150,9 @@ Semantics:
 'recents-changed'  {}
 'engine-pressure'  { level: 'normal' | 'high' }         // budgets halved; the frontend lowers MAX_MOUNTED_TILES
 'menu:<id>'        {}                                   // native macOS menu item -> the focused window
+// v0.3 pkg5
+'engine-crashed'   { docIds: DocId[]; label: string }   // H4: a panicking command closed these; their windows reopen them
+'theme-changed'    { theme: 'system' | 'light' | 'dark' } // U4: emitted by the window that changed 테마; every window follows
 ```
 
 ```ts
@@ -1327,6 +1348,34 @@ state being dropped and `RunEvent::Exit` kill the process. `speaking` turns fals
 ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors: `invalidArgument` (blank text,
 > 200 000 characters, a non-positive rate), `unsupported`.
 
+### 11b. Diagnostics, about, licences (v0.3 pkg5)
+
+```ts
+export interface AppInfo {
+  version: string; os: string; arch: string; debug: boolean;
+  pdfiumVersion: string; pdfiumDir: string; locale: 'ko' | 'en'; theme: 'system' | 'light' | 'dark';
+}
+export interface ProblemReport { text: string; path: string }
+app_info(): Promise<AppInfo>                    // H1: Welcome's version, SeePDF 정보, 문제 보고
+problem_report(): Promise<ProblemReport>        // H10: 도움말 › 문제 보고…
+open_log_folder(): Promise<string>              // H10: 도움말 › 로그 폴더 열기 → the folder's path
+third_party_notices(): Promise<string>          // H11: SeePDF 정보 › 오픈 소스 라이선스
+```
+
+`commands/app.rs` + `app/diagnostics.rs`; none of them touches PDFium (the file work runs on `spawn_blocking`).
+* `app_info`: synchronous, cheap; loaded once by the `appStore` bootstrap.
+* Logs: `run()` installs stderr plus a daily rolling file `seepdf.YYYY-MM-DD.log` in the app log directory
+  (macOS `~/Library/Logs/com.seepdf.desktop/`, Windows `%LOCALAPPDATA%\com.seepdf.desktop\logs\`), the newest 7
+  kept, and a panic hook that logs every panic. A setup failure shows a native message box (라이브러리를 불러올 수
+  없습니다 — 재설치하거나 백신 예외를 추가하세요 + the error + the log folder) and exits with code 1.
+* `problem_report`: `SeePDF <version>`, `OS: <os> / <arch>`, `PDFium: <version>`, the locale and the last 200 log
+  lines (across the newest files); also written to `<log dir>/problem-report.txt`, returned as `path`. The
+  frontend copies `text` to the clipboard and reveals `path`. Errors: `io`.
+* `open_log_folder`: creates the log directory if needed and opens it in Finder / Explorer. Errors: `io`.
+* `third_party_notices`: `<resources>/notices/THIRD_PARTY_NOTICES.txt` (generated by `scripts/gen-notices.mjs`
+  before every release bundle); without it (a dev build) the bundled PDFium and font licences; neither →
+  `notFound`.
+
 ---
 
 ## 12. Command → owner → feature index
@@ -1362,6 +1411,7 @@ ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors:
 | `set_outline`, `create_link`, `update_link`, `delete_link`, `set_page_labels`, `get_page_labels` | P2, `engine/structure/` + `commands/structure.rs` | P2 outline / links / labels |
 | `reply_annotation` | P2, `engine/annot/reply.rs` (lopdf via `registry::mutate_bytes`) | P2 threads |
 | `list_pdf_files` | P2, `commands/save.rs` | P2 multi-file search |
+| `app_info`, `problem_report`, `open_log_folder`, `third_party_notices` | v0.3 pkg5, `commands/app.rs` + `app/diagnostics.rs` | H1, H10, H11 |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

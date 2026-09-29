@@ -3,6 +3,8 @@
  * the dialog.
  *
  *   idle → checking → upToDate
+ *                   → noInfo (v0.3 pkg5, H1: the feed has no latest.json — a release published
+ *                     without signed updater bundles answers 404; neutral, not an error)
  *                   → available → downloading → ready → installing → (the app restarts)
  *                   → error (retry = check again; a failed download also lands here)
  *
@@ -18,6 +20,7 @@ export type UpdatePhase =
   | "idle"
   | "checking"
   | "upToDate"
+  | "noInfo"
   | "available"
   | "downloading"
   | "ready"
@@ -62,6 +65,15 @@ function message(e: unknown): string {
 }
 
 /**
+ * v0.3 pkg5 (H1): the endpoint answered, but with no release manifest — tauri-plugin-updater's
+ * `ReleaseNotFound` ("Could not fetch a valid release JSON from the remote"), which is what a 404 on
+ * `releases/latest/download/latest.json` becomes. Nothing is wrong with this copy of SeePDF.
+ */
+export function isNoUpdateInfo(error: string): boolean {
+  return /valid release JSON|release ?not ?found|\b404\b/i.test(error);
+}
+
+/**
  * Asks the release feed for a newer version. A check while another one runs, or once an update
  * is downloading / downloaded, is a no-op: the dialog already shows that state.
  */
@@ -88,7 +100,12 @@ export async function checkForUpdates(): Promise<void> {
     });
   } catch (e) {
     pending = null;
-    useUpdateStore.setState({ phase: "error", error: message(e), failedStep: "check" });
+    const detail = message(e);
+    if (isNoUpdateInfo(detail)) {
+      useUpdateStore.setState({ phase: "noInfo", error: detail });
+      return;
+    }
+    useUpdateStore.setState({ phase: "error", error: detail, failedStep: "check" });
   }
 }
 

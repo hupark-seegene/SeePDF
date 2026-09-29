@@ -1,0 +1,44 @@
+/* SeePDF 정보 (v0.3 pkg5, H1 / H11) — loaded with the dialog's own chunk. */
+.about-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-block-end: var(--space-3);
+}
+
+.about-name { font-weight: 600; }
+
+.about-subhead {
+  margin: var(--space-4) 0 var(--space-2);
+  font-weight: 600;
+}
+
+.about-components {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.about-components li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-block: 3px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+.about-components li:last-child { border-block-end: 0; }
+
+/* The full THIRD_PARTY_NOTICES.txt: scrolls inside the dialog, never widens it. */
+.about-notices {
+  margin: 0;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-app);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}

@@ -5,7 +5,8 @@
       "resources/pdfium/*apple-darwin.dylib",
       "resources/pdfium/LICENSE.pdfium",
       "resources/pdfium/VERSION",
-      "resources/fonts/*"
+      "resources/fonts/*",
+      "resources/notices/*"
     ],
     "macOS": {
       "signingIdentity": "-",

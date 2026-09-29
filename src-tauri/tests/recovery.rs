@@ -108,12 +108,15 @@ fn write_creates_pdf_and_sidecar_that_reopen() {
     assert_eq!(on_disk, entry);
     // The copy reopens with PDFium, same page count, and carries the edit.
     assert_eq!(reopen_page_count(&entry.recovery_path), doc.info.page_count);
-    // No temp files left behind; the user's file and the dirty state are untouched.
+    // No temp files left behind; the user's file and the dirty state are untouched. (The
+    // process's owner lock, v0.3 H2, is the one other file.)
     let names: Vec<String> = std::fs::read_dir(&root)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|n| !n.starts_with(".owner-"))
         .collect();
     assert_eq!(names.len(), 2, "{names:?}");
+    assert!(recovery::owner_lock_path(&root, recovery::Owner::current()).is_file());
     assert_eq!(
         with_doc(&doc.doc_id, |d| Ok((d.dirty(), d.generation))).unwrap(),
         dirty_before
@@ -131,7 +134,20 @@ fn rewrite_overwrites_the_same_id() {
     assert_eq!(first.id, second.id);
     assert!(second.saved_at >= first.saved_at);
     assert_eq!(recovery::list(&root).unwrap(), vec![second.clone()]);
-    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    let pair = std::fs::read_dir(&root)
+        .unwrap()
+        .filter(|e| {
+            !e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".owner-")
+        })
+        .count();
+    assert_eq!(
+        pair, 2,
+        "the pair (plus this process's owner lock, v0.3 H2)"
+    );
     // Another document gets its own id.
     let other = open("rotation.pdf");
     let third = write(&root, &other.doc_id);
@@ -258,4 +274,90 @@ fn open_documents_report_their_recovery_ids() {
         with_state(move |st| recovery::recovery_id(st, &fresh_id)).unwrap(),
         None
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg5 (H2): another running process's copies are not offered
+// ---------------------------------------------------------------------------------------
+
+/// Rewrites the sidecar of `entry` as if `owner` had written it.
+fn set_owner(root: &Path, entry: &RecoveryEntry, owner: &recovery::Owner) {
+    let path = root.join(format!("{}.json", entry.id));
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        json["owner"]["pid"],
+        std::process::id(),
+        "the sidecar names its writer"
+    );
+    json["owner"] = serde_json::to_value(owner).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+}
+
+fn sorted_ids(list: Vec<RecoveryEntry>) -> Vec<String> {
+    let mut ids: Vec<String> = list.into_iter().map(|e| e.id).collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn copies_of_a_live_foreign_process_are_skipped_and_a_dead_ones_are_listed() {
+    let root = temp_root("owners");
+    let a = open("rotation.pdf");
+    let b = open("tracemonkey.pdf");
+    let c = open("alphatrans.pdf");
+    let live = write(&root, &a.doc_id);
+    let dead = write(&root, &b.doc_id);
+    let mine = write(&root, &c.doc_id);
+
+    // `live`: a foreign pid whose process still holds its owner lock (simulated with a lock
+    // taken on a second handle — a lock is per open file, so this process sees it as foreign).
+    let live_owner = recovery::Owner {
+        pid: 4_000_001,
+        started: 1_700_000_000_000,
+    };
+    set_owner(&root, &live, &live_owner);
+    let lock_path = recovery::owner_lock_path(&root, &live_owner);
+    let held = std::fs::File::create(&lock_path).unwrap();
+    held.try_lock().expect("the simulated owner takes its lock");
+
+    // `dead`: a foreign pid that crashed — its lock file is still there but nobody holds it.
+    let dead_owner = recovery::Owner {
+        pid: 4_000_002,
+        started: 1_700_000_000_001,
+    };
+    set_owner(&root, &dead, &dead_owner);
+    std::fs::write(recovery::owner_lock_path(&root, &dead_owner), b"").unwrap();
+
+    let mut expected = vec![dead.id.clone(), mine.id.clone()];
+    expected.sort();
+    assert_eq!(sorted_ids(recovery::list(&root).unwrap()), expected);
+    assert!(
+        root.join(format!("{}.json", live.id)).is_file(),
+        "a live process's copy is left alone"
+    );
+    assert!(
+        !recovery::owner_lock_path(&root, &dead_owner).exists(),
+        "the dead owner's stale lock file is cleaned up"
+    );
+
+    // The live process exits: its lock goes with it and its copy is offered.
+    drop(held);
+    let mut all = vec![live.id.clone(), dead.id.clone(), mine.id.clone()];
+    all.sort();
+    assert_eq!(sorted_ids(recovery::list(&root).unwrap()), all);
+}
+
+#[test]
+fn sidecars_without_an_owner_are_still_listed() {
+    let root = temp_root("no-owner");
+    let doc = open("rotation.pdf");
+    let entry = write(&root, &doc.doc_id);
+    // A pre-v0.3 sidecar: the plain RecoveryEntry.
+    std::fs::write(
+        root.join(format!("{}.json", entry.id)),
+        serde_json::to_vec(&entry).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(recovery::list(&root).unwrap(), vec![entry]);
 }

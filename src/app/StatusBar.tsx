@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { AudioLines, ChevronLeft, ChevronRight, Columns2, Link2, Moon, RotateCcw, RotateCw, Rows2, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AudioLines, ChevronLeft, ChevronRight, Columns2, Hand, Link2, Lock, Moon, MousePointer2, RotateCcw, RotateCw, Rows2, ShieldCheck, X, ZoomIn, ZoomOut } from "lucide-react";
 import { IconButton } from "./IconButton";
+import { Tooltip } from "./Tooltip";
 import { resyncPanes } from "../viewer/panes";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
@@ -12,12 +13,31 @@ import { useTtsStore } from "../tts/ttsStore";
 import type { ViewLayout } from "../ipc/types";
 import { displayLabel, pageForEntry } from "../viewer/pageLabel";
 import { stepPage } from "../viewer/stepPage";
+import { toolController } from "../tools/ToolController";
+import type { ToolId } from "../store/appStore";
+import type { IconProps } from "./IconButton";
+import type { ComponentType } from "react";
 
 const LAYOUTS: { id: ViewLayout; labelKey: string; keyId: string }[] = [
   { id: "single", labelKey: "view.layout.single", keyId: "view.layout.single" },
   { id: "continuous", labelKey: "view.layout.continuous", keyId: "view.layout.continuous" },
   { id: "two", labelKey: "view.layout.twoPage", keyId: "view.layout.twoPage" },
 ];
+
+/**
+ * v0.3 pkg5 (V7): the 읽기 tools a mouse can latch — 선택 and 손 (drag pans a zoomed page; Esc returns
+ * to 선택). V1 (pkg6) adds 스냅샷 as one more row here.
+ */
+const READ_TOOLS: { id: ToolId; labelKey: string; keyId: string; icon: ComponentType<IconProps> }[] = [
+  { id: "select", labelKey: "tool.select", keyId: "tool.select", icon: MousePointer2 },
+  { id: "hand", labelKey: "tool.hand", keyId: "view.handTool", icon: Hand },
+];
+
+/** v0.3 pkg5 (H3): 진행률 N퍼센트 for a determinate bar, nothing for an indeterminate one. */
+export function progressValueText(done: number, total: number, t: (key: string, p?: Record<string, string | number>) => string): string | undefined {
+  if (!total) return undefined;
+  return t("a11y.progress", { percent: Math.round((Math.min(done, total) / total) * 100) });
+}
 
 /** 28 px status bar (UI_SPEC §8): page nav · layout · rotate · zoom · save state + progress slot. */
 export function StatusBar() {
@@ -41,6 +61,9 @@ export function StatusBar() {
   const job = useJobStore((s) => s.active);
   const speaking = useTtsStore((s) => s.speaking);
   const cancelJob = useJobStore((s) => s.cancel);
+  const mode = useAppStore((s) => s.mode);
+  const tool = useAppStore((s) => s.tool);
+  const momentaryFrom = useAppStore((s) => s.momentaryFrom);
 
   // P2: with page labels the box shows the current page's label and accepts a label or a number
   const labels = info?.pageLabels;
@@ -99,6 +122,37 @@ export function StatusBar() {
           size={16}
           onClick={() => goToPage(nextPage)}
         />
+
+        {/* v0.3 pkg5 (V7): 선택 / 손 in 읽기, latched (a click, not a hold); Esc returns to 선택 */}
+        {mode === "read" && info && (
+          <>
+            <span className="status-sep" />
+            <div className="segmented small status-tools" role="group" aria-label={t("menu.tools")}>
+              {READ_TOOLS.map((rt) => {
+                // a held Space shows 손 as the tool of the moment, but the latch is still 선택
+                const latched = (momentaryFrom ?? tool) === rt.id;
+                const Icon = rt.icon;
+                return (
+                  <Tooltip key={rt.id} label={t(rt.labelKey)} shortcut={shortcutFor(rt.keyId, os)}>
+                    <button
+                      type="button"
+                      className="segment"
+                      data-active={latched || undefined}
+                      aria-pressed={latched}
+                      aria-label={t(rt.labelKey)}
+                      onClick={() => {
+                        useAppStore.getState().setTool(rt.id);
+                        toolController.arm(rt.id);
+                      }}
+                    >
+                      <Icon size={14} strokeWidth={1.75} aria-hidden />
+                    </button>
+                  </Tooltip>
+                );
+              })}
+            </div>
+          </>
+        )}
 
         <span className="status-sep" />
 
@@ -231,7 +285,13 @@ export function StatusBar() {
         {job && job.state === "running" && (
           <div className="job-slot" role="status">
             <span className="text-sm">{t(job.labelKey)}</span>
-            <progress className="job-bar" value={job.done} max={Math.max(1, job.total)} />
+            <progress
+              className="job-bar"
+              value={job.done}
+              max={Math.max(1, job.total)}
+              aria-label={t(job.labelKey)}
+              aria-valuetext={progressValueText(job.done, job.total, t)}
+            />
             <span className="text-xs dim mono">
               {job.total ? `${job.done}/${job.total}` : ""}
             </span>
@@ -240,6 +300,20 @@ export function StatusBar() {
               <IconButton icon={X} label={t("common.cancel")} size={14} onClick={() => void cancelJob(job.id)} />
             )}
           </div>
+        )}
+        {/* v0.3 pkg5 (H3): why editing may be refused — the PDF's own permissions forbid changes
+            (읽기 전용), or it is password-protected (암호화됨) */}
+        {info && !info.permissions.modify && (
+          <span className="status-badge text-xs" data-badge="readOnly">
+            <Lock size={12} strokeWidth={1.75} aria-hidden />
+            {t("status.readOnly")}
+          </span>
+        )}
+        {info?.encrypted && (
+          <span className="status-badge text-xs" data-badge="encrypted">
+            <ShieldCheck size={12} strokeWidth={1.75} aria-hidden />
+            {t("status.encrypted")}
+          </span>
         )}
         {info && (
           <span className="text-sm dim save-state" data-dirty={info.dirty || undefined}>

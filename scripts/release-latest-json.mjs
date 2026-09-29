@@ -11,6 +11,10 @@
  *   SeePDF_0.2.0_x64-setup.exe(.sig)        windows-x86_64-nsis, and windows-x86_64
  *   SeePDF_0.2.0_x64_en-US.msi(.sig)        windows-x86_64-msi
  *   SeePDF_0.2.0_aarch64.app.tar.gz(.sig)   darwin-aarch64-app, and darwin-aarch64
+ *   SeePDF_0.2.0_x64.app.tar.gz(.sig)       darwin-x86_64-app, and darwin-x86_64 (Intel, v0.3)
+ *
+ * The WebView2-offline installer (`SeePDF_0.3.0_x64-offline-setup.exe`, v0.3) is never an updater
+ * target: an installed copy already has WebView2, and the plain setup.exe is the one to update with.
  *
  * The updater first looks for `<os>-<arch>-<installer>` and then `<os>-<arch>`, so the plain
  * Windows key points at the NSIS installer (the per-user one that needs no admin prompt).
@@ -41,6 +45,7 @@ const ARCH = { x64: "x86_64", x86_64: "x86_64", aarch64: "aarch64", arm64: "aarc
 
 /** `{ keys, preferred }` for one updater bundle name, or null for anything else. */
 function classify(name) {
+  if (/-offline-setup\.exe$/.test(name)) return null;
   let m = name.match(/_(x64|x86_64|aarch64|arm64)-setup\.exe$/);
   if (m) return { keys: [`windows-${ARCH[m[1]]}-nsis`], plain: `windows-${ARCH[m[1]]}`, rank: 2 };
   m = name.match(/_(x64|x86_64|aarch64|arm64)_[A-Za-z-]+\.msi$/);

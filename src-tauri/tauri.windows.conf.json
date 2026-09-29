@@ -18,7 +18,21 @@
       "resources/pdfium/*pc-windows-msvc.dll",
       "resources/pdfium/LICENSE.pdfium",
       "resources/pdfium/VERSION",
-      "resources/fonts/*"
-    ]
+      "resources/fonts/*",
+      "resources/notices/*"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "languages": ["Korean", "English"],
+        "displayLanguageSelector": true
+      },
+      "wix": {
+        "language": ["ko-KR", "en-US"]
+      }
+    }
   }
 }

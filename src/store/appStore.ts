@@ -7,7 +7,9 @@ import { create } from "zustand";
 import * as api from "../ipc/api";
 import { detectOs, type OsName } from "../ipc/env";
 import { resolveLocale, setLocale, type Locale } from "../i18n";
-import type { RecentEntry, Settings, ThemePref } from "../ipc/types";
+import type { AppInfo, RecentEntry, Settings, ThemePref } from "../ipc/types";
+import { applyWindowTheme } from "../app/windowTheme";
+import { emitThemeChanged } from "../ipc/events";
 
 export type Mode = "read" | "annotate" | "edit" | "pages" | "form";
 export type SidebarTab = "thumbnails" | "outline" | "annotations" | "search";
@@ -26,6 +28,8 @@ export interface AppState {
   settings: Settings | null;
   recents: RecentEntry[];
   ready: boolean;
+  /** v0.3 pkg5 (H1): `app_info`, loaded once at bootstrap (Welcome's version, SeePDF 정보). */
+  appInfo: AppInfo | null;
 
   sidebarOpen: boolean;
   sidebarTab: SidebarTab;
@@ -45,6 +49,8 @@ export interface AppState {
   bootstrap(): Promise<void>;
   setLocale(locale: Locale): void;
   setTheme(theme: ThemePref): void;
+  /** U4: another window changed the theme — follow it without writing settings again. */
+  adoptTheme(theme: ThemePref): void;
   patchSettings(patch: Partial<Settings>): Promise<void>;
   refreshRecents(): Promise<void>;
 
@@ -82,6 +88,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: null,
   recents: [],
   ready: false,
+  appInfo: null,
 
   sidebarOpen: true,
   sidebarTab: "thumbnails",
@@ -94,15 +101,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   momentaryFrom: null,
 
   async bootstrap() {
-    const [settings, recents] = await Promise.all([
+    const [settings, recents, appInfo] = await Promise.all([
       api.getSettings().catch(() => null),
       api.getRecent().catch(() => [] as RecentEntry[]),
+      api.appInfo().catch(() => null),
     ]);
     const locale = resolveLocale(settings?.locale);
     setLocale(locale);
     applyTheme(settings?.theme ?? "system");
+    // U4: the native caption bar / menus follow the app theme from the first frame
+    void applyWindowTheme(settings?.theme ?? "system");
     if (typeof document !== "undefined") document.documentElement.dataset.os = get().os;
-    set({ settings, recents, locale, theme: settings?.theme ?? "system", ready: true });
+    set({ settings, recents, appInfo, locale, theme: settings?.theme ?? "system", ready: true });
   },
 
   setLocale(locale) {
@@ -113,8 +123,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setTheme(theme) {
     applyTheme(theme);
+    void applyWindowTheme(theme);
     set({ theme });
     void get().patchSettings({ theme });
+    // U4: every other window follows (each one applies it to its own window chrome)
+    emitThemeChanged({ theme });
+  },
+
+  adoptTheme(theme) {
+    if (theme === get().theme) return;
+    applyTheme(theme);
+    void applyWindowTheme(theme);
+    set((s) => ({ theme, settings: s.settings ? { ...s.settings, theme } : s.settings }));
   },
 
   async patchSettings(patch) {

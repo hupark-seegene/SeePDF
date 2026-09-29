@@ -26,7 +26,8 @@ export interface DocState {
   info: DocInfo | null;
   outline: OutlineNode[];
   status: DocStatus;
-  error: { code: string; message: string } | null;
+  /** `detail` (v0.3 pkg5, H3): why an open failed — `notPdf`, `corrupted`, `outOfMemory` */
+  error: { code: string; message: string; detail?: string } | null;
   /** bumped by `doc-changed` so views that cache per page can invalidate cheaply */
   changeNonce: number;
   changedPages: PageIndex[] | "all";
@@ -62,7 +63,9 @@ export const useDocStore = create<DocState>((set, get) => ({
       bindWindow(info.docId);
       return info;
     } catch (e) {
-      const err = api.isSeePdfError(e) ? { code: e.code, message: e.message } : { code: "pdfium", message: String(e) };
+      const err = api.isSeePdfError(e)
+        ? { code: e.code, message: e.message, ...(e.detail ? { detail: e.detail } : {}) }
+        : { code: "pdfium", message: String(e) };
       set({ status: "error", error: err });
       return null;
     }

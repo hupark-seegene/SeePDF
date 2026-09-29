@@ -241,12 +241,15 @@ pub struct EngineState<'p> {
 
 impl<'p> EngineState<'p> {
     pub fn doc(&self, doc_id: &str) -> Result<&OpenDoc<'p>, EngineError> {
+        // v0.3 pkg5 (H4): the document a panicking command was working on gets closed.
+        crate::engine::thread::touch(doc_id);
         self.docs
             .get(doc_id)
             .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))
     }
 
     pub fn doc_mut(&mut self, doc_id: &str) -> Result<&mut OpenDoc<'p>, EngineError> {
+        crate::engine::thread::touch(doc_id);
         self.docs
             .get_mut(doc_id)
             .ok_or_else(|| EngineError::not_found(format!("unknown document '{doc_id}'")))

@@ -38,6 +38,9 @@ pub enum ErrorCode {
     Pdfium,
     /// Filesystem error.
     Io,
+    /// v0.3 pkg5 (H4): the command panicked on the engine thread. The documents it touched
+    /// were closed (`engine-crashed` event); the engine keeps serving the others.
+    EngineCrashed,
 }
 
 /// The error object delivered to JS on rejection.
@@ -135,7 +138,12 @@ impl From<std::io::Error> for EngineError {
             }
             _ => ErrorCode::Io,
         };
-        Self::new(code, e.to_string())
+        let err = Self::new(code, e.to_string());
+        // v0.3 pkg5 (H3): 메모리가 부족합니다 instead of a generic "cannot open".
+        if e.kind() == std::io::ErrorKind::OutOfMemory {
+            return err.with_detail("outOfMemory");
+        }
+        err
     }
 }
 

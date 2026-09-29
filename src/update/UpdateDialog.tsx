@@ -45,6 +45,14 @@ export default function UpdateDialog({ onClose }: { onClose(): void }) {
           <p className="text-base">{t("update.upToDate", { version: s.currentVersion ?? "" })}</p>
         )}
 
+        {/* v0.3 pkg5 (H1): no latest.json on the feed — neutral, no 다시 시도, no error styling */}
+        {s.phase === "noInfo" && (
+          <>
+            <p className="text-base">{t("update.noInfo")}</p>
+            {s.currentVersion && <p className="text-sm dim">{t("update.current", { version: s.currentVersion })}</p>}
+          </>
+        )}
+
         {(s.phase === "available" || s.phase === "downloading" || s.phase === "ready" || s.phase === "installing") && (
           <>
             <p className="text-base update-headline">{t("update.available", { version: s.version ?? "" })}</p>

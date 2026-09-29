@@ -35,6 +35,8 @@ jobs:
       - name: Install (no pdfium download needed for these checks)
         run: npm ci --ignore-scripts
       - run: node scripts/check-i18n.mjs
+      # v0.3 pkg5: installer languages / WebView2 modes / macOS 13 / Intel assets / notices
+      - run: node scripts/check-release-config.mjs
       - run: npm run typecheck
       - name: vitest
         run: bash scripts/ci-run.sh vitest npx vitest run
@@ -90,6 +92,8 @@ jobs:
           PDFIUM_TARGET: ${{ matrix.target }}
 
       - run: npm run typecheck
+      # v0.3 pkg5 (H11): the licence notices build from cargo metadata + the npm tree on every target
+      - run: node scripts/gen-notices.mjs --check
       - name: vitest
         shell: bash
         run: bash scripts/ci-run.sh vitest npx vitest run

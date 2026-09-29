@@ -128,3 +128,91 @@ pub fn app_info(app: AppHandle, engine: State<'_, EngineHandle>) -> AppInfo {
         theme: settings.theme,
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg5: 도움말 › 문제 보고… / 로그 폴더 열기 (H10), 오픈 소스 라이선스 (H11)
+// ---------------------------------------------------------------------------------------
+
+use crate::app::diagnostics;
+use crate::ipc::types::ProblemReport;
+
+fn log_dir() -> Result<std::path::PathBuf, EngineError> {
+    diagnostics::log_dir().ok_or_else(|| EngineError::io("no log directory"))
+}
+
+/// 문제 보고…: version, OS / arch, pdfium version and the last 200 log lines as one text
+/// (the frontend copies it to the clipboard), also written to `problem-report.txt` in the log
+/// folder (the frontend reveals it). File I/O only; no pdfium.
+#[tauri::command]
+pub async fn problem_report(
+    app: AppHandle,
+    engine: State<'_, EngineHandle>,
+) -> Result<ProblemReport, EngineError> {
+    let info = app_info(app, engine);
+    let dir = log_dir()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let lines = diagnostics::recent_log_lines(&dir, diagnostics::REPORT_LOG_LINES);
+        let text = diagnostics::problem_report(&info, &lines);
+        let path = diagnostics::write_report(&dir, &text).map_err(EngineError::io)?;
+        Ok(ProblemReport {
+            text,
+            path: path.display().to_string(),
+        })
+    })
+    .await
+    .map_err(|e| EngineError::io(format!("problem_report: {e}")))?
+}
+
+/// 로그 폴더 열기: the log directory in Finder / Explorer (created if it does not exist yet).
+#[tauri::command]
+pub fn open_log_folder() -> Result<String, EngineError> {
+    let dir = log_dir()?;
+    std::fs::create_dir_all(&dir).map_err(EngineError::from)?;
+    tauri_plugin_opener::open_path(&dir, None::<&str>)
+        .map_err(|e| EngineError::io(format!("open {}: {e}", dir.display())))?;
+    Ok(dir.display().to_string())
+}
+
+/// SeePDF 정보 › 오픈 소스 라이선스: `THIRD_PARTY_NOTICES.txt`, which
+/// `scripts/gen-notices.mjs` builds before every release bundle. A build without it (`tauri
+/// dev` before the script ran) answers with the licences that always ship next to the binary.
+#[tauri::command]
+pub async fn third_party_notices(app: AppHandle) -> Result<String, EngineError> {
+    use tauri::Manager;
+    let mut roots = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        roots.push(res.join("resources"));
+    }
+    if cfg!(debug_assertions) {
+        roots.push(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"));
+    }
+    tauri::async_runtime::spawn_blocking(move || read_notices(&roots))
+        .await
+        .map_err(|e| EngineError::io(format!("third_party_notices: {e}")))?
+}
+
+/// The generated notices under the first root that has them, else the bundled licence files.
+pub fn read_notices(roots: &[std::path::PathBuf]) -> Result<String, EngineError> {
+    for root in roots {
+        if let Ok(text) = std::fs::read_to_string(root.join("notices/THIRD_PARTY_NOTICES.txt")) {
+            return Ok(text);
+        }
+    }
+    let mut out = String::new();
+    for root in roots {
+        for (title, rel) in [
+            ("PDFium", "pdfium/LICENSE.pdfium"),
+            ("SeePDF-Hangul.ttf (Noto Sans KR)", "fonts/OFL.txt"),
+        ] {
+            if let Ok(text) = std::fs::read_to_string(root.join(rel)) {
+                out.push_str(&format!("==== {title} ====\n\n{text}\n\n"));
+            }
+        }
+        if !out.is_empty() {
+            return Ok(out);
+        }
+    }
+    Err(EngineError::not_found(
+        "THIRD_PARTY_NOTICES.txt is not bundled",
+    ))
+}

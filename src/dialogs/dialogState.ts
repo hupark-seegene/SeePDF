@@ -32,7 +32,9 @@ export type DialogName =
   // 여러 파일에서 검색 (P2)
   | "multiSearch"
   // 도움말 › 단축키
-  | "shortcuts";
+  | "shortcuts"
+  // v0.3 pkg5 (H1 / H11): SeePDF 정보 + 오픈 소스 라이선스
+  | "about";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";

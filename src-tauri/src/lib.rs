@@ -14,19 +14,124 @@ pub mod engine;
 pub mod ipc;
 pub mod protocol;
 
+use app::diagnostics::{self, StartupFailure};
 use app::{PendingOpens, WindowDocs};
-use ipc::EngineError;
+use ipc::types::Settings;
+use ipc::{EngineError, ErrorCode};
 use tauri::Manager;
 
-fn init_tracing() {
-    use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,seepdf_lib=debug,webview=info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_thread_names(true)
-        .with_target(true)
-        .try_init();
+/// Everything `setup` does, with a failure classified for the startup message box (v0.3
+/// pkg5, H10): a missing / quarantined / unbindable libpdfium is `Library`, the rest `Other`.
+fn start(app: &mut tauri::App, settings: &Settings) -> Result<(), StartupFailure> {
+    let handle = app.handle().clone();
+
+    // 1. locate libpdfium and start the engine thread (binding happens there).
+    let (library, dir) = app::pdfium_path::resolve(&handle).map_err(StartupFailure::Library)?;
+    tracing::info!(lib = %library.display(), "resolved bundled libpdfium");
+    let engine = engine::spawn(
+        library,
+        dir,
+        Some(handle.clone()),
+        app::store::history_spill_dir(Some(&handle)),
+        (settings.tile_cache_mb.clamp(16, 1024) as usize) * 1024 * 1024,
+    )
+    .map_err(|e| match e.code {
+        ErrorCode::Pdfium => StartupFailure::Library(e.message),
+        _ => StartupFailure::Other(e.message),
+    })?;
+    app.manage(engine);
+
+    // 2. native menu (macOS only). Windows has no menu bar at all: its 도움말 items (단축키,
+    //    문제 보고, 로그 폴더 열기, SeePDF 정보) live in the title bar's ⋯ overflow menu.
+    #[cfg(target_os = "macos")]
+    {
+        let menu = app::menu::build(&handle, settings.locale)
+            .map_err(|e| StartupFailure::Other(format!("menu: {e}")))?;
+        app.set_menu(menu)
+            .map_err(|e| StartupFailure::Other(format!("set_menu: {e}")))?;
+        app.on_menu_event(app::menu::on_menu_event);
+    }
+
+    // 3. window plumbing: drag-drop and the label -> document binding.
+    for (_, window) in app.webview_windows() {
+        app::windows::attach_handlers(&handle, &window);
+    }
+
+    // 4. v0.3 pkg5 (H14): a first-run (or restored) main window larger than the screen's work
+    //    area — 1400×900 on a 1366×768 laptop at 125 % — is shrunk to 90 % of it and centred.
+    if let Some(window) = app.get_webview_window("main") {
+        fit_main_window(&window);
+    }
+
+    // 5. files passed on the command line (Windows double-click, `cargo run -- x.pdf`).
+    for path in app::files::pdf_paths_from_argv() {
+        app::files::push_open(&handle, path, ipc::types::OpenSource::Argv);
+    }
+    Ok(())
+}
+
+/// How much of the monitor's work area a window may take before it is shrunk (H14).
+const WORK_AREA_FRACTION: f64 = 0.9;
+
+/// v0.3 pkg5 (H14): `Some((position, size))` — the window shrunk to [`WORK_AREA_FRACTION`] of
+/// the work area and centred in it — when `size` does not fit in that fraction; `None` when
+/// it already fits. Physical pixels throughout; `work_pos` / `work_size` are the monitor's
+/// work area (the screen minus the taskbar / Dock / menu bar).
+pub fn fit_to_work_area(
+    size: (u32, u32),
+    work_pos: (i32, i32),
+    work_size: (u32, u32),
+) -> Option<((i32, i32), (u32, u32))> {
+    let max_w = (work_size.0 as f64 * WORK_AREA_FRACTION).floor() as u32;
+    let max_h = (work_size.1 as f64 * WORK_AREA_FRACTION).floor() as u32;
+    if size.0 <= max_w && size.1 <= max_h {
+        return None;
+    }
+    let w = size.0.min(max_w);
+    let h = size.1.min(max_h);
+    let x = work_pos.0 + ((work_size.0 - w) / 2) as i32;
+    let y = work_pos.1 + ((work_size.1 - h) / 2) as i32;
+    Some(((x, y), (w, h)))
+}
+
+/// Applies [`fit_to_work_area`] to the main window (after `tauri-plugin-window-state` restored
+/// it). A maximised or full-screen window is left alone.
+fn fit_main_window(window: &tauri::WebviewWindow) {
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let monitor = match window.current_monitor() {
+        Ok(Some(m)) => Some(m),
+        _ => window.primary_monitor().ok().flatten(),
+    };
+    let (Some(monitor), Ok(outer), Ok(inner)) = (monitor, window.outer_size(), window.inner_size())
+    else {
+        return;
+    };
+    let area = monitor.work_area();
+    let Some(((x, y), (w, h))) = fit_to_work_area(
+        (outer.width, outer.height),
+        (area.position.x, area.position.y),
+        (area.size.width, area.size.height),
+    ) else {
+        return;
+    };
+    // `set_size` is the inner size; keep the frame (Windows caption) out of the budget.
+    let frame_w = outer.width.saturating_sub(inner.width);
+    let frame_h = outer.height.saturating_sub(inner.height);
+    let inner_size = tauri::PhysicalSize::new(w.saturating_sub(frame_w), h.saturating_sub(frame_h));
+    tracing::info!(
+        ?outer,
+        w,
+        h,
+        "main window larger than the work area; fitted"
+    );
+    if let Err(e) = window.set_size(inner_size) {
+        tracing::warn!("fit window size: {e}");
+    }
+    if let Err(e) = window.set_position(tauri::PhysicalPosition::new(x, y)) {
+        tracing::warn!("fit window position: {e}");
+    }
 }
 
 /// `seepdf --smoke <file.pdf>`: bind the *bundled* pdfium, open the file, render page 0 at
@@ -80,7 +185,16 @@ fn run_smoke(path: &str) -> Result<(), EngineError> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    init_tracing();
+    // v0.3 pkg5 (H10): stderr + a daily rolling file in the app log directory, and every
+    // panic logged before the default hook prints it.
+    diagnostics::init_tracing(diagnostics::log_dir().as_deref());
+    diagnostics::install_panic_hook();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        "SeePDF starting"
+    );
 
     if let Some(path) = smoke_argument() {
         match run_smoke(&path) {
@@ -92,7 +206,15 @@ pub fn run() {
         }
     }
 
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // v0.3 pkg5 (H2): registered first, as the plugin requires. A second SeePDF process (an
+    // Explorer double-click while SeePDF runs) exits at once and hands its argv to this one,
+    // which opens the PDFs and comes to the front. macOS is single-instance already.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        app::files::open_from_second_instance(app, argv, cwd);
+    }));
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -109,37 +231,11 @@ pub fn run() {
         // P2 읽어 주기: one system voice for the whole app, stopped on exit (below).
         .manage(std::sync::Arc::new(app::tts::Tts::system()))
         .setup(|app| {
-            let handle = app.handle().clone();
-
-            // 1. locate libpdfium and start the engine thread (binding happens there).
-            let (library, dir) = app::pdfium_path::resolve(&handle)?;
-            tracing::info!(lib = %library.display(), "resolved bundled libpdfium");
-            let settings = app::store::get_settings(&handle);
-            let engine = engine::spawn(
-                library,
-                dir,
-                Some(handle.clone()),
-                app::store::history_spill_dir(Some(&handle)),
-                (settings.tile_cache_mb.clamp(16, 1024) as usize) * 1024 * 1024,
-            )?;
-            app.manage(engine);
-
-            // 2. native menu (macOS only; Windows uses the in-window menu bar).
-            #[cfg(target_os = "macos")]
-            {
-                let menu = app::menu::build(&handle, settings.locale)?;
-                app.set_menu(menu)?;
-                app.on_menu_event(app::menu::on_menu_event);
-            }
-
-            // 3. window plumbing: drag-drop and the label -> document binding.
-            for (_, window) in app.webview_windows() {
-                app::windows::attach_handlers(&handle, &window);
-            }
-
-            // 4. files passed on the command line (Windows double-click, `cargo run -- x.pdf`).
-            for path in app::files::pdf_paths_from_argv() {
-                app::files::push_open(&handle, path, ipc::types::OpenSource::Argv);
+            let settings = app::store::get_settings(app.handle());
+            // v0.3 pkg5 (H10): a failure here used to propagate out of `build` into an
+            // `expect` — the process vanished (no console on Windows). Now it says why.
+            if let Err(failure) = start(app, &settings) {
+                diagnostics::fail_startup(failure, settings.locale);
             }
             Ok(())
         });
@@ -258,9 +354,19 @@ pub fn run() {
             commands::ocr::ocr_page_status,
             commands::ocr::ocr_apply,
             commands::ocr::ocr_recognize_native,
+            // --- v0.3 pkg5-app-shell-release-diagnostics: 문제 보고, 로그, 라이선스 ---
+            commands::app::problem_report,
+            commands::app::open_log_folder,
+            commands::app::third_party_notices,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building the tauri application")
+        .unwrap_or_else(|e| {
+            // WebView2 missing, no window could be created, …
+            diagnostics::fail_startup(
+                StartupFailure::Other(e.to_string()),
+                Settings::default().locale,
+            )
+        })
         .run(|_app, _event| {
             // P2 읽어 주기: the voice is a child process — never let it outlive the app.
             if let tauri::RunEvent::Exit = &_event {

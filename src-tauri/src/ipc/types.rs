@@ -2075,6 +2075,16 @@ pub struct AppInfo {
     pub theme: Theme,
 }
 
+// --- v0.3 pkg5-app-shell-release-diagnostics ---
+
+/// `problem_report` (H10): the text 문제 보고 copies, and the file it was also written to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProblemReport {
+    pub text: String,
+    pub path: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

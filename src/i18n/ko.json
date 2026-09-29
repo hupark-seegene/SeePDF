@@ -966,5 +966,20 @@
   "multiSearch.folderFailed": "폴더를 읽을 수 없습니다",
   "multiSearch.reason.password": "암호를 입력하지 않았습니다",
   "multiSearch.reason.searchFailed": "검색하지 못했습니다",
-  "multiSearch.openHit": "{{name}} {{page}}쪽 열기"
+  "multiSearch.openHit": "{{name}} {{page}}쪽 열기",
+  "menu.help.reportProblem": "문제 보고…",
+  "menu.help.openLogs": "로그 폴더 열기",
+  "menu.view.handTool": "손 도구",
+  "help.report.copied": "문제 보고 내용을 클립보드에 복사했습니다. 로그 폴더의 problem-report.txt에도 저장했습니다.",
+  "help.report.copyFailed": "클립보드에 복사하지 못했습니다. 열린 로그 폴더의 problem-report.txt를 첨부해 주세요.",
+  "help.report.failed": "문제 보고를 만들지 못했습니다",
+  "help.logs.failed": "로그 폴더를 열 수 없습니다",
+  "about.engine": "PDF 엔진",
+  "about.platform": "운영 체제",
+  "about.components": "포함된 오픈 소스 구성 요소",
+  "about.licenses": "오픈 소스 라이선스",
+  "about.licenses.loading": "라이선스 고지를 불러오는 중…",
+  "about.licenses.missing": "라이선스 고지를 찾을 수 없습니다. SeePDF를 다시 설치해 보세요.",
+  "about.back": "뒤로",
+  "update.noInfo": "지금은 업데이트 정보를 찾을 수 없습니다. 나중에 다시 확인해 주세요."
 }

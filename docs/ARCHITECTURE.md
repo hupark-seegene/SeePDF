@@ -89,6 +89,14 @@ Long jobs (search, export, OCR apply, flatten) are submitted as **one command pe
 `Lane::Background` with a shared `JobToken`, so visible tiles interleave and cancellation is observed
 within one page (≤ 30 ms).
 
+**Panics** (v0.3 pkg5, H4): the release profile is `panic = "unwind"` and the loop runs each command under
+`catch_unwind`. The caller gets `engineCrashed`; every document the command looked up through
+`EngineState::doc` / `doc_mut` (a thread-local list, reset per command) is closed and named in
+`engine-crashed`; the thread goes on with the next command. Its windows reopen the file or its autosave copy.
+A crash inside PDFium's C++ is not a panic and still ends the process. Every panic is logged by the hook
+`app::diagnostics` installs, into the daily log file (`~/Library/Logs/com.seepdf.desktop`,
+`%LOCALAPPDATA%\com.seepdf.desktop\logs`).
+
 ### 1.3 The pdfium-render patch (D9) — scope, fallback, and what it gates
 
 ```toml
@@ -570,6 +578,12 @@ fonts and pdfium are all local (offline is a hard product requirement).
   `RunEvent::Opened { urls }` fire for Finder double-click, `open -a`, and Dock drops. Paths arriving
   before the webview exists are queued (`PendingOpens`) and drained by `take_pending_opens`.
 * macOS ships two DMGs (arm64, x86_64); a universal build would double libpdfium.
+* v0.3 pkg5: `resources/notices/*` carries `THIRD_PARTY_NOTICES.txt` (`scripts/gen-notices.mjs`, run before
+  `tauri build`; a committed README keeps the glob matching). Windows: NSIS Korean + English with a language
+  selector and ko-KR + en-US MSIs; the main installer embeds the WebView2 bootstrapper, and a second NSIS
+  (`-offline-setup.exe`) carries the offline WebView2 installer. macOS `minimumSystemVersion` is 13.0 (OCR:
+  Vision, or WebKit with WASM SIMD). `scripts/check-release-config.mjs` asserts all of it in CI. On Windows
+  `tauri-plugin-single-instance` hands a second process's files to the running one.
 * Installed size budget ≤ 60 MB: tauri shell ~8–12 + libpdfium 7 + OCR 8.4 + Hangul font ~1.5 +
   Pretendard subset 0.35 + frontend ~2 ≈ **28 MB**. `scripts/check-bundle-size.mjs` gates it.
 

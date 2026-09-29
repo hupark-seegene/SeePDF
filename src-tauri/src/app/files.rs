@@ -34,6 +34,37 @@ pub fn pdf_paths_from_argv() -> Vec<PathBuf> {
         .collect()
 }
 
+/// v0.3 pkg5 (H2): the existing `.pdf` files among `args` (argv without the program), a
+/// relative one resolved against `cwd` — the second process's working directory, not ours.
+pub fn pdf_paths_from_args(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<PathBuf> {
+    args.into_iter()
+        .map(PathBuf::from)
+        .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+        .filter(|p| is_pdf(p) && p.is_file())
+        .collect()
+}
+
+/// v0.3 pkg5 (H2): `tauri-plugin-single-instance` callback (Windows). A second SeePDF was
+/// started — an Explorer double-click while SeePDF runs — and has already exited; its PDFs
+/// open here exactly as a macOS `RunEvent::Opened` does, and the app comes to the front.
+pub fn open_from_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
+    let paths = pdf_paths_from_args(argv.into_iter().skip(1), Path::new(&cwd));
+    tracing::info!(count = paths.len(), "second instance handed over its files");
+    for path in paths {
+        push_open(app, path, OpenSource::Argv);
+    }
+    let window = app
+        .get_webview_window("main")
+        .or_else(|| app.webview_windows().into_values().next());
+    if let Some(window) = window {
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// Queue **and** broadcast, so a path is never lost regardless of timing.
 pub fn push_open(app: &AppHandle, path: PathBuf, source: OpenSource) {
     let path = path.display().to_string();

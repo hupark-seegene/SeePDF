@@ -1,8 +1,9 @@
 name: Release
 
-# A `v*` tag builds the installers, runs the Rust suite on both targets and publishes a GitHub
-# Release: Windows x64 NSIS `.exe` + `.msi`, macOS arm64 `.dmg`, and — when the updater
-# signing key is configured — the signed updater bundles and `latest.json`.
+# A `v*` tag builds the installers, runs the Rust suite on every target and publishes a GitHub
+# Release: Windows x64 NSIS `.exe` (Korean / English, WebView2 bootstrapper embedded) + a
+# WebView2-offline `-offline-setup.exe` + `.msi` (ko-KR and en-US), macOS arm64 and x64 `.dmg`,
+# and — when the updater signing key is configured — the signed updater bundles and `latest.json`.
 #
 #   git tag v0.2.0 && git push origin v0.2.0        # a release
 #   git tag v0.2.0-rc1 && git push origin v0.2.0-rc1  # a pre-release (any tag with a `-`)
@@ -73,6 +74,11 @@ jobs:
           echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
           echo "version $version, tag '${tag:-<none>}', prerelease $pre"
 
+      # v0.3 pkg5: installer languages, WebView2 modes, the macOS minimum, both macOS assets,
+      # latest.json's darwin-x86_64 entry — asserted before anything is built.
+      - name: release config
+        run: node scripts/check-release-config.mjs
+
   test:
     name: test (${{ matrix.name }})
     needs: version
@@ -87,6 +93,10 @@ jobs:
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
+          # v0.3 pkg5 (H13): the Intel build README promises (ci.yml's runner label)
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -137,6 +147,11 @@ jobs:
             os: macos-latest
             target: aarch64-apple-darwin
             arch: aarch64
+          # v0.3 pkg5 (H13): Intel dmg + updater bundle (darwin-x86_64 in latest.json)
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x64
     steps:
       - uses: actions/checkout@v4
 
@@ -160,6 +175,12 @@ jobs:
         env:
           PDFIUM_TARGET: ${{ matrix.target }}
 
+      # v0.3 pkg5 (H11): THIRD_PARTY_NOTICES.txt, bundled as a resource and shown under
+      # SeePDF 정보 ▸ 오픈 소스 라이선스. `--check` fails the build if a core component is missing.
+      - name: third-party notices
+        shell: bash
+        run: node scripts/gen-notices.mjs --check
+
       # `bundle.createUpdaterArtifacts` is false in tauri.conf.json, so a build without the
       # signing key (a fork, a local `tauri build`, ci.yml) never fails for want of one. With
       # the secret present the override turns the signed updater bundles on.
@@ -179,6 +200,27 @@ jobs:
           fi
           bash scripts/ci-run.sh "tauri build" npm run tauri build -- "${args[@]}"
 
+      # v0.3 pkg5 (H12): the main installer embeds the WebView2 bootstrapper, which still needs the
+      # network on a Windows 10 machine without WebView2. This variant carries the whole offline
+      # WebView2 installer (~130 MB) for firewalled machines. NSIS only, no updater artifacts; it
+      # overwrites bundle/nsis, so the main installer is copied aside first.
+      - name: tauri build (WebView2 offline installer)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          nsis="src-tauri/target/${{ matrix.target }}/release/bundle/nsis"
+          mkdir -p main-nsis
+          cp "$nsis"/*.exe main-nsis/
+          cp "$nsis"/*.exe.sig main-nsis/ 2>/dev/null || true
+          printf '{"bundle":{"createUpdaterArtifacts":false,"windows":{"webviewInstallMode":{"type":"offlineInstaller","silent":true}}}}' > offline.conf.json
+          bash scripts/ci-run.sh "tauri build (offline)" npm run tauri build -- --target "${{ matrix.target }}" --bundles nsis --config offline.conf.json
+          mkdir -p offline-nsis
+          cp "$nsis/SeePDF_${version}_x64-setup.exe" "offline-nsis/SeePDF_${version}_x64-offline-setup.exe"
+          rm -f "$nsis"/*.exe "$nsis"/*.exe.sig
+          cp main-nsis/* "$nsis/"
+          ls -la "$nsis" offline-nsis
+
       # One flat folder per platform with release-ready names. The macOS updater bundle is
       # `SeePDF.app.tar.gz` out of the bundler; it gets the version and arch like the others.
       - name: Collect assets
@@ -189,7 +231,7 @@ jobs:
           out="release-assets"
           mkdir -p "$out"
           shopt -s nullglob
-          for f in "$bundle"/nsis/*.exe "$bundle"/nsis/*.exe.sig "$bundle"/msi/*.msi "$bundle"/msi/*.msi.sig "$bundle"/dmg/*.dmg; do
+          for f in "$bundle"/nsis/*.exe "$bundle"/nsis/*.exe.sig "$bundle"/msi/*.msi "$bundle"/msi/*.msi.sig "$bundle"/dmg/*.dmg offline-nsis/*.exe; do
             cp "$f" "$out/"
           done
           for f in "$bundle"/macos/*.app.tar.gz "$bundle"/macos/*.app.tar.gz.sig; do
@@ -197,6 +239,10 @@ jobs:
             cp "$f" "$out/${name/SeePDF.app.tar.gz/SeePDF_${version}_${{ matrix.arch }}.app.tar.gz}"
           done
           ls -la "$out"
+          # v0.3 pkg5 (H12): the Windows job lists both installers
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            ls "$out"/*_x64-setup.exe "$out"/*_x64-offline-setup.exe || { echo "::error::missing a Windows installer"; exit 1; }
+          fi
           count=$(ls "$out" | grep -cE '\.(exe|msi|dmg)$' || true)
           if [ "$count" -eq 0 ]; then
             echo "::error::no installer was produced under $bundle"

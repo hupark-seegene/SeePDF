@@ -12,6 +12,17 @@
 //! Writes are atomic per file (temp + fsync + rename). The PDF is written before the sidecar
 //! and [`list`] ignores (and deletes) a sidecar whose PDF is missing, so a crash between the
 //! two leaves either the previous pair or an orphan PDF that the next write overwrites.
+//!
+//! **Owners** (v0.3 pkg5, H2). Two SeePDF processes can share the directory (Windows, before
+//! the single-instance hand-off, or a second copy started some other way), and the second
+//! one's startup recovery used to offer — and on 버리기 delete — the first one's *live*
+//! autosaves. Each sidecar now records its [`Owner`] (pid + process start time), and each
+//! writing process holds an exclusive lock on `.owner-<pid>-<started>.lock` in the directory
+//! for as long as it runs. [`list`] skips a copy whose owner is another process that still
+//! holds its lock; the operating system drops the lock when that process exits or crashes,
+//! so a dead owner's copies are offered as before, and a recycled pid cannot keep them hidden
+//! (the lock names the start time too). Sidecars written before v0.3 have no owner and are
+//! always listed.
 
 use crate::engine::pages::write_atomic;
 use crate::engine::save;
@@ -19,7 +30,10 @@ use crate::engine::types::EngineState;
 use crate::ipc::types::RecoveryEntry;
 use crate::ipc::EngineError;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, OnceLock};
 
 /// Display name of a never-saved document (contract: "file name or 제목 없음").
 pub const UNTITLED_NAME: &str = "제목 없음";
@@ -27,6 +41,100 @@ pub const UNTITLED_NAME: &str = "제목 없음";
 /// Serialises writes and deletes: two autosaves of one document (or an autosave racing a
 /// `clear_recovery`) must not interleave their temp files and renames.
 static IO_LOCK: Mutex<()> = Mutex::new(());
+
+// ---------------------------------------------------------------------------------------
+// Owners (v0.3 pkg5, H2)
+// ---------------------------------------------------------------------------------------
+
+/// The process that wrote a recovery copy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Owner {
+    pub pid: u32,
+    /// When that process first touched the recovery directory, Unix milliseconds.
+    pub started: u64,
+}
+
+impl Owner {
+    /// This process.
+    pub fn current() -> &'static Owner {
+        static CURRENT: OnceLock<Owner> = OnceLock::new();
+        CURRENT.get_or_init(|| Owner {
+            pid: std::process::id(),
+            started: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        })
+    }
+}
+
+/// The lock file an owner holds in `dir` while it runs.
+pub fn owner_lock_path(dir: &Path, owner: &Owner) -> PathBuf {
+    dir.join(format!(".owner-{}-{}.lock", owner.pid, owner.started))
+}
+
+/// The locks this process holds, one per recovery directory it wrote to. Never released: the
+/// operating system drops them with the process.
+static HELD: LazyLock<Mutex<HashMap<PathBuf, std::fs::File>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Takes this process's owner lock in `dir` (once). A failure is logged, not fatal: the copy
+/// is still written, it can just be offered to a second process while this one runs.
+fn hold_owner_lock(dir: &Path) {
+    let mut held = HELD.lock();
+    if held.contains_key(dir) {
+        return;
+    }
+    let path = owner_lock_path(dir, Owner::current());
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path);
+    match file {
+        Ok(file) => match file.try_lock() {
+            Ok(()) => {
+                held.insert(dir.to_path_buf(), file);
+            }
+            Err(e) => tracing::warn!(path = %path.display(), "recovery owner lock: {e}"),
+        },
+        Err(e) => tracing::warn!(path = %path.display(), "recovery owner lock: {e}"),
+    }
+}
+
+/// `true` when `owner` is another process that is still running (it still holds its lock).
+/// A dead owner's lock file is removed on the way.
+pub fn owned_by_live_process(dir: &Path, owner: &Owner) -> bool {
+    if owner == Owner::current() {
+        return false;
+    }
+    let path = owner_lock_path(dir, owner);
+    let Ok(file) = std::fs::OpenOptions::new().write(true).open(&path) else {
+        return false; // no lock file: that process never took one, or it was cleaned up
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            false
+        }
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(e)) => {
+            tracing::warn!(path = %path.display(), "recovery owner probe: {e}");
+            false
+        }
+    }
+}
+
+/// The `<id>.json` sidecar: the [`RecoveryEntry`] plus, since v0.3, its owner.
+#[derive(Serialize, Deserialize)]
+struct Sidecar {
+    #[serde(flatten)]
+    entry: RecoveryEntry,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<Owner>,
+}
 
 /// What the engine thread hands the command task.
 #[derive(Debug, Clone)]
@@ -137,6 +245,7 @@ pub fn write(dir: &Path, snap: Snapshot) -> Result<RecoveryEntry, EngineError> {
     check_id(&snap.id)?;
     let _guard = IO_LOCK.lock();
     std::fs::create_dir_all(dir).map_err(EngineError::from)?;
+    hold_owner_lock(dir);
     let pdf = pdf_path(dir, &snap.id);
     let bytes = write_atomic(&pdf, &snap.bytes)?;
     let recovery_path = canonical(pdf);
@@ -149,10 +258,14 @@ pub fn write(dir: &Path, snap: Snapshot) -> Result<RecoveryEntry, EngineError> {
         pages: snap.pages,
         recovery_path: recovery_path.display().to_string(),
     };
-    let json = serde_json::to_vec_pretty(&entry)
+    let sidecar = Sidecar {
+        entry,
+        owner: Some(Owner::current().clone()),
+    };
+    let json = serde_json::to_vec_pretty(&sidecar)
         .map_err(|e| EngineError::io(format!("recovery sidecar: {e}")))?;
-    write_atomic(&sidecar_path(dir, &entry.id), &json)?;
-    Ok(entry)
+    write_atomic(&sidecar_path(dir, &sidecar.entry.id), &json)?;
+    Ok(sidecar.entry)
 }
 
 /// Deletes one pair. Unknown id (or a missing directory) is a no-op; a malformed id is
@@ -174,7 +287,8 @@ fn remove_if_exists(path: &Path) -> Result<(), EngineError> {
 }
 
 /// Every pair in `dir`, newest first. A sidecar whose PDF is gone, or that does not parse, is
-/// deleted and skipped. A missing directory is an empty list.
+/// deleted and skipped. A missing directory is an empty list. A copy another running SeePDF
+/// process owns is skipped (and left alone): it is that process's live autosave.
 pub fn list(dir: &Path) -> Result<Vec<RecoveryEntry>, EngineError> {
     let _guard = IO_LOCK.lock();
     let entries = match std::fs::read_dir(dir) {
@@ -195,13 +309,20 @@ pub fn list(dir: &Path) -> Result<Vec<RecoveryEntry>, EngineError> {
         }
         let parsed = std::fs::read(&path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<RecoveryEntry>(&bytes).ok());
+            .and_then(|bytes| serde_json::from_slice::<Sidecar>(&bytes).ok());
         let pdf = pdf_path(dir, stem);
-        let Some(mut entry) = parsed.filter(|e| e.id == stem && pdf.is_file()) else {
+        let Some(Sidecar {
+            mut entry, owner, ..
+        }) = parsed.filter(|s| s.entry.id == stem && pdf.is_file())
+        else {
             tracing::info!(path = %path.display(), "pruning recovery sidecar without a pdf");
             let _ = std::fs::remove_file(&path);
             continue;
         };
+        if let Some(owner) = owner.filter(|o| owned_by_live_process(dir, o)) {
+            tracing::debug!(id = %entry.id, pid = owner.pid, "recovery copy of a running process; not offered");
+            continue;
+        }
         // The directory is the source of truth for where the copy is now.
         entry.recovery_path = canonical(pdf).display().to_string();
         let at = chrono::DateTime::parse_from_rfc3339(&entry.saved_at).ok();
