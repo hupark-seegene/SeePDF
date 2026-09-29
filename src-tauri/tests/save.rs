@@ -63,6 +63,20 @@ fn temp_files(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The temp files of ONE target file (`.<name>.seepdf-<pid>.tmp`). Tests in this binary run
+/// in parallel and several of them save into `fixtures/out/stage1b`, so a directory-wide check
+/// can see another test's in-flight temp file or directory probe and fail at random.
+fn temp_files_of(target: &Path) -> Vec<String> {
+    let prefix = format!(
+        ".{}.seepdf-",
+        target.file_name().unwrap_or_default().to_string_lossy()
+    );
+    temp_files(target.parent().expect("target has a directory"))
+        .into_iter()
+        .filter(|n| n.starts_with(&prefix))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------------------
 
 /// A plain save writes through a temp file, fsyncs, renames, and leaves the document clean and
@@ -90,7 +104,7 @@ fn save_document_roundtrip() {
     let result = save_to(&doc.doc_id, None).expect("save_document");
     assert_eq!(result.path, path.display().to_string());
     assert!(result.bytes > 100_000);
-    assert!(temp_files(&out_dir()).is_empty(), "no temp file survives");
+    assert!(temp_files_of(&path).is_empty(), "no temp file survives");
 
     let info = with_doc(&doc.doc_id, |d| Ok(d.info())).expect("info");
     assert!(!info.dirty, "savedGeneration caught up");
@@ -387,7 +401,7 @@ fn save_detects_a_file_changed_on_disk() {
     let err = save_to(&doc.doc_id, None).expect_err("must refuse");
     assert_eq!(err.code, ErrorCode::FileChangedOnDisk);
     assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
-    assert!(temp_files(path.parent().unwrap()).is_empty());
+    assert!(temp_files_of(&path).is_empty());
 
     // A size change is caught too, and 덮어쓰기 (force) overwrites.
     std::fs::write(&path, b"%PDF-1.7 replaced by someone else").unwrap();

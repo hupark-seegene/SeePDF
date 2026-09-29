@@ -338,9 +338,14 @@ fn check_writable(path: &Path) -> Result<(), EngineError> {
     }
 }
 
-/// Creates and removes `.seepdf-probe-<pid>.tmp` in `dir`; `readOnly` when that is refused.
+/// Creates and removes `.seepdf-probe-<pid>-<n>.tmp` in `dir`; `readOnly` when that is refused.
+///
+/// `n` makes every probe unique: two saves into the same directory at once (two tabs, or two
+/// windows) must not create and delete each other's probe.
 fn probe_directory(dir: &Path) -> Result<(), EngineError> {
-    let probe = dir.join(format!(".seepdf-probe-{}.tmp", std::process::id()));
+    static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let probe = dir.join(format!(".seepdf-probe-{}-{n}.tmp", std::process::id()));
     match std::fs::OpenOptions::new()
         .write(true)
         .create(true)
