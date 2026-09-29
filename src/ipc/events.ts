@@ -11,7 +11,7 @@ import { useMock } from "./env";
 import { appBus } from "./bus";
 import type {
   DocChangedEvent, DocSavedEvent, EnginePressureEvent, OpenFileEvent, RecentsChangedEvent, TtsProgressEvent,
-  EngineCrashedEvent, ThemeChangedEvent,
+  EngineCrashedEvent, ThemeChangedEvent, FocusDocumentEvent,
 } from "./types";
 
 export type Unsubscribe = () => void;
@@ -94,6 +94,11 @@ export function onEnginePressure(handler: (e: EnginePressureEvent) => void): Uns
 /** H4: a panicking engine command closed these documents; their windows reopen them. */
 export function onEngineCrashed(handler: (e: EngineCrashedEvent) => void): Unsubscribe {
   return subscribe("engine-crashed", handler);
+}
+
+/** v0.3 DR1: another window tried to open a file this window has in a tab — bring that tab forward. */
+export function onFocusDocument(handler: (e: FocusDocumentEvent) => void): Unsubscribe {
+  return subscribe("focus-document", handler, true);
 }
 
 /** U4: another window (or this one) changed the theme. */

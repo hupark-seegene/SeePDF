@@ -1,6 +1,8 @@
 /**
  * 자동 저장 / 복구 (P1-8): while a document is open, dirty and `settings.autosaveSec > 0`, a timer
  * writes a recovery copy (`write_recovery`) — only when `docGeneration` moved since the last write.
+ * v0.3 DR1: every dirty tab of the window gets its copy, not only the one on screen — a beat walks
+ * the active document and then the background tabs (`tabStore.backgroundDocs`), one write at a time.
  * A successful 저장 / 다른 이름으로 저장 and a clean close drop the copy (`clear_recovery`), and so
  * does an undo that brings the document back to clean (Stage 8). A failed write is toasted at most
  * once per document. The user's file is never touched.
@@ -19,6 +21,7 @@ import { toast } from "./toastStore";
 import { openDialog } from "../dialogs/dialogState";
 import { windowLabel } from "../ipc/env";
 import { trackWrite, whenEditsSettled } from "../annot/dragGate";
+import { backgroundDocs, useTabStore } from "../store/tabStore";
 import type { DocGeneration, DocId, DocInfo, RecoveryEntry, Settings } from "../ipc/types";
 
 export const DEFAULT_AUTOSAVE_SEC = 60;
@@ -34,6 +37,8 @@ export function autosaveSecOf(settings: Settings | null): number {
 export interface AutosaveDeps {
   /** the window's document right now */
   current(): DocInfo | null;
+  /** v0.3 DR1: the documents of the window's background tabs (default: none) */
+  background?(): DocInfo[];
   write(docId: DocId): Promise<unknown>;
   clear(docId: DocId): Promise<unknown>;
   onFail(info: DocInfo, error: unknown): void;
@@ -55,11 +60,18 @@ export class AutosaveController {
 
   constructor(private readonly deps: AutosaveDeps) {}
 
-  /** (Re)arm the timer for the current document; call whenever the document, its dirty state or the interval changes. */
+  /**
+   * (Re)arm the timer for the current document; call whenever the document, its dirty state or the
+   * interval changes — or a background tab's (v0.3 DR1: the timer runs while any tab is dirty).
+   */
   sync(info: DocInfo | null, sec: number): void {
+    const background = this.deps.background?.() ?? [];
     // Undo took the document back to clean: the copy describes changes that no longer exist.
-    if (info && !info.dirty && this.written.has(info.docId)) void this.clear(info.docId);
-    const key = info && info.dirty && sec > 0 ? `${info.docId}:${sec}` : null;
+    for (const doc of info ? [info, ...background] : background) {
+      if (!doc.dirty && this.written.has(doc.docId)) void this.clear(doc.docId);
+    }
+    const dirty = (info?.dirty ?? false) || background.some((d) => d.dirty);
+    const key = dirty && sec > 0 ? `${info?.docId ?? ""}:${sec}` : null;
     if (key === this.armed) return;
     this.stop();
     this.armed = key;
@@ -77,20 +89,25 @@ export class AutosaveController {
         this.waiting = false;
       }
     }
-    const info = this.deps.current();
-    if (!info || !info.dirty || this.inFlight) return;
-    if (this.covered.get(info.docId) === info.docGeneration) return;
-    const { docId, docGeneration } = info;
+    if (this.inFlight) return;
+    const current = this.deps.current();
+    const due = [...(current ? [current] : []), ...(this.deps.background?.() ?? [])].filter(
+      (d) => d.dirty && this.covered.get(d.docId) !== d.docGeneration,
+    );
+    if (!due.length) return;
     this.inFlight = (async () => {
-      try {
-        await this.deps.write(docId);
-        this.covered.set(docId, docGeneration);
-        this.written.add(docId);
-        this.failed.delete(docId);
-      } catch (e) {
-        if (!this.failed.has(docId)) {
-          this.failed.add(docId);
-          this.deps.onFail(info, e);
+      for (const info of due) {
+        const { docId, docGeneration } = info;
+        try {
+          await this.deps.write(docId);
+          this.covered.set(docId, docGeneration);
+          this.written.add(docId);
+          this.failed.delete(docId);
+        } catch (e) {
+          if (!this.failed.has(docId)) {
+            this.failed.add(docId);
+            this.deps.onFail(info, e);
+          }
         }
       }
     })();
@@ -108,8 +125,8 @@ export class AutosaveController {
    */
   async clear(docId: DocId): Promise<void> {
     if (this.inFlight) await this.inFlight.catch(() => undefined);
-    const info = this.deps.current();
-    if (info?.docId === docId) this.covered.set(docId, info.docGeneration);
+    const info = [this.deps.current(), ...(this.deps.background?.() ?? [])].find((d) => d?.docId === docId);
+    if (info) this.covered.set(docId, info.docGeneration);
     this.failed.delete(docId);
     if (!this.written.has(docId)) return;
     this.written.delete(docId);
@@ -135,6 +152,7 @@ export class AutosaveController {
 
 export const autosave = new AutosaveController({
   current: () => useDocStore.getState().info,
+  background: backgroundDocs,
   write: (docId) => trackWrite(api.writeRecovery({ docId })),
   // the recovery copy includes the last nudge still waiting out its coalescing delay
   idle: () => whenEditsSettled().then(() => undefined),
@@ -148,9 +166,11 @@ export function useAutosave(): void {
   const docId = useDocStore((s) => s.info?.docId ?? null);
   const dirty = useDocStore((s) => s.info?.dirty ?? false);
   const sec = useAppStore((s) => autosaveSecOf(s.settings));
+  // v0.3 DR1: a background tab turning dirty or clean (a copy of a clean tab is dropped)
+  const tabs = useTabStore((s) => s.tabs.map((t) => `${t.docId}${t.dirty ? "*" : ""}`).join());
   useEffect(() => {
     autosave.sync(useDocStore.getState().info, sec);
-  }, [docId, dirty, sec]);
+  }, [docId, dirty, sec, tabs]);
   useEffect(() => () => autosave.stop(), []);
 }
 
@@ -169,9 +189,12 @@ export function markRecovered(docId: DocId, entry: RecoveryEntry): void {
   recovered.set(docId, entry);
 }
 
-// The window's document went away (closed, or replaced by another): forget its mark.
+// The window's document went away (closed, or replaced by another): forget its mark. A switch to
+// another tab (v0.3 DR1) keeps it — the document is still open in its tab.
 useDocStore.subscribe((s, prev) => {
-  if (prev.docId && prev.docId !== s.docId) recovered.delete(prev.docId);
+  if (prev.docId && prev.docId !== s.docId && !useTabStore.getState().tabs.some((t) => t.docId === prev.docId)) {
+    recovered.delete(prev.docId);
+  }
 });
 
 export function recoveredEntry(docId: DocId | null | undefined): RecoveryEntry | undefined {

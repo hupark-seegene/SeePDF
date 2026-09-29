@@ -87,18 +87,23 @@ pub fn open_in_new_window(app: AppHandle, path: Option<String>) -> Result<String
     crate::app::windows::open_in_new_window(&app, path)
 }
 
+/// `doc_id`: the window's active tab (the native menu names its undo step). `tabs` (v0.3 DR1):
+/// every document open in the window's tabs, so H8 finds a file in a background tab; omitted,
+/// the list announced before is kept.
 #[tauri::command]
 pub fn window_bind_document(
     app: AppHandle,
     windows: State<'_, WindowDocs>,
     label: String,
     doc_id: Option<String>,
+    tabs: Option<Vec<String>>,
 ) -> Result<(), EngineError> {
     #[cfg(target_os = "macos")]
     crate::app::menu::document_bound(&app, &label, doc_id.as_deref());
     #[cfg(not(target_os = "macos"))]
     let _ = &app;
     windows.bind(&label, doc_id);
+    windows.set_tabs(&label, tabs);
     Ok(())
 }
 
@@ -169,9 +174,17 @@ pub async fn redo(engine: State<'_, EngineHandle>, doc_id: String) -> Result<Doc
 /// v0.3 pkg3 (H8): the window already showing the file at `path`, brought to the front; `null`
 /// when no window has it. `openPath` calls this first and opens nothing when another window
 /// answers.
+///
+/// v0.3 DR1: a file in another window's background tab counts too — that window is sent
+/// `focus-document` and brings the tab to the front. The calling window is not sent it: it
+/// switches tabs itself.
 #[tauri::command]
-pub fn focus_document_window(app: AppHandle, path: String) -> Option<String> {
-    crate::app::windows::focus_window_for_path(&app, &path)
+pub fn focus_document_window(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Option<String> {
+    crate::app::windows::focus_window_for_path(&app, &path, Some(window.label()))
 }
 
 // ---------------------------------------------------------------------------------------

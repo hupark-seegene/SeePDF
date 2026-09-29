@@ -4,22 +4,16 @@
  *
  * Invariant: `info.docGeneration` is the cache key for every tile URL and every page-object command.
  * `applyDocChanged` is the single place a new generation enters the frontend.
+ *
+ * v0.3 DR1: this is the **active tab's** document. `tabStore` mirrors it into the tab strip and
+ * binds the window (`window_bind_document`) whenever it changes; a tab switch writes the other
+ * tab's parked state here (`tabs/flow.ts`).
  */
 import { create } from "zustand";
 import * as api from "../ipc/api";
-import { windowLabel } from "../ipc/env";
 import type { DocChangedEvent, DocInfo, OutlineNode, PageIndex } from "../ipc/types";
 
 export type DocStatus = "empty" | "opening" | "ready" | "error";
-
-/**
- * Tell the backend which document this window shows, so the native 편집 menu names the right
- * undo step and window-close cleanup finds the document. Fire-and-forget: a failure only costs
- * the menu label.
- */
-function bindWindow(docId: string | null): void {
-  void api.windowBindDocument({ label: windowLabel(), docId }).catch(() => undefined);
-}
 
 export interface DocState {
   docId: string | null;
@@ -66,7 +60,6 @@ export const useDocStore = create<DocState>((set, get) => ({
       const info = await api.openDocument(displayName ? { path, password, displayName } : { path, password });
       const outline = info.hasOutline ? await api.getOutline({ docId: info.docId }).catch(() => []) : [];
       set({ docId: info.docId, info, outline, status: "ready", changeNonce: get().changeNonce + 1 });
-      bindWindow(info.docId);
       return info;
     } catch (e) {
       const err = api.isSeePdfError(e)
@@ -88,7 +81,6 @@ export const useDocStore = create<DocState>((set, get) => ({
       changedPages: "all",
       changeNonce: get().changeNonce + 1,
     });
-    bindWindow(info.docId);
     if (info.hasOutline && outline.length === 0) {
       void api
         .getOutline({ docId: info.docId })
@@ -103,7 +95,6 @@ export const useDocStore = create<DocState>((set, get) => ({
     const docId = get().docId;
     if (docId) await api.closeDocument({ docId }).catch(() => undefined);
     set({ docId: null, info: null, outline: [], status: "empty", error: null });
-    if (docId) bindWindow(null);
   },
 
   async refresh() {

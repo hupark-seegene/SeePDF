@@ -99,7 +99,7 @@ code, commercial parity) plus a completeness critic. Status of each build item i
 
 | id | impact | effort | area | item | why / how |
 |---|---|---|---|---|---|
-| DR1 | medium | L | shell | Document tabs (여러 문서를 한 창에서) | A documented product decision (FEATURES:324, one window per document), not an unfinished feature; it would need a refactor of every zustand singleton store. H8 (focus the existing window) covers the duplicate-window pain. |
+| DR1 | medium | L | shell | Document tabs (여러 문서를 한 창에서) | ~~A documented product decision (FEATURES:324, one window per document), not an unfinished feature; it would need a refactor of every zustand singleton store. H8 (focus the existing window) covers the duplicate-window pain.~~ **Reversed and built** (every commercial competitor has tabs): the singleton stores stay and describe the active tab, background tabs park their state — see FEATURES "v0.3 status" DR1 and UI_SPEC §2.2. |
 | DR2 | low | S | annotations | Bold/italic free text and other catalogue-only keys with no prose spec | Not in the UI_SPEC §7 panel table, and the bundled Hangul subset has no bold face. The keys are removed in H6. |
 
 ## Work packages

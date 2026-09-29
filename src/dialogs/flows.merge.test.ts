@@ -33,6 +33,8 @@ async function answerUnsaved(answer: UnsavedAnswer): Promise<void> {
   (entry.props.resolve as (v: UnsavedAnswer) => void)(answer);
 }
 
+// v0.3 DR1: with a document open the merged one takes a new tab (`tabs.test.ts`); these are the
+// paths that still replace it — 설정 › 파일 열기 = 새 창, or a caller passing `replace`.
 describe("dialogs.flows.merge — the merged document replaces the window's like an open", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -64,7 +66,7 @@ describe("dialogs.flows.merge — the merged document replaces the window's like
   it("merging over A closes A in the engine, once", async () => {
     const a = (await openPath(A))!;
     const close = vi.spyOn(mock, "closeDocument");
-    const merged = (await mergePaths(INPUTS))!;
+    const merged = (await mergePaths(INPUTS, { replace: true }))!;
     expect(merged.docId).not.toBe(a.docId);
     expect(close).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledWith({ docId: a.docId });
@@ -93,7 +95,7 @@ describe("dialogs.flows.merge — the merged document replaces the window's like
     const a = await openDirtyA();
     const merge = vi.spyOn(mock, "mergeDocuments");
     const close = vi.spyOn(mock, "closeDocument");
-    const merging = mergePaths(INPUTS);
+    const merging = mergePaths(INPUTS, { replace: true });
     await answerUnsaved("cancel");
     expect(await merging).toBeNull();
     expect(merge).not.toHaveBeenCalled();
@@ -106,7 +108,7 @@ describe("dialogs.flows.merge — the merged document replaces the window's like
     const a = await openDirtyA();
     const merge = vi.spyOn(mock, "mergeDocuments");
     const close = vi.spyOn(mock, "closeDocument");
-    const merging = mergePaths(INPUTS);
+    const merging = mergePaths(INPUTS, { replace: true });
     await answerUnsaved("dontSave");
     const merged = (await merging)!;
     expect(merge).toHaveBeenCalledTimes(1);

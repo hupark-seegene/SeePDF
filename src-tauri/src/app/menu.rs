@@ -111,6 +111,11 @@ pub const MENU_IDS: &[&str] = &[
     // v0.3 pkg2-pages-structure-forms: 이미지로 PDF 만들기, 클립보드에서 새로 만들기
     "file.imagesToPdf",
     "file.newFromClipboard",
+    // v0.3 DR1 document tabs: 파일 ▸ 새 탭에서 열기… / 닫은 탭 다시 열기, 윈도우 ▸ 다음 / 이전 탭
+    "file.openInNewTab",
+    "tab.reopenClosed",
+    "tab.next",
+    "tab.previous",
 ];
 
 /// `(key, 한국어, English)` — the `menu.*` rows of `UI_SPEC.md` §15.2, verbatim. The key is
@@ -139,6 +144,11 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("file.openRecent", "최근 항목 열기", "Open Recent"),
     ("file.clearRecent", "메뉴 지우기", "Clear Menu"),
     ("file.close", "닫기", "Close"),
+    // v0.3 DR1: document tabs
+    ("file.openInNewTab", "새 탭에서 열기…", "Open in New Tab…"),
+    ("tab.reopenClosed", "닫은 탭 다시 열기", "Reopen Closed Tab"),
+    ("tab.next", "다음 탭 보기", "Show Next Tab"),
+    ("tab.previous", "이전 탭 보기", "Show Previous Tab"),
     ("file.save", "저장", "Save"),
     ("file.saveAs", "다른 이름으로 저장…", "Save As…"),
     ("file.export", "내보내기…", "Export…"),
@@ -314,6 +324,10 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
 
     let file_menu = SubmenuBuilder::new(app, t("file"))
         .item(&item("file.open", Some("CmdOrCtrl+O"))?)
+        // v0.3 DR1: ⌘T opens into a new tab whatever 설정 › 파일 열기 says; ⇧⌘T reopens the
+        // last closed tab (by path).
+        .item(&item("file.openInNewTab", Some("CmdOrCtrl+T"))?)
+        .item(&item("tab.reopenClosed", Some("CmdOrCtrl+Shift+T"))?)
         .item(&item("file.openRecent", Some("CmdOrCtrl+Shift+O"))?)
         .item(&item("file.clearRecent", None)?)
         // v0.3 pkg2: new documents from images; no shortcut.
@@ -426,6 +440,10 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
             Some(t("window.minimize")),
         )?)
         .item(&PredefinedMenuItem::maximize(app, Some(t("window.zoom")))?)
+        .separator()
+        // v0.3 DR1: ⌃Tab / ⌃⇧Tab (the keymap also takes ⌥⌘→ / ⌥⌘←)
+        .item(&item("tab.next", Some("Ctrl+Tab"))?)
+        .item(&item("tab.previous", Some("Ctrl+Shift+Tab"))?)
         .separator()
         .item(&PredefinedMenuItem::close_window(
             app,

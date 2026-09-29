@@ -18,54 +18,88 @@ import { windowLabel } from "../ipc/env";
 import { autosave, markRecovered, recoveredEntry, settleRecovered } from "../app/autosave";
 import { whenEditsSettled } from "../annot/dragGate";
 import { editLeaveGuard } from "../tools/commands";
-import type { DocId, DocInfo, PageIndex, PageOp, ProblemReport, RecentEntry, RecoveryEntry } from "../ipc/types";
+import { useTabStore } from "../store/tabStore";
+import type { DocId, DocInfo, PageIndex, PageOp, ProblemReport, RecentEntry, RecoveryEntry, ViewLayout } from "../ipc/types";
+
+/** `import("../tabs/flow")` — the tab switching / parking code stays out of this chunk's hot path. */
+const tabsFlow = () => import("../tabs/flow");
+
+/**
+ * Where a file opened while the window shows a document goes (v0.3 DR1, 설정 › 일반 › 파일 열기):
+ * a new tab (default) or a new window.
+ */
+export type OpenTarget = "tab" | "window";
+
+export function openTargetSetting(): OpenTarget {
+  return useAppStore.getState().settings?.openFilesIn === "window" ? "window" : "tab";
+}
 
 // ---------------------------------------------------------------------------
 // Opening
 // ---------------------------------------------------------------------------
 
-/** ⌘O and the welcome screen's 파일 열기… — one or many files. */
-export async function openFileFlow(): Promise<void> {
+/** ⌘O and the welcome screen's 파일 열기… — one or many files; ⌘T (v0.3 DR1): into new tabs. */
+export async function openFileFlow(opts: { target?: OpenTarget } = {}): Promise<void> {
   const picked = await api.openFileDialog({ multiple: true });
-  if (picked?.length) await openPaths(picked);
+  if (picked?.length) await openPaths(picked, opts);
 }
 
 /** A drop, an `open-file` event or a multi-selection in the picker. */
-export async function openPaths(paths: string[]): Promise<void> {
+export async function openPaths(paths: string[], opts: { target?: OpenTarget } = {}): Promise<void> {
   if (paths.length === 0) return;
   if (paths.length === 1) {
-    await openPath(paths[0]);
+    await openPath(paths[0], opts);
     return;
   }
   const answer = await askMultipleFiles(paths);
   if (answer === "merge") await mergePaths(paths.map((path) => ({ path })));
-  else if (answer === "separate") await openSeparately(paths);
+  else if (answer === "separate") await openSeparately(paths, opts);
 }
 
-async function openSeparately(paths: string[]): Promise<void> {
-  await openPath(paths[0]);
-  for (const path of paths.slice(1)) {
-    // v0.3 H8: a file another window already shows is focused, not opened a second time
-    if (await focusedElsewhere(path)) continue;
-    await api.openInNewWindow({ path }).catch(() => undefined);
-  }
+/**
+ * 각각 열기: each file in its own tab — or, with 파일 열기 = 새 창, the first here (when the window
+ * is empty) and the rest in windows of their own. `openPath` focuses a file already open (H8).
+ */
+async function openSeparately(paths: string[], opts: { target?: OpenTarget }): Promise<void> {
+  for (const path of paths) await openPath(path, opts);
 }
 
 /**
  * Open one file. Retries the password prompt in place (F-01) and restores the stored reading
  * position when 마지막으로 본 위치 기억 is on. `recovery`: the file is a 복구 copy (P1-8) — it is
  * marked so 저장 asks for a location, and it stays out of 최근 항목.
+ *
+ * v0.3 DR1: with a document on screen the file opens in a new tab (or a new window — `target`,
+ * else 설정 › 파일 열기; a 복구 copy always takes a tab). `replace`: it takes the place of the
+ * active tab's document instead (다시 불러오기, an engine crash), after `guard`'s 저장 / 저장 안 함 /
+ * 취소 — the replaced document is released.
  */
 export async function openPath(
   path: string,
-  opts: { guard?: boolean; recovery?: RecoveryEntry; password?: string } = {},
+  opts: { guard?: boolean; recovery?: RecoveryEntry; password?: string; replace?: boolean; target?: OpenTarget } = {},
 ): Promise<DocInfo | null> {
-  // v0.3 H8: one window per file — a file another window shows is brought to the front there
-  // (recents, the picker, drops and the OS's open-file events all come through here)
-  if (!opts.recovery && (await focusedElsewhere(path))) return null;
-  if (opts.guard !== false && !(await confirmLeaveDocument())) return null;
+  if (!opts.recovery && !opts.replace) {
+    // v0.3 H8 / DR1: one tab per file — a file one of this window's tabs has comes to the front,
+    // one another window shows is brought to the front there (recents, the picker, drops and the
+    // OS's open-file events all come through here)
+    const own = await (await tabsFlow()).focusOwnTab(path);
+    if (own) return own;
+    if (await focusedElsewhere(path)) return null;
+  }
   const docs = useDocStore.getState();
   const previous = docs.info;
+  const target = opts.replace || !previous ? "replace" : (opts.target ?? (opts.recovery ? "tab" : openTargetSetting()));
+  if (target === "window") {
+    await api.openInNewWindow({ path }).catch(() => undefined);
+    return null;
+  }
+  let rollback: (() => void) | null = null;
+  if (target === "tab") {
+    rollback = await (await tabsFlow()).beginNewTab();
+    if (!rollback) return null;
+  } else if (opts.guard !== false && !(await confirmLeaveDocument())) {
+    return null;
+  }
   // `password`: one the user already gave for this file (여러 파일에서 검색, P2) — tried first,
   // and a wrong one still falls back to the prompt
   let password: string | undefined = opts.password;
@@ -73,7 +107,8 @@ export async function openPath(
     // a 복구 copy opens under the original document's name, not `<uuid>.pdf` (Stage 8)
     const info = await docs.open(path, password, opts.recovery?.name);
     if (info) {
-      if (previous && previous.docId !== info.docId) await releaseReplaced(previous);
+      if (target === "replace" && previous && previous.docId !== info.docId) await releaseReplaced(previous);
+      if (target === "tab") (await tabsFlow()).freshTab();
       if (opts.recovery) markRecovered(info.docId, opts.recovery);
       await afterOpen(info);
       return info;
@@ -84,6 +119,7 @@ export async function openPath(
       if (entered === null) {
         // 취소 on the password prompt: whatever was on screen stays, loaded and current
         useDocStore.setState({ status: previous ? "ready" : "empty", error: null });
+        rollback?.();
         return null;
       }
       password = entered;
@@ -98,6 +134,7 @@ export async function openPath(
     // is still displayed and still open in the engine — it must not be closed, and the store goes
     // back to `ready` (the toast carries the error; the welcome banner is only for an empty window).
     if (previous) useDocStore.setState({ status: "ready", error: null });
+    rollback?.();
     return null;
   }
 }
@@ -142,10 +179,17 @@ async function afterOpen(info: DocInfo): Promise<void> {
   await touchRecent(info);
 }
 
-/** Write the current reading position back into the recents list (IPC_CONTRACT §11). */
-export async function touchRecent(info: DocInfo): Promise<void> {
+/**
+ * Write the current reading position back into the recents list (IPC_CONTRACT §11). `at`: a
+ * background tab's own position (v0.3 DR1) instead of the view on screen.
+ */
+export async function touchRecent(
+  info: DocInfo,
+  at?: { page: PageIndex; zoomPercent: number; layout: ViewLayout },
+): Promise<void> {
   if (!info.path || recoveredEntry(info.docId)) return;
-  const view = useViewStore.getState();
+  const shown = useViewStore.getState();
+  const view = at ? { currentPage: at.page, zoomPercent: at.zoomPercent, layout: at.layout } : shown;
   const app = useAppStore.getState();
   const previous = app.recents.find((r) => r.path === info.path);
   let thumbId = previous?.thumbId ?? null;
@@ -170,17 +214,18 @@ export async function touchRecent(info: DocInfo): Promise<void> {
 }
 
 /**
- * 파일 합치기 — the merged document becomes the window's document (it has no path yet). It replaces
+ * 파일 합치기 — the merged document (it has no path yet) opens in a new tab (v0.3 DR1; the tab on
+ * screen is parked once the merge has succeeded). With 파일 열기 = 새 창, or `replace`, it replaces
  * the current document exactly like `openPath` does: the leave guard (pending 편집 marks, then
  * 저장 / 저장 안 함 / 취소) runs first, and the replaced document is released only once the merge
  * has succeeded — a failed merge leaves it displayed and open.
  */
 export async function mergePaths(
   inputs: { path: string; range?: string }[],
-  opts: { guard?: boolean } = {},
+  opts: { guard?: boolean; replace?: boolean } = {},
 ): Promise<DocInfo | null> {
-  if (opts.guard !== false && !(await confirmLeaveDocument())) return null;
-  const previous = useDocStore.getState().info;
+  const intoTab = !!useDocStore.getState().info && !opts.replace && openTargetSetting() === "tab";
+  if (!intoTab && opts.guard !== false && !(await confirmLeaveDocument())) return null;
   let merged: Awaited<ReturnType<typeof api.mergeDocuments>>;
   try {
     merged = await api.mergeDocuments({ inputs });
@@ -189,6 +234,8 @@ export async function mergePaths(
     return null;
   }
   const { info, warnings } = merged;
+  if (intoTab && !(await adoptIntoNewTab(info))) return null;
+  const previous = intoTab ? null : useDocStore.getState().info;
   usePagesStore.getState().reset();
   useDocStore.getState().adopt(info);
   // like `afterOpen`: a new document starts at its first page, and 뒤로 must not lead back into
@@ -203,6 +250,21 @@ export async function mergePaths(
   }
   toast("pages.merge.done", { count: inputs.length }, { tone: "success" });
   return info;
+}
+
+/**
+ * v0.3 DR1: a document the engine has just built (합치기, 이미지로 PDF 만들기) is about to be adopted
+ * into a new tab: park the tab on screen first. `false`: pending 편집 marks said 취소 — the new
+ * document is closed again and nothing changes.
+ */
+export async function adoptIntoNewTab(info: DocInfo): Promise<boolean> {
+  const tabs = await tabsFlow();
+  if (await tabs.beginNewTab()) {
+    tabs.freshTab();
+    return true;
+  }
+  await api.closeDocument({ docId: info.docId }).catch(() => undefined);
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +350,7 @@ export async function confirmUnsaved(): Promise<boolean> {
  * 저장 안 함 on a document opened from a 복구 copy (Stage 8): keep the copy for the next launch
  * (the default, 보관 / Esc) or delete it now.
  */
-async function askKeepRecovery(info: DocInfo): Promise<void> {
+export async function askKeepRecovery(info: DocInfo): Promise<void> {
   const entry = recoveredEntry(info.docId);
   if (!entry) return;
   const discard = await askConfirm({
@@ -323,12 +385,21 @@ export async function confirmLeaveDocument(): Promise<boolean> {
 export async function windowCloseGate(): Promise<"close" | "confirmed" | "cancel"> {
   const info = useDocStore.getState().info;
   const pending = info ? editLeaveGuard() : null;
-  if (!info?.dirty && !pending) return "close";
+  // v0.3 DR1: every tab counts — one with changes in the background asks as well (one prompt)
+  const { tabs, activeId } = useTabStore.getState();
+  const background = tabs.some((t) => t.id !== activeId && t.dirty);
+  if (!info?.dirty && !pending && !background) return "close";
   if (pending && !(await pending)) return "cancel";
-  return (await confirmUnsaved()) ? "confirmed" : "cancel";
+  if (!background) return (await confirmUnsaved()) ? "confirmed" : "cancel";
+  return (await (await tabsFlow()).confirmUnsavedTabs()) ? "confirmed" : "cancel";
 }
 
+/**
+ * 파일 › 닫기: the active document. With other tabs open (v0.3 DR1) it closes like its tab — the
+ * neighbour comes to the front; the last one leaves the welcome screen.
+ */
 export async function closeDocumentFlow(): Promise<boolean> {
+  if (useTabStore.getState().tabs.length > 1) return (await tabsFlow()).closeActiveTab();
   if (!(await confirmLeaveDocument())) return false;
   const info = useDocStore.getState().info;
   if (info) {
@@ -603,6 +674,10 @@ let crashHandling: DocId | null = null;
  * the window goes back to the welcome screen. Resolves with the reopened document, or null.
  */
 export async function recoverFromEngineCrash(docIds: DocId[]): Promise<DocInfo | null> {
+  // v0.3 DR1: a background tab's document is reopened in its tab, without coming to the front
+  if (useTabStore.getState().tabs.some((t) => docIds.includes(t.docId))) {
+    await (await tabsFlow()).recoverBackgroundTabs(docIds);
+  }
   const info = useDocStore.getState().info;
   if (!info || !docIds.includes(info.docId) || crashHandling === info.docId) return null;
   crashHandling = info.docId;
@@ -616,8 +691,8 @@ export async function recoverFromEngineCrash(docIds: DocId[]): Promise<DocInfo |
     autosave.stop();
     usePagesStore.getState().reset();
     useDocStore.setState({ docId: null, info: null, outline: [], status: "empty", error: null });
-    if (copy) return await openPath(copy.recoveryPath, { guard: false, recovery: copy });
-    if (info.path) return await openPath(info.path, { guard: false });
+    if (copy) return await openPath(copy.recoveryPath, { guard: false, recovery: copy, replace: true });
+    if (info.path) return await openPath(info.path, { guard: false, replace: true });
     return null;
   } finally {
     crashHandling = null;
@@ -683,7 +758,7 @@ export async function resolveChangedOnDisk(info: DocInfo): Promise<boolean> {
   if (answer === "saveAs") return saveAsFlow();
   if (answer === "reload" && info.path) {
     await autosave.clear(info.docId);
-    return (await openPath(info.path, { guard: false })) !== null;
+    return (await openPath(info.path, { guard: false, replace: true })) !== null;
   }
   return false;
 }

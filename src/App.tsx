@@ -12,14 +12,15 @@ import { StatusBar } from "./app/StatusBar";
 import { useCommands } from "./app/useCommands";
 import { useKeymap } from "./keys/useKeymap";
 import { MENU_IDS, type KeyContext } from "./keys/keymap";
-import { onDocChanged, onEngineCrashed, onFileDrop, onMenuCommand, onOpenFile, onRecentsChanged, onThemeChanged } from "./ipc/events";
+import { onDocChanged, onEngineCrashed, onFileDrop, onFocusDocument, onMenuCommand, onOpenFile, onRecentsChanged, onThemeChanged } from "./ipc/events";
 import * as api from "./ipc/api";
 import { useMock } from "./ipc/env";
 import { useAppStore } from "./store/appStore";
 import { useDocStore } from "./store/docStore";
+import { tabDocChanged } from "./store/tabStore";
 import { useDialogStore } from "./dialogs/dialogState";
 import { useJobStore } from "./store/jobStore";
-import { autosave, offerRecovery, useAutosave } from "./app/autosave";
+import { offerRecovery, useAutosave } from "./app/autosave";
 import { useReadingModeKeys } from "./app/readingMode";
 import { useCompareStore } from "./compare/state";
 import { useOcrDialogOpen } from "./ocr/dialogState";
@@ -171,6 +172,13 @@ export default function App() {
 
   // 2. app-wide broadcasts
   useEffect(() => onDocChanged(applyDocChanged), [applyDocChanged]);
+  // v0.3 DR1: a background tab's document changed (its dot follows); another window opened a file
+  // this window has in a tab (H8) → that tab comes to the front
+  useEffect(() => onDocChanged(tabDocChanged), []);
+  useEffect(
+    () => onFocusDocument((e) => void import("./tabs/flow").then((m) => m.activateDocument(e.docId))),
+    [],
+  );
   // the event only says "something was queued for this window": the queue is the one source, so a
   // request is opened once whether the event or the mount drain gets there first
   useEffect(() => onOpenFile(() => void openPendingFiles()), []);
@@ -222,16 +230,17 @@ export default function App() {
       .then(({ getCurrentWindow }) => {
         const win = getCurrentWindow();
         return win.onCloseRequested(async (event) => {
-          const current = useDocStore.getState().info;
           const flows = await import("./dialogs/flows");
-          // pending 편집 marks (F-22), then 저장 / 저장 안 함 / 취소 — like closing the document
+          // pending 편집 marks (F-22), then 저장 / 저장 안 함 / 취소 — like closing the document;
+          // v0.3 DR1: with changes in several tabs, one prompt lists them all (모두 저장 / 저장 안 함 / 취소)
           const gate = await flows.windowCloseGate();
+          const tabs = await import("./tabs/flow");
           if (gate !== "close") {
             event.preventDefault();
             if (gate === "confirmed") {
-              if (current) await flows.touchRecent(useDocStore.getState().info ?? current).catch(() => undefined);
-              // 저장 or 저장 안 함: a clean close, the recovery copy goes (P1-8)
-              if (current) await autosave.clear(current.docId);
+              // 저장 or 저장 안 함: a clean close — every tab's position goes to 최근 항목, its
+              // recovery copy goes (P1-8), and its document is released
+              await tabs.releaseWindowTabs();
               await leaveCompare();
               await stopBatchOcr();
               await stopReading();
@@ -240,10 +249,7 @@ export default function App() {
             }
             return;
           }
-          if (current) {
-            await flows.touchRecent(current).catch(() => undefined);
-            await autosave.clear(current.docId);
-          }
+          await tabs.releaseWindowTabs();
           await leaveCompare();
           await stopBatchOcr();
           await stopReading();
@@ -332,7 +338,9 @@ export default function App() {
               <>
                 {!reading && <ToolStrip />}
                 <Suspense fallback={<div className="viewer-panes" />}>
-                  <CanvasStub />
+                  {/* v0.3 DR1: one scroller per document — a tab switch mounts a fresh one, which
+                      lands on the tab's parked position (its `scrollRequest`) */}
+                  <CanvasStub key={info.docId} />
                 </Suspense>
               </>
             )

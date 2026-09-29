@@ -593,6 +593,11 @@ export interface Settings {
   checkUpdates: boolean;
   /** 내 도장 (v0.3 T2), at most 30, newest last; `[]` in settings written before it */
   stamps: CustomStamp[];
+  /**
+   * 설정 › 일반 › 파일 열기 (v0.3 DR1): a file opened while the window shows a document goes to a
+   * new tab (default) or a new window; `'tab'` in settings written before it (lenient)
+   */
+  openFilesIn: 'tab' | 'window';
 }
 
 /** v0.3 T2: one 내 도장 entry. An image was copied under `$APPDATA/SeePDF/stamps/`. */
@@ -631,6 +636,8 @@ export interface ProblemReport { text: string; path: string }
 export interface EngineCrashedEvent { docIds: DocId[]; label: string }
 /** `theme-changed` (U4): one window changed 밝게 / 어둡게 / 시스템; the others follow. */
 export interface ThemeChangedEvent { theme: 'system' | 'light' | 'dark' }
+/** `focus-document` (v0.3 DR1): this window has the file another window tried to open — show its tab. */
+export interface FocusDocumentEvent { docId: DocId }
 
 /** View layout as it is stored in `Settings`/`RecentEntry` (`'two'`), see UI_SPEC §8. */
 export type ViewLayout = Settings['defaultLayout'];

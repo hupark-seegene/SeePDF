@@ -8,6 +8,8 @@ import { useDocStore } from "../store/docStore";
 import { shortcutFor } from "../keys/keymap";
 import { historyTitle } from "./historyLabel";
 import { DocBadges } from "./DocBadges";
+import { TabStrip } from "./TabStrip";
+import { useTabStore } from "../store/tabStore";
 import { installSignatureGate } from "./signatureGate";
 import type { CommandId } from "./useCommands";
 
@@ -24,6 +26,8 @@ export function TitleBar({ run }: { run: (id: CommandId) => void }) {
   const os = useAppStore((s) => s.os);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const info = useDocStore((s) => s.info);
+  // v0.3 DR1: with two or more documents the tab strip takes the title's place
+  const tabbed = useTabStore((s) => s.tabs.length > 1);
   const [menuOpen, setMenuOpen] = useState(false);
   const sc = (id: string) => shortcutFor(id, os);
   // `useT` re-renders on a locale change, so the labels below follow it.
@@ -64,7 +68,8 @@ export function TitleBar({ run }: { run: (id: CommandId) => void }) {
       </div>
 
       <div className="titlebar-title" data-tauri-drag-region>
-        {info && (
+        {tabbed && <TabStrip />}
+        {info && !tabbed && (
           <div className="doc-title-wrap" data-tauri-drag-region="false">
             <button
               type="button"

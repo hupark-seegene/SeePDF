@@ -19,7 +19,7 @@ import { useJobStore } from "../store/jobStore";
 import { toast } from "../app/toastStore";
 import { autosave } from "../app/autosave";
 import { openDialog } from "./dialogState";
-import { confirmLeaveDocument, message } from "./flows";
+import { adoptIntoNewTab, confirmLeaveDocument, message, openTargetSetting } from "./flows";
 import type { DocInfo, ImageFit, ImagePageSize } from "../ipc/types";
 
 /** What `create_from_images` accepts (the engine checks the magic bytes; this is the routing guess). */
@@ -55,8 +55,14 @@ export async function routeDroppedPaths(paths: string[]): Promise<void> {
   }
   openDialog("imagesToPdf", { paths: images });
   if (!others.length) return;
-  const { focusedElsewhere } = await import("./flows");
+  const { focusedElsewhere, openPath } = await import("./flows");
   let opened = 0;
+  // v0.3 DR1: with tabs, 만들기 no longer replaces this window's document — the PDFs open in tabs
+  if (openTargetSetting() === "tab") {
+    for (const path of others) if (await openPath(path, { target: "tab" })) opened++;
+    if (opened) toast("imagesToPdf.othersOpened", { count: opened }, { tone: "info" });
+    return;
+  }
   for (const path of others) {
     try {
       // v0.3 integration (D1 × H8): a file another window already shows is focused, not opened twice
@@ -87,11 +93,12 @@ const PROGRESS_AFTER = 5;
 export async function createFromImagesFlow(
   paths: string[],
   options: ImagesOptions,
-  opts: { guard?: boolean } = {},
+  opts: { guard?: boolean; replace?: boolean } = {},
 ): Promise<DocInfo | null> {
   if (!paths.length) return null;
-  if (opts.guard !== false && !(await confirmLeaveDocument())) return null;
-  const previous = useDocStore.getState().info;
+  // v0.3 DR1: the new document takes a new tab (설정 › 파일 열기 = 새 창, or `replace`: it replaces this one)
+  const intoTab = !!useDocStore.getState().info && !opts.replace && openTargetSetting() === "tab";
+  if (!intoTab && opts.guard !== false && !(await confirmLeaveDocument())) return null;
   const jobs = useJobStore.getState();
   let info: DocInfo;
   try {
@@ -108,6 +115,8 @@ export async function createFromImagesFlow(
     });
     return null;
   }
+  if (intoTab && !(await adoptIntoNewTab(info))) return null;
+  const previous = intoTab ? null : useDocStore.getState().info;
   usePagesStore.getState().reset();
   useDocStore.getState().adopt(info);
   const view = useViewStore.getState();

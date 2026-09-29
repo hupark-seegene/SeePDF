@@ -17,6 +17,8 @@ async function loaded(docId: string): Promise<boolean> {
   );
 }
 
+// v0.3 DR1: a file opened over a document takes a new tab (`tabs.test.ts`); these are the paths that
+// still *replace* the window's document — 다시 불러오기 and an engine crash (`replace: true`).
 describe("dialogs.flows.open — the replaced document is released", () => {
   beforeEach(() => {
     useDocStore.setState({ docId: null, info: null, outline: [], status: "empty", error: null });
@@ -30,10 +32,10 @@ describe("dialogs.flows.open — the replaced document is released", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it("opening B closes A in the engine, once", async () => {
+  it("replacing A with B closes A in the engine, once", async () => {
     const a = (await openPath(A))!;
     const close = vi.spyOn(mock, "closeDocument");
-    const b = (await openPath(B))!;
+    const b = (await openPath(B, { replace: true }))!;
     expect(b.docId).not.toBe(a.docId);
     expect(close).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledWith({ docId: a.docId });
@@ -81,7 +83,7 @@ describe("dialogs.flows.open — the replaced document is released", () => {
   it("a password-protected B closes A only once it has actually opened", async () => {
     const a = (await openPath(A))!;
     const close = vi.spyOn(mock, "closeDocument");
-    const opening = openPath("/tmp/encrypted.pdf");
+    const opening = openPath("/tmp/encrypted.pdf", { replace: true });
     await waitFor(() => expect(useDialogStore.getState().stack.at(-1)?.name).toBe("password"));
     expect(close).not.toHaveBeenCalled();
     const entry = useDialogStore.getState().stack.at(-1)!;

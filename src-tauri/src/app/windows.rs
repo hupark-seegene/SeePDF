@@ -1,6 +1,7 @@
 //! Window creation and the label ↔ document binding.
 //!
-//! One document per window. The main window is declared in `tauri.conf.json`; extra windows
+//! A window shows one document at a time — its **active tab** — and may hold more open in
+//! background tabs (v0.3 DR1). The main window is declared in `tauri.conf.json`; extra windows
 //! are created here with the label `doc-<n>`, which is what `capabilities/default.json`
 //! grants permissions to (`windows: ["main", "doc-*"]`).
 
@@ -11,14 +12,19 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tauri::{AppHandle, DragDropEvent, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, DragDropEvent, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 
-/// Which document each window is showing, so the engine can close documents whose window is
-/// gone and so `doc-changed` consumers can be scoped.
+/// Which document each window is showing (its active tab), and every document it holds open
+/// in a tab, so the menu names the right undo step, the engine can tell which windows are idle
+/// and "already open" (H8) finds a file in a background tab too.
 #[derive(Default)]
 pub struct WindowDocs {
     next: AtomicU32,
     map: Mutex<HashMap<String, DocId>>,
+    /// v0.3 DR1: every document open in the window's tabs (the active one included).
+    tabs: Mutex<HashMap<String, Vec<DocId>>>,
 }
 
 impl WindowDocs {
@@ -28,6 +34,18 @@ impl WindowDocs {
             Some(id) => map.insert(label.to_string(), id),
             None => map.remove(label),
         };
+    }
+
+    /// v0.3 DR1: the window's tab documents. `None` keeps what was announced before (a
+    /// frontend that binds without tabs); an empty list forgets them.
+    pub fn set_tabs(&self, label: &str, tabs: Option<Vec<DocId>>) {
+        let Some(tabs) = tabs else { return };
+        let mut map = self.tabs.lock();
+        if tabs.is_empty() {
+            map.remove(label);
+        } else {
+            map.insert(label.to_string(), tabs);
+        }
     }
 
     pub fn doc_of(&self, label: &str) -> Option<DocId> {
@@ -47,13 +65,33 @@ impl WindowDocs {
         format!("doc-{}", self.next.fetch_add(1, Ordering::Relaxed) + 1)
     }
 
-    /// Every (window label, document) binding.
+    /// Every (window label, active document) binding.
     pub fn bindings(&self) -> Vec<(String, DocId)> {
         self.map
             .lock()
             .iter()
             .map(|(l, d)| (l.clone(), d.clone()))
             .collect()
+    }
+
+    /// v0.3 DR1: every (window label, document) pair — each window's active document and the
+    /// documents of its background tabs, without duplicates.
+    pub fn all_documents(&self) -> Vec<(String, DocId)> {
+        let mut out = self.bindings();
+        for (label, docs) in self.tabs.lock().iter() {
+            for doc in docs {
+                if !out.iter().any(|(l, d)| l == label && d == doc) {
+                    out.push((label.clone(), doc.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// The window is gone: forget its binding and its tabs.
+    pub fn forget(&self, label: &str) {
+        self.map.lock().remove(label);
+        self.tabs.lock().remove(label);
     }
 }
 
@@ -67,13 +105,14 @@ fn canonical(path: &std::path::Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// The label of the window whose document is the file at `path`, if any. `path_of` looks a
-/// docId up in the engine's document mirror. Pure, so it is unit-testable.
+/// The label of the window whose document is the file at `path`, if any, and that document
+/// (v0.3 DR1: it may be in a background tab). `path_of` looks a docId up in the engine's
+/// document mirror. Pure, so it is unit-testable.
 pub fn window_for_path(
     bindings: &[(String, DocId)],
     path: &std::path::Path,
     path_of: impl Fn(&DocId) -> Option<PathBuf>,
-) -> Option<String> {
+) -> Option<(String, DocId)> {
     let want = canonical(path);
     let mut found: Vec<&(String, DocId)> = bindings
         .iter()
@@ -81,21 +120,38 @@ pub fn window_for_path(
         .collect();
     // Deterministic when (against the rule) two windows show the same file.
     found.sort();
-    found.first().map(|(label, _)| label.clone())
+    found
+        .first()
+        .map(|(label, doc)| (label.clone(), doc.clone()))
+}
+
+/// v0.3 DR1: the `focus-document` event — the window that already has the file brings its
+/// tab to the front.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FocusDocument {
+    doc_id: DocId,
 }
 
 /// `focus_document_window`: when another window already shows the file at `path`, bring it to
 /// the front (un-minimise, show, focus) and return its label; `None` when no window has it.
-/// The caller's own window counts too — the frontend decides what to do then.
-pub fn focus_window_for_path(app: &AppHandle, path: &str) -> Option<String> {
+/// The caller's own window counts too — the frontend decides what to do then. v0.3 DR1: a file
+/// in a background tab counts, and that window (unless it is `caller`, which switches on its
+/// own) gets `focus-document` so the tab comes to the front.
+pub fn focus_window_for_path(app: &AppHandle, path: &str, caller: Option<&str>) -> Option<String> {
     let engine = app.try_state::<crate::engine::EngineHandle>()?;
-    let bindings = app.state::<WindowDocs>().bindings();
-    let label = {
+    let bindings = app.state::<WindowDocs>().all_documents();
+    let (label, doc_id) = {
         let docs = engine.shared.docs.read();
         window_for_path(&bindings, std::path::Path::new(path), |id| {
             docs.get(id).and_then(|d| d.path.clone())
         })
     }?;
+    if caller != Some(label.as_str()) {
+        if let Err(e) = app.emit_to(label.as_str(), "focus-document", FocusDocument { doc_id }) {
+            tracing::warn!(%label, "focus-document failed: {e}");
+        }
+    }
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.unminimize();
         let _ = window.show();
@@ -174,7 +230,7 @@ pub fn attach_handlers(app: &AppHandle, window: &tauri::WebviewWindow) {
             files::handle_drop(&handle, &label, paths);
         }
         WindowEvent::Destroyed => {
-            handle.state::<WindowDocs>().bind(&label, None);
+            handle.state::<WindowDocs>().forget(&label);
             handle.state::<files::PendingOpens>().forget(&label);
         }
         // Stage 8: the native 편집 menu names the focused window's undo step.
@@ -188,7 +244,7 @@ pub fn attach_handlers(app: &AppHandle, window: &tauri::WebviewWindow) {
 
 #[cfg(test)]
 mod tests {
-    use super::window_for_path;
+    use super::{window_for_path, WindowDocs};
     use std::path::PathBuf;
 
     #[test]
@@ -208,13 +264,50 @@ mod tests {
         // A non-canonical spelling of the same file still matches.
         let spelled = dir.join(".").join("계약서.pdf");
         assert_eq!(
-            window_for_path(&bindings, &spelled, path_of).as_deref(),
-            Some("doc-1")
+            window_for_path(&bindings, &spelled, path_of),
+            Some(("doc-1".to_string(), "d2".to_string()))
         );
         assert_eq!(
             window_for_path(&bindings, &dir.join("없음.pdf"), path_of),
             None
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// v0.3 DR1: a document in a background tab is found, a window's active document is still
+    /// its binding, and a closed window forgets both.
+    #[test]
+    fn background_tabs_are_documents_of_their_window() {
+        let docs = WindowDocs::default();
+        docs.bind("main", Some("a".into()));
+        docs.set_tabs("main", Some(vec!["a".into(), "b".into()]));
+        docs.bind("doc-1", Some("c".into()));
+        let mut all = docs.all_documents();
+        all.sort();
+        assert_eq!(
+            all,
+            vec![
+                ("doc-1".to_string(), "c".to_string()),
+                ("main".to_string(), "a".to_string()),
+                ("main".to_string(), "b".to_string()),
+            ]
+        );
+        assert_eq!(docs.doc_of("main").as_deref(), Some("a"));
+        let path_of = |id: &String| Some(PathBuf::from(format!("/nowhere/{id}.pdf")));
+        assert_eq!(
+            window_for_path(&all, std::path::Path::new("/nowhere/b.pdf"), path_of),
+            Some(("main".to_string(), "b".to_string()))
+        );
+        // binding without a tab list keeps the tabs; an empty list forgets them
+        docs.set_tabs("main", None);
+        assert_eq!(docs.all_documents().len(), 3);
+        docs.set_tabs("main", Some(vec![]));
+        assert_eq!(docs.all_documents().len(), 2);
+        docs.set_tabs("main", Some(vec!["a".into(), "b".into()]));
+        docs.forget("main");
+        assert_eq!(
+            docs.all_documents(),
+            vec![("doc-1".to_string(), "c".to_string())]
+        );
     }
 }

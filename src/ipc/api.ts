@@ -247,7 +247,8 @@ export function openInNewWindow(a: { path?: string } = {}): Promise<string> {
   return call("open_in_new_window", a, (mock) => mock.openInNewWindow(a));
 }
 
-export function windowBindDocument(a: { label: string; docId: DocId | null }): Promise<void> {
+/** `tabs` (v0.3 DR1): every document open in the window's tabs, so H8 finds background tabs too. */
+export function windowBindDocument(a: { label: string; docId: DocId | null; tabs?: DocId[] }): Promise<void> {
   return call("window_bind_document", a, (mock) => mock.windowBindDocument(a));
 }
 

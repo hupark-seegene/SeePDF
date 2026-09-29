@@ -18,9 +18,12 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   } as unknown as typeof ResizeObserver;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   resetMock();
   setLocale("ko");
+  // v0.3 DR1: the tab strip is a module singleton like the stores it mirrors. Imported here, not at
+  // the top: a static import would load `ipc/api` before a test file's `vi.mock("./env")` applies.
+  (await import("../store/tabStore")).resetTabs();
 });
 
 afterEach(() => {

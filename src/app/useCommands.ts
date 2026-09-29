@@ -41,6 +41,8 @@ const ANNOT_IDS = new Set(["edit.delete", "edit.duplicate", "edit.copy", "edit.c
 
 /** `import("../dialogs/flows")` — kept in one place so every call site is obviously code-split. */
 const flows = () => import("../dialogs/flows");
+/** v0.3 DR1: the tab switching / closing code, code-split like the flows. */
+const tabs = () => import("../tabs/flow");
 
 function runPages(ops: PageOp[]): void {
   void flows().then((m) => m.runPageOps(ops));
@@ -109,8 +111,21 @@ export function runCommand(id: CommandId, opts?: { momentary?: boolean }): void 
       case "file.openRecent":
         openRecentMenu();
         return;
+      // v0.3 DR1: ⌘W closes the tab — the window when it is the last one
       case "file.close":
-        void flows().then((m) => m.closeDocumentFlow());
+        void tabs().then((m) => m.closeTabOrWindow());
+        return;
+      case "file.openInNewTab":
+        void flows().then((m) => m.openFileFlow({ target: "tab" }));
+        return;
+      case "tab.next":
+        void tabs().then((m) => m.cycleTab(1));
+        return;
+      case "tab.previous":
+        void tabs().then((m) => m.cycleTab(-1));
+        return;
+      case "tab.reopenClosed":
+        void tabs().then((m) => m.reopenClosedTab());
         return;
       case "file.save":
         void flows().then((m) => m.saveFlow());
