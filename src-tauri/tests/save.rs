@@ -336,3 +336,130 @@ fn save_untitled_needs_a_path() {
     let err = save_to(&doc.doc_id, None).expect_err("an untitled document has nowhere to go");
     assert_eq!(err.code, ErrorCode::ReadOnly);
 }
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg3-security-save-integrity: H8 (file changed on disk) and U2 (backups)
+// ---------------------------------------------------------------------------------------
+
+fn save_with(
+    doc_id: &str,
+    target: Option<&str>,
+    options: save::SaveOptions,
+) -> Result<seepdf_lib::ipc::types::SaveResult, seepdf_lib::ipc::EngineError> {
+    let doc_id = doc_id.to_string();
+    let target = target.map(str::to_owned);
+    with_state(move |st| save::save_with(st, &doc_id, target.as_deref(), &options))
+}
+
+fn rotate_first_page(doc_id: &str) {
+    let doc_id = doc_id.to_string();
+    with_state(move |st| {
+        seepdf_lib::engine::pages::apply_ops(
+            st,
+            &doc_id,
+            vec![seepdf_lib::ipc::types::PageOp::Rotate {
+                pages: vec![0],
+                delta: 90,
+            }],
+        )
+    })
+    .expect("rotate");
+}
+
+/// Another program touching the file after it was opened makes a plain save refuse with
+/// `fileChangedOnDisk`; 덮어쓰기 (`force`) then succeeds and re-records the file, so the next
+/// plain save goes through again.
+#[test]
+fn save_detects_a_file_changed_on_disk() {
+    let path = working_copy("tracemonkey.pdf", "changed-on-disk.pdf");
+    let doc = open_path(&path, None);
+    rotate_first_page(&doc.doc_id);
+
+    // Only the modification time changes (a colleague's editor re-saved it, same size).
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(90);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let err = save_to(&doc.doc_id, None).expect_err("must refuse");
+    assert_eq!(err.code, ErrorCode::FileChangedOnDisk);
+    assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
+    assert!(temp_files(path.parent().unwrap()).is_empty());
+
+    // A size change is caught too, and 덮어쓰기 (force) overwrites.
+    std::fs::write(&path, b"%PDF-1.7 replaced by someone else").unwrap();
+    let err = save_to(&doc.doc_id, None).expect_err("must refuse");
+    assert_eq!(err.code, ErrorCode::FileChangedOnDisk);
+    save_with(
+        &doc.doc_id,
+        None,
+        save::SaveOptions {
+            backup_root: None,
+            force: true,
+        },
+    )
+    .expect("덮어쓰기");
+    assert!(std::fs::read(&path).unwrap().len() > 1000);
+    rotate_first_page(&doc.doc_id);
+    save_to(&doc.doc_id, None).expect("the forced save re-recorded the file");
+
+    // Save As to another file is never a conflict, and re-points the document.
+    let other = out_dir().join("changed-on-disk-copy.pdf");
+    let _ = std::fs::remove_file(&other);
+    let other_path = other.display().to_string();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(later + std::time::Duration::from_secs(60))
+        .unwrap();
+    save_to(&doc.doc_id, Some(&other_path)).expect("save as elsewhere");
+    rotate_first_page(&doc.doc_id);
+    save_to(&doc.doc_id, None).expect("the new file is this document's file now");
+}
+
+/// U2: `backup_root: None` writes no backup at all; `Some(root)` writes exactly one per save
+/// under `<root>/<stem>/`, holding the file as it was before the save.
+#[test]
+fn save_backup_follows_the_setting() {
+    let path = working_copy("tracemonkey.pdf", "backup-setting.pdf");
+    let root = out_dir().join(format!("backups-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let doc = open_path(&path, None);
+
+    rotate_first_page(&doc.doc_id);
+    save_with(&doc.doc_id, None, save::SaveOptions::default()).expect("save without backup");
+    assert!(!root.exists(), "no backup when the setting is off");
+
+    rotate_first_page(&doc.doc_id);
+    let before = std::fs::read(&path).unwrap();
+    save_with(
+        &doc.doc_id,
+        None,
+        save::SaveOptions {
+            backup_root: Some(root.clone()),
+            force: false,
+        },
+    )
+    .expect("save with backup");
+    let dir = root.join("backup-setting");
+    let backups: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("the backup folder")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    assert_eq!(
+        std::fs::read(&backups[0]).unwrap(),
+        before,
+        "the backup is the file as it was before the save"
+    );
+    assert!(backups[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .ends_with("-backup-setting.pdf"));
+    std::fs::remove_dir_all(&root).unwrap();
+}

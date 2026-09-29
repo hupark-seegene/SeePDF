@@ -23,6 +23,8 @@ import { editLeaveGuard, runAnnotCommand } from "../tools/commands";
 import { toggleFullScreen, toggleReadingMode } from "./readingMode";
 import { isEditingTarget } from "../keys/useKeymap";
 import type { PageOp } from "../ipc/types";
+import { permissionBlock } from "./permissions";
+import { toast } from "./toastStore";
 
 export type CommandId = string;
 
@@ -52,6 +54,13 @@ export function useCommands(): (id: CommandId, opts?: { momentary?: boolean }) =
     const pages = usePagesStore.getState();
     const info = docs.info;
     const target = pages.selected.length ? pages.selected : pages.focus !== null ? [pages.focus] : [];
+
+    // v0.3 pkg3 (S5): a command the document's permissions forbid says why instead of running
+    const blocked = permissionBlock(id, info);
+    if (blocked) {
+      toast(blocked, undefined, { tone: "info" });
+      return;
+    }
 
     if (id in MODE_OF) {
       const next = MODE_OF[id];
@@ -427,7 +436,13 @@ function openOverflowMenu(): void {
     y: 52,
     labelKey: "common.more",
     items: [
-      { id: "print", labelKey: "menu.file.print", disabled: !info, onSelect: () => openDialog("print") },
+      {
+        id: "print",
+        labelKey: "menu.file.print",
+        disabled: !info || !!permissionBlock("file.print", info),
+        hintKey: permissionBlock("file.print", info) ?? undefined,
+        onSelect: () => openDialog("print"),
+      },
       { id: "security", labelKey: "menu.tools.security", disabled: !info, onSelect: () => openDialog("security") },
       { id: "stamp", labelKey: "menu.tools.stamp", disabled: !info, onSelect: () => openDialog("stamp") },
       { id: "compress", labelKey: "menu.tools.compress", disabled: !info, onSelect: () => openDialog("compress") },

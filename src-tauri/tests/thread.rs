@@ -391,9 +391,10 @@ fn reply_errors() {
     let undo = with_doc(&doc.doc_id, |d| Ok(d.history.undo_label())).unwrap();
     assert_eq!(undo.as_deref(), Some("undo.annotCreate"));
 
+    // v0.3 S2: an encrypted document is no longer refused up front; the missing parent is.
     let locked =
         try_open("gen/encrypted-rc4-40.pdf", Some("user")).expect("open with the password");
     let d = locked.doc_id.clone();
     let err = with_state(move |st| annot::reply::reply(st, &d, 0, "any", "x", None)).unwrap_err();
-    assert_eq!(err.code, ErrorCode::Unsupported);
+    assert_eq!(err.code, ErrorCode::NotFound);
 }

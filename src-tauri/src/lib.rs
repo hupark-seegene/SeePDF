@@ -242,6 +242,15 @@ pub fn run() {
             commands::save::path_exists,
             // --- 여러 파일에서 검색 › 폴더 추가 (P2) ---
             commands::save::list_pdf_files,
+            // --- v0.3 pkg3-security-save-integrity ---
+            commands::save::backup_folder,
+            commands::documents::focus_document_window,
+            commands::security::unlock_document,
+            commands::security::sanitize_document,
+            commands::security::list_attachments,
+            commands::security::save_attachment,
+            commands::security::add_attachment,
+            commands::security::delete_attachment,
             // --- export and print (Stage 1b) ---
             commands::export::export_images,
             commands::export::export_text,

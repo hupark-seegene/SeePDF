@@ -46,6 +46,62 @@ impl WindowDocs {
     fn next_label(&self) -> String {
         format!("doc-{}", self.next.fetch_add(1, Ordering::Relaxed) + 1)
     }
+
+    /// Every (window label, document) binding.
+    pub fn bindings(&self) -> Vec<(String, DocId)> {
+        self.map
+            .lock()
+            .iter()
+            .map(|(l, d)| (l.clone(), d.clone()))
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg3 (H8): one window per file
+// ---------------------------------------------------------------------------------------
+
+/// The canonical form two paths are compared in (`fs::canonicalize`, or the path itself when
+/// it cannot be resolved).
+fn canonical(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The label of the window whose document is the file at `path`, if any. `path_of` looks a
+/// docId up in the engine's document mirror. Pure, so it is unit-testable.
+pub fn window_for_path(
+    bindings: &[(String, DocId)],
+    path: &std::path::Path,
+    path_of: impl Fn(&DocId) -> Option<PathBuf>,
+) -> Option<String> {
+    let want = canonical(path);
+    let mut found: Vec<&(String, DocId)> = bindings
+        .iter()
+        .filter(|(_, doc)| path_of(doc).is_some_and(|p| canonical(&p) == want))
+        .collect();
+    // Deterministic when (against the rule) two windows show the same file.
+    found.sort();
+    found.first().map(|(label, _)| label.clone())
+}
+
+/// `focus_document_window`: when another window already shows the file at `path`, bring it to
+/// the front (un-minimise, show, focus) and return its label; `None` when no window has it.
+/// The caller's own window counts too — the frontend decides what to do then.
+pub fn focus_window_for_path(app: &AppHandle, path: &str) -> Option<String> {
+    let engine = app.try_state::<crate::engine::EngineHandle>()?;
+    let bindings = app.state::<WindowDocs>().bindings();
+    let label = {
+        let docs = engine.shared.docs.read();
+        window_for_path(&bindings, std::path::Path::new(path), |id| {
+            docs.get(id).and_then(|d| d.path.clone())
+        })
+    }?;
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    Some(label)
 }
 
 /// Window geometry shared by every window (`UI_SPEC.md` §2, tauri spike §4).
@@ -100,4 +156,37 @@ pub fn attach_handlers(app: &AppHandle, window: &tauri::WebviewWindow) {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_for_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn finds_the_window_of_a_path() {
+        let dir = std::env::temp_dir().join(format!("seepdf-winpath-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("계약서.pdf");
+        std::fs::write(&a, b"%PDF").unwrap();
+        let bindings = vec![
+            ("main".to_string(), "d1".to_string()),
+            ("doc-1".to_string(), "d2".to_string()),
+        ];
+        let path_of = |id: &String| match id.as_str() {
+            "d2" => Some(a.clone()),
+            _ => Some(PathBuf::from("/nowhere/other.pdf")),
+        };
+        // A non-canonical spelling of the same file still matches.
+        let spelled = dir.join(".").join("계약서.pdf");
+        assert_eq!(
+            window_for_path(&bindings, &spelled, path_of).as_deref(),
+            Some("doc-1")
+        );
+        assert_eq!(
+            window_for_path(&bindings, &dir.join("없음.pdf"), path_of),
+            None
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

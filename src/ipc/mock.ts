@@ -22,6 +22,7 @@ import type {
   CompareOptions, CompareReport, ComparePage, DiffOp, RecoveryEntry,
   DuplicateObjectsResult, RedactBatchMark, RedactBatchResult, AnnotationSummaryResult, ResizeMode,
   ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus, LinkTarget, PageLabelRange,
+  AttachmentInfo, SanitizeCounts, SanitizeOptions, SanitizeResult,
 } from "./types";
 import { labelsFor, normalizeRanges } from "../dialogs/pageLabels";
 
@@ -86,6 +87,15 @@ let settings = seedSettings();
  */
 const stampsOf = new Map<DocId, { role: StampRole; page: PageIndex }[]>();
 const pendingOpens: { path: string; source: "argv" | "macos-opened" | "drop" | "dialog" | "recent" }[] = [];
+// --- v0.3 pkg3-security-save-integrity ---------------------------------------------------
+/** S4: each document's attachments (a path containing `attach` or `risky` starts with one). */
+const attachmentsOf = new Map<DocId, { name: string; size: number }[]>();
+/** S3: what 문서 정리 would still find in each document (a path containing `risky`). */
+const riskyOf = new Map<DocId, SanitizeCounts>();
+/** H8: paths "changed by another program" since they were opened (`mockChangeOnDisk`). */
+const changedOnDisk = new Set<string>();
+/** H8: paths another window already shows (`mockOpenInOtherWindow`) → that window's label. */
+const otherWindows = new Map<string, string>();
 /**
  * P2 읽어 주기: one fake voice for the whole app. It "speaks" for a while proportional to the text
  * (so the bar can be seen in `vite dev`) unless stopped; tests call `ttsStop` or read `mockTts`.
@@ -190,9 +200,30 @@ function applyLabels(d: MockDoc): void {
   else delete d.info.pageLabels;
 }
 
-/** The engine refuses the lopdf rewrites (outline, page labels, page links) on an encrypted file. */
+/**
+ * v0.3 S2: the engine rewrites an encrypted file (outline, page labels, page links) and keeps it
+ * encrypted; only the document's own "modify" permission can refuse it.
+ */
 function refuseEncrypted(d: MockDoc): void {
-  if (d.info.encrypted) throw err("unsupported", "this document is encrypted: remove the password first");
+  if (!d.info.permissions.modify) {
+    throw err("permissionDenied", "the document's permissions forbid 'modify'", { detail: "modify" });
+  }
+}
+
+/** v0.3 S5: `security::ensure_security_change` — a restricted open cannot hand out a copy without its restrictions. */
+function refuseSecurityChange(d: MockDoc): void {
+  const p = d.info.permissions;
+  if (d.info.encrypted && !(p.print && p.modify && p.extractText && p.annotate && p.fillForms && p.assemble)) {
+    throw err("permissionDenied", "unlock the document to change its security", { detail: "security" });
+  }
+}
+
+/** v0.3 S5: `security::perm_for` — which permission a mutation needs. */
+function permFor(label: string, reason: string, structure: boolean): keyof Omit<Permissions, "revision"> {
+  if (label.startsWith("undo.annot")) return "annotate";
+  if (label.startsWith("undo.form")) return "fillForms";
+  if (structure || reason === "pages") return "assemble";
+  return "modify";
 }
 
 function outlineHas(nodes: OutlineNode[]): boolean {
@@ -260,6 +291,11 @@ function mutate<T>(
   opts: { reason: ChangeReason; pages: PageIndex[] | "all"; structure?: boolean; undoLabel?: string; dirty?: boolean },
   body: () => T,
 ): T {
+  // v0.3 S5: the registry's permission guard, before anything is pushed
+  const perm = permFor(opts.undoLabel ?? "undo.objectEdit", opts.reason, opts.structure ?? false);
+  if (!d.info.permissions[perm]) {
+    throw err("permissionDenied", `the document's permissions forbid '${perm}'`, { detail: perm });
+  }
   d.undo.push(snapshot(d));
   d.redo.length = 0;
   const out = body();
@@ -572,8 +608,9 @@ export const mock = {
     const d = makeDoc(a.path, recent?.pages ?? BASE_DOC.pageCount);
     // Stage 8: a recovered copy reports the original name, not `<uuid>.pdf`
     if (a.displayName) d.info.name = a.displayName;
-    // like the engine (`encrypted = revision != -1 || password.is_some()`): P2's lopdf rewrites refuse it
+    // like the engine (`encrypted = revision != -1 || password.is_some()`)
     if (a.password) d.info.encrypted = true;
+    tagPkg3(d, a.path);
     docs.set(d.info.docId, d);
     const entry: RecentEntry = recent ?? {
       path: a.path, name: baseName(a.path), dir: dirName(a.path), pages: d.info.pageCount, bytes: d.info.bytes,
@@ -587,6 +624,8 @@ export const mock = {
   },
   async closeDocument(a: { docId: DocId }): Promise<void> {
     docs.delete(a.docId);
+    attachmentsOf.delete(a.docId);
+    riskyOf.delete(a.docId);
     pendingCompress.delete(a.docId);
     stampsOf.delete(a.docId);
   },
@@ -625,7 +664,7 @@ export const mock = {
   },
   async getPageLabels(a: { docId: DocId }): Promise<PageLabelRange[]> {
     const d = doc(a.docId);
-    refuseEncrypted(d);
+    // v0.3 S2: reading needs no permission (an encrypted document is read decrypted)
     return delay(structuredClone(d.labelRanges), 10);
   },
   async takePendingOpens() {
@@ -1206,6 +1245,7 @@ export const mock = {
     const d = doc(a.docId);
     if (!a.outPath) throw err("invalidArgument", "outPath is required");
     if (!d.info.encrypted) throw err("invalidArgument", "document is not encrypted");
+    refuseSecurityChange(d);
     return { bytes: d.info.bytes };
   },
   async setPassword(a: {
@@ -1214,6 +1254,7 @@ export const mock = {
     const d = doc(a.docId);
     if (!a.outPath) throw err("invalidArgument", "outPath is required");
     if (!a.ownerPassword) throw err("invalidArgument", "ownerPassword is required");
+    refuseSecurityChange(d);
     return { bytes: d.info.bytes };
   },
   async removeMetadata(a: { docId: DocId }): Promise<DocInfo> {
@@ -1359,10 +1400,77 @@ export const mock = {
     recoveryFiles.delete(a.id);
   },
 
+  // v0.3 pkg3-security-save-integrity ----------------------------------------
+  async focusDocumentWindow(a: { path: string }): Promise<string | null> {
+    return otherWindows.get(a.path) ?? null;
+  },
+  async backupFolder(): Promise<string> {
+    return "/Users/veri/Library/Application Support/SeePDF/backups";
+  },
+  async unlockDocument(a: { docId: DocId; password: string }): Promise<DocInfo> {
+    const d = doc(a.docId);
+    if (!d.info.encrypted) throw err("invalidArgument", "this document is not encrypted");
+    if (a.password !== "owner") throw err("passwordWrong", "this is not the permissions password");
+    d.info.permissions = { ...d.info.permissions, print: true, modify: true, extractText: true, annotate: true, fillForms: true, assemble: true };
+    return delay(structuredClone(d.info), 10);
+  },
+  async sanitizeDocument(a: { docId: DocId; options?: Partial<SanitizeOptions> }): Promise<SanitizeResult> {
+    const d = doc(a.docId);
+    refuseEncrypted(d);
+    const left = riskyOf.get(a.docId) ?? { javascript: 0, attachments: 0, actions: 0, metadata: 0, hiddenLayers: 0 };
+    const on = (k: keyof SanitizeOptions) => a.options?.[k] !== false;
+    const removed: SanitizeCounts = { javascript: 0, attachments: 0, actions: 0, metadata: 0, hiddenLayers: 0 };
+    for (const k of Object.keys(removed) as (keyof SanitizeOptions)[]) if (on(k)) removed[k] = left[k];
+    if (Object.values(removed).every((n) => n === 0)) return { removed, info: structuredClone(d.info) };
+    mutate(d, { reason: "edit", pages: "all", undoLabel: "undo.sanitize" }, () => {
+      for (const k of Object.keys(removed) as (keyof SanitizeOptions)[]) left[k] -= removed[k];
+      riskyOf.set(a.docId, left);
+      if (on("attachments")) setAttachments(d, []);
+      if (on("metadata")) d.info.meta = {};
+    });
+    return { removed, info: structuredClone(d.info) };
+  },
+  async listAttachments(a: { docId: DocId }): Promise<AttachmentInfo[]> {
+    doc(a.docId);
+    return delay(attachmentListOf(a.docId), 8);
+  },
+  async saveAttachment(a: { docId: DocId; index: number; path: string }): Promise<{ bytes: number }> {
+    doc(a.docId);
+    const item = attachmentsOf.get(a.docId)?.[a.index];
+    if (!item) throw err("notFound", `attachment ${a.index}`);
+    writtenFiles.add(a.path);
+    return { bytes: item.size };
+  },
+  async addAttachment(a: { docId: DocId; path: string; name?: string }): Promise<AttachmentInfo[]> {
+    const d = doc(a.docId);
+    const list = [...(attachmentsOf.get(a.docId) ?? [])];
+    mutate(d, { reason: "edit", pages: [], undoLabel: "undo.attachmentAdd" }, () => {
+      list.push({ name: a.name?.trim() || baseName(a.path), size: 12_345 });
+      list.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+      setAttachments(d, list);
+    });
+    return attachmentListOf(a.docId);
+  },
+  async deleteAttachment(a: { docId: DocId; index: number }): Promise<AttachmentInfo[]> {
+    const d = doc(a.docId);
+    const list = [...(attachmentsOf.get(a.docId) ?? [])];
+    if (!list[a.index]) throw err("notFound", `attachment ${a.index} of ${list.length}`);
+    mutate(d, { reason: "edit", pages: [], undoLabel: "undo.attachmentDelete" }, () => {
+      list.splice(a.index, 1);
+      setAttachments(d, list);
+    });
+    return attachmentListOf(a.docId);
+  },
+
   // 7.6 save -----------------------------------------------------------------
-  async saveDocument(a: { docId: DocId }, onProgress: (e: JobEvent) => void): Promise<SaveResult> {
+  async saveDocument(a: { docId: DocId; force?: boolean }, onProgress: (e: JobEvent) => void): Promise<SaveResult> {
     const d = doc(a.docId);
     if (!d.info.path) throw err("readOnly", "document has no path; use Save As");
+    // v0.3 H8: the file changed on disk since it was opened
+    if (changedOnDisk.has(d.info.path) && !a.force) {
+      throw err("fileChangedOnDisk", `${d.info.path} changed on disk since it was opened`);
+    }
+    changedOnDisk.delete(d.info.path);
     return mock.saveDocumentAs({ docId: a.docId, path: d.info.path }, onProgress);
   },
   async saveDocumentAs(a: { docId: DocId; path: string }, onProgress: (e: JobEvent) => void): Promise<SaveResult> {
@@ -2345,6 +2453,10 @@ export function resetMock(): void {
   nextJob = 1;
   nextAnnot = 1;
   openedUrls = [];
+  attachmentsOf.clear();
+  riskyOf.clear();
+  changedOnDisk.clear();
+  otherWindows.clear();
   recents = structuredClone(recentsFixture) as unknown as RecentEntry[];
   settings = seedSettings();
 }
@@ -2352,6 +2464,59 @@ export function resetMock(): void {
 /** Test helper: queue an OS-level open so `take_pending_opens` returns something. */
 export function pushPendingOpen(path: string, source: "argv" | "macos-opened" | "drop" | "dialog" | "recent" = "argv"): void {
   pendingOpens.push({ path, source });
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg3-security-save-integrity: path tags and test seams
+// ---------------------------------------------------------------------------
+
+/**
+ * Path tags, like `encrypted` / `damaged`: `signed` → one detected signature; `restricted` → an
+ * encrypted file whose permissions forbid print, copy, modify and page changes (owner password
+ * `owner`); `attach` → one attachment; `risky` → JavaScript, attachments, actions, metadata and a
+ * hidden layer for 문서 정리.
+ */
+function tagPkg3(d: MockDoc, path: string): void {
+  if (/signed/i.test(path)) {
+    d.info.signatures = [
+      { fieldName: "서명1", reason: "계약 승인", time: "D:20260901120000+09'00'", subFilter: "adbe.pkcs7.detached" },
+    ];
+    d.info.incrementalSave = true;
+  }
+  if (/restricted/i.test(path)) {
+    d.info.encrypted = true;
+    d.info.permissions = {
+      print: false, modify: false, extractText: false, annotate: true, fillForms: true, assemble: false, revision: "r6",
+    };
+  }
+  if (/attach|risky/i.test(path)) setAttachments(d, [{ name: "견적서.xlsx", size: 48_213 }]);
+  if (/risky/i.test(path)) riskyOf.set(d.info.docId, { javascript: 2, attachments: 2, actions: 1, metadata: 2, hiddenLayers: 1 });
+}
+
+function setAttachments(d: MockDoc, list: { name: string; size: number }[]): void {
+  attachmentsOf.set(d.info.docId, list);
+  if (list.length) d.info.attachmentCount = list.length;
+  else delete d.info.attachmentCount;
+}
+
+function attachmentListOf(docId: DocId): AttachmentInfo[] {
+  return (attachmentsOf.get(docId) ?? []).map((a, index) => ({ index, name: a.name, size: a.size }));
+}
+
+/** Test seam (H8): another program changed `path` on disk; the next plain save refuses. */
+export function mockChangeOnDisk(path: string): void {
+  changedOnDisk.add(path);
+}
+
+/** Test seam (H8): the window `label` already shows `path`, so `focus_document_window` answers it. */
+export function mockOpenInOtherWindow(path: string, label: string): void {
+  otherWindows.set(path, label);
+}
+
+/** Test seam (S1): whether the next save of `docId` would be incremental. */
+export function mockSetIncrementalSave(docId: DocId, incremental: boolean): void {
+  const d = doc(docId);
+  if (d.info.signatures?.length) d.info.incrementalSave = incremental;
 }
 
 // Route every `seepdf://` URL builder to the generated data URLs above while the mock is live.

@@ -14,6 +14,8 @@ export interface MenuItem {
   shortcut?: string;
   danger?: boolean;
   disabled?: boolean;
+  /** v0.3 pkg3: i18n key of the tooltip — why a disabled entry is disabled */
+  hintKey?: string;
   onSelect?(): void;
 }
 

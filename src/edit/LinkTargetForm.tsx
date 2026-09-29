@@ -3,13 +3,14 @@
  * view's position (현재 위치 사용) — or 웹 주소. Used by the popover after a 링크 drag and by the
  * inspector's link section.
  *
- * On an encrypted document 페이지로 이동 is disabled with the reason: a /Dest is written with lopdf,
- * which would have to re-encrypt the file (the engine answers `unsupported`).
+ * On a document whose permissions forbid modification 페이지로 이동 is disabled with the reason (a
+ * /Dest is a lopdf rewrite; since v0.3 S2 an encrypted document is rewritten and stays encrypted).
  */
 import { useId, useState } from "react";
 import type { LinkTarget } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
+import { structureLocked } from "../app/permissions";
 import { currentViewTarget } from "../store/viewStore";
 import { displayLabel, pageForEntry } from "../viewer/pageLabel";
 import { normalizeUrl } from "./linkActions";
@@ -29,7 +30,7 @@ export function LinkTargetForm({ initial, submitKey, onSubmit, onCancel, autoFoc
   const info = useDocStore((s) => s.info);
   const labels = info?.pageLabels;
   const pageCount = info?.pageCount ?? 0;
-  const encrypted = info?.encrypted ?? false;
+  const encrypted = structureLocked(info); // v0.3 S2/S5: "modify" not permitted
   const start = initial && "url" in initial ? null : initial;
   const [kind, setKind] = useState<Kind>(initial && "url" in initial ? "url" : encrypted ? "url" : "page");
   const [pageText, setPageText] = useState(() => displayLabel(labels, start?.page ?? currentViewTarget().page));
@@ -111,7 +112,7 @@ export function LinkTargetForm({ initial, submitKey, onSubmit, onCancel, autoFoc
           </div>
           <p className="text-xs dim link-hint">
             {encrypted
-              ? t("structure.encrypted")
+              ? t("security.restricted.reason.modify")
               : position && position.page === page && position.y !== undefined
                 ? t("link.position", { y: Math.round(position.y) })
                 : t("link.positionTop")}

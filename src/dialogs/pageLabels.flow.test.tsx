@@ -107,7 +107,7 @@ describe("페이지 레이블", () => {
     spy.mockRestore();
   });
 
-  it("opens from 문서 정보 over it, and an encrypted document is read-only", async () => {
+  it("opens from 문서 정보 over it, and a document that forbids modification is read-only", async () => {
     await useDocStore.getState().open(SAMPLE);
     render(<DialogHost />);
     openDialog("docInfo");
@@ -119,9 +119,10 @@ describe("페이지 레이블", () => {
 
     act(() => useDialogStore.getState().closeAll());
     const info = useDocStore.getState().info!;
-    act(() => useDocStore.getState().adopt({ ...info, encrypted: true }));
+    // v0.3 S2: encryption alone no longer makes it read-only; the modify permission does
+    act(() => useDocStore.getState().adopt({ ...info, encrypted: true, permissions: { ...info.permissions, modify: false } }));
     openDialog("pageLabels");
-    expect(await screen.findByText("암호가 걸린 문서에서는 할 수 없습니다. 보안에서 암호를 먼저 제거하세요.")).toBeInTheDocument();
+    expect(await screen.findByText("이 문서는 편집이 제한되어 있습니다. 권한 암호로 잠금을 해제하세요.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "범위 추가" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "적용" })).toBeDisabled();
   });

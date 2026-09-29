@@ -27,7 +27,8 @@ export type ErrorCode =
   | 'fontCoverage'       // the requested text cannot be rendered by the target font
   | 'verifyFailed'       // save or redaction post-condition failed; the document was rolled back
   | 'pdfium'             // PdfiumError that maps to nothing more specific
-  | 'io';                // filesystem error
+  | 'io'                 // filesystem error
+  | 'fileChangedOnDisk'; // v0.3 H8: save_document found the file changed since it was opened
 
 export interface EngineError { code: ErrorCode; message: string; page?: number; detail?: string }
 
@@ -72,6 +73,13 @@ export interface DocInfo {
   hasOutline: boolean; meta: DocMeta; pdfVersion: string; tagged: boolean;
   /** P2: every page's /PageLabels label ("" where a page has none); absent when no page has one */
   pageLabels?: string[];
+  // --- v0.3 pkg3-security-save-integrity ---
+  /** S1: digital signatures, detected only (never validated); absent when there are none */
+  signatures?: SignatureInfo[];
+  /** S1: on a signed document, whether the next save appends an incremental update (signatures stay valid) */
+  incrementalSave?: boolean;
+  /** S4: document-level attachments; absent when 0 */
+  attachmentCount?: number;
 }
 /** Where on the page a `/Dest` points, PDF user space. Absent for a plain page reference. */
 export interface OutlineDest { x?: number; y?: number; zoom?: number }
@@ -523,3 +531,21 @@ export type SavedSignature =
 export type ViewLayout = Settings['defaultLayout'];
 export type ThemePref = Settings['theme'];
 export type ZoomPref = Settings['defaultZoom'];
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg3-security-save-integrity: signatures (S1), 문서 정리 (S3), 첨부 파일 (S4)
+// ---------------------------------------------------------------------------
+
+/** S1: one digital signature. `time` is the raw PDF date (`D:YYYYMMDDHHmmSS…`). */
+export interface SignatureInfo { fieldName?: string; reason?: string; time?: string; subFilter?: string }
+
+/** S3 `sanitize_document` options; a missing flag means `true`. */
+export interface SanitizeOptions {
+  javascript: boolean; attachments: boolean; actions: boolean; metadata: boolean; hiddenLayers: boolean;
+}
+/** S3: how many entries of each kind were removed. */
+export type SanitizeCounts = { [K in keyof SanitizeOptions]: number };
+export interface SanitizeResult { removed: SanitizeCounts; info: DocInfo }
+
+/** S4: one document-level attachment; `index` is valid for the generation it was listed in. */
+export interface AttachmentInfo { index: number; name: string; size: number }

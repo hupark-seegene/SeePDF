@@ -22,15 +22,16 @@
 //! * `/NM`, `/T`, `/Contents`, `/CreationDate`, `/M`, the parent's `/C` and SeePDF's colour
 //!   mirror (`annot::KEY_COLOR`), `/P`.
 //!
-//! Encrypted documents are refused (`unsupported`), like `set_metadata`: `lopdf` would have to
-//! re-encrypt the file, which needs the owner password.
+//! On an encrypted document the reply is written like every other lopdf rewrite since v0.3
+//! (S2): decrypted by PDFium, re-encrypted with the file's own key (same passwords and
+//! permissions). The document's annotate permission still applies (`registry::mutate_bytes`).
 
 use crate::engine::annot::{self, KEY_COLOR};
 use crate::engine::registry::{self, MutateOpts};
 use crate::engine::save;
 use crate::engine::types::EngineState;
 use crate::ipc::types::{AnnotId, AnnotKind, ChangeReason, PageIndex};
-use crate::ipc::{EngineError, ErrorCode};
+use crate::ipc::EngineError;
 use lopdf::{Dictionary, Object, ObjectId, Stream};
 
 /// Side of the reply's (invisible) note square, in points — `create::NOTE_SIZE`.
@@ -62,12 +63,7 @@ pub fn reply(
 ) -> Result<AnnotId, EngineError> {
     {
         let doc = st.doc_mut(doc_id)?;
-        if doc.encrypted || doc.password.is_some() {
-            return Err(EngineError::new(
-                ErrorCode::Unsupported,
-                "replies cannot be written into an encrypted document",
-            ));
-        }
+        crate::engine::security::ensure_permitted(doc, crate::engine::security::Perm::Annotate)?;
         // Cheap checks first: the heavy path serialises and reloads the whole document.
         let parent = annot::list(doc, page)?
             .into_iter()

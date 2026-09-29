@@ -163,10 +163,15 @@ describe("편집 · 링크", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
-  it("an encrypted document offers only 웹 주소 (a /Dest needs a lopdf rewrite)", async () => {
-    const info = await useDocStore.getState().open("/tmp/encrypted.pdf", "user");
+  it("a document that forbids modification offers only 웹 주소, and the engine refuses both (v0.3 S5)", async () => {
+    // v0.3 S2: an encrypted document takes page links like any other (it stays encrypted)
+    const locked = await useDocStore.getState().open("/tmp/encrypted.pdf", "user");
+    if (!locked) throw new Error("mock open failed");
+    await expect(mock.createLink({ docId: locked.docId, page: 0, rect: { l: 0, b: 0, r: 50, t: 50 }, target: { page: 1 } }))
+      .resolves.toMatchObject({ annot: { kind: "link" } });
+    const info = await useDocStore.getState().open("/tmp/restricted.pdf");
     if (!info) throw new Error("mock open failed");
-    expect(info.encrypted).toBe(true);
+    expect(info.permissions.modify).toBe(false);
     const page = info.pages[0];
     const ctx = makePageLayerContext({
       docId: info.docId, docGeneration: info.docGeneration, page, rotation: 0, zoomPercent: 100,
@@ -182,13 +187,13 @@ describe("편집 · 링크", () => {
     await screen.findByRole("dialog", { name: "새 링크" });
     expect(screen.getByRole("radio", { name: "웹 주소" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("radio", { name: "페이지로 이동" }));
-    expect(screen.getByText("암호가 걸린 문서에서는 할 수 없습니다. 보안에서 암호를 먼저 제거하세요.")).toBeInTheDocument();
+    expect(screen.getByText("이 문서는 편집이 제한되어 있습니다. 권한 암호로 잠금을 해제하세요.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "만들기" })).toBeDisabled();
     await expect(mock.createLink({ docId: info.docId, page: 0, rect: { l: 0, b: 0, r: 50, t: 50 }, target: { page: 1 } }))
-      .rejects.toMatchObject({ code: "unsupported" });
-    // a web link is PDFium's own FPDFAnnot_SetURI: allowed
+      .rejects.toMatchObject({ code: "permissionDenied" });
+    // a web link is a modification too (`registry::mutate` → modify)
     await expect(mock.createLink({ docId: info.docId, page: 0, rect: { l: 0, b: 0, r: 50, t: 50 }, target: { url: "https://a.b/" } }))
-      .resolves.toMatchObject({ annot: { kind: "link", uri: "https://a.b/" } });
+      .rejects.toMatchObject({ code: "permissionDenied", detail: "modify" });
   });
 });
 

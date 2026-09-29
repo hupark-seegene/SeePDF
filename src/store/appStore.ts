@@ -10,7 +10,8 @@ import { resolveLocale, setLocale, type Locale } from "../i18n";
 import type { RecentEntry, Settings, ThemePref } from "../ipc/types";
 
 export type Mode = "read" | "annotate" | "edit" | "pages" | "form";
-export type SidebarTab = "thumbnails" | "outline" | "annotations" | "search";
+/** `attachments`: v0.3 pkg3 (S4) — shown only when the document has attachments or in 편집 mode. */
+export type SidebarTab = "thumbnails" | "outline" | "annotations" | "search" | "attachments";
 /** Tool ids — the same strings as the `tool.*` i18n keys and the keymap `tool.*` ids. */
 export type ToolId =
   | "select" | "hand" | "snapshot"

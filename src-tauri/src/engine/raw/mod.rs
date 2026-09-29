@@ -30,6 +30,8 @@ pub mod outline;
 pub mod page;
 pub mod render;
 pub mod save;
+// v0.3 pkg3 (S1): `FPDFSignatureObj_GetSubFilter`, which pdfium-render does not expose.
+pub mod sig;
 
 use pdfium_render::prelude::{Pdfium, PdfiumLibraryBindings};
 

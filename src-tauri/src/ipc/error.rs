@@ -38,6 +38,9 @@ pub enum ErrorCode {
     Pdfium,
     /// Filesystem error.
     Io,
+    /// v0.3 pkg3 (H8): `save_document` found the file on disk changed (size or modification
+    /// time) since it was opened or last saved; retry with `force: true` to overwrite.
+    FileChangedOnDisk,
 }
 
 /// The error object delivered to JS on rejection.

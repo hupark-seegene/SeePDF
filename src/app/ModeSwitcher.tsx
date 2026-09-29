@@ -5,6 +5,7 @@ import { shortcutFor } from "../keys/keymap";
 import { MODES } from "./tools";
 import { Tooltip } from "./Tooltip";
 import type { CommandId } from "./useCommands";
+import { permissionBlock } from "./permissions";
 
 /**
  * 읽기 · 주석 · 편집 · 페이지 · 양식 (⌘1–⌘5) — the primary navigation (UI_SPEC §2).
@@ -14,25 +15,30 @@ export function ModeSwitcher({ run }: { run: (id: CommandId) => void }) {
   const t = useT();
   const os = useAppStore((s) => s.os);
   const mode = useAppStore((s) => s.mode);
-  const hasDoc = useDocStore((s) => s.info !== null);
+  const info = useDocStore((s) => s.info);
+  const hasDoc = info !== null;
 
   return (
     <div className="segmented" role="tablist" aria-label={t("mode.read")}>
-      {MODES.map((m) => (
-        <Tooltip key={m.id} label={t(m.labelKey)} shortcut={shortcutFor(m.keyId, os)}>
+      {MODES.map((m) => {
+        // v0.3 pkg3 (S5): a mode the document's permissions forbid is disabled, with the reason
+        const blocked = permissionBlock(m.keyId, info);
+        return (
+        <Tooltip key={m.id} label={blocked ? t(blocked) : t(m.labelKey)} shortcut={shortcutFor(m.keyId, os)}>
           <button
             type="button"
             role="tab"
             className="segment"
             aria-selected={mode === m.id}
             data-active={mode === m.id || undefined}
-            disabled={!hasDoc}
+            disabled={!hasDoc || !!blocked}
             onClick={() => run(m.keyId as CommandId)}
           >
             {t(m.labelKey)}
           </button>
         </Tooltip>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -4,12 +4,13 @@
  * (one undo step, 실행 취소 in the toast); 모두 제거 + 적용 removes them. Opened from 페이지 mode's
  * rail and from 문서 정보; lazy-loaded from `DialogHost`.
  *
- * An encrypted document is read-only here: the engine writes /PageLabels with lopdf, which would
- * have to re-encrypt the file (`unsupported`, as for 메타데이터 편집).
+ * v0.3 (S2): an encrypted document is edited like any other (the engine re-encrypts the rewrite
+ * with the file's own key); only a document whose permissions forbid modification is read-only.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Plus, X } from "lucide-react";
 import * as api from "../ipc/api";
+import { structureLocked } from "../app/permissions";
 import type { PageLabelRange, PageLabelStyle } from "../ipc/types";
 import { useT } from "../i18n/useT";
 import { useDocStore } from "../store/docStore";
@@ -28,12 +29,13 @@ export default function PageLabelsDialog({ onClose }: { onClose(): void }) {
   const [rows, setRows] = useState<LabelRow[]>([]);
   const [busy, setBusy] = useState(false);
   const docId = info?.docId;
-  const encrypted = info?.encrypted ?? false;
+  const encrypted = structureLocked(info); // v0.3 S2/S5: "modify" not permitted
 
   useEffect(() => {
     if (!docId) return;
     let live = true;
-    const load = encrypted ? Promise.resolve<PageLabelRange[]>([]) : api.getPageLabels({ docId }).catch(() => [] as PageLabelRange[]);
+    // v0.3 S2: an encrypted document's labels are read (decrypted) too; a lock only stops editing
+    const load = api.getPageLabels({ docId }).catch(() => [] as PageLabelRange[]);
     void load.then((ranges) => {
       if (!live) return;
       setInitial(ranges);
@@ -42,7 +44,7 @@ export default function PageLabelsDialog({ onClose }: { onClose(): void }) {
     return () => {
       live = false;
     };
-  }, [docId, encrypted]);
+  }, [docId]);
 
   const pageCount = info?.pageCount ?? 0;
   const valid = rowsValid(rows, pageCount);
@@ -92,7 +94,7 @@ export default function PageLabelsDialog({ onClose }: { onClose(): void }) {
         </button>
       }
     >
-      {encrypted && <p className="dlg-hint text-xs">{t("structure.encrypted")}</p>}
+      {encrypted && <p className="dlg-hint text-xs">{t("security.restricted.reason.modify")}</p>}
       <div className="labels-editor">
         {rows.length > 0 && (
           <div className="labels-grid" role="table" aria-label={t("pageLabels.title")}>

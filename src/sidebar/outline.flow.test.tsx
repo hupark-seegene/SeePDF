@@ -120,10 +120,11 @@ describe("목차 편집", () => {
     spy.mockRestore();
   });
 
-  it("an encrypted document cannot enter the editor, and the engine refuses one anyway", async () => {
+  it("a document that forbids modification cannot enter the editor, and the engine refuses one anyway", async () => {
     await useDocStore.getState().open(SAMPLE);
     const info = useDocStore.getState().info!;
-    act(() => useDocStore.getState().adopt({ ...info, encrypted: true }));
+    // v0.3 S2: encryption alone no longer locks the outline; the modify permission does
+    act(() => useDocStore.getState().adopt({ ...info, encrypted: true, permissions: { ...info.permissions, modify: false } }));
     render(<Outline />);
     expect(screen.getByRole("button", { name: "편집" })).toBeDisabled();
     await expect(mock.setOutline({ docId: "nope", nodes: [] })).rejects.toMatchObject({ code: "notFound" });

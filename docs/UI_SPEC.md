@@ -43,12 +43,28 @@ One document per window; the first window shows the welcome screen.
 |---|---|
 | left gutter | 78 px (macOS) / 8 px (Windows), drag region |
 | left group | `☰` sidebar toggle · `↶` undo · `↷` redo (undo/redo only when a document is open) |
-| centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty |
+| centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty. v0.3: after it, the **서명됨 (n)** pill (accent) when the document has digital signatures and the **제한됨** pill (warning) when its permissions restrict this open — see §2.1 |
 | centre | **mode switcher**: 읽기 · 주석 · 편집 · 페이지 · 양식 (segmented, ⌘1–⌘5) |
 | right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정) |
 
 Changing mode changes four things at once: the tool strip, the default canvas cursor, the properties
 panel content, and what a click on the page does.
+
+### 2.1 Document badges (v0.3, pkg3)
+
+* **서명됨 (n)** (S1) opens a 300 px popover `디지털 서명`: one entry per signature — the field name (or
+  이름 없는 서명), 사유, 서명 시각 (`YYYY-MM-DD HH:mm`), the SubFilter in mono — then the note that validity
+  is **not** checked, then what the next save does: 덧붙여 저장 (signatures kept) or 전체 다시 쓰기 (they
+  become invalid). The first document-changing command on a signed document asks once per document —
+  `서명된 문서입니다` / 편집 계속 · 취소 (취소 drops the edit silently); a save that would rewrite the file asks
+  `서명이 무효화됩니다` once per document.
+* **제한됨** (S5) opens `이 문서에 설정된 제한`: one line per forbidden permission (인쇄 · 복사 · 수정 · 주석 ·
+  양식 · 페이지) and **권한 암호로 잠금 해제…** — the password prompt (retried in place on a wrong password);
+  success reopens the document with full rights (same window, same undo history) and the pill disappears.
+  A forbidden action is disabled where it lives with the reason as its tooltip — 편집 / 페이지 / 주석 / 양식 in
+  the mode switcher, 인쇄 in the ⋯ menu — and a shortcut for it toasts the reason instead of running; ⌘C /
+  복사 on a copy-forbidden document toasts the reason and the clipboard mirror stays empty.
+* Esc or a click outside closes a popover. Both popovers are one lazy chunk (`BadgePopover`).
 
 ---
 
@@ -65,14 +81,16 @@ dimmer weight. The active tool has an `--accent-subtle` background and a 1 px ac
 
 ---
 
-## 4. Left sidebar (4 tabs, 28 px icon buttons at the top)
+## 4. Left sidebar (4 tabs + 첨부 when relevant, 28 px icon buttons at the top)
 
 | Tab | Icon | Content | Empty state |
 |---|---|---|---|
 | 축소판 | `rectangle-vertical` | 1–2 column thumbnail list, page number under each (the page label when the document has `/PageLabels`, P2 — the number in the tooltip), current page with a 2 px accent ring, drag to reorder, ⌘/⇧ multi-select, context menu | — |
-| 목차 | `list-tree` | outline tree with disclosure triangles, current section highlighted on scroll; a node written closed (`open: false`) starts collapsed; the page column shows labels; a web node (`url`, `globe` icon) asks before opening its address. Header: 목차 + **편집** (P2, disabled on an encrypted document with the reason as tooltip) — see §4.1 | `sidebar.outline.empty` |
+| 목차 | `list-tree` | outline tree with disclosure triangles, current section highlighted on scroll; a node written closed (`open: false`) starts collapsed; the page column shows labels; a web node (`url`, `globe` icon) asks before opening its address. Header: 목차 + **편집** (P2, disabled with the reason as tooltip when the document's permissions forbid modification — v0.3: encryption alone no longer does) — see §4.1 | `sidebar.outline.empty` |
 | 주석 | `message-square` | flat list grouped by page: type icon, author, excerpt, timestamp; click scrolls and selects; filter chips by type (a thread is filtered by its top-level annotation's type); a header with the count and **내보내기…** (P2: opens 내보내기 on its 주석 목록 format). **Threads (P2):** replies are listed under their top-level annotation — indented, `corner-down-right`, excerpt + 작성자 · 날짜, flattened and oldest first — behind a count badge (`message-square` + N) that folds / unfolds them (open by default); a click on a reply opens the thread's popover; right-click on a row = 답글 · 삭제 | `sidebar.annotations.empty` |
 | 검색 | `search` | query field, 대소문자 구분 / 단어 단위 toggles, result count, results with ±40 characters of context and the match in bold, grouped by page, streaming in as they arrive; a quiet 여러 파일에서 검색… button (P2) under the toggles | `sidebar.search.empty` |
+
+| 첨부 (v0.3 S4) | `paperclip` | shown only when the document has attachments (`DocInfo.attachmentCount`) or in 편집 mode: one row per attachment — name (ellipsised), size, `download` 저장… (a save panel with the attachment's name and extension); in 편집 mode also **파일 첨부…** at the top (any file) and `trash-2` 삭제 per row, each one undo step and disabled without the modify permission. A lazy chunk. | `attachments.empty` |
 
 Sidebar open/closed, active tab and width persist per app (not per document) in `settings.json`.
 
@@ -1311,6 +1329,80 @@ from the same catalogue). The native menu's `view.readAloud` label lives in `app
 | `multiSearch.reason.password` | 암호를 입력하지 않았습니다 | No password was entered |
 | `multiSearch.reason.searchFailed` | 검색하지 못했습니다 | Could not be searched |
 | `multiSearch.openHit` | {{name}} {{page}}쪽 열기 | Open {{name}}, page {{page}} |
+
+### 15.20c v0.3 pkg3 — signatures, permissions, save integrity, 문서 정리, 첨부 파일
+Where they appear: §2.1 (badges and prompts), §4 (첨부 tab), and three dialog additions:
+
+* **보안 › 문서 정리** (S3), a section after 메타데이터 제거: a short hint, five checkboxes in two columns
+  (JavaScript · 첨부 파일 · 자동 실행 동작 · 숨은 메타데이터 · 숨겨진 레이어, all on), and **정리**. The dialog
+  stays open and each checked row shows `N개 제거`; nothing found → `지울 항목이 없습니다` (no undo step). The
+  password section shows `dialog.security.empty` while both passwords are blank. 메타데이터 제거 and 정리
+  are disabled only when the document's permissions forbid modification (an encrypted document is fine).
+* **저장 › 다른 프로그램에서 파일이 변경되었습니다** (H8): a choice prompt — 덮어쓰기 (primary) · 다른 이름으로
+  저장… · 다시 불러오기 (내 변경 사항 버림) · 취소. Opening a file another window shows brings that window to
+  the front instead.
+* **설정 › 고급** (U2): under 저장할 때 백업 파일 유지, a hint (3 copies per document in the app data folder)
+  and **백업 폴더 열기** (Finder / 탐색기).
+
+| Key | ko | en |
+|---|---|---|
+| `security.signed.badge` | 서명됨 ({{count}}) | Signed ({{count}}) |
+| `security.signed.title` | 디지털 서명 | Digital signatures |
+| `security.signed.note` | 서명이 있다는 것만 확인했습니다. 인증서와 변조 여부 같은 서명의 유효성은 검증하지 않았습니다. | SeePDF only detects signatures. Their validity (certificate, tampering) is not checked. |
+| `security.signed.unnamed` | 이름 없는 서명 | Unnamed signature |
+| `security.signed.reason` | 사유: {{reason}} | Reason: {{reason}} |
+| `security.signed.time` | 서명 시각: {{time}} | Signed: {{time}} |
+| `security.signed.incremental` | 저장하면 변경 내용이 파일 끝에 덧붙여져 기존 서명이 서명한 내용은 그대로 남습니다. | Saving appends your changes, so what each signature signed stays untouched. |
+| `security.signed.rewrite` | 이 변경은 파일 전체를 다시 써야 하므로 저장하면 기존 서명이 무효화됩니다. | These changes need a full rewrite: saving will invalidate the existing signatures. |
+| `security.signed.editTitle` | 서명된 문서입니다 | This document is signed |
+| `security.signed.editBody` | 이 문서에는 디지털 서명이 있습니다. 편집하면 서명이 무효화될 수 있습니다. 계속할까요? | This document has a digital signature. Editing will invalidate the signature. Continue? |
+| `security.signed.editConfirm` | 편집 계속 | Edit anyway |
+| `security.signed.saveTitle` | 서명이 무효화됩니다 | Signatures will become invalid |
+| `security.signed.saveBody` | 지금 저장하면 파일 전체를 다시 쓰므로 기존 디지털 서명이 무효화됩니다. 저장할까요? | Saving now rewrites the whole file, which invalidates the existing digital signatures. Save anyway? |
+| `security.restricted.badge` | 제한됨 | Restricted |
+| `security.restricted.title` | 이 문서에 설정된 제한 | Restrictions on this document |
+| `security.restricted.print` | 인쇄할 수 없음 | Printing is not allowed |
+| `security.restricted.extractText` | 내용을 복사할 수 없음 | Copying content is not allowed |
+| `security.restricted.modify` | 내용을 수정할 수 없음 | Changing content is not allowed |
+| `security.restricted.annotate` | 주석을 추가할 수 없음 | Adding comments is not allowed |
+| `security.restricted.fillForms` | 양식을 채울 수 없음 | Filling in forms is not allowed |
+| `security.restricted.assemble` | 페이지를 추가, 삭제, 회전할 수 없음 | Adding, deleting or rotating pages is not allowed |
+| `security.restricted.unlock` | 권한 암호로 잠금 해제… | Unlock with the permissions password… |
+| `security.restricted.unlocked` | 제한을 해제했습니다 | Restrictions removed |
+| `security.restricted.notOwner` | 권한 암호가 아닙니다. 문서를 만든 사람에게 권한 암호를 받으세요. | That is not the permissions password. Ask the document's author for it. |
+| `security.restricted.reason.print` | 이 문서는 인쇄가 제한되어 있습니다 | This document does not allow printing |
+| `security.restricted.reason.extractText` | 이 문서는 내용 복사가 제한되어 있습니다 | This document does not allow copying |
+| `security.restricted.reason.modify` | 이 문서는 편집이 제한되어 있습니다. 권한 암호로 잠금을 해제하세요. | This document does not allow editing. Unlock it with the permissions password. |
+| `security.restricted.reason.annotate` | 이 문서는 주석 추가가 제한되어 있습니다 | This document does not allow comments |
+| `security.restricted.reason.fillForms` | 이 문서는 양식 입력이 제한되어 있습니다 | This document does not allow filling in forms |
+| `security.restricted.reason.assemble` | 이 문서는 페이지 편집이 제한되어 있습니다 | This document does not allow page changes |
+| `save.changed.title` | 다른 프로그램에서 파일이 변경되었습니다 | The file was changed by another program |
+| `save.changed.body` | ‘{{name}}’ 파일이 연 뒤에 디스크에서 바뀌었습니다. 어떻게 할까요? | “{{name}}” changed on disk after it was opened. What do you want to do? |
+| `save.changed.overwrite` | 덮어쓰기 | Overwrite |
+| `save.changed.saveAs` | 다른 이름으로 저장… | Save As… |
+| `save.changed.reload` | 다시 불러오기 (내 변경 사항 버림) | Reload (discard my changes) |
+| `settings.backups.openFolder` | 백업 폴더 열기 | Open backup folder |
+| `settings.backups.hint` | 저장하기 직전의 파일을 앱 데이터 폴더에 문서마다 3개까지 보관합니다. | Keeps up to 3 pre-save copies per document in the app data folder. |
+| `security.sanitize.title` | 문서 정리 | Sanitize document |
+| `security.sanitize.hint` | 외부로 보내기 전에 실행 코드와 숨은 정보를 지웁니다. 실행 취소할 수 있습니다. | Removes scripts and hidden information before you send the file out. You can undo it. |
+| `security.sanitize.javascript` | JavaScript | JavaScript |
+| `security.sanitize.attachments` | 첨부 파일 | Attachments |
+| `security.sanitize.actions` | 자동 실행 동작 | Automatic actions |
+| `security.sanitize.metadata` | 숨은 메타데이터 | Hidden metadata |
+| `security.sanitize.hiddenLayers` | 숨겨진 레이어 | Hidden layers |
+| `security.sanitize.action` | 정리 | Sanitize |
+| `security.sanitize.nothing` | 지울 항목이 없습니다 | Nothing to remove |
+| `security.sanitize.done` | 문서를 정리했습니다 | Document sanitized |
+| `security.sanitize.removed` | {{count}}개 제거 | {{count}} removed |
+| `attachments.empty` | 첨부 파일이 없습니다 | No attachments |
+| `attachments.add` | 파일 첨부… | Attach file… |
+| `attachments.save` | 저장… | Save… |
+| `attachments.delete` | 삭제 | Delete |
+| `attachments.saved` | 첨부 파일을 저장했습니다 | Attachment saved |
+| `undo.sanitize` | 문서 정리 | Sanitize |
+| `undo.attachmentAdd` | 첨부 파일 추가 | Add attachment |
+| `undo.attachmentDelete` | 첨부 파일 삭제 | Delete attachment |
+| `sidebar.tab.attachments` | 첨부 | Attachments |
 
 ### 15.21 Notes for the implementer
 

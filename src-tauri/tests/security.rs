@@ -241,23 +241,21 @@ fn metadata_remove_clears_info_and_xmp() {
     assert!(saved.info.has_form, "the form survives the rewrite");
 }
 
+/// v0.3 S2: an encrypted document is no longer refused — the rewrite keeps its encryption
+/// (see `structure_edits_on_rc4_and_after_unlock` and the other S2 tests below).
 #[test]
-fn metadata_refused_on_encrypted() {
+fn metadata_on_encrypted_keeps_the_password() {
     let doc = try_open("gen/encrypted-rc4-40.pdf", Some("user")).expect("open with the password");
-    let err = set_metadata(&doc.doc_id, korean_meta()).expect_err("must refuse");
-    assert_eq!(err.code, ErrorCode::Unsupported);
+    let info = remove_metadata(&doc.doc_id).expect("remove_metadata on RC4");
+    assert!(info.encrypted && info.meta.title.is_none());
+    let bytes = with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).unwrap();
     assert!(
-        err.message.contains("remove the password first"),
-        "{}",
-        err.message
+        reopen(bytes.clone(), None).is_err(),
+        "still needs the password"
     );
-    let err = remove_metadata(&doc.doc_id).expect_err("must refuse");
-    assert_eq!(err.code, ErrorCode::Unsupported);
+    reopen(bytes, Some("user")).expect("opens with the same password");
     let err = set_metadata("no-such-doc", korean_meta()).expect_err("unknown doc");
     assert_eq!(err.code, ErrorCode::NotFound);
-    // Nothing was pushed onto the history.
-    let can_undo = with_doc(&doc.doc_id, |d| Ok(d.history.can_undo())).unwrap();
-    assert!(!can_undo);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -356,7 +354,32 @@ fn password_owner_only() {
 
 #[test]
 fn password_reprotect_encrypted_input() {
-    let doc = try_open("gen/encrypted-rc4-40.pdf", Some("user")).expect("open with the password");
+    // v0.3 S5: the RC4 fixture is restricted (/P -21: no printing), so re-protecting its
+    // user-password open would drop the restriction — refused until unlocked.
+    let restricted =
+        try_open("gen/encrypted-rc4-40.pdf", Some("user")).expect("open with the password");
+    assert!(!restricted.info.permissions.print);
+    let err = protect(
+        &restricted.doc_id,
+        "never-reprotected.pdf",
+        Some("n3w"),
+        "owner-n3w",
+        PermissionsRequest::default(),
+    )
+    .expect_err("a restricted open cannot change its security");
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+
+    // An encrypted input with every permission (AES-256, open password "user") re-protects.
+    let plain = open("tracemonkey.pdf");
+    let source = protect(
+        &plain.doc_id,
+        "reprotect-source.pdf",
+        Some("user"),
+        "owner",
+        PermissionsRequest::default(),
+    )
+    .expect("set_password");
+    let doc = reopen(source, Some("user")).expect("open with the password");
     let bytes = protect(
         &doc.doc_id,
         "reprotected.pdf",
@@ -366,7 +389,7 @@ fn password_reprotect_encrypted_input() {
     )
     .expect("set_password on an encrypted input");
     let opened = reopen(bytes.clone(), Some("n3w")).expect("opens with the new password");
-    assert_eq!(opened.info.page_count, 1);
+    assert_eq!(opened.info.page_count, 14);
     let err = reopen(bytes.clone(), Some("user"))
         .err()
         .expect("the old password must fail");
@@ -471,4 +494,810 @@ fn pdf_text_string_and_date_format() {
     assert_eq!(date.len(), 23, "{date}");
     assert!(date.starts_with("D:20") && date.ends_with('\''), "{date}");
     assert!(matches!(date.as_bytes()[16], b'+' | b'-'), "{date}");
+}
+
+// =======================================================================================
+// v0.3 pkg3-security-save-integrity — S1 signatures, S2 encrypted rewrites, S3 sanitize,
+// S4 attachments, S5 permissions
+// =======================================================================================
+
+use lopdf::encryption::crypt_filters::Aes128CryptFilter;
+use lopdf::{dictionary, Object, ObjectId, Stream, StringFormat};
+use seepdf_lib::engine::registry::MutateOpts;
+use seepdf_lib::engine::{annot, attachments, export, sanitize, structure};
+use seepdf_lib::ipc::types::{
+    AnnotSpec, ChangeReason, MarkupSpec, OutlineNode, PageLabelRange, PageLabelStyle, Rect,
+    SanitizeOptions,
+};
+
+fn v3_dir() -> PathBuf {
+    let dir = fixture("out").join("v03-security");
+    std::fs::create_dir_all(&dir).expect("create fixtures/out/v03-security");
+    dir
+}
+
+/// A one-page Helvetica document built with lopdf; `extra` adds whatever the test needs to
+/// the document, its page and its catalog before it is written.
+fn build_pdf(extra: impl FnOnce(&mut lopdf::Document, ObjectId, ObjectId)) -> Vec<u8> {
+    let mut doc = lopdf::Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+    });
+    let content = b"BT /F1 24 Tf 72 700 Td (SeePDF security fixture) Tj ET".to_vec();
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content));
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "Contents" => content_id,
+        "Resources" => dictionary! { "Font" => dictionary! { "F1" => font_id } },
+    });
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+        }),
+    );
+    let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog_id);
+    let id = Object::String(b"SeePDF-pkg3-0001".to_vec(), StringFormat::Hexadecimal);
+    doc.trailer.set("ID", Object::Array(vec![id.clone(), id]));
+    extra(&mut doc, page_id, catalog_id);
+    let mut out = Vec::new();
+    doc.save_to(&mut out).expect("write the fixture");
+    out
+}
+
+/// A document with one signed signature field (`/Contents` is a dummy blob: PDFium detects
+/// signatures, it does not validate them — and neither does SeePDF).
+fn signed_pdf() -> Vec<u8> {
+    build_pdf(|doc, page, catalog| {
+        let sig = doc.add_object(dictionary! {
+            "Type" => "Sig",
+            "Filter" => "Adobe.PPKLite",
+            "SubFilter" => "adbe.pkcs7.detached",
+            "Reason" => save::pdf_text_string("계약 승인"),
+            "M" => Object::string_literal("D:20260901120000+09'00'"),
+            "ByteRange" => vec![0.into(), 0.into(), 0.into(), 0.into()],
+            "Contents" => Object::String(vec![0x30, 0x82, 0x01, 0x00], StringFormat::Hexadecimal),
+        });
+        let field = doc.add_object(dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Widget",
+            "FT" => "Sig",
+            "T" => Object::string_literal("Signature1"),
+            "V" => sig,
+            "Rect" => vec![0.into(), 0.into(), 0.into(), 0.into()],
+            "F" => 132,
+            "P" => page,
+        });
+        let empty_field = doc.add_object(dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Widget",
+            "FT" => "Sig",
+            "T" => Object::string_literal("Unsigned"),
+            "Rect" => vec![0.into(), 0.into(), 0.into(), 0.into()],
+            "F" => 132,
+            "P" => page,
+        });
+        doc.get_dictionary_mut(page)
+            .unwrap()
+            .set("Annots", vec![field.into(), empty_field.into()]);
+        let catalog = doc.get_dictionary_mut(catalog).unwrap();
+        catalog.set(
+            "AcroForm",
+            dictionary! { "Fields" => vec![field.into(), empty_field.into()], "SigFlags" => 3 },
+        );
+    })
+}
+
+/// Opens `bytes` written to `fixtures/out/v03-security/<name>` from that path (a signed
+/// document only keeps its incremental base when it has a path).
+fn open_written(name: &str, bytes: &[u8], password: Option<&str>) -> (TestDoc, PathBuf) {
+    let path = v3_dir().join(name);
+    std::fs::write(&path, bytes).expect("write the fixture");
+    let owned = path.clone();
+    let bytes = bytes.to_vec();
+    let password = password.map(str::to_owned);
+    let info = with_state(move |st| registry::open(st, Some(owned), bytes, password))
+        .expect("open the written fixture");
+    let doc_id = info.doc_id.clone();
+    (TestDoc { info, doc_id }, path)
+}
+
+fn highlight(doc_id: &str) -> Result<String, EngineError> {
+    let doc_id = doc_id.to_string();
+    with_state(move |st| {
+        registry::mutate(
+            st,
+            &doc_id,
+            MutateOpts::new("undo.annotCreate", ChangeReason::Edit).page(0),
+            |doc| {
+                annot::create::create(
+                    doc,
+                    0,
+                    &AnnotSpec::Highlight(MarkupSpec {
+                        rects: vec![Rect::new(72.0, 695.0, 300.0, 720.0)],
+                        color: [255, 235, 0],
+                        opacity: 0.6,
+                        contents: Some("형광펜".into()),
+                    }),
+                    None,
+                )
+            },
+        )
+    })
+}
+
+fn annot_count(doc_id: &str) -> usize {
+    with_doc(doc_id, |d| Ok(annot::list(d, 0)?.len())).unwrap()
+}
+
+fn save_in_place(doc_id: &str) -> Result<(), EngineError> {
+    let doc_id = doc_id.to_string();
+    with_state(move |st| {
+        save::save_with(st, &doc_id, None, &save::SaveOptions::default()).map(|_| ())
+    })
+}
+
+fn info_of(doc_id: &str) -> DocInfo {
+    with_doc(doc_id, |d| Ok(d.info())).unwrap()
+}
+
+// ---------------------------------------------------------------------------------------
+// S1
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn signed_document_is_detected() {
+    let (doc, _) = open_written("signed-detect.pdf", &signed_pdf(), None);
+    let sigs = &doc.info.signatures;
+    assert_eq!(
+        sigs.len(),
+        1,
+        "the unsigned field is not a signature: {sigs:?}"
+    );
+    let s = &sigs[0];
+    assert_eq!(s.field_name.as_deref(), Some("Signature1"));
+    assert_eq!(s.reason.as_deref(), Some("계약 승인"));
+    assert_eq!(s.sub_filter.as_deref(), Some("adbe.pkcs7.detached"));
+    assert!(
+        s.time
+            .as_deref()
+            .is_some_and(|t| t.starts_with("D:20260901")),
+        "{s:?}"
+    );
+    assert_eq!(doc.info.incremental_save, Some(true));
+
+    let plain = open("tracemonkey.pdf");
+    assert!(plain.info.signatures.is_empty());
+    assert_eq!(plain.info.incremental_save, None);
+    let json = serde_json::to_value(&plain.info).unwrap();
+    assert!(json.get("signatures").is_none() && json.get("incrementalSave").is_none());
+}
+
+#[test]
+fn signed_document_saves_incrementally() {
+    let original = signed_pdf();
+    let (doc, path) = open_written("signed-incremental.pdf", &original, None);
+    highlight(&doc.doc_id).expect("annotate");
+    assert_eq!(info_of(&doc.doc_id).incremental_save, Some(true));
+    save_in_place(&doc.doc_id).expect("save");
+
+    let first = std::fs::read(&path).unwrap();
+    assert!(first.len() > original.len(), "an update was appended");
+    assert!(
+        first.starts_with(&original),
+        "the signed revision must stay byte-identical"
+    );
+    // The saved file still has the signature and the new annotation.
+    let (again, _) = open_written("signed-incremental-reopen.pdf", &first, None);
+    assert_eq!(again.info.signatures.len(), 1);
+    assert_eq!(annot_count(&again.doc_id), annot_count(&doc.doc_id));
+
+    // A second save appends to the first.
+    highlight(&doc.doc_id).expect("annotate again");
+    save_in_place(&doc.doc_id).expect("save again");
+    let second = std::fs::read(&path).unwrap();
+    assert!(second.starts_with(&first) && second.starts_with(&original));
+}
+
+#[test]
+fn signed_document_after_a_rewrite_saves_in_full() {
+    let original = signed_pdf();
+    let (doc, path) = open_written("signed-rewrite.pdf", &original, None);
+    set_metadata(&doc.doc_id, korean_meta()).expect("a lopdf rewrite");
+    assert_eq!(
+        info_of(&doc.doc_id).incremental_save,
+        Some(false),
+        "after a lopdf rewrite only a full save is possible"
+    );
+    // Undo back to the file as it is on disk: incremental again.
+    let d = doc.doc_id.clone();
+    with_state(move |st| registry::undo(st, &d, false)).expect("undo");
+    assert_eq!(info_of(&doc.doc_id).incremental_save, Some(true));
+    let d = doc.doc_id.clone();
+    with_state(move |st| registry::undo(st, &d, true)).expect("redo");
+    save_in_place(&doc.doc_id).expect("full save");
+    let saved = std::fs::read(&path).unwrap();
+    assert!(!saved.starts_with(&original), "a full rewrite");
+    // The saved file is the new base: the next PDFium-only edit is incremental again.
+    assert_eq!(info_of(&doc.doc_id).incremental_save, Some(true));
+}
+
+// ---------------------------------------------------------------------------------------
+// S5
+// ---------------------------------------------------------------------------------------
+
+fn protect_bytes(user: Option<&str>, owner: &str, permissions: PermissionsRequest) -> Vec<u8> {
+    let doc = open("tracemonkey.pdf");
+    protect(
+        &doc.doc_id,
+        &format!("perm-{}.pdf", uuid_like()),
+        user,
+        owner,
+        permissions,
+    )
+    .expect("set_password")
+}
+
+fn uuid_like() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static N: AtomicU32 = AtomicU32::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn unlock(doc_id: &str, password: &str) -> Result<DocInfo, EngineError> {
+    let (doc_id, password) = (doc_id.to_string(), password.to_string());
+    with_state(move |st| security::unlock(st, &doc_id, &password))
+}
+
+#[test]
+fn permissions_are_enforced_and_unlock_restores_them() {
+    let bytes = protect_bytes(
+        None,
+        "owner-pw",
+        PermissionsRequest {
+            annotate: false,
+            ..PermissionsRequest::default()
+        },
+    );
+    let doc = reopen(bytes, None).expect("opens without a password");
+    assert!(!doc.info.permissions.annotate);
+
+    let err = highlight(&doc.doc_id).expect_err("annotate is forbidden");
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(err.detail.as_deref(), Some("annotate"));
+    // A permitted edit (assemble) goes through and is one undo step.
+    let d = doc.doc_id.clone();
+    with_state(move |st| {
+        seepdf_lib::engine::pages::apply_ops(
+            st,
+            &d,
+            vec![seepdf_lib::ipc::types::PageOp::Rotate {
+                pages: vec![0],
+                delta: 90,
+            }],
+        )
+    })
+    .expect("rotate is allowed");
+
+    assert_eq!(
+        unlock(&doc.doc_id, "wrong").unwrap_err().code,
+        ErrorCode::PasswordWrong
+    );
+    let info = unlock(&doc.doc_id, "owner-pw").expect("unlock");
+    assert_eq!(info.doc_id, doc.doc_id, "same docId");
+    assert!(info.permissions.annotate && info.permissions.print);
+    assert!(info.can_undo, "the undo history survives the unlock");
+    assert!(info.dirty);
+    highlight(&doc.doc_id).expect("annotate after unlocking");
+
+    let plain = open("tracemonkey.pdf");
+    assert_eq!(
+        unlock(&plain.doc_id, "x").unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+}
+
+#[test]
+fn print_and_copy_permissions_are_enforced() {
+    let bytes = protect_bytes(
+        None,
+        "owner-pw",
+        PermissionsRequest {
+            print: false,
+            extract_text: false,
+            modify: false,
+            ..PermissionsRequest::default()
+        },
+    );
+    let doc = reopen(bytes, None).expect("opens");
+    let d = doc.doc_id.clone();
+    let err = with_state(move |st| export::print_prepare(st, &d, None)).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(err.detail.as_deref(), Some("print"));
+    let d = doc.doc_id.clone();
+    let out = v3_dir().join("never.txt").display().to_string();
+    let err = with_state(move |st| export::export_text(st, &d, &[0], &out)).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(err.detail.as_deref(), Some("extractText"));
+    // modify = false: the text-edit probe names the reason, lopdf rewrites are refused.
+    let probe = with_doc(&doc.doc_id, |d| {
+        seepdf_lib::engine::objects::probe(d, 0, 0, "x")
+    })
+    .unwrap();
+    assert_eq!(
+        probe.reason,
+        Some(seepdf_lib::ipc::types::NotEditableReason::Permissions)
+    );
+    let err = set_metadata(&doc.doc_id, korean_meta()).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+
+    // Changing the security of a restricted open would hand out an unrestricted copy.
+    let d = doc.doc_id.clone();
+    let out = v3_dir().join("never-unlocked.pdf").display().to_string();
+    let err = with_state(move |st| {
+        security::set_password(
+            st,
+            &d,
+            &out,
+            None,
+            "new-owner",
+            PermissionsRequest::default(),
+        )
+    })
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(err.detail.as_deref(), Some("security"));
+
+    unlock(&doc.doc_id, "owner-pw").expect("unlock");
+    let d = doc.doc_id.clone();
+    with_state(move |st| export::print_prepare(st, &d, None)).expect("print after unlocking");
+    let d = doc.doc_id.clone();
+    let out = v3_dir()
+        .join("reprotected-after-unlock.pdf")
+        .display()
+        .to_string();
+    with_state(move |st| {
+        security::set_password(
+            st,
+            &d,
+            &out,
+            None,
+            "new-owner",
+            PermissionsRequest::default(),
+        )
+    })
+    .expect("set_password after unlocking");
+}
+
+// ---------------------------------------------------------------------------------------
+// S2
+// ---------------------------------------------------------------------------------------
+
+/// `plain` encrypted with AES-128 (V4 / R4, `/StdCF` AESV2) by lopdf.
+fn encrypt_aes128(plain: &[u8], user: &str, owner: &str, p: PermissionsRequest) -> Vec<u8> {
+    use lopdf::encryption::crypt_filters::CryptFilter;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    let mut doc = lopdf::Document::load_mem(plain).unwrap();
+    let filter: Arc<dyn CryptFilter> = Arc::new(Aes128CryptFilter);
+    let state = lopdf::EncryptionState::try_from(lopdf::EncryptionVersion::V4 {
+        document: &doc,
+        encrypt_metadata: true,
+        crypt_filters: BTreeMap::from([(b"StdCF".to_vec(), filter)]),
+        stream_filter: b"StdCF".to_vec(),
+        string_filter: b"StdCF".to_vec(),
+        owner_password: owner,
+        user_password: user,
+        permissions: security::lopdf_permissions(p),
+    })
+    .unwrap();
+    doc.encrypt(&state).unwrap();
+    let mut out = Vec::new();
+    doc.save_to(&mut out).unwrap();
+    out
+}
+
+fn two_page_pdf() -> Vec<u8> {
+    // tracemonkey through PDFium: a real-world file with fonts, images and an /ID.
+    std::fs::read(fixture("tracemonkey.pdf")).unwrap()
+}
+
+/// Every structure edit, then Save As and a fresh open with `password`.
+fn edit_structure_and_reopen(doc_id: &str, name: &str, password: Option<&str>) -> TestDoc {
+    let d = doc_id.to_string();
+    let nodes = vec![OutlineNode {
+        title: "1장 개요".into(),
+        page: Some(0),
+        dest: None,
+        url: None,
+        open: None,
+        children: vec![],
+    }];
+    with_state(move |st| structure::outline::set_outline(st, &d, &nodes)).expect("set_outline");
+    set_metadata(doc_id, korean_meta()).expect("set_metadata");
+    let d = doc_id.to_string();
+    let ranges = vec![PageLabelRange {
+        start: 0,
+        style: PageLabelStyle::RomanUpper,
+        prefix: None,
+        first: None,
+    }];
+    with_state(move |st| structure::labels::set_page_labels(st, &d, &ranges))
+        .expect("set_page_labels");
+    let parent = highlight(doc_id).expect("highlight");
+    let d = doc_id.to_string();
+    with_state(move |st| annot::reply::reply(st, &d, 0, &parent, "답글입니다", Some("검토자")))
+        .expect("reply");
+    let d = doc_id.to_string();
+    let labels = with_state(move |st| structure::labels::get_page_labels(st, &d))
+        .expect("page labels read back on an encrypted document");
+    assert_eq!(labels.len(), 1);
+
+    let target = v3_dir().join(name);
+    let _ = std::fs::remove_file(&target);
+    let (d, p) = (doc_id.to_string(), target.display().to_string());
+    with_state(move |st| save::save(st, &d, Some(&p), false)).expect("save as");
+    let reopened =
+        reopen(std::fs::read(&target).unwrap(), password).expect("reopen with the password");
+    assert_korean_meta(&reopened.info.meta);
+    assert!(reopened.info.has_outline);
+    let outline = with_doc(&reopened.doc_id, |d| Ok(d.outline())).unwrap();
+    assert_eq!(outline[0].title, "1장 개요");
+    assert_eq!(reopened.info.pages[0].label.as_deref(), Some("I"));
+    let annots = with_doc(&reopened.doc_id, |d| annot::list(d, 0)).unwrap();
+    assert!(
+        annots.iter().any(|a| a.contents == "답글입니다"),
+        "the reply survives: {annots:?}"
+    );
+    reopened
+}
+
+#[test]
+fn structure_edits_on_a_permission_only_aes128_file() {
+    let restricted = PermissionsRequest {
+        print: false,
+        ..PermissionsRequest::default()
+    };
+    let bytes = encrypt_aes128(&two_page_pdf(), "", "owner-128", restricted);
+    let doc = reopen(bytes, None).expect("a permission-only file opens without a password");
+    assert!(doc.info.encrypted);
+    assert_eq!(doc.info.permissions.revision, SecurityRevision::R4);
+    let before = doc.info.permissions;
+    assert!(!before.print && before.modify);
+
+    let reopened = edit_structure_and_reopen(&doc.doc_id, "s2-aes128.pdf", None);
+    assert!(reopened.info.encrypted, "still encrypted");
+    assert_eq!(reopened.info.permissions, before, "permissions unchanged");
+    let bytes = std::fs::read(v3_dir().join("s2-aes128.pdf")).unwrap();
+    let parsed = lopdf::Document::load_mem_with_options(
+        &bytes,
+        lopdf::LoadOptions::with_password("owner-128"),
+    )
+    .unwrap();
+    assert!(
+        parsed.encryption_state.is_some(),
+        "the owner password still works"
+    );
+}
+
+#[test]
+fn structure_edits_on_a_user_password_aes256_file() {
+    let bytes = protect_bytes(Some("user-256"), "owner-256", PermissionsRequest::default());
+    let doc = reopen(bytes, Some("user-256")).expect("opens with the user password");
+    assert_eq!(doc.info.permissions.revision, SecurityRevision::R6);
+    let before = doc.info.permissions;
+    let reopened = edit_structure_and_reopen(&doc.doc_id, "s2-aes256.pdf", Some("user-256"));
+    assert_eq!(reopened.info.permissions, before);
+    let bytes = std::fs::read(v3_dir().join("s2-aes256.pdf")).unwrap();
+    assert!(
+        reopen(bytes, None).is_err(),
+        "still needs the open password"
+    );
+}
+
+#[test]
+fn structure_edits_on_rc4_and_after_unlock() {
+    // R2 / RC4-40 with an open password.
+    let doc = try_open("gen/encrypted-rc4-40.pdf", Some("user")).expect("open");
+    let info = set_metadata(&doc.doc_id, korean_meta()).expect("metadata on RC4");
+    assert!(info.encrypted);
+    assert_korean_meta(&info.meta);
+
+    // Permission-only with modify = false: refused until unlocked, then written with the
+    // original restrictions intact.
+    let restricted = PermissionsRequest {
+        modify: false,
+        ..PermissionsRequest::default()
+    };
+    let bytes = encrypt_aes128(&two_page_pdf(), "", "owner-m", restricted);
+    let doc = reopen(bytes, None).expect("opens");
+    let err = set_metadata(&doc.doc_id, korean_meta()).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert!(!with_doc(&doc.doc_id, |d| Ok(d.history.can_undo())).unwrap());
+    unlock(&doc.doc_id, "owner-m").expect("unlock");
+    set_metadata(&doc.doc_id, korean_meta()).expect("allowed after unlocking");
+    let target = v3_dir().join("s2-unlocked.pdf");
+    let (d, p) = (doc.doc_id.clone(), target.display().to_string());
+    with_state(move |st| save::save(st, &d, Some(&p), false)).expect("save as");
+    let again = reopen(std::fs::read(&target).unwrap(), None).expect("reopen");
+    assert!(
+        !again.info.permissions.modify,
+        "the file keeps its restriction"
+    );
+    assert_korean_meta(&again.info.meta);
+}
+
+// ---------------------------------------------------------------------------------------
+// S3
+// ---------------------------------------------------------------------------------------
+
+/// JavaScript (document-level + /OpenAction + a page /AA), an embedded file, a
+/// FileAttachment annotation, XMP + /Info, and a hidden layer that draws a blue square.
+fn risky_pdf() -> Vec<u8> {
+    build_pdf(|doc, page, catalog| {
+        let js = doc.add_object(
+            dictionary! { "S" => "JavaScript", "JS" => Object::string_literal("app.alert('hi');") },
+        );
+        let open_js = doc.add_object(
+            dictionary! { "S" => "JavaScript", "JS" => Object::string_literal("this.print();") },
+        );
+        let file = doc.add_object(Stream::new(
+            dictionary! { "Type" => "EmbeddedFile" },
+            b"secret spreadsheet".to_vec(),
+        ));
+        let filespec = doc.add_object(dictionary! {
+            "Type" => "Filespec", "F" => Object::string_literal("secret.txt"),
+            "EF" => dictionary! { "F" => file },
+        });
+        let annot_file = doc.add_object(Stream::new(
+            dictionary! { "Type" => "EmbeddedFile" },
+            b"annotation payload".to_vec(),
+        ));
+        let annot_spec = doc.add_object(dictionary! {
+            "Type" => "Filespec", "F" => Object::string_literal("clip.txt"),
+            "EF" => dictionary! { "F" => annot_file },
+        });
+        let clip = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "FileAttachment",
+            "Rect" => vec![500.into(), 700.into(), 520.into(), 720.into()],
+            "FS" => annot_spec, "Name" => "PushPin", "NM" => Object::string_literal("clip-1"),
+        });
+        let xmp = doc.add_object(Stream::new(
+            dictionary! { "Type" => "Metadata", "Subtype" => "XML" },
+            b"<x:xmpmeta xmlns:x='adobe:ns:meta/'/>".to_vec(),
+        ));
+        let info = doc.add_object(dictionary! { "Author" => Object::string_literal("Hong") });
+        doc.trailer.set("Info", info);
+        // A layer that is off by default, drawing a blue square.
+        let ocg = doc.add_object(
+            dictionary! { "Type" => "OCG", "Name" => Object::string_literal("Hidden notes") },
+        );
+        let content_id = doc
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Contents")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let hidden = b"\n/OC /L1 BDC 0 0 1 rg 100 100 200 200 re f EMC\n";
+        if let Ok(Object::Stream(s)) = doc.get_object_mut(content_id) {
+            let mut content = s.content.clone();
+            content.extend_from_slice(hidden);
+            s.set_content(content);
+        }
+        let p = doc.get_dictionary_mut(page).unwrap();
+        p.set("Annots", vec![clip.into()]);
+        p.set("AA", dictionary! { "O" => js });
+        if let Ok(Object::Dictionary(res)) = p.get_mut(b"Resources") {
+            res.set("Properties", dictionary! { "L1" => ocg });
+        }
+        let c = doc.get_dictionary_mut(catalog).unwrap();
+        c.set("OpenAction", open_js);
+        c.set("Metadata", xmp);
+        c.set(
+            "Names",
+            dictionary! {
+                "JavaScript" => dictionary! { "Names" => vec![Object::string_literal("init"), js.into()] },
+                "EmbeddedFiles" => dictionary! { "Names" => vec![Object::string_literal("secret.txt"), filespec.into()] },
+            },
+        );
+        c.set(
+            "OCProperties",
+            dictionary! {
+                "OCGs" => vec![ocg.into()],
+                "D" => dictionary! { "OFF" => vec![ocg.into()], "Order" => vec![ocg.into()] },
+            },
+        );
+    })
+}
+
+/// Pixels of `rgba` inside the hidden square (100..300 pt at 1x) that are clearly blue.
+fn blue_pixels(page: &(u32, u32, Vec<u8>)) -> usize {
+    let (w, h, px) = page;
+    let mut n = 0;
+    for y in 0..*h {
+        for x in 0..*w {
+            let i = ((y * w + x) * 4) as usize;
+            let (r, g, b) = (px[i], px[i + 1], px[i + 2]);
+            if b > 200 && r < 60 && g < 60 {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+fn dangerous_objects(bytes: &[u8]) -> (usize, usize, usize, bool, bool) {
+    let doc = lopdf::Document::load_mem(bytes).unwrap();
+    let (mut js, mut files, mut clips) = (0, 0, 0);
+    for object in doc.objects.values() {
+        let dict = match object {
+            Object::Dictionary(d) => d,
+            Object::Stream(s) => &s.dict,
+            _ => continue,
+        };
+        if dict.get(b"S").and_then(Object::as_name).ok() == Some(b"JavaScript") || dict.has(b"JS") {
+            js += 1;
+        }
+        if dict.get(b"Type").and_then(Object::as_name).ok() == Some(b"EmbeddedFile") {
+            files += 1;
+        }
+        if dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"FileAttachment") {
+            clips += 1;
+        }
+    }
+    let catalog = doc.catalog().unwrap();
+    (
+        js,
+        files,
+        clips,
+        catalog.has(b"OCProperties"),
+        catalog.has(b"Metadata") || doc.trailer.has(b"Info"),
+    )
+}
+
+#[test]
+fn sanitize_removes_scripts_files_actions_metadata_and_hidden_layers() {
+    let bytes = risky_pdf();
+    let (js, files, clips, layers, meta) = dangerous_objects(&bytes);
+    assert!(js >= 2 && files == 2 && clips == 1 && layers && meta);
+    let doc = reopen(bytes, None).expect("the fixture opens");
+    assert_eq!(doc.info.attachment_count, 1);
+    let before = render_page0(&doc.doc_id);
+    assert_eq!(blue_pixels(&before), 0, "the layer is hidden by default");
+
+    let d = doc.doc_id.clone();
+    let result = with_state(move |st| sanitize::sanitize(st, &d, &SanitizeOptions::default()))
+        .expect("sanitize");
+    let r = &result.removed;
+    assert_eq!(r.javascript, 2, "{r:?}"); // the name-tree script and the /OpenAction
+    assert_eq!(r.attachments, 2, "{r:?}"); // the embedded file and the paperclip
+    assert_eq!(r.actions, 1, "{r:?}"); // the page /AA
+    assert!(r.metadata >= 2, "{r:?}"); // /Info and the XMP stream
+    assert_eq!(r.hidden_layers, 1, "{r:?}");
+    assert_eq!(result.info.undo_label.as_deref(), Some("undo.sanitize"));
+    assert_eq!(result.info.attachment_count, 0);
+    assert_eq!(result.info.meta.author, None);
+
+    let after_bytes = with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).unwrap();
+    assert_eq!(dangerous_objects(&after_bytes), (0, 0, 0, false, false));
+    let after = render_page0(&doc.doc_id);
+    assert_eq!(
+        blue_pixels(&after),
+        0,
+        "hidden content is deleted, not revealed"
+    );
+    assert!(
+        difference(&before, &after) < 0.005,
+        "the visible page is unchanged"
+    );
+
+    // Nothing left: no second undo step.
+    let d = doc.doc_id.clone();
+    let again =
+        with_state(move |st| sanitize::sanitize(st, &d, &SanitizeOptions::default())).unwrap();
+    assert_eq!(again.removed.total(), 0);
+    assert_eq!(again.info.doc_generation, result.info.doc_generation);
+
+    // One undo step brings everything back.
+    let d = doc.doc_id.clone();
+    let undone = with_state(move |st| registry::undo(st, &d, false)).unwrap();
+    assert_eq!(undone.attachment_count, 1);
+}
+
+#[test]
+fn sanitize_options_are_independent() {
+    let doc = reopen(risky_pdf(), None).unwrap();
+    let d = doc.doc_id.clone();
+    let only_js = SanitizeOptions {
+        javascript: true,
+        attachments: false,
+        actions: false,
+        metadata: false,
+        hidden_layers: false,
+    };
+    let result = with_state(move |st| sanitize::sanitize(st, &d, &only_js)).unwrap();
+    // The page /AA stays, minus its JavaScript entry.
+    assert_eq!(result.removed.javascript, 3, "{:?}", result.removed);
+    assert_eq!(result.removed.total(), 3);
+    let bytes = with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).unwrap();
+    let (js, files, clips, layers, meta) = dangerous_objects(&bytes);
+    assert_eq!((js, files, clips, layers, meta), (0, 2, 1, true, true));
+}
+
+#[test]
+fn sanitize_keeps_an_encrypted_file_encrypted() {
+    let risky = risky_pdf();
+    let bytes = encrypt_aes128(&risky, "", "owner-s", PermissionsRequest::default());
+    let doc = reopen(bytes, None).unwrap();
+    let before = doc.info.permissions;
+    let d = doc.doc_id.clone();
+    let result = with_state(move |st| sanitize::sanitize(st, &d, &SanitizeOptions::default()))
+        .expect("sanitize an encrypted file");
+    assert!(result.removed.javascript >= 2);
+    assert!(result.info.encrypted);
+    assert_eq!(result.info.permissions, before);
+}
+
+// ---------------------------------------------------------------------------------------
+// S4
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn attachments_add_list_save_delete() {
+    let doc = open("tracemonkey.pdf");
+    let source = v3_dir().join("첨부 원본.bin");
+    let payload: Vec<u8> = (0..70_000u32).map(|i| (i * 31 % 251) as u8).collect();
+    std::fs::write(&source, &payload).unwrap();
+    let list = {
+        let (d, p) = (doc.doc_id.clone(), source.display().to_string());
+        with_state(move |st| attachments::add(st, &d, &p, None)).expect("add")
+    };
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].name, "첨부 원본.bin");
+    assert_eq!(list[0].size, payload.len() as u64);
+    let info = info_of(&doc.doc_id);
+    assert_eq!(info.attachment_count, 1);
+    assert_eq!(info.undo_label.as_deref(), Some("undo.attachmentAdd"));
+    // The same name again gets a suffix.
+    let list = {
+        let (d, p) = (doc.doc_id.clone(), source.display().to_string());
+        with_state(move |st| attachments::add(st, &d, &p, None)).unwrap()
+    };
+    // PDFium lists the name tree in key order.
+    let mut names: Vec<&str> = list.iter().map(|a| a.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["첨부 원본 (2).bin", "첨부 원본.bin"]);
+
+    // Save the document, reopen, and extract: identical bytes.
+    let target = v3_dir().join("attachments.pdf");
+    let (d, p) = (doc.doc_id.clone(), target.display().to_string());
+    with_state(move |st| save::save(st, &d, Some(&p), false)).expect("save as");
+    let again = reopen(std::fs::read(&target).unwrap(), None).unwrap();
+    assert_eq!(again.info.attachment_count, 2);
+    let out = v3_dir().join("extracted.bin");
+    let (d, p) = (again.doc_id.clone(), out.display().to_string());
+    with_doc(&d, move |doc| attachments::save(doc, 0, &p)).expect("save attachment");
+    assert_eq!(std::fs::read(&out).unwrap(), payload);
+
+    // Delete both: count 0; undo brings one back.
+    for _ in 0..2 {
+        let d = again.doc_id.clone();
+        with_state(move |st| attachments::delete(st, &d, 0)).expect("delete");
+    }
+    assert_eq!(info_of(&again.doc_id).attachment_count, 0);
+    let d = again.doc_id.clone();
+    let undone = with_state(move |st| registry::undo(st, &d, false)).unwrap();
+    assert_eq!(undone.attachment_count, 1);
+    let d = again.doc_id.clone();
+    let err = with_state(move |st| attachments::delete(st, &d, 7)).unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound);
 }

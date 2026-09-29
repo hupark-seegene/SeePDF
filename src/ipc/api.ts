@@ -18,6 +18,7 @@ import type {
   RedactPreview, RemoveStampsResult, ResizeMode, ResizeTarget, Rgb, SaveResult, SearchEvent,
   SetPageBoxesArgs, Settings, StampResult, StampRole, StampSpec, SummaryFormat, TextEditProbe, TtsStatus,
   ViewportHint, LinkTarget, PageLabelRange,
+  AttachmentInfo, SanitizeOptions, SanitizeResult,
 } from "./types";
 
 export { parseTextLayer, parseRawPage };
@@ -67,6 +68,8 @@ export function errorKey(e: unknown): string {
       return "error.busy";
     case "verifyFailed":
       return "error.saveFailed";
+    case "fileChangedOnDisk":
+      return "save.changed.title";
     case "io":
       return "error.saveFailed";
     case "unsupported":
@@ -97,8 +100,34 @@ function loadMock(): Promise<MockAdapter> {
 
 if (useMock()) void loadMock();
 
+// v0.3 pkg3 (S1): one hook in front of every document-changing command, so the first edit of a
+// signed document can ask "편집하면 서명이 무효화됩니다" without any caller knowing about it.
+/** Commands that change a document (each is one `registry::mutate` / `mutate_bytes`). */
+export const MUTATING_COMMANDS: ReadonlySet<string> = new Set([
+  "create_annotation", "update_annotation", "delete_annotations", "reply_annotation",
+  "set_form_field_value", "reset_form",
+  "apply_redactions", "apply_redactions_batch", "remove_metadata", "set_metadata",
+  "set_outline", "create_link", "update_link", "delete_link", "set_page_labels",
+  "add_stamp", "remove_stamps", "compress_apply",
+  "page_ops", "set_page_boxes", "resize_pages",
+  "edit_text_object", "add_text_object", "add_image_object", "replace_image", "transform_object",
+  "delete_objects", "duplicate_objects", "edit_paragraph", "ocr_apply",
+  "sanitize_document", "add_attachment", "delete_attachment",
+]);
+/** Answers whether `command` on `args.docId` may go ahead; `false` rejects it with `cancelled`. */
+export type MutationGate = (command: string, args: { docId?: unknown }) => Promise<boolean>;
+let mutationGate: MutationGate | null = null;
+export function setMutationGate(gate: MutationGate | null): void {
+  mutationGate = gate;
+}
+/** The `message` of the `cancelled` error a declined gate throws; toasts skip it. */
+export const DECLINED = "declined by the user";
+
 /** Run `mockImpl` in mock mode, otherwise `invoke(command, args)`. */
 async function call<T>(command: string, args: object, mockImpl: (mock: MockAdapter) => Promise<T>): Promise<T> {
+  if (mutationGate && MUTATING_COMMANDS.has(command) && !(await mutationGate(command, args as { docId?: unknown }))) {
+    throw new SeePdfError({ code: "cancelled", message: DECLINED });
+  }
   try {
     if (useMock()) return await mockImpl(await loadMock());
     return await invoke<T>(command, args as Record<string, unknown>);
@@ -542,7 +571,8 @@ export function discardRecovery(a: { id: string }): Promise<void> {
 // 7.6 Save
 // ---------------------------------------------------------------------------
 
-export function saveDocument(a: { docId: DocId }, onProgress: (e: JobEvent) => void): Promise<SaveResult> {
+/** `force` (v0.3 H8): overwrite a file that changed on disk — the 덮어쓰기 answer to `fileChangedOnDisk`. */
+export function saveDocument(a: { docId: DocId; force?: boolean }, onProgress: (e: JobEvent) => void): Promise<SaveResult> {
   return call("save_document", { ...a, onProgress: channel(onProgress) }, (mock) => mock.saveDocument(a, onProgress));
 }
 
@@ -779,3 +809,41 @@ export async function saveFileDialog(
 
 /** Everything the annotation list needs to render an author string. */
 export type { Annot };
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg3-security-save-integrity
+// ---------------------------------------------------------------------------
+
+/** H8: bring the window that already shows `path` to the front; `null` when no window has it. */
+export function focusDocumentWindow(a: { path: string }): Promise<string | null> {
+  return call("focus_document_window", a, (mock) => mock.focusDocumentWindow(a));
+}
+
+/** U2: `<app data>/backups`, created if missing (설정 › 고급 › 백업 폴더 열기). */
+export function backupFolder(): Promise<string> {
+  return call("backup_folder", {}, (mock) => mock.backupFolder());
+}
+
+/** S5: reopen with the permissions (owner) password — same docId, same undo history. */
+export function unlockDocument(a: { docId: DocId; password: string }): Promise<DocInfo> {
+  return call("unlock_document", a, (mock) => mock.unlockDocument(a));
+}
+
+/** S3 문서 정리 — one undo step (none when nothing was found). */
+export function sanitizeDocument(a: { docId: DocId; options?: Partial<SanitizeOptions> }): Promise<SanitizeResult> {
+  return call("sanitize_document", a, (mock) => mock.sanitizeDocument(a));
+}
+
+/** S4 첨부 파일. */
+export function listAttachments(a: { docId: DocId }): Promise<AttachmentInfo[]> {
+  return call("list_attachments", a, (mock) => mock.listAttachments(a));
+}
+export function saveAttachment(a: { docId: DocId; index: number; path: string }): Promise<{ bytes: number }> {
+  return call("save_attachment", a, (mock) => mock.saveAttachment(a));
+}
+export function addAttachment(a: { docId: DocId; path: string; name?: string }): Promise<AttachmentInfo[]> {
+  return call("add_attachment", a, (mock) => mock.addAttachment(a));
+}
+export function deleteAttachment(a: { docId: DocId; index: number }): Promise<AttachmentInfo[]> {
+  return call("delete_attachment", a, (mock) => mock.deleteAttachment(a));
+}

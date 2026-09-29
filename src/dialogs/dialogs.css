@@ -552,3 +552,11 @@ p.compress-warn {
   margin: 0;
   text-align: end;
 }
+
+/* v0.3 pkg3 (S3): 문서 정리 checkboxes with their result counts */
+.sec-checks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-1) var(--space-3);
+}
+.sec-checks .sec-value { padding-block-start: 0; margin-inline-start: auto; color: var(--text-secondary); }

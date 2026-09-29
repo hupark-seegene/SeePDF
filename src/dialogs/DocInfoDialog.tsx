@@ -64,7 +64,7 @@ export function DocInfoDialog({ onClose }: { onClose(): void }) {
     <Dialog
       titleKey="dialog.docInfo.title"
       onClose={onClose}
-      primary={{ labelKey: "common.apply", onSelect: () => void apply(), disabled: !changed || info.encrypted || busy }}
+      primary={{ labelKey: "common.apply", onSelect: () => void apply(), disabled: !changed || !info.permissions.modify || busy }}
       footerExtra={
         // P2: stacks over 문서 정보, which comes back when it closes
         <button type="button" className="btn quiet" onClick={() => openDialog("pageLabels")}>
@@ -81,14 +81,16 @@ export function DocInfoDialog({ onClose }: { onClose(): void }) {
                 className="field grow"
                 type="text"
                 value={form[f.key]}
-                readOnly={info.encrypted}
+                readOnly={!info.permissions.modify}
                 onChange={(e) => setForm((prev) => ({ ...prev, [f.key]: e.target.value }))}
               />
               {f.hintKey && <span className="dlg-hint text-xs">{t(f.hintKey)}</span>}
             </span>
           </label>
         ))}
-        {info.encrypted && <p className="dlg-hint text-xs">{t("dialog.security.protectedHint")}</p>}
+        {/* v0.3 S2: an encrypted document is edited in place (it stays encrypted); only the
+            document's modify permission makes the fields read-only */}
+        {!info.permissions.modify && <p className="dlg-hint text-xs">{t("security.restricted.reason.modify")}</p>}
       </div>
       <dl className="info-list">
         {rows.map((row) => (

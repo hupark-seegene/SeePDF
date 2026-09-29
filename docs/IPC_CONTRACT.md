@@ -48,7 +48,8 @@ export type ErrorCode =
   | 'fontCoverage'       // the requested text cannot be rendered by the target font
   | 'verifyFailed'       // save or redaction post-condition failed; the document was rolled back
   | 'pdfium'             // PdfiumError that maps to nothing more specific
-  | 'io';                // filesystem error
+  | 'io'                 // filesystem error
+  | 'fileChangedOnDisk'; // v0.3 H8: save_document found the file changed since open / last save (§7.11)
 
 export interface EngineError { code: ErrorCode; message: string; page?: number; detail?: string }
 ```
@@ -142,6 +143,9 @@ export interface DocInfo {
   encrypted: boolean; permissions: Permissions; hasForm: boolean; xfa: boolean;
   hasOutline: boolean; meta: DocMeta; pdfVersion: string; tagged: boolean;
   pageLabels?: string[];   // P2: every page's label ("" where a page has none); absent when no page has one
+  signatures?: SignatureInfo[];   // v0.3 S1: detected digital signatures (never validated); absent when none (§7.11)
+  incrementalSave?: boolean;      // v0.3 S1: signed only — whether the next save appends (signatures stay intact)
+  attachmentCount?: number;       // v0.3 S4: document-level attachments; absent when 0
 }
 /** Stage 2: where on the page the heading is (PDF user space). Absent for a plain page jump. */
 export interface OutlineDest { x?: number; y?: number; zoom?: number }
@@ -805,14 +809,16 @@ Stage 3 semantics (`docs/STAGE3_SECURITY_NOTES.md`):
   password over 127 UTF-8 bytes → `invalidArgument`; a failed check → `verifyFailed`.
 * `set_metadata` / `remove_metadata` are **one undo step** each and return the reloaded `DocInfo`.
   In `set_metadata` an omitted field keeps its value, a blank string removes the key, and `modified`
-  omitted means "now". Both drop the catalog XMP `/Metadata` stream. An encrypted document →
-  `unsupported` ("remove the password first"), no undo entry.
+  omitted means "now". Both drop the catalog XMP `/Metadata` stream. ~~An encrypted document →
+  `unsupported`~~ — since v0.3 (S2, §7.11) an encrypted document is rewritten and **stays encrypted**
+  with the same passwords and permissions; a document whose permissions forbid modification →
+  `permissionDenied` (detail `modify`), no undo entry.
 
 ### 7.6 Save
 
 ```ts
 export interface SaveResult { docId: DocId; path: string; bytes: number; docGeneration: DocGeneration; elapsedMs: number }
-save_document(a: { docId: DocId }, onProgress: Channel<JobEvent>): Promise<SaveResult>
+save_document(a: { docId: DocId; force?: boolean }, onProgress: Channel<JobEvent>): Promise<SaveResult>   // force: v0.3 H8 (§7.11)
 save_document_as(a: { docId: DocId; path: string }, onProgress: Channel<JobEvent>): Promise<SaveResult>
 path_exists(a: { path: string }): Promise<boolean>   // Stage 6a (P1-7)
 ```
@@ -1120,6 +1126,86 @@ Semantics:
 
 ---
 
+### 7.11 Security and save integrity (v0.3, pkg3)
+
+```ts
+export interface SignatureInfo { fieldName?: string; reason?: string; time?: string; subFilter?: string }
+export interface SanitizeOptions { javascript: boolean; attachments: boolean; actions: boolean; metadata: boolean; hiddenLayers: boolean }
+export type SanitizeCounts = { [K in keyof SanitizeOptions]: number };
+export interface SanitizeResult { removed: SanitizeCounts; info: DocInfo }
+export interface AttachmentInfo { index: number; name: string; size: number }
+
+unlock_document(a: { docId: DocId; password: string }): Promise<DocInfo>                    // S5
+sanitize_document(a: { docId: DocId; options?: Partial<SanitizeOptions> }): Promise<SanitizeResult>   // S3
+list_attachments(a: { docId: DocId }): Promise<AttachmentInfo[]>                           // S4
+save_attachment(a: { docId: DocId; index: number; path: string }): Promise<{ bytes: number }>
+add_attachment(a: { docId: DocId; path: string; name?: string }): Promise<AttachmentInfo[]>
+delete_attachment(a: { docId: DocId; index: number }): Promise<AttachmentInfo[]>
+focus_document_window(a: { path: string }): Promise<string | null>                         // H8
+backup_folder(): Promise<string>                                                           // U2
+```
+
+**S1 — digital signatures.** `DocInfo.signatures` lists every top-level `/FT /Sig` field that carries a
+signature (`FPDF_GetSignatureCount` / `FPDFSignatureObj_*`; an empty signature field is not listed), with the
+field's `/T` (read with lopdf, best effort), `/Reason`, `/M` (raw `D:` string) and `/SubFilter`. Nothing is
+validated. The engine keeps a signed file's bytes (`OpenDoc::incremental_base`) and whether the in-memory
+document still derives from them by PDFium edits alone (`pristine`: any lopdf rewrite, or an undo / redo /
+rollback to a re-serialised snapshot, clears it; an undo back to the file's own bytes restores it).
+`incrementalSave` reports it. `save_document` / `save_document_as` of a signed, pristine document use
+`FPDF_INCREMENTAL`: the output **starts with the signed file byte for byte** (checked; a full rewrite is the
+fallback) and the saved file becomes the new base. Anything else is a full rewrite, which the UI announces
+first (the signatures become invalid).
+
+**S5 — permission flags.** Every mutation passes `security::ensure_permitted` inside `registry::mutate` /
+`mutate_bytes`, before any undo entry is pushed; the permission comes from the edit itself
+(`security::perm_for`): `undo.annot*` → annotate, `undo.form*` → fill forms, a structural or `pages` edit →
+assemble, everything else → modify. `print_prepare` checks print and `export_text` checks extract-text. A
+refusal is `permissionDenied` with `detail` = the permission (`print` / `modify` / `extractText` / `annotate` /
+`fillForms` / `assemble`). `probe_text_edit` answers `reason: 'permissions'`. The flags are those of the
+**current** open: an unencrypted document, or one opened with its owner password, grants everything.
+`unlock_document` reopens the document in place with `password`, which must open it with every permission
+(the owner password): same docId, path, generation, dirty state and undo / redo history (every snapshot opens
+with the owner password too). Wrong password, or the open (user) password → `passwordWrong`; an unencrypted
+document → `invalidArgument`. The view-only page route cannot tell printing from viewing, so the 인쇄 dialog's
+print-only DOM is gated in the frontend (`runPrint`); the clipboard is gated in the frontend as well.
+
+**S2 — lopdf rewrites of an encrypted document** (metadata, outline, page labels, page links, replies,
+sanitize). `registry::mutate_bytes` hands the closure PDFium's **decrypted** serialisation
+(`FPDF_REMOVE_SECURITY`), then re-encrypts its output with the document's own security-handler state, decoded
+by lopdf from the encrypted serialisation (same `/O /U /OE /UE /Perms /P /V /R`, crypt filters, `/ID` and file
+key — RC4 40/128, AES-128, AES-256), and the reopened result must report the same revision and permissions
+(else `verifyFailed`). No owner password is needed. The derived file key is checked against PDFium's own
+decryption on a few streams before anything is written; when it cannot be derived (a non-standard handler, or
+an R2–R4 file opened with its owner password while it also has an open password) → `unsupported` with that
+reason. `get_page_labels` reads an encrypted document decrypted. `compress_apply` returns bytes PDFium already
+encrypted and skips the round trip.
+
+**S3 — `sanitize_document`** (문서 정리): one undo step `undo.sanitize`, or none when a dry run finds nothing
+(the result then carries the unchanged `DocInfo`). `javascript`: `/Names /JavaScript` and every JavaScript
+action (`/S /JavaScript` or a `/JS` entry) in `/A`, `/OpenAction`, `/Next` and — when `actions` is off — the
+JavaScript entries of `/AA`. `attachments`: `/Names /EmbeddedFiles`, the catalog `/AF` and every
+`FileAttachment` annotation with its popup. `actions`: an action `/OpenAction` (a plain destination is kept)
+and every `/AA`. `metadata`: trailer `/Info`, every `/Metadata` and `/PieceInfo`. `hiddenLayers`: optional
+content off in the default configuration — its marked-content sections and `/OC`-tagged XObject draws are
+deleted from the page content, then `/OCProperties` is removed; if any page could not be rewritten the layers
+stay hidden (count 0). Unreferenced objects are pruned. Counts are entries removed per category.
+
+**S4 — attachments** go through PDFium (`FPDFDoc_*Attachment*`): `add_attachment` (name defaults to the file
+name; a taken name gets ` (2)` before the extension; ≤ 256 MiB) and `delete_attachment` are one undo step each
+(`undo.attachmentAdd` / `undo.attachmentDelete`, modify permission); `index` is PDFium's list order (name-tree
+key order) and valid for the generation it was listed in; unknown index → `notFound`.
+
+**H8 — one window per file / file changed on disk.** `focus_document_window` canonicalises `path`, finds the
+window bound (`window_bind_document`) to a document with that path, un-minimises, shows and focuses it, and
+returns its label (`null` when none). `openPath` calls it first and opens nothing when another window answers.
+The engine records the file's size and modification time at open and after every save; `save_document` over the
+document's own file compares them first and answers `fileChangedOnDisk` on a mismatch (nothing written);
+`force: true` overwrites and re-records. Save As to another path never checks.
+
+**U2 — backups.** `save_document` / `save_document_as` write a backup of the file being replaced only when
+`Settings.backupsEnabled` is on, under `<app data>/backups/<stem>/<millis>-<name>` (the newest three kept;
+the temp directory only without an app). `backup_folder` returns that folder (created if missing).
+
 ## 8. Events and progress
 
 ```ts
@@ -1362,6 +1448,8 @@ ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors:
 | `set_outline`, `create_link`, `update_link`, `delete_link`, `set_page_labels`, `get_page_labels` | P2, `engine/structure/` + `commands/structure.rs` | P2 outline / links / labels |
 | `reply_annotation` | P2, `engine/annot/reply.rs` (lopdf via `registry::mutate_bytes`) | P2 threads |
 | `list_pdf_files` | P2, `commands/save.rs` | P2 multi-file search |
+| `unlock_document`, `sanitize_document`, `list_attachments`, `save_attachment`, `add_attachment`, `delete_attachment` | v0.3 pkg3, `engine/security.rs`, `engine/sanitize.rs`, `engine/attachments.rs` + `commands/security.rs` | S5, S3, S4 |
+| `focus_document_window`, `backup_folder` (+ `save_document { force }`) | v0.3 pkg3, `app/windows.rs`, `commands/save.rs`, `engine/save/mod.rs` | H8, U2 |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

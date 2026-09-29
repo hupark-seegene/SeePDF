@@ -1,0 +1,48 @@
+/* v0.3 pkg3 (S4): 첨부 파일 panel */
+.attachments-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.attachments-bar {
+  display: flex;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.attachments-bar .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.attachments-list {
+  margin: 0;
+  padding: var(--space-1) 0;
+  list-style: none;
+}
+
+.attachments-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-2);
+}
+
+.attachments-row:hover {
+  background: var(--bg-hover);
+}
+
+.attachments-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachments-row .dim {
+  color: var(--text-tertiary);
+  flex: none;
+}

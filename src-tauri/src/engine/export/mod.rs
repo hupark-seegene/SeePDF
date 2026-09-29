@@ -230,6 +230,12 @@ pub fn export_text(
     pages: &[PageIndex],
     out_path: &str,
 ) -> Result<ExportTextResult, EngineError> {
+    // v0.3 pkg3 (S5): the document's copy / extract permission.
+    crate::engine::security::ensure_doc_permitted(
+        st,
+        doc_id,
+        crate::engine::security::Perm::ExtractText,
+    )?;
     let pages = check_pages(st, doc_id, pages)?;
     let mut out = String::new();
     for (i, &page) in pages.iter().enumerate() {
@@ -476,6 +482,12 @@ pub fn print_prepare(
     doc_id: &str,
     pages: Option<&[PageIndex]>,
 ) -> Result<PathBuf, EngineError> {
+    // v0.3 pkg3 (S5): the document's print permission.
+    crate::engine::security::ensure_doc_permitted(
+        st,
+        doc_id,
+        crate::engine::security::Perm::Print,
+    )?;
     let subset = match pages {
         Some(list) if !list.is_empty() => {
             Some(crate::engine::pages::subset_bytes(st, doc_id, list)?)
