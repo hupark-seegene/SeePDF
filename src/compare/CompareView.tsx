@@ -30,12 +30,15 @@ function CompareBody({ session }: { session: CompareSession }) {
   const t = useT();
   const { report, infoA, infoB } = session;
   const [changedOnly, setChangedOnly] = useState(false);
+  // v0.3 (X4): the figure-change marks blink so a small change is easy to spot
+  const [blink, setBlink] = useState(true);
   const [cursor, setCursor] = useState(-1);
   const [column, setColumn] = useState(DEFAULT_COLUMN_PX);
   const scroller = useRef<HTMLDivElement>(null);
   const programmatic = useRef(false);
 
   const rows = useMemo(() => buildRows(report), [report]);
+  const hasVisual = rows.some((r) => r.visualA.length > 0 || r.visualB.length > 0);
   const shown = visibleRows(rows, changedOnly);
   const prev = nextChanged(shown, cursor, -1);
   const next = nextChanged(shown, cursor, 1);
@@ -104,7 +107,7 @@ function CompareBody({ session }: { session: CompareSession }) {
   };
 
   return (
-    <div className="cmp-root" role="region" aria-label={t("compare.title")}>
+    <div className="cmp-root" role="region" aria-label={t("compare.title")} data-blink={blink || undefined}>
       <header className="cmp-head">
         <h2 className="text-md cmp-title">{t("compare.title")}</h2>
         <p className="text-sm cmp-summary" data-testid="compare-summary">
@@ -131,6 +134,12 @@ function CompareBody({ session }: { session: CompareSession }) {
           />
           <span>{t("compare.changedOnly")}</span>
         </label>
+        {hasVisual && (
+          <label className="dlg-check text-base cmp-toggle">
+            <input type="checkbox" checked={blink} onChange={(e) => setBlink(e.target.checked)} />
+            <span>{t("compare.blink")}</span>
+          </label>
+        )}
         <button type="button" className="btn primary" onClick={close}>
           {t("common.close")}
         </button>
@@ -195,7 +204,11 @@ function Row({
           <span className="cmp-badge">
             {row.inserted > 0 && <span className="cmp-ins">+{row.inserted}</span>}
             {row.deleted > 0 && <span className="cmp-del">−{row.deleted}</span>}
-            {row.inserted === 0 && row.deleted === 0 && t("compare.changed")}
+            {(row.visualA.length > 0 || row.visualB.length > 0) && (
+              <span className="cmp-vis">{t("compare.visual")}</span>
+            )}
+            {row.inserted === 0 && row.deleted === 0 && row.visualA.length === 0 && row.visualB.length === 0 &&
+              t("compare.changed")}
           </span>
         ) : (
           <span className="cmp-same">{t("compare.same")}</span>
@@ -203,12 +216,12 @@ function Row({
       </div>
       <div className="cmp-pair">
         <PageCell
-          info={infoA} page={row.pageA} rects={row.rectsA} tone="del" column={column} height={height}
-          missingKey={side === "inserted" ? "compare.insertedPage" : undefined}
+          info={infoA} page={row.pageA} rects={row.rectsA} visual={row.visualA} tone="del" column={column}
+          height={height} missingKey={side === "inserted" ? "compare.insertedPage" : undefined}
         />
         <PageCell
-          info={infoB} page={row.pageB} rects={row.rectsB} tone="ins" column={column} height={height}
-          missingKey={side === "deleted" ? "compare.deletedPage" : undefined}
+          info={infoB} page={row.pageB} rects={row.rectsB} visual={row.visualB} tone="ins" column={column}
+          height={height} missingKey={side === "deleted" ? "compare.deletedPage" : undefined}
         />
       </div>
     </section>
@@ -216,9 +229,11 @@ function Row({
 }
 
 function PageCell({
-  info, page, rects, tone, column, height, missingKey,
+  info, page, rects, visual, tone, column, height, missingKey,
 }: {
   info: DocInfo; page: PageIndex | null; rects: Rect[]; tone: "ins" | "del"; column: number; height: number;
+  /** v0.3 (X4): regions whose pixels changed outside the text */
+  visual: Rect[];
   /** what the empty side says: 삽입된 페이지 (only B has it) / 삭제된 페이지 (only A has it) */
   missingKey?: string;
 }) {
@@ -253,6 +268,17 @@ function PageCell({
             key={i}
             className={`cmp-mark ${tone}`}
             data-testid={`cmp-mark-${tone}`}
+            style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
+          />
+        );
+      })}
+      {visual.map((r, i) => {
+        const box = rectToCss(r, geom, s);
+        return (
+          <span
+            key={`v${i}`}
+            className="cmp-mark visual"
+            data-testid="cmp-mark-visual"
             style={{ left: box.x, top: box.y, width: box.w, height: box.h }}
           />
         );

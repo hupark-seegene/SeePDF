@@ -173,6 +173,7 @@ fn apply(doc_id: &str, token: u64) -> Result<DocInfo, EngineError> {
 fn opts(dpi: u32) -> CompressOptions {
     CompressOptions {
         target_dpi: dpi,
+        optimize: None,
         pages: None,
     }
 }
@@ -258,6 +259,7 @@ fn compress_presets_and_page_subset() {
     let subset = CompressOptions {
         target_dpi: 150,
         pages: Some(vec![3, 2]),
+        optimize: None,
     };
     let events = estimate(&doc.doc_id, subset).unwrap();
     assert!(matches!(events[0], JobEvent::Started { total: 2, .. }));
@@ -281,6 +283,7 @@ fn compress_presets_and_page_subset() {
     let bad_page = CompressOptions {
         target_dpi: 96,
         pages: Some(vec![99]),
+        optimize: None,
     };
     assert_eq!(
         estimate(&doc.doc_id, bad_page).unwrap_err().code,
@@ -720,4 +723,307 @@ fn compress_encrypted_document_keeps_its_password() {
             "{label}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg8 (X5): shared images, soft masks, structural optimisation
+// ---------------------------------------------------------------------------------------
+
+/// A Flate RGB image stream (and optionally an 8-bit gray `/SMask` gradient) built with lopdf.
+fn image_stream(doc: &mut lopdf::Document, w: u32, h: u32, smask: bool) -> lopdf::ObjectId {
+    use lopdf::{dictionary, Object, Stream};
+    let mut dict = dictionary! {
+        "Type" => "XObject",
+        "Subtype" => "Image",
+        "Width" => w as i64,
+        "Height" => h as i64,
+        "ColorSpace" => "DeviceRGB",
+        "BitsPerComponent" => 8,
+    };
+    if smask {
+        // Opaque on the left, fully transparent on the right.
+        let alpha: Vec<u8> = (0..h)
+            .flat_map(|_| (0..w).map(move |x| 255 - (x * 255 / (w - 1)) as u8))
+            .collect();
+        let mut mask = Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => w as i64,
+                "Height" => h as i64,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            alpha,
+        );
+        mask.compress().unwrap();
+        let mask_id = doc.add_object(mask);
+        dict.set("SMask", Object::Reference(mask_id));
+    }
+    let mut stream = Stream::new(dict, noisy_rgb(w, h).into_raw());
+    stream.compress().unwrap();
+    doc.add_object(stream)
+}
+
+/// A lopdf-built document: one page per entry, each drawing `draw` (content-stream text) with
+/// `resources` (an `/XObject` dictionary).
+fn lopdf_pdf(pages: Vec<(String, lopdf::Dictionary)>, doc: lopdf::Document) -> Vec<u8> {
+    use lopdf::{dictionary, Object, Stream};
+    let mut doc = doc;
+    let pages_id = doc.new_object_id();
+    let mut kids = Vec::new();
+    for (content, xobjects) in pages {
+        let content_id = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Contents" => content_id,
+            "Resources" => dictionary! { "XObject" => Object::Dictionary(xobjects) },
+        });
+        kids.push(Object::Reference(page_id));
+    }
+    let count = kids.len() as i64;
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => count }),
+    );
+    let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog);
+    let mut out = Vec::new();
+    doc.save_to(&mut out).unwrap();
+    out
+}
+
+fn open_bytes(bytes: Vec<u8>, name: &str) -> TestDoc {
+    std::fs::write(out_dir().join(name), &bytes).unwrap();
+    let info = with_state(move |st| registry::open(st, None, bytes, None)).expect("open");
+    TestDoc {
+        doc_id: info.doc_id.clone(),
+        info,
+    }
+}
+
+fn estimate_with(doc_id: &str, dpi: u32, optimize: bool) -> CompressReport {
+    report_of(
+        &estimate(
+            doc_id,
+            CompressOptions {
+                target_dpi: dpi,
+                pages: None,
+                optimize: Some(optimize),
+            },
+        )
+        .expect("estimate"),
+    )
+}
+
+/// `(width, SMask width)` of every image XObject in the document's current bytes.
+fn image_widths(doc_id: &str) -> Vec<(i64, Option<i64>)> {
+    let bytes = with_doc(doc_id, |d| Ok(d.bytes.to_vec())).unwrap();
+    let doc = lopdf::Document::load_mem(&bytes).unwrap();
+    let mut out = Vec::new();
+    for object in doc.objects.values() {
+        let Ok(stream) = object.as_stream() else {
+            continue;
+        };
+        let image = stream
+            .dict
+            .get(b"Subtype")
+            .and_then(|s| s.as_name())
+            .map(|n| n == b"Image")
+            .unwrap_or(false);
+        let is_mask = stream
+            .dict
+            .get(b"ColorSpace")
+            .and_then(|s| s.as_name())
+            .map(|n| n == b"DeviceGray")
+            .unwrap_or(false);
+        if !image || is_mask {
+            continue;
+        }
+        let smask = stream
+            .dict
+            .get(b"SMask")
+            .and_then(|m| m.as_reference())
+            .ok()
+            .and_then(|id| doc.get_object(id).ok())
+            .and_then(|o| o.as_stream().ok())
+            .and_then(|s| s.dict.get(b"Width").and_then(|w| w.as_i64()).ok());
+        out.push((stream.dict.get(b"Width").unwrap().as_i64().unwrap(), smask));
+    }
+    out
+}
+
+/// X5: one image XObject drawn on three pages (432 DPI) is downsampled **once** — its one
+/// stream object is replaced — and every page renders as before, only softer.
+#[test]
+fn compress_downsamples_a_shared_image_once() {
+    use lopdf::{dictionary, Object};
+    let mut doc = lopdf::Document::with_version("1.5");
+    let im = image_stream(&mut doc, 1200, 800, false);
+    let draw = "q 200 0 0 133.33 72 500 cm /Im1 Do Q".to_string();
+    let pages = (0..3)
+        .map(|_| (draw.clone(), dictionary! { "Im1" => Object::Reference(im) }))
+        .collect();
+    let doc = open_bytes(lopdf_pdf(pages, doc), "shared-image.pdf");
+    let before: Vec<Vec<u8>> = (0..3).map(|p| render_page(&doc.doc_id, p)).collect();
+
+    let report = estimate_with(&doc.doc_id, 150, false);
+    assert_eq!(report.images_total, 3);
+    assert_eq!(
+        report.images_downsampled, 3,
+        "every occurrence of the one stream"
+    );
+    assert!(
+        report.after_bytes * 3 < report.before_bytes,
+        "{} → {}",
+        report.before_bytes,
+        report.after_bytes
+    );
+    apply(&doc.doc_id, report.token).expect("apply");
+    let widths = image_widths(&doc.doc_id);
+    assert_eq!(widths.len(), 1, "still one shared stream: {widths:?}");
+    // 1200 px over 200 pt = 432 DPI → 150 DPI: ~417 px.
+    assert!((widths[0].0 - 417).abs() <= 1, "{widths:?}");
+    for p in 0..3u16 {
+        let diff = mean_abs_diff(&before[p as usize], &render_page(&doc.doc_id, p));
+        assert!(diff < 8.0, "page {p} changed by {diff:.2}");
+    }
+}
+
+/// X5: an image with an `/SMask` is downsampled together with its mask, and the page still
+/// shows the red rectangle through the transparent half.
+#[test]
+fn compress_keeps_soft_mask_transparency() {
+    use lopdf::{dictionary, Object};
+    let mut doc = lopdf::Document::with_version("1.5");
+    let im = image_stream(&mut doc, 1200, 800, true);
+    // A red rectangle, then the half-transparent image over it.
+    let draw = "1 0 0 rg 72 500 200 133.33 re f q 200 0 0 133.33 72 500 cm /Im1 Do Q".to_string();
+    let doc = open_bytes(
+        lopdf_pdf(
+            vec![(draw, dictionary! { "Im1" => Object::Reference(im) })],
+            doc,
+        ),
+        "smask-image.pdf",
+    );
+    let before = render_page(&doc.doc_id, 0);
+    let report = estimate_with(&doc.doc_id, 150, false);
+    assert_eq!(report.images_downsampled, 1);
+    assert!(report.after_bytes < report.before_bytes);
+    apply(&doc.doc_id, report.token).expect("apply");
+    let widths = image_widths(&doc.doc_id);
+    assert_eq!(widths.len(), 1, "{widths:?}");
+    assert!((widths[0].0 - 417).abs() <= 1, "{widths:?}");
+    let dump = with_doc(&doc.doc_id, |d| Ok(d.bytes.to_vec())).unwrap();
+    std::fs::write(out_dir().join("smask-after.pdf"), &dump).unwrap();
+    let mask = widths[0].1.expect("the image keeps its /SMask");
+    assert!(
+        (mask - 417).abs() <= 1,
+        "the mask is downsampled by the same factor: {mask}"
+    );
+
+    let after = render_page(&doc.doc_id, 0);
+    assert!(mean_abs_diff(&before, &after) < 8.0);
+    // At 0.5× the image spans x 36..136, y (792-633.33)/2..(792-500)/2; its right edge is
+    // transparent, so the pixel there is still red.
+    let w = (612.0f32 * 0.5).round() as usize;
+    let (x, y) = (133usize, 120usize);
+    let px = &after[(y * w + x) * 4..(y * w + x) * 4 + 3];
+    assert!(
+        px[0] > 200 && px[1] < 80 && px[2] < 80,
+        "the transparent side shows the red underneath: {px:?}"
+    );
+}
+
+/// X5 구조 최적화: an image listed in a page's resources but never drawn, and the empty
+/// content streams, are dropped, and the file is written with object streams — the estimate
+/// shows the saving and 적용 applies it even with no image downsampled.
+#[test]
+fn compress_structural_pass_drops_unused_objects() {
+    use lopdf::{dictionary, Object};
+    let mut doc = lopdf::Document::with_version("1.5");
+    let used = image_stream(&mut doc, 60, 40, false);
+    let unused = image_stream(&mut doc, 900, 700, false);
+    let draw = "q 60 0 0 40 72 500 cm /Im1 Do Q".to_string();
+    let doc = open_bytes(
+        lopdf_pdf(
+            vec![(
+                draw,
+                dictionary! { "Im1" => Object::Reference(used), "Unused" => Object::Reference(unused) },
+            )],
+            doc,
+        ),
+        "orphan-image.pdf",
+    );
+    let before = render_page(&doc.doc_id, 0);
+
+    // Without the option the unused image stays (PDFium keeps everything reachable).
+    let plain = estimate_with(&doc.doc_id, 300, false);
+    assert_eq!(plain.images_downsampled, 0);
+    assert!(plain.after_bytes as f64 > plain.before_bytes as f64 * 0.9);
+
+    let report = estimate_with(&doc.doc_id, 300, true);
+    assert_eq!(report.images_downsampled, 0);
+    assert!(
+        report.after_bytes * 5 < report.before_bytes,
+        "the unused 900×700 image is gone: {} → {}",
+        report.before_bytes,
+        report.after_bytes
+    );
+    let info = apply(&doc.doc_id, report.token).expect("apply");
+    assert_eq!(info.undo_label.as_deref(), Some("undo.compress"));
+    assert_eq!(info.bytes, report.after_bytes);
+    assert_eq!(image_widths(&doc.doc_id), vec![(60, None)]);
+    let bytes = with_doc(&doc.doc_id, |d| Ok(d.bytes.to_vec())).unwrap();
+    assert!(
+        bytes.windows(7).any(|w| w == b"/ObjStm"),
+        "written with object streams"
+    );
+    assert!(mean_abs_diff(&before, &render_page(&doc.doc_id, 0)) < 1.0);
+}
+
+#[test]
+fn optimize_structure_keeps_what_is_used() {
+    use lopdf::{dictionary, Object};
+    // Two pages share one resource dictionary: an image used only by page 2 must survive.
+    let mut doc = lopdf::Document::with_version("1.5");
+    let a = image_stream(&mut doc, 20, 20, false);
+    let b = image_stream(&mut doc, 20, 20, false);
+    let res = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "A" => Object::Reference(a), "B" => Object::Reference(b) },
+    });
+    let pages_id = doc.new_object_id();
+    let mut kids = Vec::new();
+    for draw in ["q 20 0 0 20 0 0 cm /A Do Q", "q 20 0 0 20 0 0 cm /B Do Q"] {
+        let content = doc.add_object(lopdf::Stream::new(dictionary! {}, draw.as_bytes().to_vec()));
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id, "Contents" => content, "Resources" => res,
+            "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+        });
+        kids.push(Object::Reference(page));
+    }
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => 2 }),
+    );
+    let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    doc.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes).unwrap();
+
+    let out = compress::optimize_structure(&bytes).expect("optimize");
+    let doc = lopdf::Document::load_mem(&out).unwrap();
+    let images = doc
+        .objects
+        .values()
+        .filter(|o| {
+            o.as_stream()
+                .ok()
+                .and_then(|s| s.dict.get(b"Subtype").ok().and_then(|n| n.as_name().ok()))
+                == Some(b"Image".as_slice())
+        })
+        .count();
+    assert_eq!(images, 2, "both images are used by one of the two pages");
 }

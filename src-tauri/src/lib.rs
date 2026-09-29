@@ -249,6 +249,12 @@ pub fn run() {
             commands::export::estimate_export,
             commands::export::print_prepare,
             commands::export::export_annotation_summary,
+            // --- v0.3 pkg8-export-print-compare-batch ---
+            commands::export::make_nup,
+            commands::export::export_embedded_images,
+            commands::export::export_stitched_image,
+            commands::export::export_tiff,
+            commands::export::export_text_flow,
             // --- read aloud (P2) ---
             commands::tts::tts_speak,
             commands::tts::tts_stop,

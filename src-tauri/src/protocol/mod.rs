@@ -8,7 +8,7 @@
 //! It **always** responds — a dropped `UriSchemeResponder` hangs the `<img>` until the
 //! webview times out.
 
-use crate::engine::render::cache::{Night, RenderKind, TileKey};
+use crate::engine::render::cache::{Night, PrintAnnots, RenderKind, TileKey};
 use crate::engine::render::tiles::RenderRequest;
 use crate::engine::types::{CmdStatus, Lane};
 use crate::engine::{EngineHandle, Submit};
@@ -169,12 +169,21 @@ pub fn parse_image_key(path: &str, q: &HashMap<String, String>) -> Result<TileKe
     };
     let kind = match kind {
         "tile" => RenderKind::Tile,
-        "page" => RenderKind::Page,
+        // v0.3 pkg8 (X7): `print=all|none|stamps` makes `/page` the print variant.
+        "page" => match q.get("print") {
+            None => RenderKind::Page,
+            Some(v) => RenderKind::Print(
+                PrintAnnots::parse(v)
+                    .ok_or_else(|| EngineError::invalid("print must be all, none or stamps"))?,
+            ),
+        },
         "thumb" => RenderKind::Thumb,
         _ => RenderKind::Ocr,
     };
-    if matches!(kind, RenderKind::Tile | RenderKind::Page)
-        && scale_key > crate::engine::render::geometry::MAX_SCALE_KEY
+    if matches!(
+        kind,
+        RenderKind::Tile | RenderKind::Page | RenderKind::Print(_)
+    ) && scale_key > crate::engine::render::geometry::MAX_SCALE_KEY
     {
         return Err(EngineError::invalid(format!(
             "sk {scale_key} exceeds the ceiling of {}",
@@ -237,10 +246,13 @@ fn serve_image(
     let viewport_gen = engine.shared.viewport_gen();
     let cache = engine.shared.tiles.clone();
     let stats = engine.shared.stats.clone();
-    let submit = Submit::new(lane, route_label(key.kind))
+    let mut submit = Submit::new(lane, route_label(key.kind))
         .priority(priority)
-        .page(key.page)
-        .viewport(viewport_gen);
+        .page(key.page);
+    // A print page is never "off screen": dropping it as stale would 409 a printed sheet.
+    if !matches!(key.kind, RenderKind::Print(_)) {
+        submit = submit.viewport(viewport_gen);
+    }
 
     let request = RenderRequest::new(key.clone());
     let dispatched = engine.dispatch(submit, move |st, status| match status {
@@ -277,6 +289,7 @@ fn route_label(kind: RenderKind) -> &'static str {
         RenderKind::Page => "protocol/page",
         RenderKind::Thumb => "protocol/thumb",
         RenderKind::Ocr => "protocol/ocr",
+        RenderKind::Print(_) => "protocol/print",
     }
 }
 
@@ -298,6 +311,8 @@ fn schedule(engine: &EngineHandle, key: &TileKey) -> (Lane, u32) {
         }
         RenderKind::Thumb => (Lane::Thumb, page_distance),
         RenderKind::Ocr => (Lane::Background, page_distance),
+        // In page order, behind what is on screen, ahead of the background jobs.
+        RenderKind::Print(_) => (Lane::Prefetch, key.page as u32),
     }
 }
 
@@ -633,6 +648,38 @@ mod tests {
             )
             .unwrap_err()
             .code,
+            ErrorCode::InvalidArgument
+        );
+    }
+
+    /// v0.3 pkg8 (X7): `print=` turns `/page` into the print variant, its own cache entry.
+    #[test]
+    fn print_parameter_selects_the_print_variant() {
+        let page = |print: Option<&str>| {
+            let mut q = vec![("doc", "d1"), ("gen", "2"), ("page", "0"), ("sk", "208")];
+            if let Some(p) = print {
+                q.push(("print", p));
+            }
+            parse_image_key("/page", &query(&q))
+        };
+        assert_eq!(page(None).unwrap().kind, RenderKind::Page);
+        assert_eq!(
+            page(Some("all")).unwrap().kind,
+            RenderKind::Print(PrintAnnots::All)
+        );
+        assert_eq!(
+            page(Some("none")).unwrap().kind,
+            RenderKind::Print(PrintAnnots::None)
+        );
+        let stamps = page(Some("stamps")).unwrap();
+        assert_eq!(stamps.kind, RenderKind::Print(PrintAnnots::Stamps));
+        assert_eq!(stamps.etag(), "\"d1:2:0:print-stamps:208:0:0:0:0:0:1\"");
+        assert_ne!(
+            page(None).unwrap().etag(),
+            page(Some("all")).unwrap().etag()
+        );
+        assert_eq!(
+            page(Some("sometimes")).unwrap_err().code,
             ErrorCode::InvalidArgument
         );
     }

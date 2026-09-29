@@ -411,13 +411,16 @@ export type PrintMethod = "document" | "handler";
 export async function runPrint(
   pages: PageIndex[] | undefined,
   method: PrintMethod = "document",
+  // v0.3 pkg8: 주석 / 모아찍기 / 소책자 / 크기 / 흑백 (src/print/printFlow.ts)
+  options: import("../print/printStore").PrintOptions = {},
 ): Promise<void> {
   const info = useDocStore.getState().info;
   if (!info) return;
-  if (method === "document") return printDocumentDom(info, pages);
+  if (method === "document") return printDocumentDom(info, pages, options);
   toast("print.preparing", undefined, { timeoutMs: 1800 });
   try {
-    const { tempPath } = await api.printPrepare({ docId: info.docId, pages });
+    const { prepareHandlerFile } = await import("../print/printFlow");
+    const tempPath = await prepareHandlerFile(info, pages, options);
     if (await openWithOs(tempPath)) return;
     // No OS handler for PDFs: the webview panel at least gets the user to a printer.
     if (!(await webviewPrint())) toast("print.title", undefined, { tone: "info", detail: tempPath });
@@ -427,17 +430,18 @@ export async function runPrint(
 }
 
 /** Fill the print store; `PrintRoot` renders the pages and calls `window.print()` itself. */
-async function printDocumentDom(info: DocInfo, pages: PageIndex[] | undefined): Promise<void> {
-  const { PRINT_DPI, scaleKeyForDpi, usePrintStore } = await import("../print/printStore");
-  const all = Array.from({ length: info.pageCount }, (_, i) => i);
+async function printDocumentDom(
+  info: DocInfo,
+  pages: PageIndex[] | undefined,
+  options: import("../print/printStore").PrintOptions,
+): Promise<void> {
+  const { startDomPrint } = await import("../print/printFlow");
   toast("print.rendering", undefined, { timeoutMs: 2400 });
-  usePrintStore.getState().start({
-    docId: info.docId,
-    generation: info.docGeneration,
-    pages: pages?.length ? pages : all,
-    rotation: useViewStore.getState().rotation,
-    scaleKey: scaleKeyForDpi(PRINT_DPI),
-  });
+  try {
+    await startDomPrint(info, pages, useViewStore.getState().rotation, options);
+  } catch (e) {
+    toast("error.generic", undefined, { tone: "danger", detail: message(e) });
+  }
 }
 
 /**

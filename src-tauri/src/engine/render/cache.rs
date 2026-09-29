@@ -21,6 +21,36 @@ pub enum RenderKind {
     Thumb,
     /// Gray8 page image for the OCR workers; `scale_key` carries the DPI.
     Ocr,
+    /// v0.3 pkg8 (X7): a whole page for the print-only DOM — `/page?…&print=all|none|stamps`.
+    /// Rendered with `FPDF_PRINTING`, so annotation `/F` Print / NoView flags are honoured the
+    /// way a printer sees them, and never dropped as stale when the viewport moves.
+    Print(PrintAnnots),
+}
+
+/// v0.3 pkg8 (X7): which markup reaches paper (인쇄 ▸ 주석).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum PrintAnnots {
+    /// 문서와 주석 (default): every annotation whose flags say it prints.
+    #[default]
+    All,
+    /// 문서만: page content and form field values, no markup.
+    None,
+    /// 문서와 도장·서명: only stamp and signature annotations (plus form fields).
+    Stamps,
+}
+
+impl PrintAnnots {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "1" | "all" | "true" => Some(PrintAnnots::All),
+            "none" => Some(PrintAnnots::None),
+            "stamps" => Some(PrintAnnots::Stamps),
+            _ => None,
+        }
+    }
 }
 
 impl RenderKind {
@@ -30,6 +60,9 @@ impl RenderKind {
             RenderKind::Page => "page",
             RenderKind::Thumb => "thumb",
             RenderKind::Ocr => "ocr",
+            RenderKind::Print(PrintAnnots::All) => "print",
+            RenderKind::Print(PrintAnnots::None) => "print-none",
+            RenderKind::Print(PrintAnnots::Stamps) => "print-stamps",
         }
     }
 }

@@ -76,6 +76,8 @@ pub struct Work {
     pub ignore_case: bool,
     /// Stage 8 `alignPages`.
     pub align: bool,
+    /// v0.3 pkg8 (X4) `visual`: a pixel diff outside the text per pair.
+    pub visual: bool,
     started: Instant,
     /// Report rows: known at [`begin`] for positional pairing, set by the align step otherwise.
     rows: Mutex<Vec<Row>>,
@@ -161,6 +163,7 @@ pub fn begin(
         pages_b,
         ignore_case: options.ignore_case,
         align,
+        visual: options.visual(),
         started: Instant::now(),
     }))
 }
@@ -224,7 +227,9 @@ fn dispatch_scans(
                     Side::A => (&work.doc_a, work.pages_a[i], &work.words_a),
                     Side::B => (&work.doc_b, work.pages_b[i], &work.words_b),
                 };
-                match page_words(st, doc, Some(page), work.ignore_case) {
+                match page_words(st, doc, Some(page), work.ignore_case)
+                    .and_then(|words| with_thumb(st, doc, page, words))
+                {
                     Ok(words) => {
                         slots.lock()[i] = Some(words);
                         reporter.step(None, None);
@@ -272,7 +277,7 @@ fn dispatch_rows(
             let (ia, ib) = work.rows.lock()[index];
             let page_a = ia.map(|i| work.pages_a[i]);
             let page_b = ib.map(|i| work.pages_b[i]);
-            let row = if work.align {
+            let words = if work.align {
                 // Each position is in exactly one row, so its words can be moved out.
                 let a = ia
                     .and_then(|i| work.words_a.lock()[i].take())
@@ -280,17 +285,26 @@ fn dispatch_rows(
                 let b = ib
                     .and_then(|i| work.words_b.lock()[i].take())
                     .unwrap_or_default();
-                Ok(compare_words(page_a, page_b, &a, &b))
+                Ok((a, b))
             } else {
-                compare_pair(
-                    st,
-                    &work.doc_a,
-                    &work.doc_b,
-                    page_a,
-                    page_b,
-                    work.ignore_case,
-                )
+                page_words(st, &work.doc_a, page_a, work.ignore_case)
+                    .and_then(|a| Ok((a, page_words(st, &work.doc_b, page_b, work.ignore_case)?)))
             };
+            let row = words.and_then(|(a, b)| {
+                let mut row = compare_words(page_a, page_b, &a, &b);
+                if let (true, Some(pa), Some(pb)) = (work.visual, page_a, page_b) {
+                    let found = visual_diff(
+                        st,
+                        (&work.doc_a, pa, a.layer.as_deref()),
+                        (&work.doc_b, pb, b.layer.as_deref()),
+                    )?;
+                    if let Some(op) = found {
+                        row.ops.push(op);
+                        row.changed = true;
+                    }
+                }
+                Ok(row)
+            });
             match row {
                 Ok(page) => {
                     work.results.lock()[index] = Some(page);
@@ -334,20 +348,65 @@ fn fail(reporter: &JobReporter, e: EngineError) {
     }
 }
 
-/// The align step: word sets of every candidate page, interned across both documents.
+/// The align step: word sets of every candidate page, interned across both documents; a page
+/// without words (a scan) is keyed by its thumbnail signature instead (v0.3 X4).
 fn align_work(work: &Work) -> Vec<Row> {
     let words_a = work.words_a.lock();
     let words_b = work.words_b.lock();
-    fn set<'k>(ids: &mut HashMap<&'k str, u32>, w: &'k Option<PageWords>) -> Vec<u32> {
-        let mut out: Vec<u32> = w.as_ref().map(|w| intern(ids, &w.keys)).unwrap_or_default();
+    fn key<'k>(ids: &mut HashMap<&'k str, u32>, w: &'k Option<PageWords>) -> AlignKey {
+        let Some(w) = w else {
+            return AlignKey::Words(Vec::new());
+        };
+        if w.keys.is_empty() {
+            if let Some(thumb) = &w.thumb {
+                return AlignKey::Thumb(thumb.clone());
+            }
+        }
+        let mut out: Vec<u32> = intern(ids, &w.keys);
         out.sort_unstable();
         out.dedup();
-        out
+        AlignKey::Words(out)
     }
     let mut ids: HashMap<&str, u32> = HashMap::new();
-    let sets_a: Vec<Vec<u32>> = words_a.iter().map(|w| set(&mut ids, w)).collect();
-    let sets_b: Vec<Vec<u32>> = words_b.iter().map(|w| set(&mut ids, w)).collect();
-    align(&sets_a, &sets_b)
+    let keys_a: Vec<AlignKey> = words_a.iter().map(|w| key(&mut ids, w)).collect();
+    let keys_b: Vec<AlignKey> = words_b.iter().map(|w| key(&mut ids, w)).collect();
+    align_by(&keys_a, &keys_b, AlignKey::similarity)
+}
+
+/// What the page alignment compares (v0.3 X4): a page's word set, or — for a page without
+/// words — its thumbnail signature ([`thumb_signature`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlignKey {
+    Words(Vec<u32>),
+    Thumb(Vec<u8>),
+}
+
+impl AlignKey {
+    /// Jaccard for two word sets; for two scans `1 − mean |Δgray| / 24` over the 16 × 16
+    /// signature (an identical scan scores 1, a different one ~0); a scan against a text
+    /// page 0.
+    pub fn similarity(a: &AlignKey, b: &AlignKey) -> f64 {
+        match (a, b) {
+            (AlignKey::Words(x), AlignKey::Words(y)) => jaccard(x, y),
+            (AlignKey::Thumb(x), AlignKey::Thumb(y)) => {
+                if x.len() != y.len() || x.is_empty() {
+                    return 0.0;
+                }
+                let mad = x
+                    .iter()
+                    .zip(y)
+                    .map(|(p, q)| (*p as i32 - *q as i32).unsigned_abs() as f64)
+                    .sum::<f64>()
+                    / x.len() as f64;
+                if mad <= 2.0 {
+                    1.0
+                } else {
+                    (1.0 - mad / 24.0).max(0.0)
+                }
+            }
+            _ => 0.0,
+        }
+    }
 }
 
 /// Jaccard similarity of two sorted, deduplicated sets; two empty pages are identical.
@@ -381,6 +440,12 @@ pub fn jaccard<T: Ord>(a: &[T], b: &[T]) -> f64 {
 ///   the page in its place instead of becoming two one-sided rows.
 /// * A middle larger than [`MAX_ALIGN_CELLS`] is paired by position (the Stage 5 behaviour).
 pub fn align<T: Ord>(a: &[Vec<T>], b: &[Vec<T>]) -> Vec<Row> {
+    align_by(a, b, |x, y| jaccard(x, y))
+}
+
+/// [`align`] over any page key with its own similarity (v0.3 X4: word sets or thumbnail
+/// hashes). Equal keys are the identical head / tail.
+pub fn align_by<K: PartialEq>(a: &[K], b: &[K], similarity: impl Fn(&K, &K) -> f64) -> Vec<Row> {
     const MATCH_BONUS: f64 = 1e-6;
     let (n, m) = (a.len(), b.len());
     let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
@@ -411,7 +476,7 @@ pub fn align<T: Ord>(a: &[Vec<T>], b: &[Vec<T>]) -> Vec<Row> {
         for i in 1..=h {
             for j in 1..=w {
                 let pair = score[at(i - 1, j - 1)]
-                    + jaccard(&a[prefix + i - 1], &b[prefix + j - 1])
+                    + similarity(&a[prefix + i - 1], &b[prefix + j - 1])
                     + MATCH_BONUS;
                 let up = score[at(i - 1, j)];
                 let left = score[at(i, j - 1)];
@@ -480,6 +545,7 @@ pub fn finish(work: &Work) -> Result<CompareReport, EngineError> {
                 report.deleted += op.words;
                 report.inserted += op.text_b.as_deref().map(word_count).unwrap_or(0);
             }
+            DiffKind::Visual => {}
         }
     }
     report.elapsed_ms = work.started.elapsed().as_secs_f64() * 1000.0;
@@ -497,6 +563,9 @@ pub struct PageWords {
     /// `(first char, char count)` per word.
     pub spans: Vec<(u32, u32)>,
     pub keys: Vec<String>,
+    /// v0.3 pkg8 (X4): a page without words (a scan) is aligned by this thumbnail
+    /// signature instead ([`thumb_signature`]).
+    pub thumb: Option<Vec<u8>>,
 }
 
 impl PageWords {
@@ -562,6 +631,7 @@ pub fn tokenize(layer: Arc<TextLayer>, ignore_case: bool) -> PageWords {
         layer: Some(layer),
         spans,
         keys,
+        thumb: None,
     }
 }
 
@@ -636,6 +706,262 @@ pub fn compare_words(
         words_b: b.keys.len() as u32,
         ops,
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg8 (X4): pixel diff and thumbnail hashes
+// ---------------------------------------------------------------------------------------
+
+/// The pixel diff renders both pages at this resolution.
+pub const VISUAL_DPI: f32 = 50.0;
+/// Tile edge in device px (≈ 11.5 pt at 50 DPI).
+pub const VISUAL_TILE: u32 = 8;
+/// A pixel differs when a channel moves by more than this.
+const VISUAL_THRESHOLD: i32 = 40;
+/// A tile is changed when at least this many of its pixels differ (anti-aliasing noise).
+const VISUAL_MIN_PIXELS: u32 = 3;
+/// The text is masked out, grown by this many px so glyph ink past the advance box is too.
+const TEXT_MASK_GROW: f32 = 2.0;
+/// At most this many regions per page (the largest ones).
+const VISUAL_MAX_RECTS: usize = 64;
+
+/// A page rendered for comparison: RGBA, its size and its page → device matrix.
+struct Raster {
+    w: u32,
+    h: u32,
+    rgba: Vec<u8>,
+    m: [f32; 6],
+}
+
+fn raster(
+    st: &mut EngineState<'_>,
+    doc: &str,
+    page: PageIndex,
+    dpi: f32,
+) -> Result<Raster, EngineError> {
+    let s = dpi / 72.0;
+    let geom = st.doc(doc)?.geom(page)?.clone();
+    let buf = crate::engine::render::tiles::render_raw_buffer(st, doc, page, s, None)
+        .map_err(|e| e.with_page(page))?;
+    let w = u32::from_le_bytes(buf[8..12].try_into().expect("SPRX header"));
+    let h = u32::from_le_bytes(buf[12..16].try_into().expect("SPRX header"));
+    Ok(Raster {
+        w,
+        h,
+        rgba: buf[32..].to_vec(),
+        m: crate::engine::render::geometry::page_to_device(&geom, 0, s),
+    })
+}
+
+fn apply(m: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
+    (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+}
+
+fn invert(m: &[f32; 6]) -> [f32; 6] {
+    let det = m[0] * m[3] - m[1] * m[2];
+    let det = if det.abs() < 1e-9 { 1.0 } else { det };
+    let (a, b, c, d) = (m[3] / det, -m[1] / det, -m[2] / det, m[0] / det);
+    [a, b, c, d, -(a * m[4] + c * m[5]), -(b * m[4] + d * m[5])]
+}
+
+/// The bounds of a rect's four corners through `m`.
+fn map_bounds(m: &[f32; 6], l: f32, b: f32, r: f32, t: f32) -> (f32, f32, f32, f32) {
+    let pts = [
+        apply(m, l, b),
+        apply(m, r, b),
+        apply(m, l, t),
+        apply(m, r, t),
+    ];
+    let xs = pts.iter().map(|p| p.0);
+    let ys = pts.iter().map(|p| p.1);
+    (
+        xs.clone().fold(f32::MAX, f32::min),
+        ys.clone().fold(f32::MAX, f32::min),
+        xs.fold(f32::MIN, f32::max),
+        ys.fold(f32::MIN, f32::max),
+    )
+}
+
+/// Marks the device pixels of every text line of `layer` (through `m`) in `mask`.
+fn mask_text(mask: &mut [bool], w: u32, h: u32, layer: Option<&TextLayer>, m: &[f32; 6]) {
+    let Some(layer) = layer else { return };
+    for line in &layer.lines {
+        let r = line.rect;
+        let (x0, y0, x1, y1) = map_bounds(m, r.l, r.b, r.r, r.t);
+        let x0 = (x0 - TEXT_MASK_GROW).floor().max(0.0) as u32;
+        let y0 = (y0 - TEXT_MASK_GROW).floor().max(0.0) as u32;
+        let x1 = ((x1 + TEXT_MASK_GROW).ceil().max(0.0) as u32).min(w);
+        let y1 = ((y1 + TEXT_MASK_GROW).ceil().max(0.0) as u32).min(h);
+        for y in y0..y1 {
+            let row = (y * w) as usize;
+            mask[row + x0 as usize..row + x1 as usize].fill(true);
+        }
+    }
+}
+
+/// The changed regions of a pixel grid, as device-px rects `(x0, y0, x1, y1)`: 8 × 8 tiles
+/// with at least [`VISUAL_MIN_PIXELS`] differing pixels, grouped into 8-connected components.
+pub fn changed_regions(
+    w: u32,
+    h: u32,
+    differs: impl Fn(u32, u32) -> bool,
+) -> Vec<(u32, u32, u32, u32)> {
+    let (tw, th) = (w.div_ceil(VISUAL_TILE), h.div_ceil(VISUAL_TILE));
+    let mut changed = vec![false; (tw * th) as usize];
+    for ty in 0..th {
+        for tx in 0..tw {
+            let mut n = 0;
+            'tile: for y in ty * VISUAL_TILE..((ty + 1) * VISUAL_TILE).min(h) {
+                for x in tx * VISUAL_TILE..((tx + 1) * VISUAL_TILE).min(w) {
+                    if differs(x, y) {
+                        n += 1;
+                        if n >= VISUAL_MIN_PIXELS {
+                            break 'tile;
+                        }
+                    }
+                }
+            }
+            changed[(ty * tw + tx) as usize] = n >= VISUAL_MIN_PIXELS;
+        }
+    }
+    let mut seen = vec![false; changed.len()];
+    let mut regions = Vec::new();
+    for start in 0..changed.len() {
+        if !changed[start] || seen[start] {
+            continue;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        let mut stack = vec![start];
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            let (tx, ty) = (i as u32 % tw, i as u32 / tw);
+            x0 = x0.min(tx);
+            y0 = y0.min(ty);
+            x1 = x1.max(tx);
+            y1 = y1.max(ty);
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let (nx, ny) = (tx as i32 + dx, ty as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= tw as i32 || ny >= th as i32 {
+                        continue;
+                    }
+                    let j = (ny as u32 * tw + nx as u32) as usize;
+                    if changed[j] && !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        regions.push((
+            x0 * VISUAL_TILE,
+            y0 * VISUAL_TILE,
+            ((x1 + 1) * VISUAL_TILE).min(w),
+            ((y1 + 1) * VISUAL_TILE).min(h),
+        ));
+    }
+    if regions.len() > VISUAL_MAX_RECTS {
+        regions.sort_by_key(|r| std::cmp::Reverse((r.2 - r.0) * (r.3 - r.1)));
+        regions.truncate(VISUAL_MAX_RECTS);
+    }
+    regions
+}
+
+/// The pixel diff of one pair outside the text (v0.3 X4): both pages at [`VISUAL_DPI`], the
+/// text lines of both masked out, [`changed_regions`] over the rest — a page larger than the
+/// other is compared against white. `None` when nothing changed; otherwise one `visual` op
+/// with the regions mapped back to points on each page.
+pub fn visual_diff(
+    st: &mut EngineState<'_>,
+    a: (&str, PageIndex, Option<&TextLayer>),
+    b: (&str, PageIndex, Option<&TextLayer>),
+) -> Result<Option<DiffOp>, EngineError> {
+    let ra = raster(st, a.0, a.1, VISUAL_DPI)?;
+    let rb = raster(st, b.0, b.1, VISUAL_DPI)?;
+    let (w, h) = (ra.w.max(rb.w), ra.h.max(rb.h));
+    let mut mask = vec![false; (w * h) as usize];
+    mask_text(&mut mask, w, h, a.2, &ra.m);
+    mask_text(&mut mask, w, h, b.2, &rb.m);
+    let px = |r: &Raster, x: u32, y: u32| -> [u8; 3] {
+        if x >= r.w || y >= r.h {
+            return [255, 255, 255];
+        }
+        let i = ((y * r.w + x) * 4) as usize;
+        [r.rgba[i], r.rgba[i + 1], r.rgba[i + 2]]
+    };
+    let regions = changed_regions(w, h, |x, y| {
+        if mask[(y * w + x) as usize] {
+            return false;
+        }
+        let (p, q) = (px(&ra, x, y), px(&rb, x, y));
+        (0..3).any(|c| (p[c] as i32 - q[c] as i32).abs() > VISUAL_THRESHOLD)
+    });
+    if regions.is_empty() {
+        return Ok(None);
+    }
+    let to_points = |m: &[f32; 6], &(x0, y0, x1, y1): &(u32, u32, u32, u32)| {
+        let inv = invert(m);
+        let (l, t0, r, b0) = map_bounds(&inv, x0 as f32, y0 as f32, x1 as f32, y1 as f32);
+        Rect::new(l, t0.min(b0), r, t0.max(b0))
+    };
+    Ok(Some(DiffOp {
+        kind: DiffKind::Visual,
+        words: 0,
+        text_a: None,
+        text_b: None,
+        rects_a: Some(regions.iter().map(|r| to_points(&ra.m, r)).collect()),
+        rects_b: Some(regions.iter().map(|r| to_points(&rb.m, r)).collect()),
+    }))
+}
+
+/// Cells per side of [`thumb_signature`].
+pub const THUMB_CELLS: u32 = 16;
+
+/// A page's thumbnail signature: the mean gray of each of 16 × 16 cells of an 18 DPI render
+/// (256 bytes) — what a scanned page is aligned by.
+pub fn thumb_signature(
+    st: &mut EngineState<'_>,
+    doc: &str,
+    page: PageIndex,
+) -> Result<Vec<u8>, EngineError> {
+    let r = raster(st, doc, page, 18.0)?;
+    let n = THUMB_CELLS;
+    let mut out = Vec::with_capacity((n * n) as usize);
+    for cy in 0..n {
+        for cx in 0..n {
+            let (x0, x1) = (cx * r.w / n, ((cx + 1) * r.w / n).max(cx * r.w / n + 1));
+            let (y0, y1) = (cy * r.h / n, ((cy + 1) * r.h / n).max(cy * r.h / n + 1));
+            let (mut sum, mut count) = (0f32, 0f32);
+            for y in y0..y1.min(r.h) {
+                for x in x0..x1.min(r.w) {
+                    let i = ((y * r.w + x) * 4) as usize;
+                    sum += 0.299 * r.rgba[i] as f32
+                        + 0.587 * r.rgba[i + 1] as f32
+                        + 0.114 * r.rgba[i + 2] as f32;
+                    count += 1.0;
+                }
+            }
+            out.push(if count > 0.0 {
+                (sum / count).round() as u8
+            } else {
+                255
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The scan step's words, plus the thumbnail signature when the page has none.
+fn with_thumb(
+    st: &mut EngineState<'_>,
+    doc: &str,
+    page: PageIndex,
+    mut words: PageWords,
+) -> Result<PageWords, EngineError> {
+    if words.keys.is_empty() {
+        words.thumb = Some(thumb_signature(st, doc, page)?);
+    }
+    Ok(words)
 }
 
 fn intern<'k>(ids: &mut HashMap<&'k str, u32>, keys: &'k [String]) -> Vec<u32> {

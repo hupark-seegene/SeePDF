@@ -19,6 +19,8 @@ import type {
   SetPageBoxesArgs, Settings, StampResult, StampRole, StampSpec, SummaryFormat, TextEditProbe, TtsStatus,
   ViewportHint, LinkTarget, PageLabelRange,
 } from "./types";
+// v0.3 pkg8-export-print-compare-batch
+import type { NupOptions, NupResult, PrintAnnots, StitchStart, TextFlowFormat } from "./types";
 
 export { parseTextLayer, parseRawPage };
 export type { RawPage, TextLayerView };
@@ -578,7 +580,10 @@ export function exportImages(a: ExportImagesArgs, onProgress: (e: JobEvent) => v
   );
 }
 
-export function exportText(a: { docId: DocId; pages: PageIndex[]; outPath: string }): Promise<{ chars: number }> {
+/** v0.3 (X3): `preserveLayout` — 레이아웃 유지 (monospace columns from the x positions). */
+export function exportText(
+  a: { docId: DocId; pages: PageIndex[]; outPath: string; preserveLayout?: boolean },
+): Promise<{ chars: number }> {
   return call("export_text", a, (mock) => mock.exportText(a));
 }
 
@@ -605,8 +610,54 @@ export function estimateExport(
   return call("estimate_export", a, (mock) => mock.estimateExport(a));
 }
 
-export function printPrepare(a: { docId: DocId; pages?: PageIndex[] }): Promise<{ tempPath: string }> {
+/** v0.3 (X7): `annots` — 인쇄 ▸ 주석 (default `all`: the annotations whose flags say they print). */
+export function printPrepare(a: { docId: DocId; pages?: PageIndex[]; annots?: PrintAnnots }): Promise<{ tempPath: string }> {
   return call("print_prepare", a, (mock) => mock.printPrepare(a));
+}
+
+// --- v0.3 pkg8-export-print-compare-batch -----------------------------------
+
+/** 모아찍기 / 소책자 (§7.7b): a new document written to `outPath`, or to a print temp file. */
+export function makeNup(a: { docId: DocId; pages?: PageIndex[]; options: NupOptions; outPath?: string }): Promise<NupResult> {
+  return call("make_nup", a, (mock) => mock.makeNup(a));
+}
+
+/** 이미지 추출 (X3): every embedded image as `<baseName>-p<page>-<n>.png` in `outDir`; a job. */
+export function exportEmbeddedImages(
+  a: { docId: DocId; pages: PageIndex[]; outDir: string; baseName: string },
+  onProgress: (e: JobEvent) => void,
+): Promise<JobId> {
+  return call("export_embedded_images", { ...a, onProgress: channel(onProgress) }, (mock) =>
+    mock.exportEmbeddedImages(a, onProgress),
+  );
+}
+
+/** 하나의 이미지로 이어 붙이기 (X3): the DPI is lowered when the image would exceed the pixel cap. */
+export function exportStitchedImage(
+  a: { docId: DocId; pages: PageIndex[]; dpi: number; format: "png" | "jpeg"; outPath: string },
+  onProgress: (e: JobEvent) => void,
+): Promise<StitchStart> {
+  return call("export_stitched_image", { ...a, onProgress: channel(onProgress) }, (mock) =>
+    mock.exportStitchedImage(a, onProgress),
+  );
+}
+
+/** 여러 페이지 TIFF (X3): one frame per page; a job. */
+export function exportTiff(
+  a: { docId: DocId; pages: PageIndex[]; dpi: number; outPath: string },
+  onProgress: (e: JobEvent) => void,
+): Promise<JobId> {
+  return call("export_tiff", { ...a, onProgress: channel(onProgress) }, (mock) => mock.exportTiff(a, onProgress));
+}
+
+/** 텍스트 흐름 (X6): DOCX / HWPX / HTML / Markdown, lossy; a job. */
+export function exportTextFlow(
+  a: { docId: DocId; pages: PageIndex[]; format: TextFlowFormat; outPath: string },
+  onProgress: (e: JobEvent) => void,
+): Promise<JobId> {
+  return call("export_text_flow", { ...a, onProgress: channel(onProgress) }, (mock) =>
+    mock.exportTextFlow(a, onProgress),
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -143,6 +143,8 @@ export const MENU_ONLY_IDS: readonly string[] = [
   "view.readAloud",
   // P2 여러 파일에서 검색… (편집 menu, ⋯, the 검색 panel)
   "edit.findInFiles",
+  // v0.3 pkg8: 도구 ▸ 여러 파일 처리…
+  "tools.batch",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 

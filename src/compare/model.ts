@@ -15,6 +15,9 @@ export interface CompareRow {
   rectsA: Rect[];
   /** insert + replace runs, PDF points on page B */
   rectsB: Rect[];
+  /** v0.3 (X4): regions whose pixels changed outside the text, on page A / page B */
+  visualA: Rect[];
+  visualB: Rect[];
   inserted: number;
   deleted: number;
 }
@@ -30,9 +33,16 @@ export function buildRows(report: CompareReport): CompareRow[] {
   return report.pages.map((p, index) => {
     const rectsA: Rect[] = [];
     const rectsB: Rect[] = [];
+    const visualA: Rect[] = [];
+    const visualB: Rect[] = [];
     let inserted = 0;
     let deleted = 0;
     for (const op of p.ops) {
+      if (op.kind === "visual") {
+        visualA.push(...(op.rectsA ?? []));
+        visualB.push(...(op.rectsB ?? []));
+        continue;
+      }
       if (op.kind === "delete" || op.kind === "replace") {
         rectsA.push(...(op.rectsA ?? []));
         deleted += op.words;
@@ -42,7 +52,9 @@ export function buildRows(report: CompareReport): CompareRow[] {
         inserted += op.kind === "insert" ? op.words : wordCount(op.textB);
       }
     }
-    return { index, pageA: p.pageA, pageB: p.pageB, changed: p.changed, rectsA, rectsB, inserted, deleted };
+    return {
+      index, pageA: p.pageA, pageB: p.pageB, changed: p.changed, rectsA, rectsB, visualA, visualB, inserted, deleted,
+    };
   });
 }
 

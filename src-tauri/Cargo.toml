@@ -69,6 +69,10 @@ lopdf = { version = "0.45", default-features = false }
 getrandom = "0.4"
 # Local-time ModDate for set_metadata. Already in the tree (pdfium-render), same features.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# v0.3 pkg8 (X3): multi-page TIFF export. Deflate only; flate2 is already in the tree.
+tiff = { version = "0.11", default-features = false, features = ["deflate"] }
+# v0.3 pkg8 (X6): DOCX / HWPX containers. Already in the tree (updater), plus Deflate via zlib-rs.
+zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # P1-11: macOS Vision OCR (`ocr_recognize_native`). The same objc2 0.6 / 0.3.2 family Tauri
 # already links on macOS, so this adds bindings, not a second runtime. Default features off: the

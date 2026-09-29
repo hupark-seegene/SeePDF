@@ -94,6 +94,8 @@ pub const MENU_IDS: &[&str] = &[
     "tools.compress",
     "tools.compare",
     "tools.merge",
+    // v0.3 pkg8: 여러 파일 처리
+    "tools.batch",
     "help.shortcuts",
     "settings",
     "app.checkUpdates",
@@ -187,6 +189,8 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("tools.compress", "압축…", "Compress…"),
     ("tools.compare", "문서 비교…", "Compare Documents…"),
     ("tools.merge", "파일 합치기…", "Merge Files…"),
+    // v0.3 pkg8
+    ("tools.batch", "여러 파일 처리…", "Process Multiple Files…"),
     // window / help
     ("window.minimize", "최소화", "Minimize"),
     ("window.zoom", "확대/축소", "Zoom"),
@@ -336,6 +340,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
     let tools_menu = SubmenuBuilder::new(app, t("tools"))
         .item(&item("tools.ocr", None)?)
         .item(&item("tools.batchOcr", None)?)
+        // v0.3 pkg8: 여러 파일 처리
+        .item(&item("tools.batch", None)?)
         .item(&item("tools.redact", Some("CmdOrCtrl+Shift+R"))?)
         .item(&item("tools.security", None)?)
         .item(&item("tools.stamp", Some("CmdOrCtrl+Alt+W"))?)

@@ -16,7 +16,9 @@ export type JobKind =
   // 여러 파일 OCR (P1-7): one job for the whole queue, `done/total` counted in files
   | "batchOcr"
   // 여러 파일에서 검색 (P2): one job for every file, counted in files
-  | "multiSearch";
+  | "multiSearch"
+  // v0.3 pkg8 여러 파일 처리: one job for the whole queue, counted in files
+  | "batch";
 export type JobState = "running" | "done" | "cancelled" | "error";
 
 export interface Job {

@@ -22,7 +22,7 @@ import { useViewStore } from "../store/viewStore";
 import { usePagesStore } from "../store/pagesStore";
 import { toast } from "../app/toastStore";
 import { Swatches, rgbCss } from "../app/Swatches";
-import type { StampRole } from "../ipc/types";
+import type { DocInfo, StampRole, StampSpec } from "../ipc/types";
 import { Dialog, Row } from "./Dialog";
 import { RangePicker } from "./RangePicker";
 import { resolveRange, type RangeChoice } from "./pageRange";
@@ -49,9 +49,25 @@ export const stampImageSource = {
   },
 };
 
-export default function StampDialog({ onClose, role: initialRole }: { onClose(): void; role?: StampRole }) {
+/** v0.3 pkg8 (X1): the preview page of the 여러 파일 처리 form when no document is open. */
+const BATCH_PREVIEW = {
+  docId: "", pageCount: 1, name: "document.pdf",
+  pages: [{ index: 0, widthPt: 595, heightPt: 842, rotation: 0, crop: { l: 0, b: 0, r: 595, t: 842 }, label: null }],
+} as unknown as DocInfo;
+
+export default function StampDialog({
+  onClose,
+  role: initialRole,
+  onBatchSpec,
+}: {
+  onClose(): void;
+  role?: StampRole;
+  /** v0.3 pkg8 (X1) 여러 파일 처리: hand the spec (every page) back instead of stamping this document. */
+  onBatchSpec?: (spec: StampSpec) => void;
+}) {
   const t = useT();
-  const info = useDocStore((s) => s.info);
+  const liveInfo = useDocStore((s) => s.info);
+  const info = onBatchSpec ? liveInfo ?? BATCH_PREVIEW : liveInfo;
   const currentPage = useViewStore((s) => s.currentPage);
   const selected = usePagesStore((s) => s.selected);
   const watermarkText = t("stamp.defaultText");
@@ -101,6 +117,11 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
 
   const apply = async () => {
     if (error || !pages) return;
+    if (onBatchSpec) {
+      onBatchSpec(buildStampSpec(form, pages, true));
+      onClose();
+      return;
+    }
     setBusy(true);
     try {
       const spec = buildStampSpec(form, pages, range.mode === "all");
@@ -395,6 +416,8 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
             </div>
           </Row>
 
+          {!onBatchSpec && (
+          <>
           <Row labelKey="pages.range">
             <RangePicker value={range} onChange={setRange} pageCount={pageCount} selectedCount={selected.length} />
           </Row>
@@ -422,6 +445,8 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
             </div>
             <p className="dlg-hint text-xs">{t("stamp.remove.hint")}</p>
           </Row>
+          </>
+          )}
         </div>
 
         <figure className="stamp-preview" aria-label={t("stamp.preview")}>
@@ -430,17 +455,19 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
             data-testid="stamp-preview-page"
             style={{ width: PREVIEW_W, height: Math.round(pageH * scale) }}
           >
-            <img
-              className="stamp-thumb"
-              src={thumbUrl({
-                doc: info.docId,
-                gen: info.docGeneration,
-                page: previewPage,
-                w: Math.round(PREVIEW_W * devicePixelRatio()),
-              })}
-              alt=""
-              draggable={false}
-            />
+            {info.docId && (
+              <img
+                className="stamp-thumb"
+                src={thumbUrl({
+                  doc: info.docId,
+                  gen: info.docGeneration,
+                  page: previewPage,
+                  w: Math.round(PREVIEW_W * devicePixelRatio()),
+                })}
+                alt=""
+                draggable={false}
+              />
+            )}
             <div
               className="stamp-mark"
               data-testid="stamp-preview-mark"
