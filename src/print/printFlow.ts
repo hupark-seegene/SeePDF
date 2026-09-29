@@ -13,6 +13,16 @@
 import * as api from "../ipc/api";
 import type { DocInfo, PageIndex, PageGeom, Rotation } from "../ipc/types";
 import { PRINT_DPI, scaleKeyForDpi, usePrintStore, type PrintOptions } from "./printStore";
+import { paperSize } from "./paper";
+
+// The 인쇄 dialog loads this module on demand for its 실제 크기 notice (keeps `paper.ts` out of
+// a shared chunk, so the entry's preload map does not grow).
+export { shrunkCount } from "./paper";
+
+/** v0.3.0: the sheet of a 실제 크기 job on `o.paper` (default A4); none for 맞춤. */
+function sheetFor(o: PrintOptions, sizes: [number, number][]): [number, number] | undefined {
+  return o.fit === "actual" ? paperSize(o.paper ?? "a4", sizes) : undefined;
+}
 
 /** True when the options need the engine's n-up document rather than the pages themselves. */
 export function wantsNup(o: PrintOptions): boolean {
@@ -50,6 +60,7 @@ export async function startDomPrint(
     scaleKey: scaleKeyForDpi(PRINT_DPI),
     annots: o.annots ?? "all",
     fit: o.fit ?? "fit",
+    paper: o.paper ?? "a4",
     grayscale: o.grayscale ?? false,
   } as const;
   if (wantsNup(o)) {
@@ -57,25 +68,29 @@ export async function startDomPrint(
     // The n-up file is encrypted as the source is (same open password and permissions).
     const sheets = await api.openDocument({ path: made.path, passwordFrom: info.docId });
     const all = sheets.pages.map((p) => p.index);
+    const sizes = all.map((p) => displaySize(sheets.pages[p], 0));
     usePrintStore.getState().start({
       ...base,
       docId: sheets.docId,
       generation: sheets.docGeneration,
       pages: all,
       rotation: 0,
-      sizes: all.map((p) => displaySize(sheets.pages[p], 0)),
+      sizes,
+      sheet: sheetFor(o, sizes),
       tempDocId: sheets.docId,
     });
     return;
   }
   const list = pages?.length ? pages : Array.from({ length: info.pageCount }, (_, i) => i);
+  const sizes = list.map((p) => displaySize(info.pages[p], rotation));
   usePrintStore.getState().start({
     ...base,
     docId: info.docId,
     generation: info.docGeneration,
     pages: list,
     rotation,
-    sizes: list.map((p) => displaySize(info.pages[p], rotation)),
+    sizes,
+    sheet: sheetFor(o, sizes),
   });
 }
 

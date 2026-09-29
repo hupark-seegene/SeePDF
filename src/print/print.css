@@ -96,7 +96,9 @@
     height: auto;
   }
 
-  /* 실제 크기 (X2): the page at its physical size (inline width/height in inches), centred. */
+  /* 실제 크기 (X2): the page at its physical size (inline width/height in points), centred. v0.3.0:
+     PrintRoot adds a per-job stylesheet (`paper.ts` actualSizeCss) that sizes the sheet as the
+     chosen paper and an `@page` rule for it; a page larger than the paper is shrunk to fit. */
   .print-sheet[data-fit="actual"] .print-page {
     margin-inline: auto;
     object-fit: fill;

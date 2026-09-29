@@ -18,6 +18,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { changelogSection } from "./changelog-section.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const json = (rel) => JSON.parse(readFileSync(join(ROOT, rel), "utf8"));
@@ -89,8 +90,16 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 
+// v0.3.0 — release notes: the app version has a CHANGELOG.md section, and release.yml publishes it
+// (the GitHub release body and latest.json's `notes`).
+const version = base.version;
+const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
+expect(changelogSection(changelog, version) !== "", `CHANGELOG.md has no "## [${version}]" section for the app version`);
+expect(/changelog-section\.mjs/.test(release) && /--notes-file release-notes\.md/.test(release) && /body_path:\s*release-notes\.md/.test(release),
+  "release.yml must publish the CHANGELOG.md section (changelog-section.mjs → release-notes.md → body_path and --notes-file)");
+
 if (errors.length) {
   for (const e of errors) console.error(`[release-config] ${e}`);
   process.exit(1);
 }
-console.log("[release-config] ok: installers ko+en, WebView2 embed + offline variant, macOS 13+, arm64 + x64 assets, notices bundled");
+console.log("[release-config] ok: installers ko+en, WebView2 embed + offline variant, macOS 13+, arm64 + x64 assets, notices bundled, release notes from CHANGELOG.md");

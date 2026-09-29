@@ -75,9 +75,9 @@ export function Dialog({
   // after the trap, so the trap is already gone when focus goes back to the app.
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    const first = ref.current?.querySelector<HTMLElement>(
-      "input:not([type=hidden]), select, textarea, button.primary, button",
-    );
+    // By preference, not document order (v0.3.0 QA: a list's first ↑ button, now disabled at the
+    // list end, took the focus in 이미지로 PDF 만들기): a form field, then the primary, then a button.
+    const first = INITIAL_FOCUS.map((sel) => ref.current?.querySelector<HTMLElement>(sel)).find(Boolean);
     first?.focus();
     return () => previous?.focus?.();
   }, []);
@@ -147,6 +147,12 @@ export function Dialog({
     </div>
   );
 }
+
+const INITIAL_FOCUS = [
+  "input:not([type=hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled)",
+  "button.primary:not(:disabled)",
+  "button:not(:disabled)",
+];
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';

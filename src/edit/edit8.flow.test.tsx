@@ -19,7 +19,7 @@ import { runAnnotCommand } from "../tools/commands";
 import { EditPanel } from "../app/Inspector/EditPanel";
 import { useEditStore } from "./editStore";
 import { EditLayer } from "./EditLayer";
-import { clearObjectClipboard, moveObjects } from "./actions";
+import { clearObjectClipboard, moveObjects, pasteObjects } from "./actions";
 import { hitObject } from "./geometry";
 import { editHost } from "./index";
 
@@ -157,6 +157,26 @@ describe("편집 · ⌘C / ⌘V / ⌘D", () => {
     await waitFor(() => expect(useEditStore.getState().selection?.page).toBe(1));
     const pasted = objects(1).find((o) => o.objectId === useEditStore.getState().selection!.ids[0]);
     expect(pasted?.text).toBe(line.text);
+  });
+
+  it("붙여넣기 at a point (the canvas menu) puts the copy's top-left corner on that point", async () => {
+    await setup();
+    const dup = vi.spyOn(mock, "duplicateObjects");
+    const line = lines()[2];
+    select([line.objectId]);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", metaKey: true, bubbles: true, cancelable: true }));
+    await act(async () => {
+      await pasteObjects(1, [100, 300]);
+    });
+    expect(dup).toHaveBeenCalledTimes(1);
+    const call = dup.mock.calls[0][0];
+    expect(call).toMatchObject({ page: 0, objectIds: [line.objectId], targetPage: 1 });
+    expect(call.offset![0]).toBeCloseTo(100 - line.rect.l, 6);
+    expect(call.offset![1]).toBeCloseTo(300 - line.rect.t, 6);
+    // a point paste does not advance the ⌘V cascade
+    fireEvent.keyDown(window, { key: "v", metaKey: true });
+    await waitFor(() => expect(dup).toHaveBeenCalledTimes(2));
+    expect(dup.mock.calls[1][0]).toMatchObject({ offset: [10, -10] });
   });
 
   it("an object the engine cannot carry to another page is a toast, not an error", async () => {

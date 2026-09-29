@@ -18,8 +18,9 @@ annotate, fill forms, reorder pages, edit text and images, redact, recognise Kor
 
 ## Download
 
-Installers are published on [GitHub Releases](https://github.com/hupark-seegene/SeePDF/releases/latest).
-Which one to pick:
+The current version is **0.3.0** — what changed in each release is in [CHANGELOG.md](CHANGELOG.md) (Korean
+first), and the same notes are on each GitHub release. Installers are published on
+[GitHub Releases](https://github.com/hupark-seegene/SeePDF/releases/latest). Which one to pick:
 
 | File | For |
 |---|---|
@@ -27,11 +28,12 @@ Which one to pick:
 | `SeePDF_<version>_x64-offline-setup.exe` | Windows PCs **without internet access** (firewalled or air-gapped) that may lack WebView2: carries the whole WebView2 runtime installer, so it is much larger. |
 | `SeePDF_<version>_x64_ko-KR.msi` / `_en-US.msi` | Windows managed deployment (Intune, GPO), Korean or English. |
 | `SeePDF_<version>_aarch64.dmg` | Mac with Apple silicon (M1 and later), macOS 13 or newer. |
-| `SeePDF_<version>_x64.dmg` | Intel Mac, macOS 13 or newer. |
+| `SeePDF_<version>_x64.dmg` | Intel Mac, macOS 13 or newer (new in 0.3). |
 
 The builds are not code-signed yet: Windows SmartScreen shows "추가 정보 → 실행", and macOS needs 시스템 설정
 → 개인정보 보호 및 보안 → "그래도 열기". Installed copies check for updates at launch (설정 → 일반) once signed update
-bundles are published (see `.github/workflows/release.yml`).
+bundles are published (see `.github/workflows/release.yml`); until then, install a new version over the old one —
+settings, signatures, stamps and recent files are kept.
 
 If something goes wrong, ⋯ ▸ 문제 보고… (macOS: 도움말 ▸ 문제 보고…) copies the version, OS and the recent log
 to the clipboard and opens the log folder (`~/Library/Logs/com.seepdf.desktop` on macOS,
@@ -85,6 +87,28 @@ Acrobat show exactly what SeePDF showed.
 * 주석 답글 (threads that survive save and reopen in other viewers), 주석 목록 내보내기 (TXT / CSV / Markdown)
 * 여러 파일에서 검색 (files or a whole folder), 분할 보기 (two independently scrolled panes of one document),
   읽어 주기 (the OS voice, offline), 업데이트 확인
+
+### New in 0.3
+* **Redaction you can trust on real documents:** one word removes only that word, a mark over a scan
+  blacks out those pixels in the image itself, 검색해서 표시 finds keywords and Korean personal data
+  (주민등록번호, 전화번호, 이메일, 계좌번호) on every page, and text inside groups can be ungrouped and edited
+* **Signed and restricted PDFs handled properly:** 서명됨 detection with incremental save (signatures stay
+  valid), PDF permission flags enforced with a 제한됨 badge and unlock by the permissions password, structure
+  edits on encrypted files, 문서 정리 (JavaScript, attachments, hidden data), a 첨부 파일 panel
+* **Pages and forms:** 이미지로 PDF 만들기 (files, drops, clipboard), merge / insert that keep bookmarks, labels
+  and fields, drag pages between windows, split by bookmarks, outline from headings, **form field
+  authoring** plus CSV / XFDF form data
+* **Annotations:** real line / polygon / cloud / callout annotations and a measure tool, partial ink
+  erasing, pen pressure and palm rejection, a quick popover, 내 도장 and dynamic stamps, saved image
+  signatures, the author name from 설정, per-annotation 인쇄 안 함
+* **OCR:** Japanese and Chinese (Apple Vision), automatic page-rotation detection, Windows' built-in OCR,
+  a scanned-document banner, smaller OCR'd files
+* **Output:** 여러 파일 처리 (watermark / Bates, compress, encrypt, flatten, images over many files), 모아찍기 /
+  소책자 / 흑백 printing, 실제 크기 printing laid out for the chosen paper, image extraction, long-image and
+  multi-page TIFF export, text-flow DOCX / HWPX / HTML / Markdown, pixel 문서 비교, better 압축
+* **Viewing and the app:** 스냅샷, context menus, a draggable split divider, 두 쪽 (표지 따로), auto web
+  links, sentence-by-sentence 읽어 주기, a latched hand tool, screen-reader text and caret mode (F7), a
+  single instance on Windows, crash-proof engine, 문제 보고 / 로그 폴더 / 오픈 소스 라이선스, backups on save
 
 ### OCR
 Current page / all pages / a range, `kor+eng`, at 200–400 DPI, with progress and cancel. The
@@ -148,12 +172,12 @@ cross-preparing resources.
 
 ```sh
 npm run typecheck                    # tsc --noEmit
-npx vitest run                       # 266 frontend tests
-node scripts/check-i18n.mjs          # ko/en key + placeholder parity (CI gate)
+npx vitest run                       # ~1040 frontend tests (135 files)
+node scripts/check-i18n.mjs --strict # ko/en key + placeholder parity, no dead keys (CI gate)
 npm run build && node scripts/check-bundle-size.mjs   # critical-path budget
 
 cd src-tauri
-cargo build --release --tests && cargo test --release # 126 engine tests against real fixtures
+cargo build --release --tests && cargo test --release # ~610 engine tests (41 suites) against real fixtures
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 ```
 

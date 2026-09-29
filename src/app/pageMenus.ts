@@ -280,7 +280,7 @@ export function openPageContextMenu(
           hintKey: pasteBlock ?? undefined,
           onSelect: () => {
             if (canPasteAnnots) runAnnotCommand("annot.pasteAt", { page, at: point.at });
-            else void editActions?.pasteObjects(page);
+            else void editActions?.pasteObjects(page, point.at);
           },
         },
         {

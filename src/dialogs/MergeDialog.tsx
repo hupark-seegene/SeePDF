@@ -103,10 +103,10 @@ export function MergeDialog({ onClose, initialPaths }: { onClose(): void; initia
                   setInputs((prev) => prev.map((it, j) => (j === i ? { ...it, range: e.target.value } : it)))
                 }
               />
-              <button type="button" className="icon-btn" aria-label={t("common.moveUp")} onClick={() => move(i, i - 1)}>
+              <button type="button" className="icon-btn" aria-label={t("common.moveUp")} disabled={i === 0} onClick={() => move(i, i - 1)}>
                 <ChevronUp size={16} strokeWidth={1.75} aria-hidden />
               </button>
-              <button type="button" className="icon-btn" aria-label={t("common.moveDown")} onClick={() => move(i, i + 1)}>
+              <button type="button" className="icon-btn" aria-label={t("common.moveDown")} disabled={i === inputs.length - 1} onClick={() => move(i, i + 1)}>
                 <ChevronDown size={16} strokeWidth={1.75} aria-hidden />
               </button>
               <button

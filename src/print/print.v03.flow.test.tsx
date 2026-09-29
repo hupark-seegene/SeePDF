@@ -13,6 +13,7 @@ import { setMockAssetResolver } from "../ipc/protocol";
 import { mock, mockAssetUrl } from "../ipc/mock";
 import { useDocStore } from "../store/docStore";
 import { PrintDialog } from "../dialogs/PrintDialog";
+import { paperSize, shrunkCount } from "./paper";
 
 const SAMPLE = "/Users/veri/Documents/SeePDF-샘플.pdf"; // 3 pages
 
@@ -165,18 +166,94 @@ describe("print v0.3", () => {
     expect(container.querySelector("#seepdf-print-root")?.getAttribute("data-gray")).toBe("1");
   });
 
-  it("실제 크기 sizes each page in inches", () => {
+  it("실제 크기 sizes each page in points for the chosen paper", () => {
     vi.spyOn(window, "print").mockImplementation(() => undefined);
     const { container } = render(<PrintRoot />);
     act(() =>
       usePrintStore.getState().start({
         docId: "d1", generation: 1, pages: [0], rotation: 0, scaleKey: 208,
-        sizes: [[612, 792]], fit: "actual",
+        sizes: [[612, 792]], fit: "actual", paper: "letter", sheet: [612, 792],
       }),
     );
     const img = images(container)[0];
-    expect(img.style.width).toBe("8.5in");
-    expect(img.style.height).toBe("11in");
+    expect(img.style.width).toBe("612pt");
+    expect(img.style.height).toBe("792pt");
+    const style = container.querySelector("style[data-print-paper]")!;
+    expect(style.getAttribute("data-print-paper")).toBe("letter");
+    expect(style.textContent).toContain("@page { size: 612pt 792pt; margin: 0; }");
+  });
+
+  it("실제 크기: an A4 page on Letter is shrunk to the sheet, not spilled onto a second one", () => {
+    vi.spyOn(window, "print").mockImplementation(() => undefined);
+    const { container } = render(<PrintRoot />);
+    act(() =>
+      usePrintStore.getState().start({
+        docId: "d1", generation: 1, pages: [0, 1], rotation: 0, scaleKey: 208,
+        sizes: [[595.28, 841.89], [612, 792]], fit: "actual", paper: "letter", sheet: [612, 792],
+      }),
+    );
+    const [a4, letter] = images(container);
+    expect(a4.style.height).toBe("792pt");
+    expect(parseFloat(a4.style.width)).toBeLessThan(595.28);
+    expect(letter.style.width).toBe("612pt");
+  });
+
+  it("맞춤 adds no per-job paper stylesheet", () => {
+    vi.spyOn(window, "print").mockImplementation(() => undefined);
+    const { container } = render(<PrintRoot />);
+    act(() =>
+      usePrintStore.getState().start({
+        docId: "d1", generation: 1, pages: [0], rotation: 0, scaleKey: 208, sizes: [[612, 792]],
+      }),
+    );
+    expect(container.querySelector("style[data-print-paper]")).toBeNull();
+    expect(images(container)[0].style.width).toBe("");
+  });
+
+  it("the dialog offers 용지 under 실제 크기, explains it and passes the paper to the job", async () => {
+    vi.spyOn(window, "print").mockImplementation(() => undefined);
+    await openSample();
+    render(
+      <>
+        <PrintDialog onClose={() => {}} />
+        <PrintRoot />
+      </>,
+    );
+    expect(screen.queryByLabelText("용지")).toBeNull();
+    fireEvent.change(screen.getByLabelText("크기"), { target: { value: "actual" } });
+    expect(screen.getByTestId("print-actual-hint").textContent).toContain("같은 용지를 고르세요");
+    // The shrink notice counts the pages larger than the chosen paper (the math loads on demand).
+    const info = useDocStore.getState().info!;
+    const sizes = info.pages.map((p) => [p.widthPt, p.heightPt] as [number, number]);
+    fireEvent.change(screen.getByLabelText("용지"), { target: { value: "a4" } });
+    const onA4 = shrunkCount("a4", sizes);
+    if (onA4 > 0) {
+      await waitFor(() => expect(screen.getByTestId("print-actual-hint").textContent).toContain(`${onA4}쪽은 용지보다 커서`));
+    }
+    fireEvent.change(screen.getByLabelText("용지"), { target: { value: "a3" } });
+    expect(shrunkCount("a3", sizes)).toBe(0);
+    await waitFor(() => expect(screen.getByTestId("print-actual-hint").textContent).not.toContain("줄여 인쇄합니다"));
+    fireEvent.change(screen.getByLabelText("용지"), { target: { value: "letter" } });
+    fireEvent.click(screen.getByRole("button", { name: "인쇄" }));
+    await waitFor(() => expect(usePrintStore.getState().job).not.toBeNull());
+    expect(usePrintStore.getState().job).toMatchObject({ fit: "actual", paper: "letter", sheet: paperSize("letter", sizes) });
+  });
+
+  it("the shrink notice names the pages larger than the paper", async () => {
+    await openSample();
+    const info = useDocStore.getState().info!;
+    // Make page 2 an A3 page: on A4 it is the one page that has to shrink.
+    useDocStore.setState({
+      info: { ...info, pages: info.pages.map((p, i) => (i === 1 ? { ...p, widthPt: 841.89, heightPt: 1190.55 } : p)) },
+    });
+    render(<PrintDialog onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText("크기"), { target: { value: "actual" } });
+    fireEvent.change(screen.getByLabelText("용지"), { target: { value: "a4" } });
+    const expected = shrunkCount("a4", useDocStore.getState().info!.pages.map((p) => [p.widthPt, p.heightPt]));
+    expect(expected).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(screen.getByTestId("print-actual-hint").textContent).toContain(`${expected}쪽은 용지보다 커서 용지에 맞게 줄여 인쇄합니다.`),
+    );
   });
 
   it("문서만 puts print=none on every print image URL", async () => {

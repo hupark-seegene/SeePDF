@@ -25,12 +25,16 @@
  *   and the progress line has a 취소 button while a chunk is being prepared.
  * * X2 — 실제 크기 (`data-fit="actual"`: physical size, centred) and 흑백 (CSS grayscale); an n-up
  *   job prints a temporary document, closed when the job ends.
+ * * v0.3.0 — 실제 크기 is paper-aware (`paper.ts`): a per-job `@page` size for the chosen paper,
+ *   each sheet laid out as that paper (`paperLayout.ts`), and a page larger than it shrunk to fit instead of
+ *   spilling onto a second sheet.
  */
 import { useEffect, useRef } from "react";
 import { pageUrl } from "../ipc/protocol";
 import * as api from "../ipc/api";
 import { useT } from "../i18n/useT";
 import { PRINT_CHUNK, usePrintStore, type PrintJob } from "./printStore";
+import { actualSizeCss, placeActual } from "./paperLayout";
 import "./print.css";
 
 /** Print anyway after this long, even if a page image never answered. */
@@ -118,8 +122,11 @@ export function PrintRoot() {
   if (!job) return null;
   const chunks = Math.ceil(job.pages.length / PRINT_CHUNK);
   const fit = job.fit ?? "fit";
+  // 실제 크기 on the paper chosen in the dialog (`startDomPrint` put its sheet on the job).
+  const sheet = fit === "actual" ? job.sheet : undefined;
   return (
     <>
+      {sheet && <style data-print-paper={job.paper ?? "a4"}>{actualSizeCss(sheet)}</style>}
       {chunks > 1 && (
         <div className="print-progress">
           <span role="status" aria-live="polite">
@@ -149,6 +156,7 @@ export function PrintRoot() {
       >
         {mounted.map(({ page, at }) => {
           const size = job.sizes?.[at];
+          const placed = sheet && size ? placeActual(size, sheet) : undefined;
           return (
             <div
               key={at}
@@ -160,7 +168,7 @@ export function PrintRoot() {
                 className="print-page"
                 alt=""
                 draggable={false}
-                style={fit === "actual" && size ? { width: `${size[0] / 72}in`, height: `${size[1] / 72}in` } : undefined}
+                style={placed ? { width: `${placed.width}pt`, height: `${placed.height}pt` } : undefined}
                 src={pageUrl({
                   doc: job.docId,
                   gen: job.generation,

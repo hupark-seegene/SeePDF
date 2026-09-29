@@ -162,6 +162,12 @@ describe("batch.flow", () => {
     expect(vi.mocked(mock.saveDocumentAs).mock.calls.map((c) => c[0].path)).toEqual([
       "/docs/보고서-stamped.pdf", "/docs/회의록-stamped.pdf",
     ]);
+    // v0.3.0 QA: a finished row counts all its pages done (stamping sends no page progress).
+    for (const item of useBatch.getState().items) {
+      expect(item.status).toBe("done");
+      expect(item.total).toBe(3);
+      expect(item.done).toBe(item.total);
+    }
   });
 
   it("암호 설정 and 평면화 write their own output, with no save", async () => {

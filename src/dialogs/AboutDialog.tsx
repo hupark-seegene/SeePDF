@@ -56,7 +56,13 @@ export default function AboutDialog({ onClose }: { onClose(): void }) {
         size="lg"
         onClose={onClose}
         cancelKey="common.close"
-        secondary={{ labelKey: "about.back", onSelect: () => setNotices(null) }}
+        // v0.3.0 QA: 뒤로 is navigation, so it sits at the footer's leading edge (like 이미지 추가 /
+        // 파일 추가 in other dialogs) and 닫기 keeps the trailing place the dialogs' last action has.
+        footerExtra={
+          <button type="button" className="btn" onClick={() => setNotices(null)}>
+            {t("about.back")}
+          </button>
+        }
       >
         {notices.state === "loading" && <p className="text-sm dim">{t("about.licenses.loading")}</p>}
         {notices.state === "missing" && (

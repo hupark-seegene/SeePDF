@@ -469,8 +469,12 @@ once the rows differ from the file) → `set_page_labels` (one undo step 페이�
   prints — a NoView + Print watermark prints, a screen-only comment does not) / 문서만 (page content and form values)
   / 문서와 도장·서명 (stamps and signatures only) · **모아찍기** 1쪽 / 2쪽 / 4쪽 / 6쪽 / 9쪽 with 순서 가로 방향 (Z) |
   세로 방향 (N) when > 1 · **소책자 (중철)** checkbox (2 per side in saddle-stitch order, 모아찍기 disabled, a hint) · for
-  시스템 인쇄 대화상자 only: **크기** 용지에 맞춤 (default: the page is contained in the sheet and turned 90° when its
-  orientation differs from the sheet's) / 실제 크기 (physical size, centred) and **흑백** · when the job has more than
+  시스템 인쇄 대화상자 only: **크기** 용지에 맞춤 (default: the page as wide as the sheet — the 90° turn was dropped at
+  the v0.3 integration QA) / 실제 크기 (physical size, centred) and **흑백** · under 실제 크기 (v0.3.0) a **용지** row
+  A4 (default; 레터 where the locale's region uses Letter) / 레터 / 리걸 / A3 / 문서 페이지 크기 (the most common page
+  size) and a hint `print.actualHint` — the pages are laid out for that paper, pick the same one in the system
+  dialog — followed by `print.actualShrunk` with the number of pages larger than the paper, which are shrunk to fit
+  it (never enlarged) instead of spilling onto a second sheet · when the job has more than
   50 sheets, a hint that it prints in parts of 50, each with its own system dialog (`print.chunkHint`). While a chunked
   job runs, a small on-screen line bottom centre says `인쇄 준비 중… n / N쪽 (k/m번째 묶음)` with a **취소** button
   (never printed). `afterprint` fires for 인쇄 and 취소 alike, so after each part but the last the job pauses (no page
@@ -1780,6 +1784,9 @@ dead-key cleanup runs after every v0.3 package is merged).
 | `print.fit.fit` | 용지에 맞춤 | Fit to sheet |
 | `print.fit.actual` | 실제 크기 | Actual size |
 | `print.grayscale` | 흑백 | Grayscale |
+| `print.paper` / `.a4` / `.letter` / `.legal` / `.a3` / `.page` | 용지 / A4 / 레터 / 리걸 / A3 / 문서 페이지 크기 | Paper / A4 / Letter / Legal / A3 / Document page size |
+| `print.actualHint` | 실제 크기는 여기서 고른 용지에 맞춰 배치합니다. 시스템 인쇄 대화상자에서도 같은 용지를 고르세요. | Actual size lays the pages out for the paper chosen here. Choose the same paper in the system print dialog. |
+| `print.actualShrunk` | {{count}}쪽은 용지보다 커서 용지에 맞게 줄여 인쇄합니다. | {{count}} page(s) are larger than the paper and will be shrunk to fit it. |
 | `print.chunkHint` | 긴 문서는 {{size}}쪽씩 {{parts}}번에 나누어 인쇄 대화상자가 열립니다. 한 번에 인쇄하려면 'PDF 앱에서 열기'를 쓰세요. | A long document prints in {{parts}} parts of up to {{size}} pages, each with its own print dialog. Use 'Open in the PDF app' to print it in one go. |
 | `print.progress` | 인쇄 준비 중… {{done}} / {{total}}쪽 ({{part}}/{{parts}}번째 묶음) | Preparing to print… {{done}} / {{total}} pages (part {{part}} of {{parts}}) |
 | `print.chunkClosed` | {{part}}/{{parts}}번째 묶음의 인쇄 대화상자가 닫혔습니다. 다음 묶음을 인쇄할까요? | The print panel for part {{part}} of {{parts}} has closed. Print the next part? |
