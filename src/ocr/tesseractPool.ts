@@ -22,23 +22,12 @@ import type { TessPage } from "./normalize";
 // Assets
 // ---------------------------------------------------------------------------
 
-/** Where `scripts/prepare-ocr.mjs` puts the offline bundle, relative to the app origin. */
-export const OCR_ASSET_DIR = "/ocr";
+// `OCR_ASSET_DIR` / `ocrAssetUrl` live in `assets.ts` (v0.3: the capability loader needs them
+// without tesseract.js); re-exported here for the existing callers.
+export { OCR_ASSET_DIR, ocrAssetUrl } from "./assets";
+import { ocrAssetUrl } from "./assets";
 const CORE_SIMD = "tesseract-core-simd-lstm.wasm.js";
 const CORE_PLAIN = "tesseract-core-lstm.wasm.js";
-
-/**
- * Absolute URL of an OCR asset. tesseract.js resolves relative paths against `window.location.href`
- * itself, but the worker then fetches `langPath` from *inside* the worker, so we hand it an absolute
- * URL and stop guessing. In the bundle the origin is `tauri://localhost`, in `vite dev`
- * `http://localhost:1420`, and `'self'` covers both.
- */
-export function ocrAssetUrl(path: string): string {
-  const base = typeof document !== "undefined" && document.baseURI
-    ? document.baseURI
-    : typeof location !== "undefined" ? location.href : "http://localhost/";
-  return new URL(`${OCR_ASSET_DIR}/${path}`.replace(/\/{2,}/g, "/"), base).href;
-}
 
 /**
  * `wasm-feature-detect`'s fixed-width SIMD probe (`v128` return + `i8x16.splat`), inlined so the

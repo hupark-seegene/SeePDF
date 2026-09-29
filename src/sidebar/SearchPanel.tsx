@@ -16,6 +16,7 @@ import { useViewStore } from "../store/viewStore";
 import { useSearchStore } from "../viewer/search/SearchController";
 import { openDialog } from "../dialogs/dialogState";
 import type { SearchHit } from "../ipc/types";
+import { NeedsOcrSearchHint } from "../ocr/NeedsOcrBanner"; // v0.3 pkg7-ocr (O6)
 import "./sidebar.css";
 
 const DEBOUNCE_MS = 220;
@@ -192,6 +193,8 @@ export function SearchPanel() {
       </div>
 
       {query && !running && total === 0 && <p className="empty">{t("sidebar.search.empty")}</p>}
+      {/* v0.3 pkg7-ocr (O6): an image-only document says why, and offers OCR */}
+      {query && !running && total === 0 && <NeedsOcrSearchHint docId={info?.docId} />}
 
       <ol className="search-results">
         {groups.map((group) => (

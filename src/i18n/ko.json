@@ -966,5 +966,13 @@
   "multiSearch.folderFailed": "폴더를 읽을 수 없습니다",
   "multiSearch.reason.password": "암호를 입력하지 않았습니다",
   "multiSearch.reason.searchFailed": "검색하지 못했습니다",
-  "multiSearch.openHit": "{{name}} {{page}}쪽 열기"
+  "multiSearch.openHit": "{{name}} {{page}}쪽 열기",
+  "ocr.engine.windows": "Windows OCR",
+  "ocr.engine.autoHintWindows": "이 PC에서는 Windows OCR로 더 빠르게 인식합니다",
+  "ocr.rotatedCount": "{{count}}쪽의 방향을 바로잡았습니다",
+  "ocr.rotatedCount_other": "{{count}}쪽의 방향을 바로잡았습니다",
+  "ocr.needsOcr.banner": "이 문서에는 검색 가능한 텍스트가 없습니다",
+  "ocr.needsOcr.hint": "스캔한 문서로 보입니다. 텍스트 인식(OCR)을 실행하면 검색하고 선택할 수 있습니다.",
+  "ocr.needsOcr.run": "OCR 실행…",
+  "ocr.needsOcr.searchHint": "이 문서에는 검색 가능한 텍스트가 없습니다. OCR을 실행하면 검색할 수 있습니다."
 }

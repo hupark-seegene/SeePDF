@@ -14,11 +14,13 @@ import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, AnnotationSummaryResult, CompareOptions, CompressOptions, DocGeneration, DocId, DocInfo, DocMeta,
   DuplicateObjectsResult, RedactBatchMark, RedactBatchResult,
   EngineError, EngineStats, ErrorCode, ExportImagesArgs, FieldValue, FormField, JobEvent, JobId, ObjectId,
-  ObjectsResult, OcrApplyPage, OcrEngine, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
+  ObjectsResult, OcrApplyPage, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
   RedactPreview, RemoveStampsResult, ResizeMode, ResizeTarget, Rgb, SaveResult, SearchEvent,
   SetPageBoxesArgs, Settings, StampResult, StampRole, StampSpec, SummaryFormat, TextEditProbe, TtsStatus,
   ViewportHint, LinkTarget, PageLabelRange,
 } from "./types";
+// v0.3 pkg7-ocr
+import type { OcrCapabilities, OrientationResult, Rotation } from "./types";
 
 export { parseTextLayer, parseRawPage };
 export type { RawPage, TextLayerView };
@@ -625,7 +627,7 @@ export function redo(a: { docId: DocId }): Promise<DocInfo> {
 // 7.9 OCR
 // ---------------------------------------------------------------------------
 
-export function ocrCapabilities(): Promise<{ engines: OcrEngine[]; languages: string[] }> {
+export function ocrCapabilities(): Promise<OcrCapabilities> {
   return call("ocr_capabilities", {}, (mock) => mock.ocrCapabilities());
 }
 
@@ -645,13 +647,22 @@ export function ocrApply(
 
 /**
  * P1-11, macOS 13+: Apple Vision over the page the `/ocr` route would render (the backend renders it
- * itself). `languages` are Vision's (`ko-KR`, `en-US`); tesseract codes are mapped too. `unsupported`
- * where `ocrCapabilities().engines` has no `vision`.
+ * itself); v0.3 O3: Windows.Media.Ocr on Windows. `languages` are BCP 47 (`ko-KR`, `en-US`); tesseract
+ * codes are mapped too. `unsupported` where `ocrCapabilities().engines` has neither `vision` nor
+ * `windows`. v0.3 O2: `rotate` turns the image clockwise first (the page then reads `rotation + rotate`).
  */
 export function ocrRecognizeNative(
-  a: { docId: DocId; page: PageIndex; dpi: number; languages: string[] },
+  a: { docId: DocId; page: PageIndex; dpi: number; languages: string[]; rotate?: Rotation },
 ): Promise<OcrPage> {
   return call("ocr_recognize_native", a, (mock) => mock.ocrRecognizeNative(a));
+}
+
+// v0.3 pkg7-ocr (O2): 페이지 회전 자동 감지 with Apple Vision (100 DPI, reading direction of every line).
+// `unsupported` without `vision`: the frontend then detects with tesseract.
+export function ocrDetectOrientation(
+  a: { docId: DocId; page: PageIndex; languages: string[] },
+): Promise<OrientationResult> {
+  return call("ocr_detect_orientation", a, (mock) => mock.ocrDetectOrientation(a));
 }
 
 // ---------------------------------------------------------------------------

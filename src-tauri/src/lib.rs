@@ -258,6 +258,8 @@ pub fn run() {
             commands::ocr::ocr_page_status,
             commands::ocr::ocr_apply,
             commands::ocr::ocr_recognize_native,
+            // v0.3 pkg7-ocr (O2): 페이지 회전 자동 감지 with the native recogniser
+            commands::ocr::ocr_detect_orientation,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the tauri application")

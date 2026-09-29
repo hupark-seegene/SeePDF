@@ -122,8 +122,9 @@ form filling becomes read-only (P0-20), page reorder must be copy+delete (breaks
 ellipse falls back to rectangle, annotation border width and safe recolour are lost, and
 "remove password" is impossible. This is why the patch is the primary plan.
 
-The patch is **not** used for: `FPDF_INCREMENTAL` (not in v1), `FPDFText_LoadCidType2Font` (glyphless
-OCR font is P2; v1 uses the bundled subset font), XFA (not built into this pdfium).
+The patch is **not** used for: `FPDF_INCREMENTAL` (not in v1), XFA (not built into this pdfium).
+`FPDFText_LoadCidType2Font` (the v0.3 glyphless OCR font) needs no patch either: it is driven through
+`raw_bindings()` and the document's `raw_handle()` in `engine/fonts/glyphless.rs`.
 
 ---
 
@@ -400,8 +401,15 @@ with a trailing U+0020 (`set_text` after the fit is measured on the bare word): 
 break from a gap wider than about a quarter glyph, which Vision's padded boxes (6–13 px at 300 DPI) miss,
 and a run of nothing but a space has a zero-width rect that `CPDF_TextPage` skips. Words with confidence
 < 30 are skipped; `Manual` + one `regenerate_content()` per page (2 ms for 730 words vs 81 ms
-automatic). Latin-1-only words use `helvetica()` (no embedding); everything else uses the bundled Hangul
-font (`load_true_type_from_bytes(bytes, true)`, once per document).
+automatic). Latin-1-only words use `helvetica()` (no embedding); everything else uses the **glyphless CID
+font** (v0.3 O5, `engine/fonts/glyphless.rs`): a ~0.9 KB TrueType of three box glyphs, loaded once per
+`ocr_apply` with `FPDFText_LoadCidType2Font`, a `/ToUnicode` naming exactly the call's characters (CID 1…n;
+PDFium's `CharCodeFromUnicode` finds them by reverse lookup) and a `/CIDToGIDMap` from which PDFium derives
+`/W` (½ em Latin, 1 em CJK). Its text objects are created through the raw bindings (no `PdfFontToken` can be
+made from a raw `FPDF_FONT`). Before v0.3 this was the 487 KB Hangul subset, once per document (~260 KB in the
+saved file) — and it could not write kana or hanja outside KS X 1001. A page sent with `setRotation` (O2,
+페이지 회전 자동 감지) gets its new `/Rotate` on the same scratch page first, so `pixels_to_points` inverts the
+turned display transform.
 
 ### 6.7 Document structure — outline, links, page labels (P2, `engine/structure/`)
 
@@ -483,6 +491,11 @@ plus `scheduler.terminate()` (tesseract.js has no per-job cancel; re-creating wo
 Memory ≈ 95–120 MB RSS per worker.
 
 macOS Vision (P1) implements `ocr_recognize_native` and returns the same `OcrPage`; nothing else changes.
+v0.3: Windows.Media.Ocr (`engine/ocr/winocr.rs`) is the Windows body of the same command, normalised through
+Vision's normaliser; 페이지 회전 자동 감지 (`engine/ocr/orientation.rs`, `src/ocr/orientation.ts`) reads each page at
+100 DPI before it is recognised — Vision by line reading direction (`ocr_detect_orientation`), everything else
+with tesseract four ways — and `ocr_apply` sets `/Rotate` in the same undo step; the language chips follow
+`ocr_capabilities.engineLanguages` (+ `public/ocr/tessdata/languages.json`).
 
 ---
 

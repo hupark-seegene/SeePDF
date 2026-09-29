@@ -1054,6 +1054,42 @@ and Korean always brings English. `ocr_capabilities` lists `vision` only on macO
 `ko-KR`; elsewhere the command answers `unsupported`. `ocr_apply` with a wrapped page whose `page` differs
 from `ocr.page` is `invalidArgument`. 여러 파일 OCR applies each file's pages in one call (one snapshot).
 
+**v0.3 pkg7-ocr** (O1, O2, O3, O5):
+
+```ts
+export interface OcrEngineLanguages { tesseract: string[]; vision: string[]; windows: string[] }
+ocr_capabilities(): Promise<{ engines: OcrEngine[]; languages: string[]; engineLanguages: OcrEngineLanguages }>
+export type OcrApplyPage = OcrPage | { page: PageIndex; ocr: OcrPage; setRotation?: Rotation };
+ocr_recognize_native(a: { docId; page; dpi; languages: string[]; rotate?: Rotation }): Promise<OcrPage>
+export interface OrientationScore { rotation: Rotation; confidence: number; words: number }
+ocr_detect_orientation(a: { docId: DocId; page: PageIndex; languages: string[] }):
+  Promise<{ rotation: Rotation; scores: OrientationScore[] }>          // macOS Vision only
+```
+
+* `engineLanguages` (O1) lists, per engine, the app language codes it reads — `kor`, `eng`, `jpn`, `chi_sim`
+  (tesseract's spelling, also `Settings.ocrLanguages`'). Tesseract is always `kor` + `eng` from the backend; the
+  frontend adds what `public/ocr/tessdata/languages.json` (written by `prepare-ocr --langs`) says is staged. Vision
+  lists what `supportedRecognitionLanguages` has (`ja-JP` → `jpn`, `zh-Hans` → `chi_sim`); an engine not in
+  `engines` has `[]`. `languages` stays the tesseract baseline.
+* `windows` (O3) is listed where `Windows.Media.Ocr` has a recogniser for one of those languages
+  (`AvailableRecognizerLanguages`); `ocr_recognize_native` then runs it on a blocking thread (the first requested
+  language that is installed; Korean first for `kor+eng`), maps lines and word rectangles through Vision's
+  normaliser (so the `OcrPage` is the same shape), gives every word confidence 90 (Windows reports none), merges
+  adjacent CJK single-character words, and reads pages larger than `MaxImageDimension` at an integer fraction.
+* `rotate` (O2, default 0) turns the rendered image clockwise before it is read; the result's `rotation` is
+  `(page /Rotate + rotate) % 360`. `ocr_detect_orientation` renders the page at 100 DPI and answers the clockwise
+  turn that makes it upright (0 = leave it): every line Vision finds votes with its reading direction (the
+  `bottomLeft → bottomRight` angle of its quadrilateral), weighted by characters; a turn wins only with ≥ 3 words
+  and 1.15 × the runner-up and the page as it is. Vision reads sideways text as confidently as upright text, so
+  confidence cannot decide this — elsewhere the command answers `unsupported` and the frontend reads the 100 DPI
+  `/ocr` image four ways with tesseract (the same pick, on mean word confidence).
+* `setRotation` (O2) on the wrapped form sets that page's `/Rotate` **inside the same `mutate`** as its layer (one
+  undo step, `structure: true` when a page actually turns); `ocr.rotation` must equal it, else `invalidArgument`.
+* The layer (O5) writes every non-Latin-1 word in a **glyphless CID font** loaded per `ocr_apply` with
+  `FPDFText_LoadCidType2Font` (~0.9 KB TrueType of three box glyphs, `/ToUnicode` of the call's characters,
+  `/CIDToGIDMap` → ½ em / 1 em): the file grows by ~2.6 KB where the Hangul subset cost ~260 KB, and any script
+  (日本語, 中文) is written — the subset covered KS X 1001 only. Latin-1 words stay base-14 Helvetica.
+
 ### 7.10 Document structure — outline, links, page labels (P2)
 
 ```ts

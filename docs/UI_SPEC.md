@@ -130,6 +130,12 @@ reads back with no page and no url and is written back as a title only (IPC_CONT
   user put between them. Esc with nothing else to cancel (no tool armed, no text selection, no annotation
   selected or being edited) closes the split, as do the menu item, the button and opening another document; the
   main pane stays where it was. Both panes share one tile manager (one in-flight budget) and the engine's cache.
+* **Scanned documents** (v0.3 pkg7-ocr, O6): once a document is open and the window idle, its first ≤ 10 pages go
+  through `ocr_page_status`; when none has text a 40 px info strip sits between the tool strip and the panes
+  (`--accent-subtle`, `scan-text` icon): **이 문서에는 검색 가능한 텍스트가 없습니다** · 스캔한 문서로 보입니다… ·
+  [OCR 실행…] (opens the OCR sheet) · ×. × hides it for that file (by path) for the rest of the session; an edit that
+  adds text (the OCR itself) makes it go away. A 0-hit search on such a document adds the same hint and button under
+  검색 결과가 없습니다 in the 검색 panel.
 
 ---
 
@@ -235,6 +241,15 @@ only where `ocr_capabilities` lists `vision`; 자동 = Apple Vision there, 이�
 **on**, 해상도 자동/200/300/400 DPI, 고급 ▸ 레이아웃 자동/단일 단/단일 블록 for Tesseract) · footer 예상 시간 + 취소/시작.
 While running it becomes a progress view: `12 / 148`, a thumbnail of the page being processed,
 elapsed/remaining, and an always-live 취소. On completion: an inline success bar with 실행 취소.
+v0.3 (pkg7-ocr): 언어 and 해상도 start from 설정 ▸ OCR (`Settings.ocrLanguages` / `ocrDpi`; 한국어 + English / 자동
+without them). The language chips are 한국어 · English · 日本語 · 中文(简体), each shown only when the engine that
+will run reads it (Apple Vision: all four; Windows OCR: the installed packs; Tesseract: `kor`/`eng` plus whatever
+`prepare-ocr --langs` staged); a chip the newly chosen engine cannot read is dropped from the run, and the last
+selected chip cannot be turned off. 옵션 gains **페이지 회전 자동 감지** (off by default): each page is first read at
+100 DPI four ways (Vision: by reading direction) and a sideways or upside-down page is turned upright in the same
+undo step as its text; the result bar adds "n쪽의 방향을 바로잡았습니다". On Windows the native engine is **Windows
+OCR** (자동 / Windows OCR / Tesseract, hint "이 PC에서는 Windows OCR로 더 빠르게 인식합니다"). 여러 파일 OCR gets the same
+chips, 페이지 회전 자동 감지 and 설정 defaults (re-read whenever it opens on an empty list).
 
 **여러 파일 OCR** (P1-7, 640 px, 도구 ▸ 여러 파일 OCR… or ⋯; no shortcut): 파일 추가… (multi-select) / 목록 비우기,
 a list 파일 · 상태 (대기 / 여는 중… / 진행 중 n/m 페이지 / 저장 중… / 완료 · `<name>-ocr.pdf` / 건너뜀 · 이유 /
@@ -883,6 +898,17 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `batchOcr.summary` | 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | {{done}} done · {{skipped}} skipped · {{failed}} failed |
 | `batchOcr.finished` | 여러 파일 텍스트 인식을 마쳤습니다: 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | Batch text recognition finished: {{done}} done · {{skipped}} skipped · {{failed}} failed |
 | `batchOcr.cancelled` | 여러 파일 텍스트 인식을 취소했습니다: 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | Batch text recognition cancelled: {{done}} done · {{skipped}} skipped · {{failed}} failed |
+
+#### v0.3 pkg7-ocr additions (`ocr.*`)
+| Key | ko | en |
+|---|---|---|
+| `ocr.engine.windows` | Windows OCR | Windows OCR |
+| `ocr.engine.autoHintWindows` | 이 PC에서는 Windows OCR로 더 빠르게 인식합니다 | On this PC, Windows OCR recognizes text faster |
+| `ocr.rotatedCount` / `_other` | {{count}}쪽의 방향을 바로잡았습니다 | Turned {{count}} page(s) upright |
+| `ocr.needsOcr.banner` | 이 문서에는 검색 가능한 텍스트가 없습니다 | This document has no searchable text |
+| `ocr.needsOcr.hint` | 스캔한 문서로 보입니다. 텍스트 인식(OCR)을 실행하면 검색하고 선택할 수 있습니다. | It looks like a scan. Run text recognition (OCR) to search and select its text. |
+| `ocr.needsOcr.run` | OCR 실행… | Run OCR… |
+| `ocr.needsOcr.searchHint` | 이 문서에는 검색 가능한 텍스트가 없습니다. OCR을 실행하면 검색할 수 있습니다. | This document has no searchable text. Run OCR to make it searchable. |
 
 ### 15.12 `export.*`
 | Key | ko | en |

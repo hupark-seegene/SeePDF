@@ -23,6 +23,7 @@ import { TileManager } from "./TileManager";
 import type { PageLayerRenderer } from "./PageShell";
 import { useViewerCommands } from "./viewerCommands";
 import "./viewer.css";
+import { NeedsOcrBanner } from "../ocr/NeedsOcrBanner"; // v0.3 pkg7-ocr (O6)
 
 export interface ViewerProps {
   /** (d)/(e): one call per mounted page, returns the annotation / form / pointer layers. */
@@ -81,10 +82,14 @@ export function Viewer({ layers, fieldHighlight, renderFormWidgets, onPageRender
   };
 
   return (
-    <div className="viewer-panes" data-split={split?.orientation}>
-      {pane("main")}
-      {split && pane("second")}
-    </div>
+    <>
+      {/* v0.3 pkg7-ocr (O6): "이 문서에는 검색 가능한 텍스트가 없습니다 · OCR 실행…" */}
+      <NeedsOcrBanner />
+      <div className="viewer-panes" data-split={split?.orientation}>
+        {pane("main")}
+        {split && pane("second")}
+      </div>
+    </>
   );
 }
 

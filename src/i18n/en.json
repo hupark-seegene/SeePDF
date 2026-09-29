@@ -966,5 +966,13 @@
   "multiSearch.folderFailed": "The folder could not be read",
   "multiSearch.reason.password": "No password was entered",
   "multiSearch.reason.searchFailed": "Could not be searched",
-  "multiSearch.openHit": "Open {{name}}, page {{page}}"
+  "multiSearch.openHit": "Open {{name}}, page {{page}}",
+  "ocr.engine.windows": "Windows OCR",
+  "ocr.engine.autoHintWindows": "On this PC, Windows OCR recognizes text faster",
+  "ocr.rotatedCount": "Turned {{count}} page upright",
+  "ocr.rotatedCount_other": "Turned {{count}} pages upright",
+  "ocr.needsOcr.banner": "This document has no searchable text",
+  "ocr.needsOcr.hint": "It looks like a scan. Run text recognition (OCR) to search and select its text.",
+  "ocr.needsOcr.run": "Run OCR…",
+  "ocr.needsOcr.searchHint": "This document has no searchable text. Run OCR to make it searchable."
 }

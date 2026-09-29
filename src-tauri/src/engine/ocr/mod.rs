@@ -37,13 +37,20 @@
 //! pins it on `fixtures/rotation.pdf`, which the spike never measured.
 //!
 //! **Fonts.** Latin-1-only words go through `helvetica()` and embed nothing; everything else
-//! uses the bundled Hangul subset, loaded **once per document** — `load_true_type_from_bytes`
-//! appends another copy of the whole file on every call.
+//! uses the glyphless CID font of [`crate::engine::fonts::glyphless`] (v0.3 O5): ~0.6 KB of font
+//! plus a `/ToUnicode` of the batch's characters, loaded once per `ocr_apply`, instead of the
+//! 487 KB Hangul subset — and any script (日本語, 中文) instead of KS X 1001 only.
+//!
+//! **Rotation fix-up** (v0.3 O2). A page sent with `setRotation` gets that `/Rotate` first, in
+//! the same `mutate`; its OCR boxes are in the display pixels of the *new* rotation.
 
+pub mod orientation;
 pub mod vision;
+pub mod winocr;
 
 use crate::engine::annot::ScratchPage;
 use crate::engine::fonts;
+use crate::engine::fonts::glyphless::{CodeMap, GlyphlessFont};
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
 use crate::engine::render::cache::{Night, RenderKind, TileKey};
 use crate::engine::render::tiles::{self, RenderRequest};
@@ -51,8 +58,8 @@ use crate::engine::text::layer;
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
-    ChangeReason, DocInfo, OcrCapabilities, OcrEngine, OcrLine, OcrPage, OcrPageStatus, PageIndex,
-    Rotation,
+    ChangeReason, DocInfo, OcrCapabilities, OcrEngine, OcrEngineLanguages, OcrLine, OcrPage,
+    OcrPageStatus, PageIndex, Rotation,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::*;
@@ -79,23 +86,83 @@ const LATIN_BOX_TO_EM: f32 = 1.15;
 // Capabilities and status
 // ---------------------------------------------------------------------------------------
 
+/// The OCR languages SeePDF offers, as tesseract spells them (the app-wide code): 한국어,
+/// English, 日本語, 中文(简体). Chips, settings and `engineLanguages` all use these.
+pub const APP_LANGUAGES: [&str; 4] = ["kor", "eng", "jpn", "chi_sim"];
+
+/// `code` as the `'static` entry of [`APP_LANGUAGES`], if it is one.
+pub fn app_language(code: &str) -> Option<&'static str> {
+    APP_LANGUAGES.iter().copied().find(|c| *c == code)
+}
+
 /// `ocr_capabilities` — which engines this build can drive, and in which languages.
 ///
 /// The engine list is what the **backend** knows about. tesseract.js is always available (it is
 /// bundled in `public/ocr/`, 8.4 MB, and runs entirely offline). `vision` (P1-11) is added on a
 /// Mac whose Vision reads Korean — macOS 13 or later, checked against Vision's own language
-/// list, once per process. `windows` (P2) has no `ocr_recognize_native` body and is never listed.
+/// list, once per process. `windows` (v0.3 O3) is added where `Windows.Media.Ocr` has a
+/// recogniser for one of [`APP_LANGUAGES`] (`AvailableRecognizerLanguages`).
 pub fn capabilities() -> OcrCapabilities {
     let mut engines = vec![OcrEngine::Tesseract];
+    let vision = vision_languages();
     if vision_available() {
         engines.push(OcrEngine::Vision);
     }
+    let windows = windows_languages();
+    if !windows.is_empty() {
+        engines.push(OcrEngine::Windows);
+    }
+    // The traineddata `scripts/prepare-ocr.mjs` always fetches. Always `kor+eng` together:
+    // `kor` alone reads English as digits (ARCHITECTURE §9).
+    let tesseract = vec!["kor".to_string(), "eng".to_string()];
     OcrCapabilities {
         engines,
-        // The traineddata `scripts/prepare-ocr.mjs` fetches. Always `kor+eng` together:
-        // `kor` alone reads English as digits (ARCHITECTURE §9).
-        languages: vec!["kor".to_string(), "eng".to_string()],
+        languages: tesseract.clone(),
+        engine_languages: OcrEngineLanguages {
+            tesseract,
+            vision,
+            windows,
+        },
     }
+}
+
+/// The app languages Vision reads on this Mac (`ko-KR` → `kor`, `ja-JP` → `jpn`, …); empty
+/// where Vision is not offered.
+pub fn vision_languages() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let supported = vision::mac::supported();
+        APP_LANGUAGES
+            .iter()
+            .filter(|code| {
+                let tag = &vision::vision_languages(&[code.to_string()])[0];
+                supported.iter().any(|s| s == tag)
+            })
+            .map(|c| c.to_string())
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
+
+/// The app languages `Windows.Media.Ocr` has a recogniser for here; empty off Windows.
+pub fn windows_languages() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        winocr::app_languages(winocr::win::available_languages())
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+/// `true` when `ocr_recognize_native` can run here: Vision (macOS 13+ with Korean) or
+/// `Windows.Media.Ocr` with at least one of the app's languages.
+pub fn native_available() -> bool {
+    vision_available() || !windows_languages().is_empty()
 }
 
 /// `true` when `ocr_recognize_native` can run here (macOS 13+ with Korean in Vision).
@@ -188,10 +255,39 @@ pub fn render_page_gray(
     })
 }
 
-/// **Any thread but the engine's** (it blocks for 0.1–3 s). Vision over a rendered page →
-/// the contract's `OcrPage`. `languages` may be tesseract codes or Vision's own
-/// ([`vision::vision_languages`]); other OSes get `unsupported`.
+/// **Any thread but the engine's** (it blocks for 0.1–3 s). The platform's native recogniser
+/// over a rendered page → the contract's `OcrPage`: Vision on macOS, `Windows.Media.Ocr` on
+/// Windows (v0.3 O3). `languages` may be tesseract codes or BCP 47 tags
+/// ([`vision::vision_languages`], [`winocr::pick_language`]); other OSes get `unsupported`.
 pub fn recognize_gray(image: &GrayPage, languages: &[String]) -> Result<OcrPage, EngineError> {
+    #[cfg(windows)]
+    {
+        let Some(tag) = winocr::pick_language(languages, winocr::win::available_languages()) else {
+            return Err(EngineError::unsupported(&format!(
+                "ocr_recognize_native: no Windows recogniser for {languages:?}"
+            ))
+            .with_page(image.page));
+        };
+        // Pages larger than the engine's limit are read at an integer fraction and scaled back.
+        let max = winocr::win::max_dimension();
+        let factor = image.width.max(image.height).div_ceil(max).max(1);
+        let (pixels, width, height) =
+            winocr::downscale(&image.pixels, image.width, image.height, factor);
+        let lines = winocr::win::recognize(&pixels, width, height, &tag)
+            .map_err(|e| e.with_page(image.page))?;
+        let observations = winocr::observations(&lines, image.width, image.height, factor as f64);
+        Ok(vision::normalize(
+            &observations,
+            &vision::VisionContext {
+                page: image.page,
+                dpi: image.dpi,
+                width_px: image.width,
+                height_px: image.height,
+                rotation: image.rotation,
+                min_confidence: vision::MIN_CONFIDENCE,
+            },
+        ))
+    }
     #[cfg(target_os = "macos")]
     {
         let languages = vision::vision_languages(languages);
@@ -210,10 +306,41 @@ pub fn recognize_gray(image: &GrayPage, languages: &[String]) -> Result<OcrPage,
             },
         ))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (image, languages);
         Err(EngineError::unsupported("ocr_recognize_native"))
+    }
+}
+
+/// **Any thread but the engine's.** 페이지 회전 자동 감지 (v0.3 O2) with Apple Vision: `image`
+/// (rendered at [`orientation::DETECT_DPI`]) is read once and every line votes with its
+/// reading direction ([`vision::TextDirection`]); the turn that wins clearly
+/// ([`orientation::pick`]) is the answer. Vision reads sideways text as confidently as upright
+/// text, so four turned reads compared by confidence cannot tell which way is up — measured on
+/// the Korean fixture: 100 % at all four turns. Elsewhere `unsupported`: the frontend detects
+/// with tesseract (four turned reads, whose confidence *does* collapse on a wrong turn), which
+/// is also what the Windows engine uses — it reports no confidence at all.
+pub fn detect_orientation(
+    image: &GrayPage,
+    languages: &[String],
+) -> Result<orientation::OrientationResult, EngineError> {
+    #[cfg(target_os = "macos")]
+    {
+        let languages = vision::vision_languages(languages);
+        let directions =
+            vision::mac::text_directions(&image.pixels, image.width, image.height, &languages)
+                .map_err(|e| e.with_page(image.page))?;
+        let scores = orientation::scores_from_directions(&directions);
+        Ok(orientation::OrientationResult {
+            rotation: orientation::pick(&scores),
+            scores,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (image, languages);
+        Err(EngineError::unsupported("ocr_detect_orientation"))
     }
 }
 
@@ -283,11 +410,41 @@ pub fn apply_cancellable(
     progress: &mut dyn FnMut(usize, PageIndex),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DocInfo, EngineError> {
+    let rotations = vec![None; pages.len()];
+    apply_rotated_cancellable(
+        st,
+        doc_id,
+        pages,
+        &rotations,
+        replace_existing,
+        progress,
+        cancelled,
+    )
+}
+
+/// [`apply_cancellable`] with the per-page `/Rotate` fix-up of 페이지 회전 자동 감지 (v0.3 O2):
+/// `set_rotation[i] = Some(r)` sets page `pages[i].page`'s `/Rotate` to `r` before its layer is
+/// written, inside the same `mutate` (one undo step). `pages[i].rotation` must be `r` — the image
+/// was recognised at the new rotation. `set_rotation` is as long as `pages`.
+pub fn apply_rotated_cancellable(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    pages: &[OcrPage],
+    set_rotation: &[Option<Rotation>],
+    replace_existing: bool,
+    progress: &mut dyn FnMut(usize, PageIndex),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DocInfo, EngineError> {
     if pages.is_empty() {
         return Err(EngineError::invalid("ocr_apply was given no page"));
     }
+    if set_rotation.len() != pages.len() {
+        return Err(EngineError::invalid(
+            "ocr_apply: one rotation entry per page",
+        ));
+    }
     let count = st.doc(doc_id)?.page_count();
-    for p in pages {
+    for (p, rotate) in pages.iter().zip(set_rotation) {
         if p.page >= count {
             return Err(
                 EngineError::invalid(format!("page {} is outside 0..{count}", p.page))
@@ -300,6 +457,15 @@ pub fn apply_cancellable(
                 p.page, p.dpi, p.width_px, p.height_px
             ))
             .with_page(p.page));
+        }
+        if let Some(r) = rotate {
+            if !matches!(r, 0 | 90 | 180 | 270) || p.rotation % 360 != *r {
+                return Err(EngineError::invalid(format!(
+                    "page {}: setRotation {r} needs an OCR result recognised at {r}° (it says {}°)",
+                    p.page, p.rotation
+                ))
+                .with_page(p.page));
+            }
         }
     }
     let touched: Vec<PageIndex> = pages.iter().map(|p| p.page).collect();
@@ -316,49 +482,79 @@ pub fn apply_cancellable(
             ));
         }
     }
-    registry::mutate(
-        st,
-        doc_id,
-        MutateOpts::new("undo.ocrApply", ChangeReason::Ocr).pages(touched),
-        |doc| {
-            // One font object for the whole **document**: `load_true_type_from_bytes` embeds
-            // another copy of the ~0.5 MB file every time it is called, so the token is cached
-            // on `OpenDoc` and survives across `ocr_apply` calls — which is what makes (f)'s
-            // per-page chunking (one `ocr_apply` per page) affordable.
-            let mut hangul: Option<PdfFontToken> = None;
-            let needs_hangul = pages
-                .iter()
-                .flat_map(|p| p.lines.iter())
-                .flat_map(|l| l.words.iter())
-                .any(|w| !fonts::is_latin1(&w.text));
-            if needs_hangul {
-                hangul = Some(doc.hangul_token()?);
+    // A new `/Rotate` swaps the page's width and height: the page list's geometry must be
+    // re-read whole, which is what a structural mutate does.
+    let turns = {
+        let doc = st.doc(doc_id)?;
+        pages.iter().zip(set_rotation).any(|(p, r)| {
+            r.is_some_and(|r| doc.geom(p.page).map(|g| g.rotation != r).unwrap_or(true))
+        })
+    };
+    let mut opts = MutateOpts::new("undo.ocrApply", ChangeReason::Ocr).pages(touched);
+    if turns {
+        opts = opts.structural();
+    }
+    registry::mutate(st, doc_id, opts, |doc| {
+        // One glyphless font for the whole **call** (O5): its `/ToUnicode` must name every
+        // character before the first word is written, so the batch's non-Latin words are
+        // collected first. Latin-1 words stay in base-14 Helvetica and embed nothing.
+        let non_latin: Vec<&str> = pages
+            .iter()
+            .flat_map(|p| p.lines.iter())
+            .flat_map(|l| l.words.iter())
+            .map(|w| w.text.trim())
+            .filter(|t| !fonts::is_latin1(t))
+            .collect();
+        let glyphless = if non_latin.is_empty() {
+            None
+        } else {
+            let map = CodeMap::new(non_latin.iter().copied())?;
+            Some(GlyphlessFont::load(doc.bindings(), doc.pdf(), map)?)
+        };
+        let helvetica = doc.pdf_mut().fonts_mut().helvetica();
+        for (done, (page, rotate)) in pages.iter().zip(set_rotation).enumerate() {
+            if cancelled() {
+                return Err(EngineError::cancelled(format!(
+                    "ocr_apply cancelled after {done} of {} pages",
+                    pages.len()
+                )));
             }
-            let helvetica = doc.pdf_mut().fonts_mut().helvetica();
-            for (done, page) in pages.iter().enumerate() {
-                if cancelled() {
-                    return Err(EngineError::cancelled(format!(
-                        "ocr_apply cancelled after {done} of {} pages",
-                        pages.len()
-                    )));
-                }
-                apply_page(doc, page, replace_existing, helvetica, hangul)?;
-                progress(done + 1, page.page);
-            }
-            Ok(())
-        },
-    )?;
+            apply_page(
+                doc,
+                page,
+                *rotate,
+                replace_existing,
+                helvetica,
+                glyphless.as_ref(),
+            )?;
+            progress(done + 1, page.page);
+        }
+        Ok(())
+    })?;
     Ok(st.doc(doc_id)?.info())
 }
 
 fn apply_page(
     doc: &mut OpenDoc<'_>,
     ocr: &OcrPage,
+    set_rotation: Option<Rotation>,
     replace_existing: bool,
     helvetica: PdfFontToken,
-    hangul: Option<PdfFontToken>,
+    glyphless: Option<&GlyphlessFont>,
 ) -> Result<(), EngineError> {
-    let page_rotation = doc.geom(ocr.page)?.rotation;
+    let mut scratch = ScratchPage::open(doc, ocr.page)?;
+    let document = doc.pdf();
+
+    // O2: the page turns first, so `pixels_to_points` below inverts the new display transform.
+    if let Some(rotation) = set_rotation {
+        scratch.page.set_rotation(render_rotation(rotation));
+    }
+    let page_rotation: Rotation = scratch
+        .page
+        .rotation()
+        .map(|r| r.as_degrees() as Rotation)
+        .unwrap_or(0)
+        % 360;
     if ocr.rotation % 360 != page_rotation {
         // `OcrPage.rotation` is informational: the `/ocr` route takes no rotation parameter, so
         // the worker always sees the page at its own `/Rotate`, which is what
@@ -371,8 +567,6 @@ fn apply_page(
             "OcrPage.rotation disagrees with the page's /Rotate; using the page's"
         );
     }
-    let mut scratch = ScratchPage::open(doc, ocr.page)?;
-    let document = doc.pdf();
 
     if replace_existing {
         remove_layer(&mut scratch.page)?;
@@ -409,26 +603,26 @@ fn apply_page(
                 continue;
             }
 
-            let latin = fonts::is_latin1(&word.text);
+            let text = word.text.trim();
             let font =
-                if latin {
-                    helvetica
+                if fonts::is_latin1(text) {
+                    WordFont::Helvetica(helvetica)
                 } else {
-                    match hangul {
-                        Some(token) => token,
-                        // A Hangul word with no bundled font: skipping it silently would produce a
-                        // layer that looks complete and is not.
+                    match glyphless {
+                        Some(font) => WordFont::Glyphless(font),
+                        // Cannot happen (the font is loaded whenever a word needs it), but a
+                        // silently skipped word would produce a layer that looks complete and is not.
                         None => return Err(EngineError::new(
                             ErrorCode::FontCoverage,
-                            "the OCR result contains non-Latin text but the bundled Hangul font \
-                             is not available",
+                            "the OCR result contains non-Latin text but no text layer font was \
+                             loaded",
                         )
                         .with_page(ocr.page)),
                     }
                 };
             placed.push(PlacedWord {
                 // The box is the ink: stray whitespace around a token would shift the fit.
-                text: word.text.trim(),
+                text,
                 font,
                 bl,
                 box_w,
@@ -460,10 +654,29 @@ fn apply_page(
     Ok(())
 }
 
+/// `/Rotate` in degrees → pdfium-render's rotation (0 for anything but a quarter turn).
+fn render_rotation(degrees: Rotation) -> PdfPageRenderRotation {
+    match degrees % 360 {
+        90 => PdfPageRenderRotation::Degrees90,
+        180 => PdfPageRenderRotation::Degrees180,
+        270 => PdfPageRenderRotation::Degrees270,
+        _ => PdfPageRenderRotation::None,
+    }
+}
+
+/// Which font a word is written in.
+#[derive(Clone, Copy)]
+enum WordFont<'f> {
+    /// Latin-1: base-14 Helvetica, nothing embedded.
+    Helvetica(PdfFontToken),
+    /// Everything else: the batch's glyphless CID font (O5).
+    Glyphless(&'f GlyphlessFont),
+}
+
 /// One word of a line, ready to place.
 struct PlacedWord<'a> {
     text: &'a str,
-    font: PdfFontToken,
+    font: WordFont<'a>,
     /// The box's bottom-left corner in user space: the run's origin.
     bl: (f32, f32),
     /// The box width in points, along the (possibly rotated) baseline.
@@ -483,42 +696,65 @@ fn add_invisible_word<'a>(
     size_pt: f32,
     page_rotation: Rotation,
 ) -> Result<(), EngineError> {
-    let mut object =
-        PdfPageTextObject::new(document, word.text, word.font, PdfPoints::new(size_pt))
-            .ctx("create OCR text object")?;
-    object
-        .set_render_mode(PdfPageTextRenderMode::Invisible)
-        .ctx("set render mode 3")?;
-    let natural_w = object
-        .bounds()
-        .ctx("measure OCR word")?
-        .to_rect()
-        .width()
-        .value;
-    let sx = if natural_w > 0.0 {
-        (word.box_w / natural_w).clamp(MIN_SX, MAX_SX)
-    } else {
-        1.0
+    let fit = |natural_w: f32| {
+        if natural_w > 0.0 {
+            (word.box_w / natural_w).clamp(MIN_SX, MAX_SX)
+        } else {
+            1.0
+        }
     };
-    if space_after {
-        object
-            .set_text(format!("{} ", word.text))
-            .ctx("append the OCR word space")?;
+    match word.font {
+        WordFont::Helvetica(token) => {
+            let mut object =
+                PdfPageTextObject::new(document, word.text, token, PdfPoints::new(size_pt))
+                    .ctx("create OCR text object")?;
+            object
+                .set_render_mode(PdfPageTextRenderMode::Invisible)
+                .ctx("set render mode 3")?;
+            let natural_w = object
+                .bounds()
+                .ctx("measure OCR word")?
+                .to_rect()
+                .width()
+                .value;
+            let sx = fit(natural_w);
+            if space_after {
+                object
+                    .set_text(format!("{} ", word.text))
+                    .ctx("append the OCR word space")?;
+            }
+            // Order matters: scale post-multiplies in page space, so it must happen before the
+            // translate that positions the run (ocr spike gotcha 11).
+            object.scale(sx, 1.0).ctx("fit OCR word to its box")?;
+            if !page_rotation.is_multiple_of(360) {
+                object
+                    .rotate_counter_clockwise_degrees(page_rotation as f32)
+                    .ctx("rotate OCR word")?;
+            }
+            object
+                .translate(PdfPoints::new(word.bl.0), PdfPoints::new(word.bl.1))
+                .ctx("place OCR word")?;
+            page.objects_mut()
+                .add_text_object(object)
+                .ctx("add OCR word")?;
+        }
+        WordFont::Glyphless(font) => {
+            // The same sequence through the raw bindings (the font has no pdfium-render token).
+            let object = font.text_object(document, word.text, size_pt)?;
+            let sx = fit(object.width()?);
+            if space_after {
+                object.set_text(&format!("{} ", word.text))?;
+            }
+            object.transform([sx as f64, 0.0, 0.0, 1.0, 0.0, 0.0]);
+            if !page_rotation.is_multiple_of(360) {
+                let theta = (page_rotation as f64).to_radians();
+                let (sin, cos) = (theta.sin(), theta.cos());
+                object.transform([cos, sin, -sin, cos, 0.0, 0.0]);
+            }
+            object.transform([1.0, 0.0, 0.0, 1.0, word.bl.0 as f64, word.bl.1 as f64]);
+            object.insert(page)?;
+        }
     }
-    // Order matters: scale post-multiplies in page space, so it must happen before the
-    // translate that positions the run (ocr spike gotcha 11).
-    object.scale(sx, 1.0).ctx("fit OCR word to its box")?;
-    if !page_rotation.is_multiple_of(360) {
-        object
-            .rotate_counter_clockwise_degrees(page_rotation as f32)
-            .ctx("rotate OCR word")?;
-    }
-    object
-        .translate(PdfPoints::new(word.bl.0), PdfPoints::new(word.bl.1))
-        .ctx("place OCR word")?;
-    page.objects_mut()
-        .add_text_object(object)
-        .ctx("add OCR word")?;
     Ok(())
 }
 
@@ -659,7 +895,14 @@ mod tests {
             caps.engines.contains(&OcrEngine::Vision),
             vision_available()
         );
+        assert_eq!(
+            caps.engines.contains(&OcrEngine::Windows),
+            !windows_languages().is_empty()
+        );
+        #[cfg(not(windows))]
         assert!(!caps.engines.contains(&OcrEngine::Windows));
+        assert_eq!(caps.engine_languages.tesseract, ["kor", "eng"]);
+        assert_eq!(caps.engine_languages.vision, vision_languages());
         #[cfg(not(target_os = "macos"))]
         assert!(!vision_available());
         assert!(caps.languages.iter().any(|l| l == "kor"));

@@ -1397,7 +1397,18 @@ pub struct OcrPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OcrApplyPage {
-    Wrapped { page: PageIndex, ocr: OcrPage },
+    Wrapped {
+        page: PageIndex,
+        ocr: OcrPage,
+        /// v0.3 pkg7-ocr (O2 페이지 회전 자동 감지): set the page's `/Rotate` to this before the
+        /// layer is written, in the same undo step. `ocr` must have been recognised at it.
+        #[serde(
+            default,
+            rename = "setRotation",
+            skip_serializing_if = "Option::is_none"
+        )]
+        set_rotation: Option<Rotation>,
+    },
     Plain(OcrPage),
 }
 
@@ -1405,14 +1416,27 @@ impl OcrApplyPage {
     /// The page to apply; a wrapped page whose `page` disagrees with its `ocr.page` is refused
     /// rather than guessed at (the boxes belong to one of the two).
     pub fn into_page(self) -> Result<OcrPage, crate::ipc::EngineError> {
+        self.into_page_and_rotation().map(|(ocr, _)| ocr)
+    }
+
+    /// [`OcrApplyPage::into_page`] plus the wrapped form's `setRotation` (v0.3 O2).
+    pub fn into_page_and_rotation(
+        self,
+    ) -> Result<(OcrPage, Option<Rotation>), crate::ipc::EngineError> {
         match self {
-            OcrApplyPage::Plain(ocr) => Ok(ocr),
-            OcrApplyPage::Wrapped { page, ocr } if page == ocr.page => Ok(ocr),
-            OcrApplyPage::Wrapped { page, ocr } => Err(crate::ipc::EngineError::invalid(format!(
-                "ocr_apply: page {page} carries the OCR result of page {}",
-                ocr.page
-            ))
-            .with_page(page)),
+            OcrApplyPage::Plain(ocr) => Ok((ocr, None)),
+            OcrApplyPage::Wrapped {
+                page,
+                ocr,
+                set_rotation,
+            } if page == ocr.page => Ok((ocr, set_rotation)),
+            OcrApplyPage::Wrapped { page, ocr, .. } => {
+                Err(crate::ipc::EngineError::invalid(format!(
+                    "ocr_apply: page {page} carries the OCR result of page {}",
+                    ocr.page
+                ))
+                .with_page(page))
+            }
         }
     }
 }
@@ -1430,6 +1454,22 @@ pub enum OcrEngine {
 pub struct OcrCapabilities {
     pub engines: Vec<OcrEngine>,
     pub languages: Vec<String>,
+    /// v0.3 pkg7-ocr (O1): the languages (`kor`, `eng`, `jpn`, `chi_sim`) each listed engine
+    /// reads. `languages` stays the tesseract baseline for older callers.
+    #[serde(default)]
+    pub engine_languages: OcrEngineLanguages,
+}
+
+/// v0.3 pkg7-ocr (O1): `OcrCapabilities.engineLanguages`. An engine that is not listed in
+/// `engines` has an empty list. The tesseract list is what the backend guarantees (`kor`,
+/// `eng`); extra traineddata staged by `prepare-ocr --langs` is announced by the frontend's
+/// asset manifest, which only it can see.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrEngineLanguages {
+    pub tesseract: Vec<String>,
+    pub vision: Vec<String>,
+    pub windows: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

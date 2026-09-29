@@ -14,6 +14,7 @@
 //!   `  Hangul ABC` with the wrong font (text spike §5). Checking before we embed is the only
 //!   way to give the UI an honest `fontCoverage` error.
 
+pub mod glyphless;
 pub mod ksx1001;
 
 use crate::ipc::error::PdfiumResultExt;

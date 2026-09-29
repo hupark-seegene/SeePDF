@@ -13,6 +13,10 @@
  * The run lives in this module, not in the dialog: the password prompt stacks on top of the dialog
  * and the host renders only the top entry, and the user may close the dialog and keep working while
  * the queue runs (the status bar shows it, with its own ×).
+ *
+ * v0.3 (pkg7-ocr): the options start from 설정 (언어, 해상도 — U1) whenever the dialog opens on an
+ * empty list; the languages are the OCR sheet's chips (日本語 / 中文 where the engine reads them, O1);
+ * 페이지 회전 자동 감지 (O2).
  */
 import { create } from "zustand";
 import * as api from "../../ipc/api";
@@ -23,7 +27,12 @@ import { useAppStore } from "../../store/appStore";
 import { toast } from "../../app/toastStore";
 import { resolveDpi, runOcrJob, type OcrDpi } from "../ocrJob";
 import { DEFAULT_LAYOUT, TesseractPool, defaultWorkerCount } from "../tesseractPool";
-import { isVisionAvailable, resolveEngine, type OcrEngineChoice, type OcrRunEngine } from "../engine";
+import {
+  languagesFor, loadOcrCapabilities, nativeEngineOf, resolveEngine, type OcrEngineChoice, type OcrRunEngine,
+} from "../engine";
+import {
+  BASELINE_LANGUAGES, effectiveLanguages, isOcrLanguage, langsFor as joinLangs, type OcrLanguage,
+} from "../languages";
 import {
   addPaths, isRunnable, patchItem, pathKey, pickOutputPath, removeItem, requeue, summarize,
   type BatchItem, type BatchStatus,
@@ -32,9 +41,10 @@ import {
 export type BatchPhase = "idle" | "running" | "finished";
 
 export interface BatchOptions {
-  /** 한국어 — always recognised together with English (`kor` alone garbles Latin) */
-  ko: boolean;
-  en: boolean;
+  /** the language chips (`kor`, `eng`, `jpn`, `chi_sim`); Korean always brings English at run time */
+  langs: OcrLanguage[];
+  /** 페이지 회전 자동 감지 (v0.3 O2), off by default */
+  autoRotate: boolean;
   /** 인식 엔진: 자동 = Apple Vision where the backend has it (P1-11) */
   engine: OcrEngineChoice;
   dpi: OcrDpi;
@@ -57,12 +67,26 @@ export interface BatchState {
 }
 
 const DEFAULT_OPTIONS: BatchOptions = {
-  ko: true, en: true, engine: "auto", dpi: "auto", skipPagesWithText: true, outputDir: null,
+  langs: [...BASELINE_LANGUAGES], autoRotate: false, engine: "auto", dpi: "auto", skipPagesWithText: true,
+  outputDir: null,
 };
+
+const DPI_CHOICES: OcrDpi[] = ["auto", 200, 300, 400];
+
+/** 설정's OCR defaults (U1): `Settings.ocrLanguages` and `ocrDpi`, or 한국어 + English / 자동. */
+export function settingsDefaults(): Pick<BatchOptions, "langs" | "dpi"> {
+  const settings = useAppStore.getState().settings;
+  const langs = (settings?.ocrLanguages ?? []).filter(isOcrLanguage);
+  const dpi = settings?.ocrDpi;
+  return {
+    langs: langs.length ? langs : [...BASELINE_LANGUAGES],
+    dpi: DPI_CHOICES.includes(dpi as OcrDpi) ? (dpi as OcrDpi) : "auto",
+  };
+}
 
 function initial(): BatchState {
   return {
-    items: [], options: { ...DEFAULT_OPTIONS }, phase: "idle",
+    items: [], options: { ...DEFAULT_OPTIONS, ...settingsDefaults() }, phase: "idle",
     runDone: 0, runTotal: 0, cancelling: false, jobId: null,
   };
 }
@@ -80,8 +104,18 @@ const live: { controller: AbortController | null; docId: DocId | null; run: Prom
 };
 
 /** The OCR dialog's language rule: `kor` never goes alone (spike §4.2). */
-export function langsFor(o: Pick<BatchOptions, "ko" | "en">): string {
-  return o.ko ? "kor+eng" : "eng";
+export function langsFor(o: Pick<BatchOptions, "langs">): string {
+  return joinLangs(o.langs);
+}
+
+/**
+ * The dialog opened on an empty, idle list: start from 설정 again (U1). A list the user is building,
+ * a running batch or a finished one keeps what it has.
+ */
+export function seedFromSettings(): void {
+  const s = useBatchOcr.getState();
+  if (s.phase !== "idle" || s.items.length > 0) return;
+  useBatchOcr.setState({ options: { ...s.options, ...settingsDefaults() } });
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +170,7 @@ export function startBatch(): Promise<void> {
   const s = useBatchOcr.getState();
   if (s.phase === "running") return live.run ?? Promise.resolve();
   const queue = s.items.filter(isRunnable).map((i) => i.id);
-  if (queue.length === 0 || (!s.options.ko && !s.options.en)) return Promise.resolve();
+  if (queue.length === 0 || s.options.langs.length === 0) return Promise.resolve();
   const run = runQueue(queue).finally(() => {
     if (live.run === run) live.run = null;
   });
@@ -162,7 +196,6 @@ async function runQueue(queue: number[]): Promise<void> {
   live.controller = controller;
   const { signal } = controller;
   const { options } = useBatchOcr.getState();
-  const langs = langsFor(options);
   const dpi = resolveDpi(options.dpi);
   const workers = defaultWorkerCount();
   /** the batch's tesseract pool; Vision needs none — the backend renders and recognises */
@@ -183,7 +216,10 @@ async function runQueue(queue: number[]): Promise<void> {
   let finished = 0;
   try {
     // After the phase switch above, which must stay synchronous (a second 시작 checks it).
-    const engine = resolveEngine(options.engine, await isVisionAvailable());
+    const caps = await loadOcrCapabilities();
+    const engine = resolveEngine(options.engine, nativeEngineOf(caps));
+    // O1: only the chips this engine reads (a 日本語 chosen for Vision is dropped for Tesseract).
+    const langs = joinLangs(effectiveLanguages(options.langs, languagesFor(caps, engine)));
     // One pool for the whole batch: the workers load their language data once, not once per file.
     if (engine === "tesseract") pool = new TesseractPool({ langs, layout: DEFAULT_LAYOUT, dpi, workers });
     for (const id of queue) {
@@ -242,6 +278,7 @@ async function processFile(item: BatchItem, ctx: FileContext): Promise<Outcome> 
       langs: ctx.langs,
       dpi: ctx.options.dpi,
       skipPagesWithText: ctx.options.skipPagesWithText,
+      autoRotate: ctx.options.autoRotate,
       workers: ctx.workers,
       engine: ctx.engine,
       pool: ctx.pool,
