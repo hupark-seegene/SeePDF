@@ -67,3 +67,18 @@
 .cmp-mark.del { background: rgb(217 63 63 / 0.28); box-shadow: inset 0 -2px 0 var(--danger); }
 .cmp-mark.ins { background: rgb(46 158 91 / 0.28); box-shadow: inset 0 -2px 0 var(--success); }
 .cmp-empty { color: var(--text-inverse); text-align: center; margin-top: var(--space-12); }
+/* v0.3 (X4): pixels changed outside the text — an outlined region, blinking while 깜빡이기 is on */
+.cmp-vis { color: var(--warning); }
+.cmp-mark.visual {
+  background: rgb(199 119 0 / 0.16);
+  box-shadow: inset 0 0 0 2px var(--warning);
+  mix-blend-mode: normal;
+}
+.cmp-root[data-blink] .cmp-mark.visual { animation: cmp-blink 1.1s steps(2, jump-none) infinite; }
+@keyframes cmp-blink {
+  from { opacity: 1; }
+  to { opacity: 0.1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cmp-root[data-blink] .cmp-mark.visual { animation: none; }
+}

@@ -1872,6 +1872,10 @@ pub struct CompressOptions {
     /// Default: every page.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pages: Option<Vec<PageIndex>>,
+    /// v0.3 pkg8 (X5) 구조 최적화, default `false`: drop unused page resources and unreferenced
+    /// objects, empty content streams, and write object streams (unencrypted documents only).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub optimize: Option<bool>,
 }
 
 /// Rides on the `done` job event of `compress_estimate`.
@@ -1909,11 +1913,20 @@ pub struct CompareOptions {
     /// every later pair. `false` = the Stage 5 positional pairing.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub align_pages: Option<bool>,
+    /// v0.3 pkg8 (X4), default `true`: a 50 DPI pixel diff of every pair outside the text,
+    /// reported as `visual` ops.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub visual: Option<bool>,
 }
 
 impl CompareOptions {
     pub fn align(&self) -> bool {
         self.align_pages.unwrap_or(true)
+    }
+
+    /// v0.3 pkg8 (X4) `visual`, default `true`: also diff the pixels outside the text.
+    pub fn visual(&self) -> bool {
+        self.visual.unwrap_or(true)
     }
 }
 
@@ -1924,6 +1937,9 @@ pub enum DiffKind {
     Insert,
     Delete,
     Replace,
+    /// v0.3 pkg8 (X4): pixels changed outside the text (a figure, a scan, a drawing): `words`
+    /// is 0, no text, `rectsA` / `rectsB` are the changed regions on each page.
+    Visual,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -27,6 +27,16 @@
 //! pkg4 (A2 / A6) draws lines and arrows as real `/Line` annotations and dashes borders with a
 //! `lopdf` step; both have a PDFium form (the Ink line, a solid border), which a signed file
 //! that still saves incrementally (pkg3 S1) keeps, so the signature survives the save.
+//!
+//! pkg8 (X3 / X6) adds exports that carry a document's content out — 텍스트 ▸ 레이아웃 유지,
+//! 이미지 추출, Word / 한글 / HTML / Markdown — next to pkg3 (S5)'s copy permission, which
+//! `export_text` checks; they check it too. pkg8's 모아찍기 builds its sheets from the print
+//! bytes, so it needs the print permission `print_prepare` needs.
+//!
+//! pkg4 (A10) lets 인쇄 be switched off per annotation (`/F` Print), including on the kinds it
+//! writes with `lopdf`; pkg8 (X7) makes both print paths honour `/F` (`FPDF_PRINTING` for the
+//! page route, `FLAT_PRINT` for the handler file), so such an annotation stays on screen and
+//! off paper.
 
 mod common;
 
@@ -968,4 +978,254 @@ fn lines_and_dashed_shapes_on_a_signed_file_keep_the_signature() {
     assert_eq!(kinds[1].0, "Line", "{kinds:?}");
     assert!(kinds[2].1, "the square is dashed: {kinds:?}");
     close(unsigned);
+}
+
+// ---------------------------------------------------------------------------------------
+// pkg8 (X3 / X6 exports, X2 모아찍기) × pkg3 (S5 permission flags)
+// ---------------------------------------------------------------------------------------
+
+/// A document that forbids copying refuses every pkg8 export that pulls its text or images
+/// out, with the same `extractText` detail as `export_text`; one that forbids printing refuses
+/// 모아찍기. The plain text export and an n-up of an unrestricted copy still work.
+#[test]
+fn content_exports_honour_the_copy_and_print_permissions() {
+    use seepdf_lib::engine::export::{self, nup, PrintAnnots};
+    let dir = fixture("out").join("v03-integration");
+    std::fs::create_dir_all(&dir).expect("create fixtures/out/v03-integration");
+    let text_out = dir
+        .join(format!("layout-{}.txt", std::process::id()))
+        .display()
+        .to_string();
+    let images_out = dir.join(format!("embedded-{}", std::process::id()));
+
+    let no_copy = restricted_copy(
+        "export-no-copy",
+        PermissionsRequest {
+            extract_text: false,
+            ..PermissionsRequest::default()
+        },
+    );
+    let refusals = [
+        (
+            "레이아웃 유지",
+            with_state({
+                let (d, out) = (no_copy.clone(), text_out.clone());
+                move |st| export::export_text_with(st, &d, &[0], &out, true).map(|_| ())
+            }),
+        ),
+        (
+            "이미지 추출",
+            with_state({
+                let (d, out) = (no_copy.clone(), images_out.clone());
+                move |st| export::export_embedded_page(st, &d, 0, &out, "x").map(|_| ())
+            }),
+        ),
+        (
+            "텍스트 흐름",
+            with_state({
+                let d = no_copy.clone();
+                move |st| export::text_flow_start(st, &d).map(|_| ())
+            }),
+        ),
+    ];
+    for (what, result) in refusals {
+        let err = result.expect_err(what);
+        assert_eq!(err.code, ErrorCode::PermissionDenied, "{what}");
+        assert_eq!(err.detail.as_deref(), Some("extractText"), "{what}");
+    }
+    assert!(
+        !images_out.exists(),
+        "nothing was extracted before the refusal"
+    );
+    close(no_copy);
+
+    let opts = nup::NupOptions {
+        per_sheet: 2,
+        order: nup::NupOrder::Across,
+        booklet: false,
+        paper: nup::NupPaper::Auto,
+        annots: PrintAnnots::All,
+    };
+    let no_print = restricted_copy(
+        "export-no-print",
+        PermissionsRequest {
+            print: false,
+            ..PermissionsRequest::default()
+        },
+    );
+    let err = with_state({
+        let d = no_print.clone();
+        move |st| nup::make_nup_bytes(st, &d, None, &opts).map(|_| ())
+    })
+    .expect_err("모아찍기 of a document that forbids printing");
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(err.detail.as_deref(), Some("print"));
+    // Copying is still allowed on this one: 레이아웃 유지 works.
+    with_state({
+        let (d, out) = (no_print.clone(), text_out.clone());
+        move |st| export::export_text_with(st, &d, &[0], &out, true).map(|_| ())
+    })
+    .expect("레이아웃 유지 of a copyable document");
+    close(no_print);
+
+    let free = open("tracemonkey.pdf");
+    let (_, sheets) = with_state({
+        let d = free.doc_id.clone();
+        move |st| nup::make_nup_bytes(st, &d, Some(&[0, 1, 2, 3]), &opts)
+    })
+    .expect("모아찍기 of an unrestricted document");
+    assert_eq!(sheets, 2, "4 pages at 2-up");
+    let _ = std::fs::remove_file(&text_out);
+}
+
+// ---------------------------------------------------------------------------------------
+// pkg4 (A10 인쇄 toggle, A2 lopdf polygons) × pkg8 (X7 print paths honour /F)
+// ---------------------------------------------------------------------------------------
+
+fn render_as(
+    doc_id: &str,
+    kind: seepdf_lib::engine::render::cache::RenderKind,
+) -> (u32, u32, Vec<u8>) {
+    use seepdf_lib::engine::render::cache::{Night, TileKey};
+    let doc_id = doc_id.to_string();
+    let raw = with_state(move |st| {
+        let key = TileKey {
+            doc: doc_id.clone(),
+            generation: st.doc(&doc_id)?.generation,
+            page: 0,
+            kind,
+            scale_key: 100,
+            rotation: 0,
+            tx: 0,
+            ty: 0,
+            night: Night::Off,
+            hl: false,
+            forms: true,
+        };
+        tiles::render(st, &tiles::RenderRequest::new(key))
+    })
+    .expect("render");
+    (raw.width, raw.height, raw.pixels)
+}
+
+/// Share of the pixels inside `r` (points, y-up, 1×) that differ by more than 24.
+fn differing(a: &(u32, u32, Vec<u8>), b: &(u32, u32, Vec<u8>), r: Rect, h_pt: f32) -> f64 {
+    assert_eq!((a.0, a.1), (b.0, b.1));
+    let (x0, x1) = (r.l.max(0.0) as u32, (r.r as u32).min(a.0));
+    let (y0, y1) = ((h_pt - r.t).max(0.0) as u32, ((h_pt - r.b) as u32).min(a.1));
+    let (mut total, mut diff) = (0usize, 0usize);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = ((y * a.0 + x) * 4) as usize;
+            total += 1;
+            if (0..3).any(|c| (a.2[i + c] as i32 - b.2[i + c] as i32).abs() > 24) {
+                diff += 1;
+            }
+        }
+    }
+    diff as f64 / total.max(1) as f64
+}
+
+/// The handler path's file (`print_bytes`), reopened and rendered as a plain page.
+fn printed_file(
+    doc_id: &str,
+    annots: seepdf_lib::engine::export::PrintAnnots,
+) -> (u32, u32, Vec<u8>) {
+    use seepdf_lib::engine::render::cache::RenderKind;
+    let d = doc_id.to_string();
+    let bytes =
+        with_state(move |st| seepdf_lib::engine::export::print_bytes(st, &d, Some(&[0]), annots))
+            .expect("print_bytes");
+    let copy = open_bytes(bytes);
+    let out = render_as(&copy, RenderKind::Page);
+    close(copy);
+    out
+}
+
+#[test]
+fn annotations_switched_off_for_print_stay_off_paper() {
+    use seepdf_lib::engine::annot::update::update_in;
+    use seepdf_lib::engine::export::PrintAnnots;
+    use seepdf_lib::engine::render::cache::RenderKind;
+    use seepdf_lib::ipc::types::AnnotPatch;
+    let doc = open("tracemonkey.pdf");
+    let id = doc.doc_id.clone();
+    let h = doc.info.pages[0].height_pt;
+    let square_at = Rect::new(380.0, 40.0, 520.0, 120.0);
+    let polygon_at = Rect::new(70.0, 40.0, 210.0, 120.0);
+    let square = create_annot(
+        &id,
+        AnnotSpec::Square(ShapeSpec {
+            rect: square_at,
+            color: [200, 0, 0],
+            fill_color: Some([200, 0, 0]),
+            width: 2.0,
+            opacity: 1.0,
+            dashed: false,
+        }),
+    )
+    .expect("a square (PDFium)");
+    let polygon = create_annot(
+        &id,
+        AnnotSpec::Polygon(PolySpec {
+            vertices: vec![70.0, 40.0, 210.0, 40.0, 210.0, 120.0, 70.0, 120.0],
+            color: [0, 150, 0],
+            fill_color: Some([0, 150, 0]),
+            width: 2.0,
+            opacity: 1.0,
+            cloudy: false,
+            dashed: false,
+            measure: None,
+        }),
+    )
+    .expect("a polygon (lopdf)");
+
+    let bare = render_as(&id, RenderKind::Print(PrintAnnots::None));
+    let bare_file = printed_file(&id, PrintAnnots::None);
+    let print = render_as(&id, RenderKind::Print(PrintAnnots::All));
+    let file = printed_file(&id, PrintAnnots::All);
+    for r in [square_at, polygon_at] {
+        assert!(
+            differing(&print, &bare, r, h) > 0.5,
+            "printed by default: {r:?}"
+        );
+        assert!(
+            differing(&file, &bare_file, r, h) > 0.5,
+            "in the print file: {r:?}"
+        );
+    }
+
+    for a in [&square, &polygon] {
+        let (d, a) = (id.clone(), a.clone());
+        with_state(move |st| {
+            update_in(
+                st,
+                &d,
+                0,
+                &a,
+                &AnnotPatch {
+                    printed: Some(false),
+                    ..AnnotPatch::default()
+                },
+            )
+        })
+        .expect("인쇄 off");
+    }
+    let screen = render_as(&id, RenderKind::Page);
+    let print = render_as(&id, RenderKind::Print(PrintAnnots::All));
+    let file = printed_file(&id, PrintAnnots::All);
+    for r in [square_at, polygon_at] {
+        assert!(
+            differing(&screen, &bare, r, h) > 0.5,
+            "still on screen: {r:?}"
+        );
+        assert!(
+            differing(&print, &bare, r, h) < 0.02,
+            "off the page route: {r:?}"
+        );
+        assert!(
+            differing(&file, &bare_file, r, h) < 0.02,
+            "off the print file: {r:?}"
+        );
+    }
 }

@@ -79,7 +79,11 @@ const jobs = new Map<JobId, { cancel: () => void }>();
 /** 압축 예상 results waiting for 적용 / 취소: at most one per document, like the engine. */
 const pendingCompress = new Map<
   DocId,
-  { token: number; beforeBytes: number; afterBytes: number; imagesDownsampled: number; baseGeneration: DocGeneration }
+  {
+    token: number; beforeBytes: number; afterBytes: number; imagesDownsampled: number; baseGeneration: DocGeneration;
+    /** v0.3 pkg8 (X5) */
+    optimized?: boolean;
+  }
 >();
 let nextCompressToken = 1;
 /** Recovery copies (P1-8): what `$APPDATA/SeePDF/recovery` would hold, and each open doc's id. */
@@ -91,6 +95,8 @@ let nextJob = 1;
 let nextAnnot = 1;
 /** Files the mock "wrote" (Save As): `path_exists` answers true for them (여러 파일 OCR). */
 const writtenFiles = new Set<string>();
+/** v0.3 pkg8: sheet counts of the n-up files `make_nup` "wrote", so opening one gives its sheets. */
+const nupPageCounts = new Map<string, number>();
 let recents: RecentEntry[] = structuredClone(recentsFixture) as unknown as RecentEntry[];
 let settings = seedSettings();
 /**
@@ -237,6 +243,13 @@ function applyLabels(d: MockDoc): void {
 function refuseEncrypted(d: MockDoc): void {
   if (!d.info.permissions.modify) {
     throw err("permissionDenied", "the document's permissions forbid 'modify'", { detail: "modify" });
+  }
+}
+
+/** v0.3 S5: `security::ensure_doc_permitted` — one permission flag of this open. */
+function requirePerm(d: MockDoc, perm: "print" | "extractText"): void {
+  if (!d.info.permissions[perm]) {
+    throw err("permissionDenied", `the document's permissions forbid '${perm}'`, { detail: perm });
   }
 }
 
@@ -647,7 +660,7 @@ export const mock = {
     if (/corrupt/i.test(a.path)) throw err("pdfium", "load document: FormatError", { detail: "corrupted" });
     if (/out-of-memory/i.test(a.path)) throw err("io", "out of memory", { detail: "outOfMemory" });
     const recent = recents.find((r) => r.path === a.path);
-    const d = makeDoc(a.path, recent?.pages ?? BASE_DOC.pageCount);
+    const d = makeDoc(a.path, nupPageCounts.get(a.path) ?? recent?.pages ?? BASE_DOC.pageCount);
     // Stage 8: a recovered copy reports the original name, not `<uuid>.pdf`
     if (a.displayName) d.info.name = a.displayName;
     // like the engine (`encrypted = revision != -1 || password.is_some()`)
@@ -1419,14 +1432,16 @@ export const mock = {
     const baseGeneration = d.info.docGeneration;
     // 300 DPI: nothing in the fixture is above it, so the rewrite comes out slightly bigger
     const ratio = a.options.targetDpi === 300 ? 1.002 : a.options.targetDpi === 150 ? 0.58 : 0.41;
+    // v0.3 pkg8 (X5) 구조 최적화: unencrypted only, a further ~12 % (kept only when smaller)
+    const optimized = !!a.options.optimize && !d.info.encrypted;
     const imagesTotal = pages.length * 2;
     return runJob(Math.max(1, pages.length), onEvent, {
       stepMs: 60,
       report: (elapsedMs) => {
         const token = nextCompressToken++;
-        const afterBytes = Math.round(before * ratio);
+        const afterBytes = Math.round(before * (optimized ? Math.min(ratio, 1) * 0.88 : ratio));
         const imagesDownsampled = a.options.targetDpi === 300 ? 0 : imagesTotal - 1;
-        pendingCompress.set(a.docId, { token, beforeBytes: before, afterBytes, imagesDownsampled, baseGeneration });
+        pendingCompress.set(a.docId, { token, beforeBytes: before, afterBytes, imagesDownsampled, baseGeneration, optimized });
         return { token, beforeBytes: before, afterBytes, imagesTotal, imagesDownsampled, elapsedMs };
       },
     });
@@ -1437,7 +1452,9 @@ export const mock = {
     if (!pending || pending.token !== a.token) throw err("notFound", `compress result ${a.token}`);
     pendingCompress.delete(a.docId);
     // like the engine: a result that saves nothing is spent without touching the document
-    if (pending.imagesDownsampled === 0 || pending.afterBytes >= pending.beforeBytes) return structuredClone(d.info);
+    if ((pending.imagesDownsampled === 0 && !pending.optimized) || pending.afterBytes >= pending.beforeBytes) {
+      return structuredClone(d.info);
+    }
     // …and one estimated before the latest edit is `stale` (the token is spent either way)
     if (d.info.docGeneration !== pending.baseGeneration) {
       throw err("stale", "the document changed after the estimate; estimate again");
@@ -1595,8 +1612,9 @@ export const mock = {
       outputs: a.pages.map((p) => `${a.outDir}/${a.baseName}-${p + 1}.${a.format}`),
     });
   },
-  async exportText(a: { docId: DocId; pages: PageIndex[]; outPath: string }) {
+  async exportText(a: { docId: DocId; pages: PageIndex[]; outPath: string; preserveLayout?: boolean }) {
     const d = doc(a.docId);
+    requirePerm(d, "extractText");
     const chars = a.pages.reduce((n, p) => n + textPage(d, p).text.length, 0);
     return { chars };
   },
@@ -1626,8 +1644,75 @@ export const mock = {
     const perPage = (a.format === "png" ? 180_000 : 90_000) * (a.dpi / 150) ** 2;
     return { bytes: Math.round(perPage * Math.max(1, a.pages.length)), sampledPages: Math.min(3, a.pages.length) };
   },
-  async printPrepare(a: { docId: DocId; pages?: PageIndex[] }) {
+  async printPrepare(a: { docId: DocId; pages?: PageIndex[]; annots?: "all" | "none" | "stamps" }) {
     return { tempPath: `/tmp/seepdf-print-${a.docId}.pdf` };
+  },
+  // v0.3 pkg8: 모아찍기 / 소책자 — the engine's sheet arithmetic, no file.
+  async makeNup(a: {
+    docId: DocId; pages?: PageIndex[];
+    options: { perSheet: number; booklet?: boolean };
+    outPath?: string;
+  }): Promise<{ path: string; pageCount: number }> {
+    const d = doc(a.docId);
+    // v0.3 integration: the sheets are built from the print bytes (`print_bytes`)
+    requirePerm(d, "print");
+    if (![1, 2, 4, 6, 9].includes(a.options.perSheet)) throw err("invalidArgument", "perSheet must be 1, 2, 4, 6 or 9");
+    const n = a.pages?.length ? a.pages.length : d.info.pageCount;
+    const pageCount = a.options.booklet ? Math.ceil(n / 4) * 2 : Math.ceil(n / a.options.perSheet);
+    const path = a.outPath ?? `/tmp/seepdf-print/${d.info.name.replace(/\.pdf$/i, "")}-${a.docId}-nup.pdf`;
+    writtenFiles.add(path);
+    nupPageCounts.set(path, pageCount);
+    return delay({ path, pageCount }, 30);
+  },
+  /** v0.3 pkg8 (X3): the sample's pages carry one image each. */
+  async exportEmbeddedImages(
+    a: { docId: DocId; pages: PageIndex[]; outDir: string; baseName: string },
+    onProgress: (e: JobEvent) => void,
+  ): Promise<JobId> {
+    const d = doc(a.docId);
+    // v0.3 integration (pkg3 S5): extracting images is "extract text and graphics"
+    requirePerm(d, "extractText");
+    const pages = a.pages.length ? a.pages : d.info.pages.map((p) => p.index);
+    return runJob(Math.max(1, pages.length), onProgress, {
+      stepMs: 40,
+      outputs: pages.map((p) => `${a.outDir}/${a.baseName}-p${p + 1}-1.png`),
+    });
+  },
+  async exportStitchedImage(
+    a: { docId: DocId; pages: PageIndex[]; dpi: number; format: "png" | "jpeg"; outPath: string },
+    onProgress: (e: JobEvent) => void,
+  ): Promise<{ jobId: JobId; dpi: number; width: number; height: number; lowered: boolean }> {
+    const d = doc(a.docId);
+    const pages = a.pages.length ? a.pages : d.info.pages.map((p) => p.index);
+    const px = (pt: number, dpi: number) => Math.round((pt * dpi) / 72);
+    const size = (dpi: number) => ({
+      width: Math.max(...pages.map((p) => px(d.info.pages[p].widthPt, dpi))),
+      height: pages.reduce((n, p) => n + px(d.info.pages[p].heightPt, dpi), 0),
+    });
+    // the engine's cap: 64 Mpx and 65 000 px a side
+    let dpi = a.dpi;
+    while (dpi > 36 && (size(dpi).width * size(dpi).height > 64_000_000 || size(dpi).height > 65_000)) dpi -= 1;
+    writtenFiles.add(a.outPath);
+    const jobId = runJob(Math.max(1, pages.length), onProgress, { stepMs: 40, outputs: [a.outPath] });
+    return { jobId, dpi, ...size(dpi), lowered: dpi !== a.dpi };
+  },
+  async exportTiff(
+    a: { docId: DocId; pages: PageIndex[]; dpi: number; outPath: string },
+    onProgress: (e: JobEvent) => void,
+  ): Promise<JobId> {
+    const d = doc(a.docId);
+    if (a.dpi < 36 || a.dpi > 1200) throw err("invalidArgument", `${a.dpi} DPI is outside 36..=1200`);
+    writtenFiles.add(a.outPath);
+    return runJob(Math.max(1, a.pages.length || d.info.pageCount), onProgress, { stepMs: 40, outputs: [a.outPath] });
+  },
+  async exportTextFlow(
+    a: { docId: DocId; pages: PageIndex[]; format: "docx" | "hwpx" | "html" | "md"; outPath: string },
+    onProgress: (e: JobEvent) => void,
+  ): Promise<JobId> {
+    const d = doc(a.docId);
+    requirePerm(d, "extractText");
+    writtenFiles.add(a.outPath);
+    return runJob(Math.max(1, a.pages.length || d.info.pageCount), onProgress, { stepMs: 40, outputs: [a.outPath] });
   },
 
   // 7.8 history --------------------------------------------------------------
@@ -3006,6 +3091,7 @@ export function resetMock(): void {
   stampsOf.clear();
   writtenFiles.clear();
   mockImageSizes.clear();
+  nupPageCounts.clear();
   if (mockTts.timer) clearTimeout(mockTts.timer);
   Object.assign(mockTts, { speaking: false, text: "", rate: 1, lang: undefined, timer: 0, sentences: null, index: null });
   Object.assign(mockRenderCache, { bytes: 12 * 1024 * 1024, clears: 0 });

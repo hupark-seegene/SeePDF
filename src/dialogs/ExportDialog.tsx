@@ -5,9 +5,13 @@
  *
  * P2 주석 목록: every annotation of the range as TXT, CSV (Excel, UTF-8 with BOM) or Markdown
  * (`export_annotation_summary`). The 주석 sidebar's 내보내기… opens the dialog on this format.
+ *
+ * v0.3 pkg8: N-up PDF (모아찍기 / 소책자, `make_nup`, X2); PNG / JPEG 하나의 이미지로 이어 붙이기,
+ * 여러 페이지 TIFF, 이미지 추출 and 텍스트 ▸ 레이아웃 유지 (X3); Word / 한글 / HTML / Markdown text
+ * flow — lossy, said so in the dialog (X6).
  */
 import { useEffect, useMemo, useState } from "react";
-import { FileText, Image as ImageIcon, Layers, MessageSquareText } from "lucide-react";
+import { FileCode2, FileText, FileType2, Grid2x2, Image as ImageIcon, Images, Layers, MessageSquareText } from "lucide-react";
 import { useT } from "../i18n/useT";
 import { formatBytes, getLocale } from "../i18n";
 import * as api from "../ipc/api";
@@ -20,16 +24,27 @@ import { Dialog, Row } from "./Dialog";
 import { RangePicker } from "./RangePicker";
 import { resolveRange, type RangeChoice } from "./pageRange";
 import { dirName, message, revealAction, suggestName } from "./flows";
-import type { JobEvent, PageIndex, SummaryFormat } from "../ipc/types";
+import { reasonKey, type PermKey } from "../app/permissions";
+import type { JobEvent, NupOptions, PageIndex, SummaryFormat, TextFlowFormat } from "../ipc/types";
 
-export type ExportFormat = "pdfFlattened" | "png" | "jpeg" | "text" | "annotations";
+export type ExportFormat =
+  | "pdfFlattened" | "png" | "jpeg" | "text" | "annotations"
+  // v0.3 pkg8
+  | "nup" | "tiff" | "embedded" | "docx" | "hwpx" | "html" | "md";
 type Format = ExportFormat;
 
 const FORMATS: { id: Format; labelKey: string; icon: typeof FileText }[] = [
   { id: "pdfFlattened", labelKey: "export.format.pdfFlattened", icon: Layers },
+  { id: "nup", labelKey: "export.format.nup", icon: Grid2x2 },
   { id: "png", labelKey: "export.format.png", icon: ImageIcon },
   { id: "jpeg", labelKey: "export.format.jpeg", icon: ImageIcon },
+  { id: "tiff", labelKey: "export.format.tiff", icon: ImageIcon },
+  { id: "embedded", labelKey: "export.format.embedded", icon: Images },
   { id: "text", labelKey: "export.format.text", icon: FileText },
+  { id: "docx", labelKey: "export.format.docx", icon: FileType2 },
+  { id: "hwpx", labelKey: "export.format.hwpx", icon: FileType2 },
+  { id: "html", labelKey: "export.format.html", icon: FileCode2 },
+  { id: "md", labelKey: "export.format.md", icon: FileCode2 },
   { id: "annotations", labelKey: "export.format.annotations", icon: MessageSquareText },
 ];
 
@@ -39,6 +54,28 @@ const SUMMARY_FILTER: Record<SummaryFormat, { name: string; extensions: string[]
   txt: { name: "Text", extensions: ["txt"] },
   md: { name: "Markdown", extensions: ["md"] },
 };
+
+/** The text-flow formats (X6) and their file extension / filter name. */
+const FLOW: Record<TextFlowFormat, { ext: string; name: string }> = {
+  docx: { ext: "docx", name: "Word" },
+  hwpx: { ext: "hwpx", name: "HWPX" },
+  html: { ext: "html", name: "HTML" },
+  md: { ext: "md", name: "Markdown" },
+};
+const isFlow = (f: Format): f is TextFlowFormat => f === "docx" || f === "hwpx" || f === "html" || f === "md";
+
+const PER_SHEET: NupOptions["perSheet"][] = [2, 4, 6, 9];
+
+/**
+ * v0.3 integration (pkg8 × pkg3 S5): the permission a format needs, as the engine checks it —
+ * text and the formats that carry text / images out need "copy", 모아찍기 is built from the print
+ * bytes. Page images and the flattened PDF are not gated (like `export_images`).
+ */
+export function exportNeeds(format: ExportFormat): PermKey | null {
+  if (format === "nup") return "print";
+  if (format === "text" || format === "embedded" || isFlow(format)) return "extractText";
+  return null;
+}
 
 export function ExportDialog({ onClose, initialFormat }: { onClose(): void; initialFormat?: ExportFormat }) {
   const t = useT();
@@ -53,6 +90,13 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
   const [transparent, setTransparent] = useState(false);
   const [annotations, setAnnotations] = useState(true);
   const [forms, setForms] = useState(true);
+  // v0.3 pkg8
+  const [stitch, setStitch] = useState(false);
+  const [preserveLayout, setPreserveLayout] = useState(false);
+  const [perSheet, setPerSheet] = useState<NupOptions["perSheet"]>(2);
+  const [order, setOrder] = useState<"across" | "down">("across");
+  const [booklet, setBooklet] = useState(false);
+  const [paper, setPaper] = useState<"auto" | "a4" | "letter">("a4");
   const [estimate, setEstimate] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -62,6 +106,9 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
     [range, pageCount, currentPage, selected],
   );
   const isImage = format === "png" || format === "jpeg";
+  const usesDpi = isImage || format === "tiff";
+  const need = exportNeeds(format);
+  const blocked = need && info && !info.permissions[need] ? reasonKey(need) : null;
 
   // The size estimate is what stops people writing 1.17 MB/page PNGs into a temp folder (spike §16).
   useEffect(() => {
@@ -86,9 +133,14 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
     if (!info || !pages?.length) return;
     setBusy(true);
     try {
-      if (isImage) await runImages(info.docId, pages, format as "png" | "jpeg");
+      if (isImage && stitch) await runStitched(info.docId, pages, format as "png" | "jpeg");
+      else if (isImage) await runImages(info.docId, pages, format as "png" | "jpeg");
       else if (format === "text") await runText(info.docId, pages);
       else if (format === "annotations") await runAnnotations(info.docId, pages);
+      else if (format === "nup") await runNup(info.docId, pages);
+      else if (format === "tiff") await runTiff(info.docId, pages);
+      else if (format === "embedded") await runEmbedded(info.docId, pages);
+      else if (isFlow(format)) await runFlow(info.docId, pages, format);
       else await runFlattened(info.docId, pages);
     } catch (e) {
       toast("export.failed", undefined, { tone: "danger", detail: message(e) });
@@ -96,6 +148,18 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
       setBusy(false);
       onClose();
     }
+  };
+
+  /** Status-bar progress and the completion toast of a one-file job. */
+  const fileJob = (outPath: string) => {
+    const jobs = useJobStore.getState();
+    return (e: JobEvent) => {
+      jobs.apply("export", "export.title", e);
+      if (e.type === "done") {
+        toast("export.done", { name: baseNameOf(outPath) }, { tone: "success", actions: [revealAction(dirName(outPath))] });
+      }
+      if (e.type === "error") toast("export.failed", undefined, { tone: "danger", detail: e.error.message });
+    };
   };
 
   const runImages = async (docId: string, list: PageIndex[], fmt: "png" | "jpeg") => {
@@ -119,10 +183,67 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
     );
   };
 
+  const runStitched = async (docId: string, list: PageIndex[], fmt: "png" | "jpeg") => {
+    const ext = fmt === "png" ? "png" : "jpg";
+    const outPath = await api.saveFileDialog({
+      defaultPath: `${stem(info?.name ?? "document")}.${ext}`,
+      filters: [{ name: fmt.toUpperCase(), extensions: [ext] }],
+    });
+    if (!outPath) return;
+    const started = await api.exportStitchedImage({ docId, pages: list, dpi, format: fmt, outPath }, fileJob(outPath));
+    if (started.lowered) toast("export.stitch.lowered", { dpi: started.dpi }, { tone: "info" });
+  };
+
+  const runTiff = async (docId: string, list: PageIndex[]) => {
+    const outPath = await api.saveFileDialog({
+      defaultPath: `${stem(info?.name ?? "document")}.tiff`,
+      filters: [{ name: "TIFF", extensions: ["tiff", "tif"] }],
+    });
+    if (!outPath) return;
+    await api.exportTiff({ docId, pages: list, dpi, outPath }, fileJob(outPath));
+  };
+
+  const runEmbedded = async (docId: string, list: PageIndex[]) => {
+    const dir = await api.openFileDialog({ directory: true, multiple: false });
+    if (!dir?.length) return;
+    const outDir = dir[0];
+    const baseName = stem(info?.name ?? "document");
+    const jobs = useJobStore.getState();
+    await api.exportEmbeddedImages({ docId, pages: list, outDir, baseName }, (e: JobEvent) => {
+      jobs.apply("export", "export.title", e);
+      if (e.type === "done") {
+        const count = e.outputs?.length ?? 0;
+        if (count === 0) toast("export.embedded.none", undefined, { tone: "info" });
+        else toast("export.embedded.done", { count }, { tone: "success", actions: [revealAction(outDir)] });
+      }
+      if (e.type === "error") toast("export.failed", undefined, { tone: "danger", detail: e.error.message });
+    });
+  };
+
+  const runNup = async (docId: string, list: PageIndex[]) => {
+    const outPath = await api.saveFileDialog({ defaultPath: suggestName(info?.name ?? "document.pdf", booklet ? "booklet" : `${perSheet}up`) });
+    if (!outPath) return;
+    const all = list.length === (info?.pageCount ?? 0);
+    await api.makeNup({
+      docId, pages: all ? undefined : list, outPath,
+      options: { perSheet: booklet ? 2 : perSheet, order, booklet, paper },
+    });
+    toast("export.done", { name: baseNameOf(outPath) }, { tone: "success", actions: [revealAction(dirName(outPath))] });
+  };
+
+  const runFlow = async (docId: string, list: PageIndex[], fmt: TextFlowFormat) => {
+    const outPath = await api.saveFileDialog({
+      defaultPath: `${stem(info?.name ?? "document")}.${FLOW[fmt].ext}`,
+      filters: [{ name: FLOW[fmt].name, extensions: [FLOW[fmt].ext] }],
+    });
+    if (!outPath) return;
+    await api.exportTextFlow({ docId, pages: list, format: fmt, outPath }, fileJob(outPath));
+  };
+
   const runText = async (docId: string, list: PageIndex[]) => {
     const outPath = await api.saveFileDialog({ defaultPath: `${stem(info?.name ?? "document")}.txt` });
     if (!outPath) return;
-    await api.exportText({ docId, pages: list, outPath });
+    await api.exportText({ docId, pages: list, outPath, preserveLayout: preserveLayout || undefined });
     toast("export.done", { name: baseNameOf(outPath) }, { tone: "success", actions: [revealAction(dirName(outPath))] });
   };
 
@@ -162,7 +283,7 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
       titleKey="export.title"
       size="xl"
       onClose={onClose}
-      primary={{ labelKey: "export.button", onSelect: () => void run(), disabled: busy || !pages?.length }}
+      primary={{ labelKey: "export.button", onSelect: () => void run(), disabled: busy || !pages?.length || !!blocked }}
     >
       <div className="export-grid">
         <ul className="format-list" role="listbox" aria-label={t("export.format")}>
@@ -187,23 +308,26 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
             <RangePicker value={range} onChange={setRange} pageCount={pageCount} selectedCount={selected.length} />
           </Row>
 
+          {usesDpi && (
+            <Row labelKey="export.dpi">
+              <div className="inline-row">
+                <input
+                  className="slider"
+                  type="range"
+                  min={72}
+                  max={600}
+                  step={1}
+                  value={dpi}
+                  aria-label={t("export.dpi")}
+                  onChange={(e) => setDpi(Number(e.target.value))}
+                />
+                <span className="text-sm mono">{dpi}</span>
+              </div>
+            </Row>
+          )}
+
           {isImage && (
             <>
-              <Row labelKey="export.dpi">
-                <div className="inline-row">
-                  <input
-                    className="slider"
-                    type="range"
-                    min={72}
-                    max={600}
-                    step={1}
-                    value={dpi}
-                    aria-label={t("export.dpi")}
-                    onChange={(e) => setDpi(Number(e.target.value))}
-                  />
-                  <span className="text-sm mono">{dpi}</span>
-                </div>
-              </Row>
               {format === "jpeg" && (
                 <Row labelKey="export.quality">
                   <div className="inline-row">
@@ -221,13 +345,83 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
                   </div>
                 </Row>
               )}
-              {format === "png" && (
+              {format === "png" && !stitch && (
                 <label className="dlg-check text-base">
                   <input type="checkbox" checked={transparent} onChange={(e) => setTransparent(e.target.checked)} />
                   <span>{t("export.transparentBg")}</span>
                 </label>
               )}
-              <p className="dlg-hint text-xs">{t("export.onePerPage")}</p>
+              <label className="dlg-check text-base">
+                <input type="checkbox" checked={stitch} onChange={(e) => setStitch(e.target.checked)} />
+                <span>{t("export.singleImage")}</span>
+              </label>
+              <p className="dlg-hint text-xs">{t(stitch ? "export.stitch.hint" : "export.onePerPage")}</p>
+            </>
+          )}
+
+          {format === "tiff" && <p className="dlg-hint text-xs">{t("export.tiff.hint")}</p>}
+          {format === "embedded" && <p className="dlg-hint text-xs">{t("export.embedded.hint")}</p>}
+
+          {format === "text" && (
+            <label className="dlg-check text-base">
+              <input type="checkbox" checked={preserveLayout} onChange={(e) => setPreserveLayout(e.target.checked)} />
+              <span>{t("export.preserveLayout")}</span>
+            </label>
+          )}
+
+          {isFlow(format) && (
+            <p className="dlg-hint text-xs" role="note" data-testid="export-lossy">
+              {t("export.flow.lossy")}
+            </p>
+          )}
+
+          {format === "nup" && (
+            <>
+              <Row labelKey="print.perSheet">
+                <div className="inline-row">
+                  <select
+                    className="field"
+                    value={perSheet}
+                    disabled={booklet}
+                    aria-label={t("print.perSheet")}
+                    onChange={(e) => setPerSheet(Number(e.currentTarget.value) as NupOptions["perSheet"])}
+                  >
+                    {PER_SHEET.map((n) => (
+                      <option key={n} value={n}>
+                        {t("print.perSheet.n", { count: n })}
+                      </option>
+                    ))}
+                  </select>
+                  {!booklet && (
+                    <select
+                      className="field"
+                      value={order}
+                      aria-label={t("print.order")}
+                      onChange={(e) => setOrder(e.currentTarget.value as "across" | "down")}
+                    >
+                      <option value="across">{t("print.order.across")}</option>
+                      <option value="down">{t("print.order.down")}</option>
+                    </select>
+                  )}
+                </div>
+              </Row>
+              <Row labelKey="export.nup.paper">
+                <select
+                  className="field"
+                  value={paper}
+                  aria-label={t("export.nup.paper")}
+                  onChange={(e) => setPaper(e.currentTarget.value as "auto" | "a4" | "letter")}
+                >
+                  <option value="a4">A4</option>
+                  <option value="letter">Letter</option>
+                  <option value="auto">{t("export.nup.paperAuto")}</option>
+                </select>
+              </Row>
+              <label className="dlg-check text-base">
+                <input type="checkbox" checked={booklet} onChange={(e) => setBooklet(e.target.checked)} />
+                <span>{t("print.booklet")}</span>
+              </label>
+              <p className="dlg-hint text-xs">{t(booklet ? "print.bookletHint" : "export.nup.hint")}</p>
             </>
           )}
 
@@ -263,8 +457,12 @@ export function ExportDialog({ onClose, initialFormat }: { onClose(): void; init
             </Row>
           )}
 
-          <p className="export-estimate text-sm" aria-live="polite">
-            {estimate !== null ? t("export.estimatedSize", { size: formatBytes(estimate) }) : ""}
+          <p className="export-estimate text-sm" aria-live="polite" data-testid="export-estimate">
+            {blocked
+              ? t(blocked)
+              : estimate !== null && !stitch
+                ? t("export.estimatedSize", { size: formatBytes(estimate) })
+                : ""}
           </p>
         </div>
       </div>

@@ -22,6 +22,11 @@
  *   eraser, pressure pen) go through the signed-document gate.
  * - pkg6 V2 (canvas menu 이 스타일을 기본값으로) × pkg4 A2: a polygon / polyline keeps its stroke width and
  *   a polygon its fill, and a polyline's default belongs to the 다각형 tool.
+ * - pkg3 S5 × pkg8 X3 / X6 / X2: 텍스트 (레이아웃 유지), 이미지 추출 and Word / 한글 / HTML / Markdown carry
+ *   the document's content out, so a document that forbids copying cannot export them (the button is
+ *   off and the reason shows, and the mock refuses like the engine); 모아찍기 PDF is built from the
+ *   print bytes and needs the print permission. Page images and the flattened PDF stay available.
+ * - pkg4 T4 (배경색 도장) × pkg8 X1: the 여러 파일 처리 stamp summary names a background stamp.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -48,6 +53,9 @@ import { NeedsOcrBanner, NeedsOcrSearchHint } from "../ocr/NeedsOcrBanner";
 import { resetNeedsOcr } from "../ocr/needsOcr";
 import { OcrDialog } from "../ocr/OcrDialog";
 import { closeOcrDialog, openOcrDialog, useOcrDialogStore } from "../ocr/dialogState";
+import { ExportDialog, exportNeeds } from "../dialogs/ExportDialog";
+import { stampSummary } from "../batch/BatchDialog";
+import type { StampSpec } from "../ipc/types";
 
 const SAMPLE = "/Users/veri/Documents/SeePDF-샘플.pdf";
 /** pkg3's mock fixture: print, copy, modify and assemble are forbidden; comments are allowed. */
@@ -346,5 +354,66 @@ describe("V2 × pkg4 A2: 이 스타일을 기본값으로 on the new kinds", () 
     expect(toolOfKind("polyline")).toBe("polygon");
     expect(toolOfKind("polygon")).toBe("polygon");
     expect(toolOfKind("callout")).toBe("callout");
+  });
+});
+
+describe("S5 × pkg8: exports that carry the content out need the document's permission", () => {
+  it("maps each format to the permission the engine checks", () => {
+    for (const f of ["text", "embedded", "docx", "hwpx", "html", "md"] as const) expect(exportNeeds(f)).toBe("extractText");
+    expect(exportNeeds("nup")).toBe("print");
+    for (const f of ["png", "jpeg", "tiff", "pdfFlattened", "annotations"] as const) expect(exportNeeds(f)).toBeNull();
+  });
+
+  it("on a document that forbids copying and printing, those formats are off with the reason", async () => {
+    await useDocStore.getState().open(RESTRICTED);
+    render(<ExportDialog onClose={() => {}} />);
+    const button = () => screen.getByRole("button", { name: tr("export.button") });
+    const estimate = () => screen.getByTestId("export-estimate");
+    for (const [label, reason] of [
+      [tr("export.format.docx"), "security.restricted.reason.extractText"],
+      [tr("export.format.embedded"), "security.restricted.reason.extractText"],
+      [tr("export.format.text"), "security.restricted.reason.extractText"],
+      [tr("export.format.nup"), "security.restricted.reason.print"],
+    ] as const) {
+      fireEvent.click(screen.getByRole("option", { name: label }));
+      expect(button()).toBeDisabled();
+      expect(estimate()).toHaveTextContent(tr(reason));
+    }
+    // a page image is still allowed (like export_images)
+    fireEvent.click(screen.getByRole("option", { name: tr("export.format.png") }));
+    expect(button()).toBeEnabled();
+    expect(estimate()).not.toHaveTextContent(tr("security.restricted.reason.extractText"));
+  });
+
+  it("an unrestricted document exports them", async () => {
+    await useDocStore.getState().open(SAMPLE);
+    render(<ExportDialog onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("option", { name: tr("export.format.hwpx") }));
+    expect(screen.getByRole("button", { name: tr("export.button") })).toBeEnabled();
+  });
+
+  it("the mock refuses them as the engine does", async () => {
+    const info = (await useDocStore.getState().open(RESTRICTED))!;
+    const d = info.docId;
+    await expect(mock.exportText({ docId: d, pages: [0], outPath: "/o.txt", preserveLayout: true }))
+      .rejects.toMatchObject({ code: "permissionDenied", detail: "extractText" });
+    await expect(mock.exportTextFlow({ docId: d, pages: [0], format: "docx", outPath: "/o.docx" }, () => {}))
+      .rejects.toMatchObject({ code: "permissionDenied", detail: "extractText" });
+    await expect(mock.exportEmbeddedImages({ docId: d, pages: [0], outDir: "/o", baseName: "x" }, () => {}))
+      .rejects.toMatchObject({ code: "permissionDenied", detail: "extractText" });
+    await expect(mock.makeNup({ docId: d, options: { perSheet: 2 } }))
+      .rejects.toMatchObject({ code: "permissionDenied", detail: "print" });
+  });
+});
+
+describe("T4 × X1: 여러 파일 처리 with a background stamp", () => {
+  it("the summary names the 배경색 source (it has no text or file)", () => {
+    const spec = {
+      role: "watermark", source: { kind: "background", color: [255, 250, 230] },
+      anchor: "center", marginPt: 0, rotateDeg: 0, opacity: 1, pages: "all",
+    } as unknown as StampSpec;
+    expect(stampSummary(spec, tr)).toBe(`${tr("stamp.role.watermark")} · ${tr("stamp.source.background")}`);
+    const text = { ...spec, source: { kind: "text", text: "대외비", fontSizePt: 48, color: [0, 0, 0] } } as StampSpec;
+    expect(stampSummary(text, tr)).toBe(`${tr("stamp.role.watermark")} · 대외비`);
   });
 });

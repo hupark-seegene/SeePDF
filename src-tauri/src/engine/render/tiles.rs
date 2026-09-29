@@ -12,7 +12,7 @@
 //! through [`crate::engine::raw::render`] instead, which makes the same `FPDF_RenderPageBitmap`
 //! call minus `FPDF_FFLDraw`.
 
-use crate::engine::render::cache::{Night, RenderKind, TileKey};
+use crate::engine::render::cache::{Night, PrintAnnots, RenderKind, TileKey};
 use crate::engine::render::encode::RawImage;
 use crate::engine::render::geometry;
 use crate::engine::types::EngineState;
@@ -97,7 +97,7 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
             })?;
             (Target::Scale(s, tw, th), Some((ox, oy)), Some((w, h)))
         }
-        RenderKind::Page => {
+        RenderKind::Page | RenderKind::Print(_) => {
             let s = geometry::scale_from_key(key.scale_key);
             let (w, h) = geometry::page_pixels(&geom, key.rotation, s);
             (Target::Scale(s, w, h), None, None)
@@ -125,6 +125,16 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
     let grayscale = key.kind == RenderKind::Ocr;
     if grayscale {
         config = config.use_grayscale_rendering(true);
+    }
+    // v0.3 pkg8 (X7): the print variant renders the way a printer sees the page.
+    let print = match key.kind {
+        RenderKind::Print(mode) => Some(mode),
+        _ => None,
+    };
+    if let Some(mode) = print {
+        config = config
+            .use_print_quality(true)
+            .render_annotations(mode != PrintAnnots::None);
     }
     let (width, height) = match target {
         Target::Scale(s, w, h) => {
@@ -156,15 +166,25 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
         .get_mut(&key.doc)
         .ok_or_else(|| EngineError::not_found(format!("unknown document '{}'", key.doc)))?;
     let bindings = doc.bindings();
+    let form = doc.form_handle();
     let page = doc.page(page_index)?;
 
     let t0 = Instant::now();
-    let pixels = if key.forms {
-        let mut bitmap = PdfBitmap::empty(width as Pixels, height as Pixels, PdfBitmapFormat::BGRA)
-            .ctx("allocate bitmap")?;
-        page.render_into_bitmap_with_config(&mut bitmap, &config)
-            .ctx("render page")?;
-        bitmap.as_raw_bytes()
+    // 문서와 도장·서명: everything else is hidden for this one render and put back right after
+    // it, on this thread, so no other command ever sees the flags changed.
+    let hidden = if print == Some(PrintAnnots::Stamps) {
+        hide_all_but_stamps(bindings, page)
+    } else {
+        Vec::new()
+    };
+    let rendered = if key.forms {
+        PdfBitmap::empty(width as Pixels, height as Pixels, PdfBitmapFormat::BGRA)
+            .ctx("allocate bitmap")
+            .and_then(|mut bitmap| {
+                page.render_into_bitmap_with_config(&mut bitmap, &config)
+                    .ctx("render page")?;
+                Ok(bitmap.as_raw_bytes())
+            })
     } else {
         // `forms=0` (F-20): the same FFI call minus `FPDF_FFLDraw`, because pdfium-render's
         // `render_form_data(false)` would take the matrix path, which has no tile origin.
@@ -180,10 +200,21 @@ pub fn render(st: &mut EngineState<'_>, req: &RenderRequest) -> Result<RawImage,
             out_w,
             out_h,
             pdfium_rotation(key.rotation),
-            render_flags(grayscale),
+            render_flags(grayscale, print),
             clear_color(key.night),
-        )?
+        )
     };
+    restore_flags(bindings, page, &hidden);
+    // `highlight_all_form_fields` sets the wash on the document's form handle
+    // (`FPDF_SetFormFieldHighlightColor/Alpha`), where it would stay for every later render —
+    // a print, an export, a compare, a screen render with `hl=0`. The invariant (set at open
+    // and reload) is alpha 0 outside an `hl=1` render, so put it back right after this one.
+    if key.hl {
+        if let Some(form) = form {
+            crate::engine::raw::form::set_field_highlight_alpha(bindings, form, 0);
+        }
+    }
+    let pixels = rendered?;
     let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
     st.shared.stats.record_tile_ms(render_ms);
 
@@ -206,14 +237,69 @@ fn pdfium_rotation(deg: u16) -> std::os::raw::c_int {
     }
 }
 
-/// The flag word [`base_config`] produces: annotations on, LCD text off, RGBA byte order.
-fn render_flags(grayscale: bool) -> std::os::raw::c_int {
+/// The flag word [`base_config`] produces: annotations on, LCD text off, RGBA byte order —
+/// plus, for the print variant (X7), `FPDF_PRINTING` and no `FPDF_ANNOT` for 문서만.
+fn render_flags(grayscale: bool, print: Option<PrintAnnots>) -> std::os::raw::c_int {
     use crate::engine::raw::consts;
     let mut flags = consts::FPDF_ANNOT | consts::FPDF_REVERSE_BYTE_ORDER;
     if grayscale {
         flags |= consts::FPDF_GRAYSCALE;
     }
+    if let Some(mode) = print {
+        flags |= consts::FPDF_PRINTING;
+        if mode == PrintAnnots::None {
+            flags &= !consts::FPDF_ANNOT;
+        }
+    }
     flags
+}
+
+/// Whether 문서와 도장·서명 keeps this annotation: stamps, signatures (SeePDF's ink and image
+/// signatures carry `/Subj "SeePDF:Signature"`), and form widgets, which are document content.
+/// SeePDF's own text boxes are `Stamp`s too (`/Subj "SeePDF:TextBox"`, the 텍스트 상자 tool) but
+/// are comments, not stamps: they are left out (v0.3 integration).
+pub fn is_stamp_or_signature(subtype: std::os::raw::c_int, subj: Option<&str>) -> bool {
+    use crate::engine::raw::consts;
+    (subtype == consts::FPDF_ANNOT_STAMP && subj != Some(crate::engine::annot::SUBJ_TEXTBOX))
+        || subtype == consts::FPDF_ANNOT_WIDGET
+        || subj == Some(crate::engine::annot::SUBJ_SIGNATURE)
+}
+
+/// Sets the Hidden flag on every annotation 문서와 도장·서명 leaves out and returns
+/// `(index, original flags)` so [`restore_flags`] can put them back exactly.
+fn hide_all_but_stamps(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+) -> Vec<(usize, std::os::raw::c_int)> {
+    use crate::engine::raw::{annot, consts};
+    let mut changed = Vec::new();
+    for i in 0..annot::count(bindings, page) {
+        let Some(mut a) = annot::slot(bindings, page, i) else {
+            continue;
+        };
+        if is_stamp_or_signature(a.subtype(), a.string("Subj").as_deref()) {
+            continue;
+        }
+        let flags = a.flags();
+        if flags & consts::FPDF_ANNOT_FLAG_HIDDEN == 0
+            && a.set_flags(flags | consts::FPDF_ANNOT_FLAG_HIDDEN)
+        {
+            changed.push((i, flags));
+        }
+    }
+    changed
+}
+
+fn restore_flags(
+    bindings: &'static dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    changed: &[(usize, std::os::raw::c_int)],
+) {
+    for &(i, flags) in changed {
+        if let Some(mut a) = crate::engine::raw::annot::slot(bindings, page, i) {
+            a.set_flags(flags);
+        }
+    }
 }
 
 /// `0xAARRGGBB`, matching [`base_config`]'s `set_clear_color`.

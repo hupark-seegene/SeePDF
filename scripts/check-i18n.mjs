@@ -5,9 +5,20 @@
  *   - `{{placeholder}}` drift between locales
  *   - an `_other` plural without its singular
  *   - an empty string
- *   - a `t("literal.key")` in src/ that no catalogue defines
+ *   - a `t("literal.key")` — or a `…Key: "literal.key"` / `…Key="literal.key"` prop — in src/
+ *     that no catalogue defines
  *
- * Usage: node scripts/check-i18n.mjs [--quiet]
+ * And reports the keys nothing references (v0.3 pkg8, H6). A key counts as used when
+ *   - it appears as a string literal anywhere in src/ (non-test .ts/.tsx): `t("…")`, `labelKey`,
+ *     `messageKey`, `toast("…")`, `cond ? "a.b" : "c.d"`, key tables — any literal that names a key;
+ *   - a template literal starts with its prefix: t(`stamp.role.${r}`) marks every `stamp.role.*`;
+ *   - it appears as a string literal in src-tauri/src (the Rust side reads the same catalogues:
+ *     undo labels, menu titles, annotation kinds), or a Rust `format!("prefix.{…}")` covers it;
+ *   - it is the `_other` plural of a used key.
+ *
+ * Usage: node scripts/check-i18n.mjs [--quiet] [--list-unused] [--strict]
+ *   --list-unused  print every unreferenced key
+ *   --strict       unreferenced keys are errors (after the dead-key cleanup, H6)
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
@@ -16,7 +27,10 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const I18N = join(ROOT, "src", "i18n");
 const SRC = join(ROOT, "src");
+const RUST = join(ROOT, "src-tauri", "src");
 const quiet = process.argv.includes("--quiet");
+const listUnused = process.argv.includes("--list-unused");
+const strict = process.argv.includes("--strict");
 
 const ko = JSON.parse(readFileSync(join(I18N, "ko.json"), "utf8"));
 const en = JSON.parse(readFileSync(join(I18N, "en.json"), "utf8"));
@@ -41,33 +55,79 @@ for (const [key, value] of Object.entries(ko)) {
   }
 }
 
-// Every literal t("…") in the app must resolve.
-function walk(dir, out = []) {
+function walk(dir, exts, out = []) {
   for (const entry of readdirSync(dir)) {
     const path = join(dir, entry);
-    if (statSync(path).isDirectory()) walk(path, out);
-    else if ([".ts", ".tsx"].includes(extname(path)) && !/\.(test|spec)\.tsx?$/.test(path)) out.push(path);
+    if (statSync(path).isDirectory()) walk(path, exts, out);
+    else if (exts.includes(extname(path)) && !/\.(test|spec)\.tsx?$/.test(path)) out.push(path);
   }
   return out;
 }
 
+const KEY = /^[a-zA-Z][\w]*(\.[\w]+)+$/;
+/** key → first file that references it */
 const used = new Map();
-for (const file of walk(SRC)) {
+/** template / format! prefixes ("stamp.role.") */
+const prefixes = new Map();
+const mark = (key, file) => {
+  if (!used.has(key)) used.set(key, file);
+};
+
+for (const file of walk(SRC, [".ts", ".tsx"])) {
+  const rel = file.slice(ROOT.length + 1);
   const source = readFileSync(file, "utf8");
+  // Explicit uses must resolve: t("…") and …Key props.
   for (const m of source.matchAll(/\bt\(\s*"([a-zA-Z][\w.]*)"/g)) {
-    if (!used.has(m[1])) used.set(m[1], file.slice(ROOT.length + 1));
+    mark(m[1], rel);
+    if (!(m[1] in ko)) errors.push(`unknown key used in ${rel}: ${m[1]}`);
+  }
+  for (const m of source.matchAll(/\b\w*Key\s*(?::|=)\s*\{?\s*"([a-zA-Z][\w]*(?:\.[\w]+)+)"/g)) {
+    mark(m[1], rel);
+    if (!(m[1] in ko)) errors.push(`unknown key used in ${rel}: ${m[1]}`);
+  }
+  // Any other string literal that names a key (toast("…"), tables, ternaries).
+  for (const m of source.matchAll(/["']([a-zA-Z][\w]*(?:\.[\w]+)+)["']/g)) {
+    if (m[1] in ko) mark(m[1], rel);
+  }
+  // Template literals with a key prefix: `x.y.${…}`.
+  for (const m of source.matchAll(/`([a-zA-Z][\w]*(?:\.[\w]+)*\.)\$\{/g)) {
+    if (!prefixes.has(m[1])) prefixes.set(m[1], rel);
   }
 }
-for (const [key, file] of used) {
-  if (!(key in ko)) errors.push(`unknown key used in ${file}: ${key}`);
+
+for (const file of walk(RUST, [".rs"])) {
+  const rel = file.slice(ROOT.length + 1);
+  const source = readFileSync(file, "utf8");
+  for (const m of source.matchAll(/"([a-zA-Z][\w]*(?:\.[\w]+)+)"/g)) {
+    if (m[1] in ko) mark(m[1], rel);
+  }
+  // format!("annot.kind.{}", …) / format!("undo.{kind}")
+  for (const m of source.matchAll(/"([a-zA-Z][\w]*(?:\.[\w]+)*\.)\{/g)) {
+    if (!prefixes.has(m[1])) prefixes.set(m[1], rel);
+  }
 }
 
-const unused = Object.keys(ko).filter((k) => !used.has(k) && !k.endsWith("_other"));
-if (unused.length) warnings.push(`${unused.length} keys are not referenced yet (Stage 1 owns most of them)`);
+const isUsed = (key) => {
+  if (used.has(key)) return true;
+  for (const prefix of prefixes.keys()) if (key.startsWith(prefix)) return true;
+  if (key.endsWith("_other")) return isUsed(key.slice(0, -"_other".length));
+  return false;
+};
+
+const unused = Object.keys(ko).filter((k) => KEY.test(k) && !isUsed(k));
+if (unused.length) {
+  const line = `${unused.length} keys are not referenced`;
+  if (strict) errors.push(line);
+  else warnings.push(line);
+}
 
 if (!quiet) {
-  console.log(`[i18n] ko ${Object.keys(ko).length} keys · en ${Object.keys(en).length} keys · ${used.size} referenced`);
+  console.log(
+    `[i18n] ko ${Object.keys(ko).length} keys · en ${Object.keys(en).length} keys · ` +
+      `${Object.keys(ko).length - unused.length} referenced (${used.size} literally, ${prefixes.size} template prefixes)`,
+  );
   for (const w of warnings) console.log(`[i18n] note: ${w}`);
+  if (listUnused) for (const k of unused) console.log(`[i18n] unused: ${k}`);
 }
 
 if (errors.length) {

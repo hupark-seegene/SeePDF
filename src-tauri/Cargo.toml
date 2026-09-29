@@ -75,6 +75,10 @@ tracing-appender = "0.2"
 # v0.3 pkg5 (H10): the log directory before the Tauri app exists (the lookup tauri's own
 # `app_log_dir` does; already in the tree through tauri).
 dirs = "6"
+# v0.3 pkg8 (X3): multi-page TIFF export. Deflate only; flate2 is already in the tree.
+tiff = { version = "0.11", default-features = false, features = ["deflate"] }
+# v0.3 pkg8 (X6): DOCX / HWPX containers. Already in the tree (updater), plus Deflate via zlib-rs.
+zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # v0.3 pkg5 (H10): the "cannot start" message box when setup fails, before any webview exists.
 # The same rfd 0.16 with the features tauri-plugin-dialog already builds: nothing new compiles.

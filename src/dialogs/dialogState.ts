@@ -36,7 +36,9 @@ export type DialogName =
   // 도움말 › 단축키
   | "shortcuts"
   // v0.3 pkg5 (H1 / H11): SeePDF 정보 + 오픈 소스 라이선스
-  | "about";
+  | "about"
+  // v0.3 pkg8: 여러 파일 처리
+  | "batch";
 
 /** Answers the modal prompts resolve with. */
 export type UnsavedAnswer = "save" | "dontSave" | "cancel";

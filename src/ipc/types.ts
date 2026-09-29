@@ -420,6 +420,8 @@ export type CompressPreset = 300 | 150 | 96;   // target DPI for raster images
 export interface CompressOptions {
   targetDpi: CompressPreset;
   pages?: PageIndex[];         // default all
+  /** v0.3 pkg8 (X5) 구조 최적화: unused resources / objects out, object streams; default false */
+  optimize?: boolean;
 }
 export interface CompressReport {
   token: number;               // pending-result handle, valid until apply/discard or doc close
@@ -442,8 +444,11 @@ export interface CompareOptions {
    * sets), so an inserted / deleted page becomes a null-sided row instead of shifting every later pair.
    */
   alignPages?: boolean;
+  /** v0.3 pkg8 (X4), default true: a 50 DPI pixel diff outside the text, reported as `visual` ops. */
+  visual?: boolean;
 }
-export type DiffKind = 'equal' | 'insert' | 'delete' | 'replace';
+/** v0.3 pkg8 (X4) `visual`: pixels changed outside the text; words 0, no text, rects on both pages. */
+export type DiffKind = 'equal' | 'insert' | 'delete' | 'replace' | 'visual';
 export interface DiffOp {
   kind: DiffKind;
   words: number;               // words on the A side for equal/delete/replace, B side for insert
@@ -696,3 +701,23 @@ export type FormDataFormat = 'csv' | 'xfdf';
 export interface FormDataResult { fields: number; unknown: string[]; docGeneration?: DocGeneration }
 /** A visible link border; `width: 0` = none. */
 export interface LinkBorder { width: number; color: Rgb }
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg8-export-print-compare-batch (IPC_CONTRACT §7.7, §7.7b–d)
+// ---------------------------------------------------------------------------
+
+/** 인쇄 ▸ 주석 (X7): 문서와 주석 / 문서만 / 문서와 도장·서명. */
+export type PrintAnnots = 'all' | 'none' | 'stamps';
+/** 모아찍기 / 소책자 (X2). */
+export interface NupOptions {
+  perSheet: 1 | 2 | 4 | 6 | 9;
+  order?: 'across' | 'down';     // default across (Z)
+  booklet?: boolean;             // saddle stitch, always 2 per side
+  paper?: 'auto' | 'a4' | 'letter';   // default auto = the first page's size
+  annots?: PrintAnnots;          // baked in first; default all
+}
+export interface NupResult { path: string; pageCount: number }
+/** 하나의 이미지로 이어 붙이기 (X3): the job and the geometry used (`lowered`: DPI cut to fit the cap). */
+export interface StitchStart { jobId: JobId; dpi: number; width: number; height: number; lowered: boolean }
+/** 텍스트 흐름 내보내기 (X6). */
+export type TextFlowFormat = 'docx' | 'hwpx' | 'html' | 'md';

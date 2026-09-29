@@ -1164,6 +1164,28 @@ page, then `done{elapsedMs, report}` — or `cancelled` / `error`. The open docu
   changed since the estimate → `stale`; otherwise the document is replaced from the pending bytes
   (`mutate_bytes`), one undo step, and the returned `DocInfo.undoLabel` is `undo.compress`. `compress_discard` of an unknown token is a
   no-op. Cancel with `cancel_job`.
+* **v0.3 pkg8 (X5)** — `CompressOptions.optimize?: boolean` (default `false`) and three changes:
+  * **Shared top-level images** (one stream drawn by several objects / pages) are no longer skipped: when every
+    occurrence is above the threshold they go through the Stage 8 splice (re-encoded once, written into the one
+    stream object; every occurrence counts in `imagesDownsampled`). Never on an encrypted document, and never
+    for a stream something the scan does not see can draw — a page outside `pages`, or an annotation's appearance
+    stream (lopdf resource reachability) — so a page range cannot shrink an image on the other pages.
+  * **Masks**: PDFium's `FPDFPageObj_HasTransparency` does not see an image's own `/SMask` / `/Mask`, and
+    `FPDFImageObj_SetBitmap` drops them, so the image dictionaries are read with lopdf first. An `/SMask` image is
+    spliced and its 8-bit gray mask resampled by the same factor (kept at its resolution when lopdf cannot decode
+    it); an all-255 mask counts as none; a `/Mask` (colour key / stencil) image, or one drawn with transparent
+    graphics state, is left alone. Encrypted documents: soft-masked images are left alone.
+  * **`optimize`** (unencrypted only): page resource entries (`/XObject`, `/Font`) whose name appears nowhere in
+    the page's content are removed — a lexical scan of every `/Name` token (`#xx` decoded), not lopdf's content
+    parser, which stops silently at a token it cannot read (form feed, NUL, a comment between operands). Streams
+    without `/Resources` that PDFium draws with the page's — forms, annotation appearance streams, Type 3 glyph
+    procedures, tiling patterns, soft-mask groups — count as the page's content. A resource dictionary shared by
+    pages keeps the union; one referenced by anything but a page, or inherited from the page tree, is left alone.
+    Empty content streams leave `/Contents`, unreferenced objects are pruned, and the file is written with object
+    streams + an xref stream (`lopdf::save_modern`). Kept only when smaller, PDFium still opens it, **and every page
+    that lost a resource entry renders identically** (160 px, annotations on) before and after; then a result with
+    `imagesDownsampled == 0` but `afterBytes < beforeBytes` **is** applicable (the dialog passes the flag to its
+    `applyBlock`).
 
 ### 7.6b Compare two documents (P1-6, Stage 5)
 
@@ -1220,6 +1242,16 @@ a page out of range → `invalidArgument` (promise rejected, no job). Events wit
   `replace` (bounded memory).
 * Rects: `TextLayer::range_rects` over the run's code-point span — one rect per line fragment.
 * A page without text (scanned) has 0 words, no error. Neither document is modified.
+* **v0.3 pkg8 (X4)** — `CompareOptions.visual?: boolean` (default `true`) and `DiffKind` `'visual'`:
+  * every pair with both pages is also rendered at 50 DPI (`render_page_raw`'s render: annotations and form values
+    included) on the engine thread; the text lines of both pages (grown by 2 px) are masked out; 8 × 8-px tiles with
+    ≥ 3 pixels differing by more than 40 in a channel are changed; 8-connected tiles group into regions (at most 64,
+    the largest). Any region adds **one** op `{ kind: 'visual', words: 0, rectsA, rectsB }` — the same regions in
+    points on each page (a larger page is compared against white) — and makes the row `changed`. Not counted in
+    `inserted` / `deleted`.
+  * with `alignPages`, a candidate page without words is keyed by a 16 × 16 gray thumbnail signature (18 DPI render)
+    instead of an empty word set: two scans score `1 − mean|Δ| / 24` (≤ 2 → 1), a scan against a text page 0 — so an
+    inserted scanned page becomes a null-sided row like an inserted text page.
 
 ### 7.6c Autosave / crash recovery (P1-8, Stage 5)
 
@@ -1283,6 +1315,93 @@ comments editable — parked outside `/Annots` for the flatten and restored in a
 an encrypted file stays encrypted). `print_prepare` is the fallback path for the OS print handler; the
 primary print path is the frontend's print-only DOM plus `getCurrentWebview().print()`.
 Owner (b). Features F-24, F-25, F-26.
+
+**v0.3 pkg8** additions to §7.7:
+
+```ts
+print_prepare(a: { docId: DocId; pages?: PageIndex[]; annots?: PrintAnnots }): Promise<{ tempPath: string }>
+export_text(a: { docId: DocId; pages: PageIndex[]; outPath: string; preserveLayout?: boolean }): Promise<{ chars: number }>
+export type PrintAnnots = 'all' | 'none' | 'stamps';
+```
+
+* `print_prepare` (X7) flattens with **`FLAT_PRINT`**: what reaches paper is what the annotations' `/F` flags say
+  prints (NoView + Print is baked in, an annotation without Print is dropped). `annots`: `all` (default) · `none` —
+  every non-widget annotation removed first (form values still print) · `stamps` — only Stamp annotations and
+  SeePDF signatures (`/Subj SeePDF:Signature`) kept. X8: the file is written to `$TMPDIR/seepdf-print/` and deleted
+  10 minutes later (a detached timer), and any file older than 10 minutes is swept on every write;
+  `engine::export::cleanup_print_temp()` empties the directory and is meant to run at startup and at exit (lib.rs).
+* `export_text.preserveLayout` (X3): characters bucketed into rows by baseline, each word placed at the monospace
+  column its x maps to (one column = the median advance of the page's narrow characters; East Asian wide characters
+  take two), at least one space between words, a vertical gap of more than 1.5 rows becomes up to two blank lines.
+
+### 7.7b 모아찍기 / 소책자 — `make_nup` (v0.3 pkg8, X2)
+
+```ts
+export interface NupOptions {
+  perSheet: 1 | 2 | 4 | 6 | 9; order?: 'across' | 'down'; booklet?: boolean;
+  paper?: 'auto' | 'a4' | 'letter'; annots?: PrintAnnots;
+}
+make_nup(a: { docId: DocId; pages?: PageIndex[]; options: NupOptions; outPath?: string }): Promise<{ path: string; pageCount: number }>
+```
+
+Engine `engine/export/nup.rs`, `Lane::Background`. The selected pages are first flattened for paper (`print_prepare`'s
+bytes with `annots`), then imported in cell order into an intermediate document — 세로 방향 permutes each sheet so a
+row-major fill reads down the columns; 소책자 pads to a multiple of 4 with blank pages and uses the saddle-stitch
+order (8 pages → 8,1,2,7,6,3,4,5), always 2 per side on a landscape sheet — and laid out with
+`FPDF_ImportNPagesToOne`. The grid (cols × rows = perSheet, portrait or landscape sheet) is the one that prints the
+first page largest (A4 portrait pages: 2-up 2 × 1 landscape, 4-up 2 × 2 portrait, 6-up 3 × 2 landscape, 9-up 3 × 3).
+`paper: 'auto'` = the first page's size. Written to `outPath` (내보내기) or, without one, to a print temp file (the
+print path opens it with `open_document` and closes it after printing; deleted as above). Errors:
+`invalidArgument` (perSheet not 1/2/4/6/9, page out of range), `permissionDenied` detail `print` (v0.3 integration:
+the sheets are built from `print_prepare`'s bytes, which check the document's print permission — for 내보내기 ▸
+모아찍기 PDF too). ⚠️ `FPDF_ImportNPagesToOne` ignores `/Rotate`.
+
+### 7.7c Image export additions (v0.3 pkg8, X3)
+
+```ts
+export interface StitchStart { jobId: JobId; dpi: number; width: number; height: number; lowered: boolean }
+export_embedded_images(a: { docId: DocId; pages: PageIndex[]; outDir: string; baseName: string },
+                       onProgress: Channel<JobEvent>): Promise<JobId>
+export_stitched_image(a: { docId: DocId; pages: PageIndex[]; dpi: number; format: 'png' | 'jpeg'; outPath: string },
+                      onProgress: Channel<JobEvent>): Promise<StitchStart>
+export_tiff(a: { docId: DocId; pages: PageIndex[]; dpi: number; outPath: string },
+            onProgress: Channel<JobEvent>): Promise<JobId>
+```
+
+All three are page jobs (`engine/export/pagejob.rs`: one `Lane::Background` command per page in order, one
+`JobToken`, Cancel within a page, one terminal event; state carried from page to page, `done.outputs` lists the files).
+`pages: []` = every page. `export_embedded_images`: every image object as shown (soft mask / colour conversion
+applied) → `<baseName>-p<page>-<n>.png`, 1-based. `export_stitched_image`: pages one under the other, centred on a
+white canvas as wide as the widest page; the DPI is lowered (whole steps) until the canvas is ≤ 64 000 000 px and
+≤ 65 000 px a side — the answer says `lowered` and the DPI used — JPEG quality 85. `export_tiff`: RGB, Deflate, the
+DPI as the resolution tag, one IFD per page, written to `<out>.part` and renamed at the end (removed on cancel /
+error). Errors: `invalidArgument` (page out of range, DPI outside 36–1200, too many pages for one image even at
+36 DPI), `io`; `export_embedded_images` also `permissionDenied` detail `extractText` (v0.3 integration, §7.11 S5:
+pulling the images out is "extract text and graphics"; checked before the job starts and on every page), like
+`export_text` — with or without `preserveLayout`. The two page renders (stitched, TIFF) are not gated, like
+`export_images`.
+
+### 7.7d Text flow — DOCX / HWPX / HTML / Markdown (v0.3 pkg8, X6)
+
+```ts
+export type TextFlowFormat = 'docx' | 'hwpx' | 'html' | 'md';
+export_text_flow(a: { docId: DocId; pages: PageIndex[]; format: TextFlowFormat; outPath: string },
+                 onProgress: Channel<JobEvent>): Promise<JobId>
+```
+
+Engine `engine/export/textflow.rs`, a page job. Lossy by design (no conversion engine): each page's text-layer lines
+join into paragraphs (same size ±15 %, baseline ≤ 1.8 × size below, no jump up, left edge within 3 × size; a trailing
+hyphen before a lower-case letter is dropped, otherwise lines join with a space); the size with the most characters
+is the body, and a paragraph of ≤ 200 characters at ≥ 1.6 / 1.3 / 1.12 × body is heading 1 / 2 / 3. Images
+(`extract_images`, PNG, on-page size) are placed before the first paragraph below their top. DOCX: minimal OOXML
+(`[Content_Types].xml`, `_rels/.rels`, `word/document.xml`, `word/styles.xml` with Heading1–3 and 맑은 고딕,
+`word/_rels/document.xml.rels`, `word/media/imageN.png`, pages separated by page breaks). HWPX: OWPML — `mimetype`
+(stored, first), `version.xml`, `META-INF/container.xml` + `manifest.xml`, `Contents/content.hpf`,
+`Contents/header.xml` (함초롬바탕, 본문 10 pt + 제목 18/15/13 pt bold, 바탕글), `Contents/section0.xml` (the first
+paragraph carries the A4 `secPr`), `settings.xml`; **no images** in HWPX. HTML: one UTF-8 file, images as `data:`
+URLs, `<hr>` between pages. Markdown: `#` headings, images written to `<name>_images/image-N.png` beside it, `---`
+between pages. `done.outputs` lists every file written. No tables, columns, fonts or positions. Errors:
+`permissionDenied` detail `extractText` (v0.3 integration, §7.11 S5; checked before the job starts and on every page).
 
 ### 7.7a Annotation summary export — 주석 목록 내보내기 (P2)
 
@@ -1758,7 +1877,7 @@ its in-flight and mounted-tile budgets while `high` (`TileManager.setPressure`).
 
 **`tts-progress`** (v0.3, V4): see §11a.
 
-Channels are used by `search_start` (own event type), `export_images`, `export_flattened`,
+Channels are used by `search_start` (own event type), `export_images`, `export_flattened`, (v0.3) `export_embedded_images`, `export_stitched_image`, `export_tiff`, `export_text_flow`,
 `split_document`, `ocr_apply`, `scan_annotations`, `save_document`, `compress_estimate`, `compare_documents`. Every job id can be cancelled with
 `cancel_job`, except `save_document` / `save_document_as`'s, which is for progress only (`cancel_job`
 answers `false`). `ocr_apply` stops between pages; the batch is one undo step, so a cancelled batch is
@@ -1775,13 +1894,19 @@ every URL with `convertFileSrc('', 'seepdf')` — it never sniffs the OS.
 | Route | Query | Response |
 |---|---|---|
 | `/tile` | `doc, gen, page, sk, rot, tx, ty[, night][, hl][, forms][, vn]` | `image/png` (512×512 or clipped edge) |
-| `/page` | `doc, gen, page, sk, rot[, night][, hl][, forms][, vn]` | `image/png`, whole page — also the placeholder (`sk` small) |
+| `/page` | `doc, gen, page, sk, rot[, night][, hl][, forms][, vn][, print]` | `image/png`, whole page — also the placeholder (`sk` small) |
 | `/thumb` | `doc, gen, page, w[, rot]` | `image/png`, `set_target_width(w).set_maximum_height(w*2)` |
 | `/ocr` | `doc, gen, page, dpi` | `image/png` gray8 at `dpi` (300 default) |
 | `/recent-thumb` | `id` | `image/png` from `$APPDATA/SeePDF/thumbs/<id>.png` (read on the io thread) |
 | `/raw` | `doc` | `application/pdf`, honours `Range:` → 206 |
 
 * `sk` = `scaleKey` = `round(zoomPercent × devicePixelRatio)`; device scale `s = sk / 100`.
+* **v0.3 pkg8 (X7)** `/page?…&print=all|none|stamps` is the **print variant** (the print-only DOM's images): rendered
+  with `FPDF_PRINTING`, so annotation Print / NoView flags are honoured as on paper; `none` drops `FPDF_ANNOT`
+  (form widgets still drawn); `stamps` hides every annotation but Stamp / SeePDF signature / widget for that one
+  render (the Hidden flags are restored before the command ends). Its own cache entry: the ETag's kind is `print`,
+  `print-none` or `print-stamps`. Scheduled on `Lane::Prefetch` in page order and never dropped as stale (`409`),
+  since a printed sheet is never "off screen". Any other `print` value is `400`.
 * `tx`,`ty` are **tile indices** (device origin = `tx·512, ty·512`).
 * `vn` (Stage 6b, P1-12) is the `viewNonce` that `set_annotations_hidden` returned, on the **one page**
   it changed. The engine ignores it (it is not part of the cache key or the ETag; `set_annotations_hidden`
@@ -2026,6 +2151,7 @@ third_party_notices(): Promise<string>          // H11: SeePDF 정보 › 오픈
 | `add_stamp`, `remove_stamps` (Stage 8) | Stage 4, `engine/stamp.rs` | P1-4 |
 | `compress_estimate`, `compress_apply`, `compress_discard` | Stage 4, `engine/compress.rs` | P1-5 |
 | `compare_documents` | Stage 5, `engine/compare.rs` | P1-6 |
+| `make_nup`, `export_embedded_images`, `export_stitched_image`, `export_tiff`, `export_text_flow` (v0.3) | pkg8, `commands/export.rs` + `engine/export/{nup,pagejob,textflow}.rs` | X2, X3, X6 |
 | `write_recovery`, `clear_recovery`, `list_recovery`, `discard_recovery` | Stage 5, `engine/recovery.rs` | P1-8 |
 | `set_page_boxes`, `resize_pages` | P2, `engine/pages/boxes.rs` | P2 crop / resize |
 | `export_annotation_summary` | P2, `engine/export/summary.rs` | P2 annotation summary |

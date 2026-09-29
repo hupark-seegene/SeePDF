@@ -16,7 +16,7 @@ import { DocInfoDialog } from "./DocInfoDialog";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { ChoiceDialog, ConfirmDialog, ExtractDialog, InsertFromDialog, MoveToDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
 import type { ChoiceRequest, MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
-import type { PageIndex, RecoveryEntry, StampRole } from "../ipc/types";
+import type { PageIndex, RecoveryEntry, StampRole, StampSpec } from "../ipc/types";
 import type { DrawnSignature, ImageSignature } from "./SignatureDialog";
 
 const OcrDialog = lazy(() => import("../ocr").then((m) => ({ default: m.OcrDialog })));
@@ -47,6 +47,8 @@ const MultiSearchDialog = lazy(() => import("../multisearch/MultiSearchDialog"))
 const AboutDialog = lazy(() => import("./AboutDialog"));
 // v0.3 pkg2-pages-structure-forms: 이미지로 PDF 만들기, its own chunk.
 const ImagesToPdfDialog = lazy(() => import("./ImagesToPdfDialog"));
+// v0.3 pkg8 여러 파일 처리: its own chunk.
+const BatchDialog = lazy(() => import("../batch/BatchDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -148,7 +150,11 @@ function Current({ entry }: { entry: DialogEntry }) {
     case "stamp":
       return (
         <Suspense fallback={null}>
-          <StampDialog onClose={close} role={p.role as StampRole | undefined} />
+          <StampDialog
+            onClose={close}
+            role={p.role as StampRole | undefined}
+            onBatchSpec={p.onBatchSpec as ((spec: StampSpec) => void) | undefined}
+          />
         </Suspense>
       );
     case "compress":
@@ -167,6 +173,13 @@ function Current({ entry }: { entry: DialogEntry }) {
       return (
         <Suspense fallback={null}>
           <BatchOcrDialog onClose={close} />
+        </Suspense>
+      );
+    // v0.3 pkg8
+    case "batch":
+      return (
+        <Suspense fallback={null}>
+          <BatchDialog onClose={close} />
         </Suspense>
       );
     case "multiSearch":

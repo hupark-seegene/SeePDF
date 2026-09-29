@@ -63,7 +63,14 @@ export interface TileParams {
   vn?: number;
 }
 
-export type PageParams = Omit<TileParams, "tx" | "ty">;
+export type PageParams = Omit<TileParams, "tx" | "ty"> & {
+  /**
+   * v0.3 pkg8 (X7): the print variant — rendered with `FPDF_PRINTING` (annotation Print / NoView
+   * flags honoured) and the 주석 option: `all` / `none` (no markup) / `stamps` (stamps and
+   * signatures only). Omitted on screen.
+   */
+  print?: "all" | "none" | "stamps";
+};
 
 /** 1×1 transparent PNG: what a route answers with before the mock adapter has loaded. */
 const BLANK_PNG =
@@ -93,6 +100,7 @@ export function pageUrl(p: PageParams): string {
   return build("/page", {
     doc: p.doc, gen: p.gen, page: p.page, sk: p.sk, rot: p.rot,
     night: p.night ? 1 : undefined, hl: p.hl ? 1 : undefined, forms: p.forms === false ? 0 : undefined, vn: p.vn,
+    print: p.print,
   });
 }
 

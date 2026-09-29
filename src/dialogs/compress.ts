@@ -34,9 +34,13 @@ export function summarize(r: Pick<CompressReport, "beforeBytes" | "afterBytes">)
  */
 export type CompressBlock = "noGain" | "noImages";
 
-export function applyBlock(r: Pick<CompressReport, "beforeBytes" | "afterBytes" | "imagesDownsampled">): CompressBlock | null {
+export function applyBlock(
+  r: Pick<CompressReport, "beforeBytes" | "afterBytes" | "imagesDownsampled">,
+  // v0.3 pkg8 (X5): with 구조 최적화 a smaller file is a saving even with no image downsampled
+  optimized = false,
+): CompressBlock | null {
   if (r.afterBytes >= r.beforeBytes) return "noGain";
-  if (r.imagesDownsampled === 0) return "noImages";
+  if (r.imagesDownsampled === 0 && !optimized) return "noImages";
   return null;
 }
 
@@ -48,6 +52,12 @@ export function formatDeltaPct(pct: number, locale: string): string {
 }
 
 /** `pages` omitted = the whole document. */
-export function buildCompressOptions(targetDpi: CompressPreset, pages: PageIndex[] | null, allPages: boolean): CompressOptions {
-  return allPages || !pages ? { targetDpi } : { targetDpi, pages };
+export function buildCompressOptions(
+  targetDpi: CompressPreset,
+  pages: PageIndex[] | null,
+  allPages: boolean,
+  optimize = false, // v0.3 pkg8 (X5) 구조 최적화
+): CompressOptions {
+  const base: CompressOptions = allPages || !pages ? { targetDpi } : { targetDpi, pages };
+  return optimize ? { ...base, optimize: true } : base;
 }

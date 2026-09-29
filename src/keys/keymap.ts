@@ -159,6 +159,8 @@ export const MENU_ONLY_IDS: readonly string[] = [
   "help.reportProblem", "help.openLogs",
   // v0.3 pkg2-pages-structure-forms: 파일 ▸ 이미지로 PDF 만들기… / 클립보드에서 새로 만들기
   "file.imagesToPdf", "file.newFromClipboard",
+  // v0.3 pkg8: 도구 ▸ 여러 파일 처리…
+  "tools.batch",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 

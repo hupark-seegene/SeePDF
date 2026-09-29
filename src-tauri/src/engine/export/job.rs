@@ -98,6 +98,11 @@ impl JobReporter {
         done
     }
 
+    /// v0.3 pkg8: files a unit produced beyond the one `step` takes (several images of a page).
+    pub fn add_outputs(&self, paths: impl IntoIterator<Item = String>) {
+        self.outputs.lock().extend(paths);
+    }
+
     /// Sends `done` once every unit has reported. No-op until then.
     pub fn finish_if_complete(&self) {
         if self.done.load(Ordering::Relaxed) < self.total() {

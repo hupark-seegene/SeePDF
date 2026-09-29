@@ -51,7 +51,7 @@ One document per window; the first window shows the welcome screen.
 | left group | `☰` sidebar toggle · `↶` undo · `↷` redo (undo/redo only when a document is open) |
 | centre-left | document title + `⌄` menu: 경로 복사 / Finder에서 보기 / 문서 정보… ; middle-truncated; a `•` prefix when dirty. v0.3: after it, the **서명됨 (n)** pill (accent) when the document has digital signatures and the **제한됨** pill (warning) when its permissions restrict this open — see §2.1 |
 | centre | **mode switcher**: 읽기 · 주석 · 편집 · 페이지 · 양식 (segmented, ⌘1–⌘5) |
-| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정, 업데이트 확인…, 손 도구; then 도움말 — 단축키, 문제 보고…, 로그 폴더 열기, SeePDF 정보 — which is where Windows, with no menu bar, finds them (v0.3 pkg5); under 900 px 찾기 / 내보내기 come first) |
+| right | `🔍` search toggle · `⤓` export · `⋯` overflow (인쇄, 보안, 워터마크, 압축, 문서 비교, OCR, 여러 파일 OCR, 여러 파일 처리 (v0.3 pkg8), 여러 파일에서 검색, 합치기, 분할, 문서 정보, 설정, 업데이트 확인…, 손 도구; then 도움말 — 단축키, 문제 보고…, 로그 폴더 열기, SeePDF 정보 — which is where Windows, with no menu bar, finds them (v0.3 pkg5); under 900 px 찾기 / 내보내기 come first) |
 
 Changing mode changes four things at once: the tool strip, the default canvas cursor, the properties
 panel content, and what a click on the page does.
@@ -462,6 +462,46 @@ number outside 1–1 000 000 shows the reason under it (`role=alert`) and disabl
 the way PDFium computes them (letters repeat: 27 = aa). 모두 제거 (footer, left) empties the rows; 적용 (enabled
 once the rows differ from the file) → `set_page_labels` (one undo step 페이지 레이블), toast 페이지 레이블을
 적용했습니다 / 제거했습니다 + 실행 취소. On an encrypted document everything is read-only with `structure.encrypted`.
+
+**v0.3 (pkg8) — 인쇄, 내보내기, 압축, 문서 비교, 여러 파일 처리**
+
+* **인쇄** (480 px): 인쇄 범위 · 인쇄 방법 · **주석** 문서와 주석 (default: every annotation whose `/F` flags say it
+  prints — a NoView + Print watermark prints, a screen-only comment does not) / 문서만 (page content and form values)
+  / 문서와 도장·서명 (stamps and signatures only) · **모아찍기** 1쪽 / 2쪽 / 4쪽 / 6쪽 / 9쪽 with 순서 가로 방향 (Z) |
+  세로 방향 (N) when > 1 · **소책자 (중철)** checkbox (2 per side in saddle-stitch order, 모아찍기 disabled, a hint) · for
+  시스템 인쇄 대화상자 only: **크기** 용지에 맞춤 (default: the page is contained in the sheet and turned 90° when its
+  orientation differs from the sheet's) / 실제 크기 (physical size, centred) and **흑백** · when the job has more than
+  50 sheets, a hint that it prints in parts of 50, each with its own system dialog (`print.chunkHint`). While a chunked
+  job runs, a small on-screen line bottom centre says `인쇄 준비 중… n / N쪽 (k/m번째 묶음)` with a **취소** button
+  (never printed). `afterprint` fires for 인쇄 and 취소 alike, so after each part but the last the job pauses (no page
+  images mounted) and the line asks `k/m번째 묶음의 인쇄 대화상자가 닫혔습니다. 다음 묶음을 인쇄할까요?` with
+  **다음 묶음 인쇄 (k+1/m)** (focused) and **중지**; 중지 / 취소 end the job and close an n-up temp document.
+  모아찍기 / 소책자 print a temporary n-up document (`make_nup`), opened beside the window's document and closed when
+  the job ends; the handler path hands that file (or the 주석-filtered flattened copy) to the PDF app.
+* **내보내기** gains, in the format list: 모아찍기 PDF (N-up) (모아찍기 2/4/6/9 + 순서, 용지 A4 (default) / Letter / 첫 페이지
+  크기, 소책자) · TIFF (여러 페이지) (DPI slider; one file) · 이미지 추출 (a folder; `name-p<page>-<n>.png`; toast
+  `그림 N개를 저장했습니다` or 선택한 페이지에 그림이 없습니다) · Word 문서 (.docx) · 한글 문서 (.hwpx) · 웹 페이지 (.html) ·
+  Markdown (.md) — these four show `export.flow.lossy` (서식 일부 유실 …) as a note. PNG / JPEG get **하나의 이미지로 이어
+  붙이기** (one image, pages top to bottom; no size estimate; an info toast when the DPI was lowered to fit 64 Mpx /
+  65 000 px); 텍스트 gets **레이아웃 유지 시도** (monospace columns). v0.3 integration (pkg3 S5): on a document that
+  forbids copying, 텍스트, 이미지 추출 and the four text-flow formats keep their row, but 내보내기 is off and the estimate
+  line gives the reason (`security.restricted.reason.extractText`); 모아찍기 PDF likewise needs the print permission.
+  Page images (PNG / JPEG / TIFF) and 평면화한 PDF stay available.
+* **압축** gains **구조 최적화** (checkbox under 페이지 범위, off by default) with a hint (`compress.optimizeHint`, or
+  `compress.optimizeEncrypted` on an encrypted document). With it, a smaller file is applicable even when no image was
+  downsampled.
+* **문서 비교**: figures and scans are compared by their pixels (50 DPI, text masked out): each changed region is a
+  warning-coloured outline (`cmp-mark visual`) on both pages, the row badge says 그림 변경, and a header checkbox
+  **바뀐 그림 깜빡이기** (on by default, shown only when a region exists) blinks them (static under reduced motion).
+  Scanned pages (no words) pair by a 16 × 16 thumbnail signature, so an inserted scan is its own row.
+* **여러 파일 처리** (640 px, 도구 ▸ 여러 파일 처리… or ⋯; works with no document open): the 여러 파일 OCR list (파일 추가… /
+  목록 비우기, 파일 · 상태, × per row) · **작업** 워터마크 · 머리글 · Bates 번호 (설정… opens the 워터마크 dialog on top
+  in batch mode — no 페이지 범위 / 기존 항목 제거 — and 적용 hands its settings back; Bates numbers continue across
+  files) / 압축 (이미지 품질) / 암호 설정 (열기 암호) / 평면화한 PDF로 내보내기 / 이미지로 내보내기 (PNG/JPEG + DPI) · 저장
+  위치 원본과 같은 폴더 | 다른 폴더. 시작 processes each file in list order: open (암호 입력; dismiss = 건너뜀) → action
+  → `<name>-stamped / -compressed / -protected / -flat.pdf` (` (2)`… when taken; images as `<name>-001.png`…) → close.
+  A compress that saves nothing is 건너뜀 · 더 줄일 이미지가 없습니다. 취소 stops after the current file (its engine
+  job is cancelled; nothing after it is opened). 닫기 only hides the sheet; the status bar shows the job with ×.
 
 **Others**: 암호 입력 (on `passwordRequired`, retries in place) · 저장하지 않은 변경 사항 (저장 / 저장 안 함 /
 취소) · 파일 합치기 (ordered list with pointer drag — v0.3; per-file range field; bookmarks, labels and fields come along) ·
@@ -1715,6 +1755,83 @@ With the 링크 tool, a click (no drag) on a page where text is selected links t
 | `undo.pageImport`, `undo.formFieldCreate` / `Edit` / `Delete`, `undo.formImport`, `undo.formFlatten` | 다른 문서에서 페이지 가져오기, 필드 만들기 / 필드 속성 / 필드 삭제, 양식 데이터 가져오기, 양식 평면화 | Pages from Another Document, Create Field / Field Properties / Delete Field, Import Form Data, Flatten Form |
 
 (Full list: the 77 keys appended to `src/i18n/ko.json` / `en.json` in v0.3 pkg2.)
+
+### 15.20g v0.3 pkg8 — 인쇄, 내보내기, 압축, 문서 비교, 여러 파일 처리
+
+New keys (`compare.hint` is reworded: scans are no longer "run OCR first"). `scripts/check-i18n.mjs` (H6) now counts
+every string literal that names a key, `` t(`prefix.${…}`) `` template prefixes and the Rust side's literals /
+`format!("prefix.{…}")`; `--list-unused` lists what nothing references and `--strict` makes that an error (the
+dead-key cleanup runs after every v0.3 package is merged).
+
+| key | ko | en |
+|---|---|---|
+| `print.annots` | 주석 | Annotations |
+| `print.annots.all` | 문서와 주석 | Document and markups |
+| `print.annots.none` | 문서만 | Document only |
+| `print.annots.stamps` | 문서와 도장·서명 | Document, stamps and signatures |
+| `print.perSheet` | 모아찍기 | Pages per sheet |
+| `print.perSheet.n` | {{count}}쪽 | {{count}} per sheet |
+| `print.order` | 순서 | Order |
+| `print.order.across` | 가로 방향 (Z) | Across, then down |
+| `print.order.down` | 세로 방향 (N) | Down, then across |
+| `print.booklet` | 소책자 (중철) | Booklet (saddle stitch) |
+| `print.bookletHint` | 한 면에 2쪽씩, 양면으로 인쇄해 반으로 접으면 순서대로 읽히도록 배치합니다. | Two pages per side, ordered so the sheets read in order when printed on both sides and folded. |
+| `print.fit` | 크기 | Size |
+| `print.fit.fit` | 용지에 맞춤 | Fit to sheet |
+| `print.fit.actual` | 실제 크기 | Actual size |
+| `print.grayscale` | 흑백 | Grayscale |
+| `print.chunkHint` | 긴 문서는 {{size}}쪽씩 {{parts}}번에 나누어 인쇄 대화상자가 열립니다. 한 번에 인쇄하려면 'PDF 앱에서 열기'를 쓰세요. | A long document prints in {{parts}} parts of up to {{size}} pages, each with its own print dialog. Use 'Open in the PDF app' to print it in one go. |
+| `print.progress` | 인쇄 준비 중… {{done}} / {{total}}쪽 ({{part}}/{{parts}}번째 묶음) | Preparing to print… {{done}} / {{total}} pages (part {{part}} of {{parts}}) |
+| `print.chunkClosed` | {{part}}/{{parts}}번째 묶음의 인쇄 대화상자가 닫혔습니다. 다음 묶음을 인쇄할까요? | The print panel for part {{part}} of {{parts}} has closed. Print the next part? |
+| `print.nextChunk` | 다음 묶음 인쇄 ({{next}}/{{parts}}) | Print next part ({{next}} of {{parts}}) |
+| `print.stop` | 중지 | Stop |
+| `export.format.nup` | 모아찍기 PDF (N-up) | N-up PDF |
+| `export.format.tiff` | TIFF (여러 페이지) | TIFF (multi-page) |
+| `export.format.embedded` | 이미지 추출 | Extract images |
+| `export.format.docx` | Word 문서 (.docx) | Word document (.docx) |
+| `export.format.hwpx` | 한글 문서 (.hwpx) | Hangul document (.hwpx) |
+| `export.format.html` | 웹 페이지 (.html) | Web page (.html) |
+| `export.format.md` | Markdown (.md) | Markdown (.md) |
+| `export.stitch.hint` | 선택한 페이지를 위에서 아래로 이어 붙여 이미지 한 장으로 만듭니다. 너무 크면 해상도를 낮춥니다. | Joins the chosen pages top to bottom into one image. The resolution is lowered if it would be too large. |
+| `export.stitch.lowered` | 이미지가 너무 커서 {{dpi}} DPI로 낮춰 내보냅니다 | The image would be too large; exporting at {{dpi}} DPI instead |
+| `export.tiff.hint` | 선택한 페이지를 한 파일에 여러 페이지로 담은 TIFF를 만듭니다. | Writes the chosen pages as the pages of one TIFF file. |
+| `export.embedded.hint` | 페이지에 들어 있는 그림을 원래 해상도의 PNG로 저장합니다 (파일이름-p쪽-번호.png). | Saves the pictures on the pages as PNG at their own resolution (name-p&lt;page&gt;-&lt;n&gt;.png). |
+| `export.embedded.done` | 그림 {{count}}개를 저장했습니다 | Saved {{count}} image |
+| `export.embedded.done_other` | 그림 {{count}}개를 저장했습니다 | Saved {{count}} images |
+| `export.embedded.none` | 선택한 페이지에 그림이 없습니다 | There are no images on the chosen pages |
+| `export.flow.lossy` | 서식 일부 유실: 문단, 제목, 그림만 옮깁니다. 표, 단 나눔, 글꼴과 정확한 위치는 옮기지 않습니다. | Some formatting is lost: only paragraphs, headings and pictures are carried over — no tables, columns, fonts or exact positions. |
+| `export.nup.paper` | 용지 | Paper |
+| `export.nup.paperAuto` | 첫 페이지 크기 | Size of the first page |
+| `export.nup.hint` | 선택한 페이지를 한 장에 여러 쪽씩 모은 PDF를 만듭니다. 주석은 페이지에 합쳐 넣습니다. | Writes a PDF with several pages on each sheet. Annotations are merged into the pages. |
+| `compress.optimize` | 구조 최적화 | Optimize structure |
+| `compress.optimizeHint` | 쓰지 않는 개체와 빈 스트림을 지우고 개체 스트림으로 다시 써서 파일을 더 줄입니다. | Removes unused objects and empty streams and rewrites the file with object streams. |
+| `compress.optimizeEncrypted` | 암호가 걸린 문서는 구조 최적화를 할 수 없습니다. 이미지만 줄입니다. | A password-protected document cannot be restructured; only images are made smaller. |
+| `compare.hint` | 텍스트가 비슷한 페이지끼리 짝을 지어 비교합니다. 그림과 스캔한 페이지는 픽셀로 비교합니다. 추가되거나 빠진 페이지는 따로 표시합니다. | Pages are paired by similar text; figures and scanned pages are compared by their pixels. Added and removed pages are shown separately. |
+| `compare.blink` | 바뀐 그림 깜빡이기 | Blink changed figures |
+| `compare.visual` | 그림 변경 | Figure changed |
+| `menu.tools.batch` | 여러 파일 처리… | Process Multiple Files… |
+| `batch.title` | 여러 파일 처리 | Process Multiple Files |
+| `batch.description` | 여러 PDF에 같은 작업을 차례로 적용해 사본을 만듭니다. 원본 파일은 바꾸지 않습니다. | Applies one action to several PDFs in turn and writes copies. The original files are not changed. |
+| `batch.pick` | 처리할 PDF 선택 | Choose the PDFs to process |
+| `batch.action` | 작업 | Action |
+| `batch.action.stamp` | 워터마크 · 머리글 · Bates 번호 | Watermark · header · Bates number |
+| `batch.action.compress` | 압축 | Compress |
+| `batch.action.password` | 암호 설정 | Set a password |
+| `batch.action.flatten` | 평면화한 PDF로 내보내기 | Export flattened PDF |
+| `batch.action.images` | 이미지로 내보내기 (PNG/JPEG) | Export as images (PNG/JPEG) |
+| `batch.stamp` | 도장 설정 | Stamp |
+| `batch.stamp.configure` | 설정… | Set up… |
+| `batch.stamp.hint` | 모든 페이지에 적용합니다. Bates 번호는 파일이 바뀌어도 이어서 매깁니다. | Applied to every page. Bates numbers continue from one file to the next. |
+| `batch.need.stamp` | 워터마크나 머리글을 먼저 설정하세요 | Set up the watermark or header first |
+| `batch.need.password` | 암호를 입력하세요 | Enter a password |
+| `batch.password` | 열기 암호 | Password to open |
+| `batch.password.hint` | 모든 파일에 같은 암호를 겁니다. 권한은 제한하지 않습니다. | Every file gets the same password. Permissions are not restricted. |
+| `batch.flatten.hint` | 주석과 양식 값을 페이지에 합친 사본을 만듭니다. | Writes copies with annotations and form values merged into the pages. |
+| `batch.output.hint` | 파일 이름 뒤에 작업 이름(-stamped, -compressed, -protected, -flat)을 붙여 저장합니다. 같은 이름이 있으면 (2), (3)…을 붙입니다. | Saves as the file name plus the action (-stamped, -compressed, -protected, -flat). If the name is taken, (2), (3)… is added. |
+| `batch.reason.noGain` | 더 줄일 이미지가 없습니다 | Nothing to make smaller |
+| `batch.running` | 여러 파일 처리 중… | Processing files… |
+| `batch.finished` | 여러 파일 처리를 마쳤습니다: 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | Finished processing files: {{done}} done · {{skipped}} skipped · {{failed}} failed |
+| `batch.cancelled` | 여러 파일 처리를 취소했습니다: 완료 {{done}} · 건너뜀 {{skipped}} · 실패 {{failed}} | Stopped processing files: {{done}} done · {{skipped}} skipped · {{failed}} failed |
 
 ### 15.21 Notes for the implementer
 

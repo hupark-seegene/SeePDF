@@ -16,7 +16,19 @@
 //! 2. [`process_page`] downsamples the candidates whose hash occurs **once**. An image
 //!    XObject shared by many pages (a logo) is one stream in the file, but PDFium's
 //!    `FPDFImageObj_SetBitmap` gives every object a stream of its own — "compressing" it would
-//!    store N copies. Shared images are counted and left alone.
+//!    store N copies. Since v0.3 (X5) a shared stream goes through the Stage 8 splice below
+//!    instead: re-encoded once, written into its one stream object.
+//!
+//! ## v0.3 (X5): soft masks and 구조 최적화
+//!
+//! PDFium's `FPDFPageObj_HasTransparency` does not see an image's own `/SMask` or `/Mask`, and
+//! `FPDFImageObj_SetBitmap` silently drops them — so [`begin`] reads the image dictionaries
+//! with lopdf ([`image_masks`]). A soft-masked image is re-encoded and spliced, and its
+//! `/SMask` (8-bit gray) is resampled by the same factor (left at its resolution when lopdf
+//! cannot decode it — the mask need not match the image); an all-255 mask counts as none. A
+//! `/Mask` image is left alone. The optional structural pass ([`optimize_structure`]) drops
+//! page resources the content never uses, empty content streams and unreferenced objects, and
+//! writes object streams; it is kept only when smaller and PDFium still opens the result.
 //!
 //! ## Images inside Form XObjects (Stage 8)
 //!
@@ -32,14 +44,21 @@
 //! scale). Skipped on an encrypted document (the serialised streams are encrypted), and a
 //! re-encode that is not smaller than the original is dropped.
 //!
+//! The scan only sees the pages of the chosen range, so a splice is refused for any stream
+//! something the scan did not look at can draw: a page outside the range, or an annotation's
+//! appearance stream on any page ([`image_masks`] collects those hashes with lopdf — resource
+//! reachability, which over-counts but never misses). Otherwise compressing pages 2–3 would
+//! shrink a logo page 1 draws at full size too.
+//!
 //! ## What is skipped
 //!
-//! Images with transparency (`/SMask`, `/Mask`, soft-mask graphics state —
-//! `FPDFPageObj_HasTransparency`), 1-bit images and stencil masks (CCITT / JBIG2 are already
-//! small, and resampling would turn them into 8-bit), top-level images that share their
-//! stream with another image object (a form's included), images inside Form XObjects of an
-//! encrypted document, and bitmaps PDFium cannot hand back in a format we can re-encode.
-//! They count in `imagesTotal` but not in `imagesDownsampled`.
+//! Images with a `/Mask` or drawn with transparent graphics state
+//! (`FPDFPageObj_HasTransparency`), 1-bit images and stencil masks (CCITT / JBIG2 are already
+//! small, and resampling would turn them into 8-bit), shared, soft-masked or nested images of
+//! an encrypted document (no splice there), shared ones with an occurrence at or below the
+//! target, spliceable ones something outside the scan can draw (a page outside the range, an
+//! annotation), and bitmaps PDFium cannot hand back in a format we can re-encode. They count in
+//! `imagesTotal` but not in `imagesDownsampled`.
 //!
 //! ## Encoding
 //!
@@ -117,6 +136,8 @@ struct NestedReplacement {
     height: u32,
     gray: bool,
     occurrences: u32,
+    /// v0.3 (X5): the image has an `/SMask`, which is downsampled by the same factor.
+    smask: bool,
 }
 
 /// A running estimate. Lives in [`OpenDoc::compress_work`](registry::OpenDoc).
@@ -142,6 +163,183 @@ pub struct Work<'p> {
     encrypted: bool,
     images_total: u32,
     images_downsampled: u32,
+    /// v0.3 (X5): top-level images with transparency above the target — spliced when the
+    /// lopdf pass finds their transparency is an `/SMask` (and nothing else).
+    masked: HashMap<PageIndex, Vec<Candidate>>,
+    masked_seen: HashMap<u64, u32>,
+    masked_plan: HashMap<u64, NestedPlan>,
+    /// v0.3 (X5) 구조 최적화.
+    optimize: bool,
+    /// v0.3 (X5): which image streams carry a mask ([`image_masks`]).
+    masks: ImageMasks,
+}
+
+/// v0.3 (X5): the encoded-stream hashes of the document's image XObjects that have an
+/// `/SMask` (`soft`) or a `/Mask` (`other`), read with lopdf — PDFium does not expose either.
+/// Empty when lopdf cannot read the file (then only PDFium's transparency test applies).
+#[derive(Debug, Default)]
+pub struct ImageMasks {
+    pub soft: HashSet<u64>,
+    pub other: HashSet<u64>,
+    /// The images something the scan does not see can draw — a page outside the scanned
+    /// range, or any page's annotations ([`drawn_elsewhere`]). Such a stream is never spliced:
+    /// the splice rewrites the one stream object for every user. `None` when lopdf cannot read
+    /// the file: nothing is spliced then.
+    pub outside: Option<HashSet<u64>>,
+}
+
+/// Reads the image dictionaries of `bytes` with lopdf; `scanned` is the page range the job
+/// visits (every page for the whole document).
+pub fn image_masks(bytes: &[u8], password: Option<&str>, scanned: &[PageIndex]) -> ImageMasks {
+    let options = lopdf::LoadOptions::with_password(password.unwrap_or(""));
+    let Ok(doc) = lopdf::Document::load_mem_with_options(bytes, options) else {
+        tracing::warn!("compress: lopdf could not read the document; image masks unknown");
+        return ImageMasks::default();
+    };
+    let mut masks = ImageMasks {
+        outside: Some(drawn_elsewhere(&doc, scanned)),
+        ..ImageMasks::default()
+    };
+    for object in doc.objects.values() {
+        let Ok(stream) = object.as_stream() else {
+            continue;
+        };
+        if !is_image_stream(stream) {
+            continue;
+        }
+        if stream.dict.has(b"Mask") {
+            masks.other.insert(hash_of(&stream.content));
+        } else if stream.dict.has(b"SMask") && !opaque_mask(&doc, stream) {
+            masks.soft.insert(hash_of(&stream.content));
+        }
+    }
+    masks
+}
+
+fn is_image_stream(stream: &lopdf::Stream) -> bool {
+    stream
+        .dict
+        .get(b"Subtype")
+        .and_then(|s| s.as_name())
+        .map(|n| n == b"Image")
+        .unwrap_or(false)
+}
+
+/// v0.3 (X5, verification round 2): the encoded-stream hashes of every image reachable from
+/// what the scan does not look at — each page outside `scanned` (its whole dictionary, with
+/// inherited `/Resources`) and the `/Annots` of the scanned pages. A reference walk that never
+/// enters another page or page-tree node, so a link's destination does not pull in its page.
+fn drawn_elsewhere(doc: &lopdf::Document, scanned: &[PageIndex]) -> HashSet<u64> {
+    use lopdf::Object;
+    let is_page_node = |dict: &lopdf::Dictionary| {
+        matches!(
+            dict.get(b"Type").and_then(|t| t.as_name()),
+            Ok(b"Page") | Ok(b"Pages")
+        )
+    };
+    let scanned: HashSet<PageIndex> = scanned.iter().copied().collect();
+    let mut stack: Vec<&Object> = Vec::new();
+    for (number, page_id) in doc.get_pages() {
+        let Ok(page) = doc.get_dictionary(page_id) else {
+            continue;
+        };
+        let index = (number - 1).min(PageIndex::MAX as u32) as PageIndex;
+        if scanned.contains(&index) {
+            if let Ok(annots) = page.get(b"Annots") {
+                stack.push(annots);
+            }
+            continue;
+        }
+        stack.extend(
+            page.iter()
+                .filter(|(key, _)| key.as_slice() != b"Parent")
+                .map(|(_, value)| value),
+        );
+        // Inherited resources: every ancestor's `/Resources`, direct or referenced.
+        let mut parent = page.get(b"Parent").and_then(|p| p.as_reference()).ok();
+        let mut depth = 0;
+        while let Some(id) = parent.filter(|_| depth < 64) {
+            let Ok(node) = doc.get_dictionary(id) else {
+                break;
+            };
+            if let Ok(resources) = node.get(b"Resources") {
+                stack.push(resources);
+            }
+            parent = node.get(b"Parent").and_then(|p| p.as_reference()).ok();
+            depth += 1;
+        }
+    }
+    let mut visited: HashSet<lopdf::ObjectId> = HashSet::new();
+    let mut hashes = HashSet::new();
+    while let Some(object) = stack.pop() {
+        match object {
+            Object::Reference(id) => {
+                if !visited.insert(*id) {
+                    continue;
+                }
+                let Ok(target) = doc.get_object(*id) else {
+                    continue;
+                };
+                let dict = match target {
+                    Object::Dictionary(d) => Some(d),
+                    Object::Stream(s) => Some(&s.dict),
+                    _ => None,
+                };
+                if dict.map(is_page_node).unwrap_or(false) {
+                    continue;
+                }
+                stack.push(target);
+            }
+            Object::Array(items) => stack.extend(items.iter()),
+            Object::Dictionary(dict) => {
+                if !is_page_node(dict) {
+                    stack.extend(dict.iter().map(|(_, v)| v));
+                }
+            }
+            Object::Stream(stream) => {
+                if is_image_stream(stream) {
+                    hashes.insert(hash_of(&stream.content));
+                }
+                stack.extend(stream.dict.iter().map(|(_, v)| v));
+            }
+            _ => {}
+        }
+    }
+    hashes
+}
+
+/// An `/SMask` whose every sample is 255 changes nothing (PDFium writes one next to any image
+/// placed from an alpha bitmap): such an image is compressed like an unmasked one.
+fn opaque_mask(doc: &lopdf::Document, image: &lopdf::Stream) -> bool {
+    let Some(mask) = image
+        .dict
+        .get(b"SMask")
+        .and_then(|m| m.as_reference())
+        .ok()
+        .and_then(|id| doc.get_object(id).ok())
+        .and_then(|o| o.as_stream().ok())
+    else {
+        return false;
+    };
+    if mask
+        .dict
+        .get(b"BitsPerComponent")
+        .and_then(|b| b.as_i64())
+        .ok()
+        != Some(8)
+        || mask.dict.has(b"Decode")
+    {
+        return false;
+    }
+    let samples = if mask.dict.has(b"Filter") {
+        match mask.decompressed_content() {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    } else {
+        mask.content.clone()
+    };
+    !samples.is_empty() && samples.iter().all(|&s| s == 255)
 }
 
 /// A finished estimate, waiting for `compress_apply` / `compress_discard`.
@@ -155,14 +353,18 @@ pub struct Pending {
     /// The report's `beforeBytes` / `imagesDownsampled`, for [`Pending::saves_nothing`].
     pub before_bytes: u64,
     pub images_downsampled: u32,
+    /// v0.3 (X5): the structural pass made the file smaller.
+    pub optimized: bool,
 }
 
 impl Pending {
-    /// `true` when applying would replace the document for no gain: no image was downsampled,
-    /// or the file did not get smaller. The same rule as the dialog's `applyBlock`
-    /// (`src/dialogs/compress.ts`), which disables 적용 for exactly these reports.
+    /// `true` when applying would replace the document for no gain: no image was downsampled
+    /// (and the structural pass did not apply), or the file did not get smaller. The same rule
+    /// as the dialog's `applyBlock` (`src/dialogs/compress.ts`), which disables 적용 for
+    /// exactly these reports.
     pub fn saves_nothing(&self) -> bool {
-        self.images_downsampled == 0 || self.bytes.len() as u64 >= self.before_bytes
+        (self.images_downsampled == 0 && !self.optimized)
+            || self.bytes.len() as u64 >= self.before_bytes
     }
 }
 
@@ -205,6 +407,7 @@ pub fn begin(
     }
     let bytes = save::serialize(st, doc_id)?;
     let before_bytes = bytes.len() as u64;
+    let masks = image_masks(&bytes, st.doc(doc_id)?.password.as_deref(), &pages);
     let pdfium = st.pdfium;
     let doc = st.doc_mut(doc_id)?;
     let scratch = pdfium
@@ -228,8 +431,26 @@ pub fn begin(
         encrypted: doc.encrypted || doc.password.is_some(),
         images_total: 0,
         images_downsampled: 0,
+        masked: HashMap::new(),
+        masked_seen: HashMap::new(),
+        masked_plan: HashMap::new(),
+        optimize: options.optimize.unwrap_or(false),
+        masks,
     });
     Ok(pages)
+}
+
+impl Work<'_> {
+    /// Whether the one stream object with this hash may be rewritten by the splice: never on
+    /// an encrypted document, and never when something the scan did not see draws it too.
+    fn may_splice(&self, hash: u64) -> bool {
+        !self.encrypted
+            && self
+                .masks
+                .outside
+                .as_ref()
+                .is_some_and(|outside| !outside.contains(&hash))
+    }
 }
 
 fn work<'a, 'p>(
@@ -266,6 +487,7 @@ pub fn scan_page(
     let target = work.target_dpi as f32 * (1.0 + DPI_TOLERANCE);
     let handle = open_page(&work.scratch, page)?;
     let mut found = Vec::new();
+    let mut masked = Vec::new();
     let mut nested_found: Vec<NestedFound> = Vec::new();
     for (index, object) in handle.objects().iter().enumerate() {
         if let Some(form) = object.as_x_object_form_object() {
@@ -277,27 +499,66 @@ pub fn scan_page(
             continue;
         };
         work.images_total += 1;
-        if object.has_transparency() || image.bits_per_pixel().unwrap_or(1) <= 1 {
+        if image.bits_per_pixel().unwrap_or(1) <= 1 {
             continue;
         }
         let Ok(data) = image.get_raw_image_data() else {
             continue;
         };
         let hash = hash_of(&data);
-        // Every eligible occurrence counts, candidate or not: a stream drawn twice is shared.
-        *work.seen.entry(hash).or_insert(0) += 1;
-        let (Ok(dpi_x), Ok(dpi_y)) = (image.horizontal_dpi(), image.vertical_dpi()) else {
-            continue;
-        };
-        if !dpi_x.is_finite() || !dpi_y.is_finite() || dpi_x.min(dpi_y) <= target {
+        // v0.3 (X5): PDFium's `FPDFPageObj_HasTransparency` does not see an image's own
+        // `/SMask` / `/Mask`; the dictionaries were read with lopdf in `begin`. A soft-masked
+        // image goes through the lopdf splice (mask downsampled with it); a `/Mask` (colour
+        // key or stencil) image and one drawn with transparent graphics state are left alone —
+        // `FPDFImageObj_SetBitmap` would drop the mask.
+        if work.masks.other.contains(&hash) {
             continue;
         }
+        let transparent = work.masks.soft.contains(&hash);
+        if !transparent && object.has_transparency() {
+            continue;
+        }
+        if transparent && work.encrypted {
+            continue;
+        }
+        let (Ok(dpi_x), Ok(dpi_y)) = (image.horizontal_dpi(), image.vertical_dpi()) else {
+            if !transparent {
+                *work.seen.entry(hash).or_insert(0) += 1;
+            }
+            continue;
+        };
+        let above = dpi_x.is_finite() && dpi_y.is_finite() && dpi_x.min(dpi_y) > target;
+        if transparent {
+            // An `/SMask` image (the splice checks the dictionary): every occurrence counts.
+            *work.masked_seen.entry(hash).or_insert(0) += 1;
+            if above {
+                plan_occurrence(&mut work.masked_plan, hash, dpi_x, dpi_y);
+                masked.push(Candidate {
+                    index,
+                    hash,
+                    dpi_x,
+                    dpi_y,
+                });
+            }
+            continue;
+        }
+        // Every eligible occurrence counts, candidate or not: a stream drawn twice is shared.
+        *work.seen.entry(hash).or_insert(0) += 1;
+        if !above {
+            continue;
+        }
+        // v0.3 (X5): a shared stream is re-encoded once and spliced, like a nested image —
+        // the plan collects every candidate occurrence, top-level and nested alike.
+        plan_occurrence(&mut work.nested_plan, hash, dpi_x, dpi_y);
         found.push(Candidate {
             index,
             hash,
             dpi_x,
             dpi_y,
         });
+    }
+    if !masked.is_empty() {
+        work.masked.insert(page, masked);
     }
     drop(handle);
     let mut nested = Vec::new();
@@ -310,14 +571,7 @@ pub fn scan_page(
         if !dpi_x.is_finite() || !dpi_y.is_finite() || dpi_x.min(dpi_y) <= target {
             continue;
         }
-        let plan = work.nested_plan.entry(hash).or_insert(NestedPlan {
-            dpi_x,
-            dpi_y,
-            count: 0,
-        });
-        plan.dpi_x = plan.dpi_x.min(dpi_x);
-        plan.dpi_y = plan.dpi_y.min(dpi_y);
-        plan.count += 1;
+        plan_occurrence(&mut work.nested_plan, hash, dpi_x, dpi_y);
         nested.push(NestedCandidate { path: f.path, hash });
     }
     if !found.is_empty() {
@@ -327,6 +581,18 @@ pub fn scan_page(
         work.nested.insert(page, nested);
     }
     Ok(())
+}
+
+/// One more candidate occurrence of `hash`: the lowest DPI sets the scale.
+fn plan_occurrence(plans: &mut HashMap<u64, NestedPlan>, hash: u64, dpi_x: f32, dpi_y: f32) {
+    let plan = plans.entry(hash).or_insert(NestedPlan {
+        dpi_x,
+        dpi_y,
+        count: 0,
+    });
+    plan.dpi_x = plan.dpi_x.min(dpi_x);
+    plan.dpi_y = plan.dpi_y.min(dpi_y);
+    plan.count += 1;
 }
 
 fn hash_of(data: &Vec<u8>) -> u64 {
@@ -441,23 +707,64 @@ pub fn process_page(
     let bindings = st.doc(doc_id)?.bindings();
     let work = work(st, doc_id, job_id)?;
     let candidates = work.candidates.remove(&page).unwrap_or_default();
-    if candidates.is_empty() && !work.nested.contains_key(&page) {
+    let masked = work.masked.remove(&page).unwrap_or_default();
+    if candidates.is_empty() && masked.is_empty() && !work.nested.contains_key(&page) {
         return Ok(0);
     }
     let target = work.target_dpi as f32;
     let handle = open_page(&work.scratch, page)?;
     let mut replaced = 0u32;
     for c in candidates {
-        if work.seen.get(&c.hash).copied().unwrap_or(0) != 1 {
+        let seen = work.seen.get(&c.hash).copied().unwrap_or(0);
+        if seen == 1 {
+            if downsample(bindings, &handle, c, target)? {
+                replaced += 1;
+            }
             continue;
         }
-        if downsample(bindings, &handle, c, target)? {
-            replaced += 1;
+        // v0.3 (X5): a shared stream — re-encoded once, spliced into its one stream object by
+        // `finish`, so every page that draws it gets the smaller image. Only when every
+        // occurrence is above the target (the lowest sets the scale), never encrypted, and
+        // never when a page outside the range (or an annotation) draws it too.
+        if !work.may_splice(c.hash) || work.nested_done.contains(&c.hash) {
+            continue;
+        }
+        let Some(plan) = work.nested_plan.get(&c.hash).copied() else {
+            continue;
+        };
+        if plan.count != seen {
+            continue;
+        }
+        work.nested_done.insert(c.hash);
+        if let Some(r) = with_object_at_path(&handle, &[c.index], |object| {
+            reencode_nested(object, c.hash, plan, target)
+        }) {
+            work.replacements.push(r);
+        }
+    }
+    // v0.3 (X5): images with transparency, re-encoded here; the splice keeps only those
+    // whose dictionary has an `/SMask` and downsamples that mask by the same factor.
+    for c in masked {
+        if !work.may_splice(c.hash) || work.nested_done.contains(&c.hash) {
+            continue;
+        }
+        let Some(plan) = work.masked_plan.get(&c.hash).copied() else {
+            continue;
+        };
+        if plan.count != work.masked_seen.get(&c.hash).copied().unwrap_or(0) {
+            continue;
+        }
+        work.nested_done.insert(c.hash);
+        if let Some(mut r) = with_object_at_path(&handle, &[c.index], |object| {
+            reencode_nested(object, c.hash, plan, target)
+        }) {
+            r.smask = true;
+            work.replacements.push(r);
         }
     }
     // Stage 8: nested images are re-encoded here and spliced in by `finish`.
     for n in work.nested.remove(&page).unwrap_or_default() {
-        if work.encrypted || work.nested_done.contains(&n.hash) {
+        if !work.may_splice(n.hash) || work.nested_done.contains(&n.hash) {
             continue;
         }
         let Some(plan) = work.nested_plan.get(&n.hash).copied() else {
@@ -641,6 +948,7 @@ fn reencode_nested(
         height: nh,
         gray,
         occurrences: plan.count,
+        smask: false,
     })
 }
 
@@ -655,35 +963,45 @@ fn splice_nested(bytes: &[u8], replacements: &[NestedReplacement]) -> (Vec<u8>, 
     };
     let mut done: HashSet<u64> = HashSet::new();
     let mut changed = 0u32;
+    // v0.3 (X5): the soft masks of spliced images, with the scale their image got.
+    let mut masks: Vec<(lopdf::ObjectId, f64, f64)> = Vec::new();
     for object in doc.objects.values_mut() {
         let lopdf::Object::Stream(stream) = object else {
             continue;
         };
-        let is_image = stream
+        let is_image = is_image_stream(stream);
+        let smask = stream
             .dict
-            .get(b"Subtype")
-            .and_then(|s| s.as_name())
-            .map(|n| n == b"Image")
-            .unwrap_or(false);
+            .get(b"SMask")
+            .and_then(|m| m.as_reference())
+            .ok();
         if !is_image
-            || stream.dict.has(b"SMask")
             || stream.dict.has(b"Mask")
             || stream
                 .dict
                 .get(b"ImageMask")
                 .and_then(|m| m.as_bool())
                 .unwrap_or(false)
+            // an inline or broken /SMask is left alone
+            || (stream.dict.has(b"SMask") && smask.is_none())
         {
             continue;
         }
         let len = stream.content.len();
         let Some(r) = replacements
             .iter()
-            .find(|r| r.old_len == len && !done.contains(&r.hash))
+            .find(|r| r.old_len == len && !done.contains(&r.hash) && r.smask == smask.is_some())
             .filter(|r| hash_of(&stream.content) == r.hash)
         else {
             continue;
         };
+        if let Some(id) = smask {
+            let dim = |key: &[u8]| stream.dict.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
+            let (w, h) = (dim(b"Width"), dim(b"Height"));
+            if w > 0 && h > 0 {
+                masks.push((id, r.width as f64 / w as f64, r.height as f64 / h as f64));
+            }
+        }
         let mut next = stream.clone();
         next.dict.remove(b"DecodeParms");
         next.dict.remove(b"Decode");
@@ -709,6 +1027,18 @@ fn splice_nested(bytes: &[u8], replacements: &[NestedReplacement]) -> (Vec<u8>, 
     if changed == 0 {
         return (bytes.to_vec(), 0);
     }
+    // A mask that cannot be resampled keeps its resolution: `/SMask` need not match the image.
+    let mut resized: HashSet<lopdf::ObjectId> = HashSet::new();
+    for (id, sx, sy) in masks {
+        if !resized.insert(id) {
+            continue;
+        }
+        if let Ok(lopdf::Object::Stream(mask)) = doc.get_object_mut(id) {
+            if let Some(next) = downsample_mask(mask, sx, sy) {
+                *mask = next;
+            }
+        }
+    }
     let mut out = Vec::with_capacity(bytes.len());
     match doc.save_to(&mut out) {
         Ok(()) => (out, changed),
@@ -717,6 +1047,444 @@ fn splice_nested(bytes: &[u8], replacements: &[NestedReplacement]) -> (Vec<u8>, 
             (bytes.to_vec(), 0)
         }
     }
+}
+
+/// v0.3 (X5): an 8-bit gray `/SMask` resampled by `(sx, sy)` and Flate-compressed; `None`
+/// when it is not a plain 8-bit gray mask lopdf can decode, or nothing would shrink.
+fn downsample_mask(mask: &lopdf::Stream, sx: f64, sy: f64) -> Option<lopdf::Stream> {
+    let dim = |key: &[u8]| mask.dict.get(key).and_then(|v| v.as_i64()).ok();
+    let (w, h) = (dim(b"Width")? as u32, dim(b"Height")? as u32);
+    if dim(b"BitsPerComponent") != Some(8) || w == 0 || h == 0 {
+        return None;
+    }
+    let (nw, nh) = (
+        ((w as f64 * sx).round() as u32).clamp(1, w),
+        ((h as f64 * sy).round() as u32).clamp(1, h),
+    );
+    if nw >= w && nh >= h {
+        return None;
+    }
+    let samples = if mask.dict.has(b"Filter") {
+        mask.decompressed_content().ok()?
+    } else {
+        mask.content.clone()
+    };
+    let gray = image::GrayImage::from_raw(w, h, samples.get(..(w * h) as usize)?.to_vec())?;
+    let small = image::imageops::resize(&gray, nw, nh, image::imageops::FilterType::Triangle);
+    let mut next = mask.clone();
+    next.dict.remove(b"DecodeParms");
+    next.dict.remove(b"Filter");
+    next.dict.set("Width", nw as i64);
+    next.dict.set("Height", nh as i64);
+    next.set_content(small.into_raw());
+    next.compress().ok()?;
+    Some(next)
+}
+
+/// Every name a content stream mentions (`"*"` = could not tell: keep all).
+///
+/// Deliberately **lexical**, not `lopdf::content::Content::decode`: that parser stops quietly
+/// at the first token it cannot read (a form feed or NUL between tokens, a comment between
+/// operands…) and returns only the operations before it, while PDFium draws the whole stream —
+/// so a `Do` / `Tf` after that point was never seen and its image or font was removed from a
+/// page that still draws it (verification round 1). A name that appears anywhere — as the
+/// operand of `Do` / `Tf`, of another operator, in a comment, inside a string or inline image
+/// data — counts as used: over-counting only keeps an entry, it can never drop one in use.
+type UsedNames = HashSet<Vec<u8>>;
+
+/// The names in `content` (PDF 32000-1 §7.2.2 white space and delimiters, `#xx` decoded).
+fn content_names(content: &[u8]) -> Vec<Vec<u8>> {
+    fn ends_name(c: u8) -> bool {
+        b" \t\n\r\0\x0c()<>[]{}/%".contains(&c)
+    }
+    fn hex(c: u8) -> Option<u8> {
+        (c as char).to_digit(16).map(|d| d as u8)
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < content.len() {
+        if content[i] != b'/' {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let mut name = Vec::new();
+        while i < content.len() && !ends_name(content[i]) {
+            match (
+                content[i],
+                content.get(i + 1).copied().and_then(hex),
+                content.get(i + 2).copied().and_then(hex),
+            ) {
+                (b'#', Some(h), Some(l)) => {
+                    name.push(h << 4 | l);
+                    i += 3;
+                }
+                (c, _, _) => {
+                    name.push(c);
+                    i += 1;
+                }
+            }
+        }
+        out.push(name);
+    }
+    out
+}
+
+/// A stream's decoded bytes (`None` when a filter cannot be undone).
+fn stream_data(stream: &lopdf::Stream) -> Option<Vec<u8>> {
+    if stream.dict.has(b"Filter") {
+        stream.decompressed_content().ok()
+    } else {
+        Some(stream.content.clone())
+    }
+}
+
+/// Adds the names `content` uses to `out`, following the form XObjects it may draw that have no
+/// `/Resources` of their own (PDFium draws those with the page's).
+fn scan_names(
+    doc: &lopdf::Document,
+    content: &[u8],
+    xobjects: Option<&lopdf::Dictionary>,
+    depth: u8,
+    out: &mut UsedNames,
+) {
+    for name in content_names(content) {
+        if !out.insert(name.clone()) {
+            continue;
+        }
+        let form = xobjects
+            .and_then(|x| x.get(&name).ok())
+            .and_then(|o| doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_stream().ok());
+        if let Some(form) = form {
+            let is_form = form
+                .dict
+                .get(b"Subtype")
+                .and_then(|s| s.as_name())
+                .map(|s| s == b"Form")
+                .unwrap_or(false);
+            if is_form && !form.dict.has(b"Resources") {
+                scan_resourceless(doc, form, xobjects, depth + 1, out);
+            }
+        }
+    }
+}
+
+/// A stream drawn with the page's resources when it has none of its own: its names are the
+/// page's too. Undecodable, or nested too deep: keep everything.
+fn scan_resourceless(
+    doc: &lopdf::Document,
+    stream: &lopdf::Stream,
+    xobjects: Option<&lopdf::Dictionary>,
+    depth: u8,
+    out: &mut UsedNames,
+) {
+    if stream.dict.has(b"Resources") {
+        return;
+    }
+    match stream_data(stream) {
+        Some(data) if depth < 8 => scan_names(doc, &data, xobjects, depth, out),
+        _ => {
+            out.insert(b"*".to_vec());
+        }
+    }
+}
+
+/// The streams besides the page content that PDFium resolves against the page's resources
+/// when they have no `/Resources`: annotation appearance streams (`/AP` `/N` `/R` `/D`, per
+/// state), Type 3 glyph procedures, tiling patterns and soft-mask groups.
+fn scan_page_extras(
+    doc: &lopdf::Document,
+    page: &lopdf::Dictionary,
+    resources: Option<&lopdf::Dictionary>,
+    xobjects: Option<&lopdf::Dictionary>,
+    out: &mut UsedNames,
+) {
+    use lopdf::Object;
+    let deref = |o: &Object| -> Option<Object> { doc.dereference(o).ok().map(|(_, o)| o.clone()) };
+    let dict_at = |d: &lopdf::Dictionary, key: &[u8]| -> Option<lopdf::Dictionary> {
+        d.get(key)
+            .ok()
+            .and_then(deref)
+            .and_then(|o| o.as_dict().ok().cloned())
+    };
+    let visit = |o: &Object, out: &mut UsedNames| {
+        if let Some(Object::Stream(s)) = deref(o) {
+            scan_resourceless(doc, &s, xobjects, 0, out);
+        }
+    };
+
+    // Annotation appearances.
+    if let Some(Object::Array(annots)) = page.get(b"Annots").ok().and_then(deref) {
+        for annot in &annots {
+            let Some(Object::Dictionary(annot)) = deref(annot) else {
+                continue;
+            };
+            let Some(ap) = dict_at(&annot, b"AP") else {
+                continue;
+            };
+            for key in [b"N".as_slice(), b"R", b"D"] {
+                match ap.get(key).ok().and_then(deref) {
+                    Some(Object::Stream(s)) => scan_resourceless(doc, &s, xobjects, 0, out),
+                    Some(Object::Dictionary(states)) => {
+                        for (_, state) in states.iter() {
+                            visit(state, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let Some(resources) = resources else { return };
+    // Type 3 fonts without resources: their glyph procedures draw with the page's.
+    if let Some(fonts) = dict_at(resources, b"Font") {
+        for (_, font) in fonts.iter() {
+            let Some(Object::Dictionary(font)) = deref(font) else {
+                continue;
+            };
+            let type3 = font
+                .get(b"Subtype")
+                .and_then(|s| s.as_name())
+                .map(|s| s == b"Type3")
+                .unwrap_or(false);
+            if !type3 || font.has(b"Resources") {
+                continue;
+            }
+            if let Some(procs) = dict_at(&font, b"CharProcs") {
+                for (_, glyph) in procs.iter() {
+                    visit(glyph, out);
+                }
+            }
+        }
+    }
+    if let Some(patterns) = dict_at(resources, b"Pattern") {
+        for (_, pattern) in patterns.iter() {
+            visit(pattern, out);
+        }
+    }
+    if let Some(states) = dict_at(resources, b"ExtGState") {
+        for (_, gs) in states.iter() {
+            let Some(Object::Dictionary(gs)) = deref(gs) else {
+                continue;
+            };
+            if let Some(Object::Dictionary(mask)) = gs.get(b"SMask").ok().and_then(deref) {
+                if let Ok(group) = mask.get(b"G") {
+                    visit(group, out);
+                }
+            }
+        }
+    }
+}
+
+/// What [`optimize_structure`] made: the rewritten file and the pages (0-based) whose resource
+/// entries it removed — the only pages whose rendering could change, so the only ones
+/// [`finish`] compares before keeping the pass.
+pub struct Optimized {
+    pub bytes: Vec<u8>,
+    pub pruned_pages: Vec<u16>,
+}
+
+/// v0.3 (X5) 구조 최적화 — lopdf over the finished bytes (unencrypted only):
+///
+/// 1. resource entries a page never names (`/XObject` and `/Font` entries whose name appears
+///    nowhere in its content — see [`UsedNames`] — nor in the resourceless streams PDFium
+///    draws with the page's resources: forms, annotation appearances, Type 3 glyphs, patterns,
+///    soft masks) are removed from the page's own `/Resources` — a resource dictionary shared
+///    by several pages keeps the union of their uses, one shared with anything else (a form,
+///    a font, a pattern…) or inherited from the page tree is left alone;
+/// 2. empty content streams are dropped from `/Contents`;
+/// 3. unreferenced objects are pruned;
+/// 4. the file is written with object streams and a cross-reference stream.
+///
+/// `None` when lopdf cannot read or write the file.
+pub fn optimize_structure(bytes: &[u8]) -> Option<Optimized> {
+    use lopdf::{Dictionary, Object, ObjectId};
+    let mut doc = lopdf::Document::load_mem(bytes).ok()?;
+    if doc.is_encrypted() {
+        return None;
+    }
+
+    // Resource dictionaries (by id) referenced by anything but a page: left alone.
+    let mut foreign_resources: HashSet<ObjectId> = HashSet::new();
+    for object in doc.objects.values() {
+        let dict = match object {
+            Object::Stream(s) => &s.dict,
+            Object::Dictionary(d) => d,
+            _ => continue,
+        };
+        let is_page = dict
+            .get(b"Type")
+            .and_then(|t| t.as_name())
+            .map(|t| t == b"Page")
+            .unwrap_or(false);
+        if is_page {
+            continue;
+        }
+        if let Ok(Object::Reference(id)) = dict.get(b"Resources") {
+            foreign_resources.insert(*id);
+        }
+    }
+
+    enum ResourcesAt {
+        Inline(ObjectId),
+        Shared(ObjectId),
+    }
+    let mut usage: HashMap<Vec<u8>, UsedNames> = HashMap::new();
+    // (where, key, pages using it)
+    let mut targets: Vec<(ResourcesAt, Vec<u8>, Vec<u16>)> = Vec::new();
+    let pages: Vec<(u32, ObjectId)> = doc.get_pages().into_iter().collect();
+    for (number, page_id) in pages {
+        let index = number.saturating_sub(1).min(u16::MAX as u32) as u16;
+        let Ok(page) = doc.get_dictionary(page_id) else {
+            continue;
+        };
+        let at = match page.get(b"Resources") {
+            Ok(Object::Dictionary(_)) => ResourcesAt::Inline(page_id),
+            Ok(Object::Reference(id)) if !foreign_resources.contains(id) => {
+                ResourcesAt::Shared(*id)
+            }
+            // Inherited from the page tree, or shared with something else: left alone.
+            _ => continue,
+        };
+        let key = match &at {
+            ResourcesAt::Inline(id) => format!("page {} {}", id.0, id.1).into_bytes(),
+            ResourcesAt::Shared(id) => format!("res {} {}", id.0, id.1).into_bytes(),
+        };
+        let resources = match &at {
+            ResourcesAt::Inline(_) => page.get(b"Resources").and_then(Object::as_dict).ok(),
+            ResourcesAt::Shared(id) => doc.get_dictionary(*id).ok(),
+        };
+        let xobjects = resources
+            .and_then(|r| r.get(b"XObject").ok())
+            .and_then(|o| doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_dict().ok());
+        let entry = usage.entry(key.clone()).or_default();
+        // Every content stream decoded, or the page keeps all of its resources.
+        for id in doc.get_page_contents(page_id) {
+            match doc
+                .get_object(id)
+                .ok()
+                .and_then(|o| o.as_stream().ok())
+                .and_then(stream_data)
+            {
+                Some(data) => scan_names(&doc, &data, xobjects, 0, entry),
+                None => {
+                    entry.insert(b"*".to_vec());
+                }
+            }
+        }
+        scan_page_extras(&doc, page, resources, xobjects, entry);
+        match targets.iter_mut().find(|(_, k, _)| *k == key) {
+            Some((_, _, pages)) => pages.push(index),
+            None => targets.push((at, key, vec![index])),
+        }
+    }
+
+    let mut pruned_pages = Vec::new();
+    for (at, key, pages) in targets {
+        let used = &usage[&key];
+        if used.contains(b"*".as_slice()) {
+            continue;
+        }
+        let resources: Option<&mut Dictionary> = match at {
+            ResourcesAt::Inline(page_id) => doc
+                .get_dictionary_mut(page_id)
+                .ok()
+                .and_then(|p| p.get_mut(b"Resources").ok())
+                .and_then(|r| r.as_dict_mut().ok()),
+            ResourcesAt::Shared(id) => doc.get_dictionary_mut(id).ok(),
+        };
+        let Some(resources) = resources else { continue };
+        let mut removed = false;
+        for kind in [b"XObject".as_slice(), b"Font".as_slice()] {
+            // Only a direct sub-dictionary is edited; a referenced one may be shared.
+            if let Ok(Object::Dictionary(sub)) = resources.get_mut(kind) {
+                let unused: Vec<Vec<u8>> = sub
+                    .iter()
+                    .map(|(k, _)| k.clone())
+                    .filter(|k| !used.contains(k))
+                    .collect();
+                for k in unused {
+                    sub.remove(&k);
+                    removed = true;
+                }
+            }
+        }
+        if removed {
+            pruned_pages.extend(pages);
+        }
+    }
+    pruned_pages.sort_unstable();
+    pruned_pages.dedup();
+
+    // Empty content streams: out of the page's /Contents.
+    let pages: Vec<ObjectId> = doc.get_pages().values().copied().collect();
+    for page_id in pages {
+        let empty = |doc: &lopdf::Document, o: &Object| -> bool {
+            o.as_reference()
+                .ok()
+                .and_then(|id| doc.get_object(id).ok())
+                .and_then(|o| o.as_stream().ok())
+                .map(|s| s.content.is_empty())
+                .unwrap_or(false)
+        };
+        let contents = doc
+            .get_dictionary(page_id)
+            .ok()
+            .and_then(|p| p.get(b"Contents").ok())
+            .cloned();
+        if let Some(Object::Array(items)) = contents {
+            let kept: Vec<Object> = items.iter().filter(|o| !empty(&doc, o)).cloned().collect();
+            if kept.len() != items.len() {
+                if let Ok(page) = doc.get_dictionary_mut(page_id) {
+                    page.set("Contents", Object::Array(kept));
+                }
+            }
+        }
+    }
+
+    doc.prune_objects();
+    let mut out = Vec::with_capacity(bytes.len());
+    doc.save_modern(&mut out).ok()?;
+    Some(Optimized {
+        bytes: out,
+        pruned_pages,
+    })
+}
+
+/// Width in px of the renders [`renders_unchanged`] compares.
+const OPTIMIZE_CHECK_PX: Pixels = 160;
+
+/// The safety net of 구조 최적화: `pages` of `before` and `after` rendered small (annotations
+/// included) are identical. Removing entries nothing draws cannot change a pixel, so any
+/// difference — a name the scan missed — discards the pass. Both files are unencrypted.
+pub fn renders_unchanged(st: &EngineState<'_>, before: &[u8], after: &[u8], pages: &[u16]) -> bool {
+    if pages.is_empty() {
+        return true;
+    }
+    let (Ok(a), Ok(b)) = (
+        st.pdfium.load_pdf_from_byte_slice(before, None),
+        st.pdfium.load_pdf_from_byte_slice(after, None),
+    ) else {
+        return false;
+    };
+    let config = PdfRenderConfig::new()
+        .set_target_width(OPTIMIZE_CHECK_PX)
+        .set_maximum_height(OPTIMIZE_CHECK_PX * 4)
+        .render_annotations(true)
+        .render_form_data(false);
+    let render = |doc: &PdfDocument<'_>, page: u16| -> Option<Vec<u8>> {
+        let page = doc.pages().get(page as i32).ok()?;
+        let bitmap = page.render_with_config(&config).ok()?;
+        Some(bitmap.as_raw_bytes())
+    };
+    pages
+        .iter()
+        .all(|&page| match (render(&a, page), render(&b, page)) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        })
 }
 
 /// Serialises and verifies the scratch copy, parks it as the document's [`Pending`] result.
@@ -743,6 +1511,8 @@ pub fn finish(
         images_total,
         mut images_downsampled,
         replacements,
+        optimize,
+        encrypted,
         ..
     } = work;
     drop(scratch);
@@ -752,6 +1522,23 @@ pub fn finish(
         let (spliced, changed) = splice_nested(&bytes, &replacements);
         images_downsampled += changed;
         spliced
+    };
+    // v0.3 (X5) 구조 최적화: kept only when it is smaller, PDFium still reads it, and every
+    // page it removed resource entries from renders exactly as before.
+    let mut optimized = false;
+    let bytes = match (optimize && !encrypted)
+        .then(|| optimize_structure(&bytes))
+        .flatten()
+    {
+        Some(smaller)
+            if smaller.bytes.len() < bytes.len()
+                && save::verify_bytes(st, &smaller.bytes, page_count, password.clone()).is_ok()
+                && renders_unchanged(st, &bytes, &smaller.bytes, &smaller.pruned_pages) =>
+        {
+            optimized = true;
+            smaller.bytes
+        }
+        _ => bytes,
     };
     save::verify_bytes(st, &bytes, page_count, password)?;
     let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed) + 1;
@@ -769,6 +1556,7 @@ pub fn finish(
         base_generation,
         before_bytes,
         images_downsampled,
+        optimized,
     });
     Ok(report)
 }

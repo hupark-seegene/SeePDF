@@ -209,6 +209,7 @@ fn replaced_words_collapse_and_ignore_case_folds() {
         pages_b: Some(vec![1]),
         ignore_case: false,
         align_pages: None,
+        visual: None,
     };
 
     let r = report(&run(&a.doc_id, &b.doc_id, options.clone()).unwrap());
@@ -259,6 +260,7 @@ fn unequal_page_lists_give_null_sided_rows() {
                 pages_b: Some(vec![0]),
                 ignore_case: false,
                 align_pages: None,
+                visual: None,
             },
         )
         .unwrap(),
@@ -509,4 +511,182 @@ fn alignment_unit_cases() {
     assert_eq!(align(&c, &[]), vec![(Some(0), None), (Some(1), None)]);
     assert_eq!(jaccard::<u32>(&[], &[]), 1.0);
     assert_eq!(jaccard(&[1u32, 2], &[2, 3]), 1.0 / 3.0);
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg8 (X4): pixel diff and scans
+// ---------------------------------------------------------------------------------------
+
+use pdfium_render::prelude::*;
+
+/// A scan-like page image: `kind` picks a pattern so the pages hash differently.
+fn pattern(kind: u8) -> image::DynamicImage {
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(300, 420, move |x, y| {
+        let on = match kind % 5 {
+            0 => (x / 30) % 2 == 0,
+            1 => (y / 30) % 2 == 0,
+            2 => ((x / 40) + (y / 40)) % 2 == 0,
+            3 => x < 150,
+            _ => y < 210,
+        };
+        if on {
+            image::Rgb([30, 30, 30])
+        } else {
+            image::Rgb([250, 250, 250])
+        }
+    }))
+}
+
+/// One A4 page per entry: an optional caption line of text, and a 300 × 420 pt image at
+/// (150, 250) drawn from `pattern(kind)`.
+fn image_doc(pages: &[(u8, Option<&str>)]) -> TestDoc {
+    let pages: Vec<(u8, Option<String>)> = pages
+        .iter()
+        .map(|(k, t)| (*k, t.map(str::to_owned)))
+        .collect();
+    let bytes = with_state(move |st| {
+        let mut doc = st.pdfium.create_new_pdf().expect("new pdf");
+        let font = doc.fonts_mut().helvetica();
+        for (index, (kind, caption)) in pages.iter().enumerate() {
+            doc.pages_mut()
+                .create_page_at_end(PdfPagePaperSize::a4())
+                .expect("page");
+            let mut object = PdfPageImageObject::new_with_size(
+                &doc,
+                &pattern(*kind),
+                PdfPoints::new(300.0),
+                PdfPoints::new(420.0),
+            )
+            .expect("image");
+            object
+                .translate(PdfPoints::new(150.0), PdfPoints::new(250.0))
+                .expect("place");
+            let mut page = doc.pages().get(index as i32).expect("page");
+            page.objects_mut().add_image_object(object).expect("add");
+            if let Some(text) = caption {
+                page.objects_mut()
+                    .create_text_object(
+                        PdfPoints::new(72.0),
+                        PdfPoints::new(760.0),
+                        text,
+                        font,
+                        PdfPoints::new(14.0),
+                    )
+                    .expect("text");
+            }
+            page.regenerate_content().expect("regenerate");
+        }
+        Ok(doc.save_to_bytes().expect("save"))
+    })
+    .expect("build");
+    let info = with_state(move |st| seepdf_lib::engine::registry::open(st, None, bytes, None))
+        .expect("open");
+    let doc_id = info.doc_id.clone();
+    TestDoc { info, doc_id }
+}
+
+fn visual_rects(page: &seepdf_lib::ipc::types::ComparePage) -> Vec<seepdf_lib::ipc::types::Rect> {
+    page.ops
+        .iter()
+        .filter(|op| op.kind == DiffKind::Visual)
+        .flat_map(|op| op.rects_a.clone().unwrap_or_default())
+        .collect()
+}
+
+/// X4: scanned pages (no words) align by their thumbnail hash, so a scan inserted into B is a
+/// null-sided row and every later page still pairs with its own counterpart.
+#[test]
+fn scans_align_around_an_inserted_page() {
+    let a = image_doc(&[(0, None), (1, None), (2, None)]);
+    let b = image_doc(&[(0, None), (3, None), (1, None), (2, None)]);
+    let r = report(&run(&a.doc_id, &b.doc_id, CompareOptions::default()).unwrap());
+    let rows: Vec<_> = r.pages.iter().map(|p| (p.page_a, p.page_b)).collect();
+    assert_eq!(
+        rows,
+        vec![
+            (Some(0), Some(0)),
+            (None, Some(1)),
+            (Some(1), Some(2)),
+            (Some(2), Some(3))
+        ]
+    );
+    assert_eq!(r.changed_pages, 1, "only the inserted scan is a change");
+    assert!(r.pages.iter().all(|p| visual_rects(p).is_empty()));
+}
+
+/// X4: a changed figure on a page whose text is the same gives a visual region over the
+/// figure (and nowhere else); identical pages give none.
+#[test]
+fn changed_image_gives_a_visual_rect_in_the_right_place() {
+    let a = image_doc(&[
+        (0, Some("Figure 1: the same caption")),
+        (4, Some("Unchanged")),
+    ]);
+    let b = image_doc(&[
+        (2, Some("Figure 1: the same caption")),
+        (4, Some("Unchanged")),
+    ]);
+    let r = report(&run(&a.doc_id, &b.doc_id, CompareOptions::default()).unwrap());
+    assert_eq!(r.pages.len(), 2);
+    assert_eq!((r.inserted, r.deleted), (0, 0), "the text is the same");
+
+    let changed = &r.pages[0];
+    assert!(changed.changed);
+    let rects = visual_rects(changed);
+    assert!(!rects.is_empty(), "{:?}", changed.ops);
+    // Every region lies on the image (150, 250)–(450, 670), give or take a tile.
+    for rect in &rects {
+        assert!(
+            rect.l >= 150.0 - 12.0 && rect.r <= 450.0 + 12.0,
+            "{rect:?} is outside the image horizontally"
+        );
+        assert!(
+            rect.b >= 250.0 - 12.0 && rect.t <= 670.0 + 12.0,
+            "{rect:?} is outside the image vertically"
+        );
+    }
+    let covered: f32 = rects.iter().map(|r| (r.r - r.l) * (r.t - r.b)).sum();
+    assert!(
+        covered > 300.0 * 420.0 * 0.3,
+        "most of the figure changed: {covered}"
+    );
+    let op = changed
+        .ops
+        .iter()
+        .find(|op| op.kind == DiffKind::Visual)
+        .unwrap();
+    assert_eq!(
+        op.rects_a.as_ref().unwrap().len(),
+        op.rects_b.as_ref().unwrap().len()
+    );
+
+    // Identical pages: no visual op, not changed.
+    assert!(!r.pages[1].changed);
+    assert!(visual_rects(&r.pages[1]).is_empty());
+
+    // `visual: false` turns the pixel diff off.
+    let r = report(
+        &run(
+            &a.doc_id,
+            &b.doc_id,
+            CompareOptions {
+                visual: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    assert_eq!(r.changed_pages, 0);
+}
+
+#[test]
+fn changed_regions_group_tiles() {
+    // Two separate blobs → two regions; one noisy pixel → none.
+    let regions = compare::changed_regions(64, 64, |x, y| {
+        (x < 10 && y < 10) || ((40..60).contains(&x) && (40..50).contains(&y)) || (x, y) == (30, 5)
+    });
+    assert_eq!(regions.len(), 2, "{regions:?}");
+    assert!(regions.contains(&(0, 0, 16, 16)));
+    assert!(regions.contains(&(40, 40, 64, 56)));
+    assert!(compare::changed_regions(64, 64, |_, _| false).is_empty());
 }

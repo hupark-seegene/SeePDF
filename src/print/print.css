@@ -16,6 +16,27 @@
   z-index: -1;
 }
 
+/* v0.3 (X8): the chunk progress of a long print, on screen only. */
+.print-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: calc(100vw - 32px);
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: var(--elevation-2);
+  font-size: var(--text-sm);
+  z-index: 60;
+}
+
 @media print {
   /* No running headers, no app chrome, no scroll container — just the pages. */
   @page {
@@ -31,7 +52,8 @@
     background: #fff;
   }
 
-  #root > .app-shell {
+  #root > .app-shell,
+  .print-progress {
     display: none !important;
   }
 
@@ -48,17 +70,69 @@
     print-color-adjust: exact;
   }
 
-  .print-page {
-    display: block;
-    width: 100%;
-    height: auto;
+  /* v0.3 (X8): one sheet = one page box; the page is contained in it, never clipped or split. */
+  .print-sheet {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
     /* `break-after` is the modern spelling; WebKit still wants the legacy property too. */
     page-break-after: always;
     break-after: page;
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
 
-  .print-page:last-child {
+  .print-sheet:last-child {
     page-break-after: auto;
     break-after: auto;
+  }
+
+  .print-page {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  /* 맞춤: a page whose orientation differs from the sheet's is turned a quarter so it fills the
+     sheet instead of printing small. The image box is laid out with the sheet's sides swapped,
+     centred, then rotated back into place. */
+  @media (orientation: portrait) {
+    .print-sheet[data-fit="fit"][data-orient="landscape"] .print-page {
+      inset: auto;
+      left: 50%;
+      top: 50%;
+      width: 100vh;
+      height: 100vw;
+      transform: translate(-50%, -50%) rotate(90deg);
+    }
+  }
+
+  @media (orientation: landscape) {
+    .print-sheet[data-fit="fit"][data-orient="portrait"] .print-page {
+      inset: auto;
+      left: 50%;
+      top: 50%;
+      width: 100vh;
+      height: 100vw;
+      transform: translate(-50%, -50%) rotate(90deg);
+    }
+  }
+
+  /* 실제 크기 (X2): the page at its physical size (inline width/height in inches), centred. */
+  .print-sheet[data-fit="actual"] .print-page {
+    inset: auto;
+    left: 50%;
+    top: 50%;
+    object-fit: fill;
+    transform: translate(-50%, -50%);
+  }
+
+  /* 흑백 (X2). */
+  #seepdf-print-root[data-gray] .print-page {
+    filter: grayscale(1);
   }
 }

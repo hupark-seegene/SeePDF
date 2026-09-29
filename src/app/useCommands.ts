@@ -184,6 +184,10 @@ export function runCommand(id: CommandId, opts?: { momentary?: boolean }): void 
       case "tools.batchOcr":
         openDialog("batchOcr");
         return;
+      // v0.3 pkg8: 여러 파일 처리 (X1)
+      case "tools.batch":
+        openDialog("batch");
+        return;
       case "tools.merge":
         openDialog("merge");
         return;
@@ -516,6 +520,8 @@ function openOverflowMenu(): void {
         onSelect: () => void import("../ocr").then((m) => m.openOcrDialog()),
       },
       { id: "batchOcr", labelKey: "menu.tools.batchOcr", onSelect: () => openDialog("batchOcr") },
+      // v0.3 pkg8
+      { id: "batch", labelKey: "menu.tools.batch", onSelect: () => openDialog("batch") },
       { id: "findInFiles", labelKey: "menu.edit.findInFiles", onSelect: () => openDialog("multiSearch") },
       { id: "merge", labelKey: "menu.tools.merge", onSelect: () => openDialog("merge") },
       // v0.3 pkg2: new documents from images

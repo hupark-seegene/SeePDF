@@ -262,6 +262,12 @@ pub fn run() {
             if let Err(failure) = start(app, &settings) {
                 diagnostics::fail_startup(failure, settings.locale);
             }
+            // v0.3 pkg8 (X8), wired at the v0.3 integration (pkg5 owns this file): flattened —
+            // possibly decrypted — print copies a previous run left behind. Plain file I/O, no
+            // pdfium, off the start-up path.
+            let _ = std::thread::Builder::new()
+                .name("seepdf-print-sweep".into())
+                .spawn(engine::export::cleanup_print_temp);
             Ok(())
         });
 
@@ -385,6 +391,12 @@ pub fn run() {
             commands::export::estimate_export,
             commands::export::print_prepare,
             commands::export::export_annotation_summary,
+            // --- v0.3 pkg8-export-print-compare-batch ---
+            commands::export::make_nup,
+            commands::export::export_embedded_images,
+            commands::export::export_stitched_image,
+            commands::export::export_tiff,
+            commands::export::export_text_flow,
             // --- read aloud (P2) ---
             commands::tts::tts_speak,
             commands::tts::tts_stop,
@@ -433,6 +445,9 @@ pub fn run() {
                 if let Some(tts) = _app.try_state::<std::sync::Arc<app::tts::Tts>>() {
                     tts.stop();
                 }
+                // v0.3 pkg8 (X8): no print copy outlives the app (a file the OS handler still
+                // holds open on Windows is skipped and caught by the next start's sweep).
+                engine::export::cleanup_print_temp();
             }
             // Finder double-click / `open -a SeePDF x.pdf` / Dock drop. Only fires for a
             // bundled .app whose Info.plist has CFBundleDocumentTypes.

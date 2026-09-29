@@ -22,7 +22,11 @@ import { COMPRESS_PRESETS, DEFAULT_PRESET, applyBlock, buildCompressOptions, for
 
 type Phase = "idle" | "estimating" | "ready" | "applying";
 
-interface Live { mounted: boolean; jobId: JobId | null; token: number | null; docId: DocId | null; run: number }
+interface Live {
+  mounted: boolean; jobId: JobId | null; token: number | null; docId: DocId | null; run: number;
+  /** v0.3 (X5): the shown estimate was made with 구조 최적화 */
+  optimize: boolean;
+}
 
 /** Drop the pending result the engine holds for us, if any. */
 function discard(ref: Live): void {
@@ -44,10 +48,12 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [report, setReport] = useState<CompressReport | null>(null);
+  // v0.3 pkg8 (X5) 구조 최적화
+  const [optimize, setOptimize] = useState(false);
 
   // What must be cleaned up however the dialog goes away (취소, Esc, backdrop, closeAll):
   // the running job and the pending result the engine is holding for us.
-  const live = useRef<Live>({ mounted: true, jobId: null, token: null, docId: null, run: 0 });
+  const live = useRef<Live>({ mounted: true, jobId: null, token: null, docId: null, run: 0, optimize: false });
 
   const pageCount = info?.pageCount ?? 0;
   const pages = useMemo(
@@ -107,7 +113,7 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
           if (e.report) {
             ref.token = e.report.token;
             // nothing to apply: the engine need not hold the rewritten copy while the dialog is open
-            if (applyBlock(e.report)) discard(ref);
+            if (applyBlock(e.report, ref.optimize)) discard(ref);
             setReport(e.report);
             setPhase("ready");
           } else {
@@ -126,7 +132,9 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
       }
     };
     try {
-      const jobId = await api.compressEstimate({ docId, options: buildCompressOptions(dpi, pages, range.mode === "all") }, onEvent);
+      live.current.optimize = optimize;
+      const options = buildCompressOptions(dpi, pages, range.mode === "all", optimize);
+      const jobId = await api.compressEstimate({ docId, options }, onEvent);
       // mock mode (and a fast engine) may have streamed every event before the id comes back
       if (finished) return;
       if (live.current.run === run && live.current.mounted) live.current.jobId = jobId;
@@ -147,7 +155,7 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
   };
 
   const apply = async () => {
-    if (!report || applyBlock(report)) return;
+    if (!report || applyBlock(report, live.current.optimize)) return;
     setPhase("applying");
     live.current.token = null; // consumed by apply, success or not
     try {
@@ -176,7 +184,7 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
   };
 
   const summary = report ? summarize(report) : null;
-  const block = report ? applyBlock(report) : null;
+  const block = report ? applyBlock(report, live.current.optimize) : null;
   const estimating = phase === "estimating";
 
   return (
@@ -226,6 +234,21 @@ export default function CompressDialog({ onClose }: { onClose(): void }) {
           selectedCount={selected.length}
         />
       </Row>
+
+      {/* v0.3 pkg8 (X5) */}
+      <label className="dlg-check text-base">
+        <input
+          type="checkbox"
+          checked={optimize}
+          disabled={estimating}
+          onChange={(e) => {
+            setOptimize(e.target.checked);
+            invalidate();
+          }}
+        />
+        <span>{t("compress.optimize")}</span>
+      </label>
+      <p className="dlg-hint text-xs">{t(info.encrypted ? "compress.optimizeEncrypted" : "compress.optimizeHint")}</p>
 
       <div className="compress-run">
         {estimating ? (
