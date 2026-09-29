@@ -21,9 +21,12 @@
 //! * **hiddenLayers** — optional-content groups that are off in the default configuration:
 //!   the marked-content sections that draw them (`/OC /name BDC … EMC`) and the XObjects
 //!   tagged with them are deleted from the page content, then `/OCProperties` goes, so no
-//!   layer is hidden any more. A page whose content lopdf cannot parse is left as it was
-//!   (and `/OCProperties` is then kept, so its hidden content stays hidden rather than
-//!   appearing); content inside Form XObjects is not rewritten.
+//!   layer is hidden any more. The rewrite follows the Form XObjects a page draws (at any
+//!   depth) and annotation appearance streams, and drops annotations tagged with a hidden
+//!   layer. When anything a hidden layer draws cannot be deleted (content lopdf cannot
+//!   parse, a pattern or Type 3 glyph that uses a hidden layer, an undecidable membership
+//!   dictionary), `/OCProperties` is kept and the count is 0, so hidden content stays hidden
+//!   rather than appearing.
 //!
 //! Objects nothing refers to any more (the removed scripts, file streams, XMP) are pruned, so
 //! they are gone from the file, not merely unlinked.
@@ -420,37 +423,201 @@ fn hidden_groups(doc: &Document, root: ObjectId) -> BTreeSet<ObjectId> {
     off
 }
 
-/// Deletes the page content drawn by hidden layers, then `/OCProperties`. Returns the number
-/// of hidden layers (0 when there were none, or when a page could not be rewritten).
-fn remove_hidden_layers(doc: &mut Document, root: ObjectId) -> u32 {
-    let hidden = hidden_groups(doc, root);
-    if hidden.is_empty() {
-        return 0;
+/// How an `/OC` value (an OCG or an OCMD) draws in the default configuration.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OcState {
+    Visible,
+    Hidden,
+    /// Unresolvable or malformed: the rewrite cannot tell, so it must not reveal anything.
+    Unknown,
+}
+
+/// Deepest nesting of Form XObjects (and visibility expressions) followed.
+const MAX_DEPTH: usize = 32;
+
+/// The hidden groups, and the rewrite state shared by every page and form it visits.
+struct HiddenLayers {
+    groups: BTreeSet<ObjectId>,
+    /// Pages and content streams already rewritten (a shared form is rewritten once).
+    visited: HashSet<ObjectId>,
+    /// False as soon as something drawn by a hidden layer could not be deleted.
+    complete: bool,
+}
+
+/// What a `/Resources` dictionary says about hidden layers.
+#[derive(Default)]
+struct ResourceScan {
+    /// `/Properties` names whose optional content is hidden.
+    props: HashSet<Vec<u8>>,
+    /// `/XObject` names tagged with hidden optional content.
+    xobjects: HashSet<Vec<u8>>,
+    /// The visible Form XObjects the content can draw (their own content may hide layers).
+    forms: Vec<ObjectId>,
+}
+
+impl ResourceScan {
+    fn hides_something(&self) -> bool {
+        !self.props.is_empty() || !self.xobjects.is_empty()
     }
-    // An OCG, or an OCMD whose groups are all hidden.
-    let is_hidden = |doc: &Document, o: &Object| -> bool {
-        let Ok(id) = o.as_reference() else {
-            return false;
-        };
-        if hidden.contains(&id) {
-            return true;
+}
+
+impl HiddenLayers {
+    fn group_state(&self, id: ObjectId) -> OcState {
+        if self.groups.contains(&id) {
+            OcState::Hidden
+        } else {
+            OcState::Visible
         }
-        let Ok(d) = doc.get_dictionary(id) else {
-            return false;
+    }
+
+    /// The state of an `/OC` value: an OCG, or an OCMD (`/OCGs` + `/P`, or `/VE`).
+    fn state(&self, doc: &Document, o: &Object) -> OcState {
+        let (id, d) = match o {
+            Object::Reference(r) => match doc.get_dictionary(*r) {
+                Ok(d) => (Some(*r), d),
+                Err(_) => return OcState::Unknown,
+            },
+            Object::Dictionary(d) => (None, d),
+            _ => return OcState::Unknown,
         };
+        let is_ocmd = d.get(b"Type").and_then(Object::as_name).ok() == Some(b"OCMD")
+            || d.has(b"OCGs")
+            || d.has(b"VE");
+        if !is_ocmd {
+            // An OCG: only an indirect one can be told apart.
+            return id.map_or(OcState::Unknown, |id| self.group_state(id));
+        }
+        if let Ok(ve) = d.get(b"VE") {
+            return match self.expression(doc, ve, 0) {
+                Some(true) => OcState::Visible,
+                Some(false) => OcState::Hidden,
+                None => OcState::Unknown,
+            };
+        }
         let groups: Vec<ObjectId> = match d.get(b"OCGs") {
-            Ok(Object::Reference(r)) if doc.get_dictionary(*r).is_ok_and(|g| g.has(b"Name")) => {
-                vec![*r]
-            }
+            Ok(Object::Reference(r)) => match doc.get_object(*r) {
+                Ok(Object::Array(a)) => a.iter().filter_map(|o| o.as_reference().ok()).collect(),
+                Ok(_) => vec![*r],
+                Err(_) => return OcState::Unknown,
+            },
             Ok(Object::Array(a)) => a.iter().filter_map(|o| o.as_reference().ok()).collect(),
-            _ => Vec::new(),
+            // No groups: the membership has no effect on visibility.
+            _ => return OcState::Visible,
         };
-        !groups.is_empty() && groups.iter().all(|g| hidden.contains(g))
-    };
-    let mut complete = true;
-    let pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
-    for page in pages {
-        // Resource names that point at a hidden group, and XObjects tagged with one.
+        if groups.is_empty() {
+            return OcState::Visible;
+        }
+        let on = groups.iter().filter(|g| !self.groups.contains(g)).count();
+        let visible = match d.get(b"P").and_then(Object::as_name).ok() {
+            Some(b"AllOn") => on == groups.len(),
+            Some(b"AnyOff") => on < groups.len(),
+            Some(b"AllOff") => on == 0,
+            // /AnyOn is the default.
+            _ => on > 0,
+        };
+        if visible {
+            OcState::Visible
+        } else {
+            OcState::Hidden
+        }
+    }
+
+    /// A visibility expression (`/VE`): an OCG, or `[/And|/Or|/Not operand…]`.
+    fn expression(&self, doc: &Document, o: &Object, depth: usize) -> Option<bool> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        let array = match o {
+            Object::Reference(r) => match doc.get_object(*r).ok()? {
+                Object::Array(a) => a.clone(),
+                Object::Dictionary(_) => {
+                    return Some(self.group_state(*r) == OcState::Visible);
+                }
+                _ => return None,
+            },
+            Object::Array(a) => a.clone(),
+            _ => return None,
+        };
+        let (op, operands) = array.split_first()?;
+        let values = operands
+            .iter()
+            .map(|v| self.expression(doc, v, depth + 1))
+            .collect::<Option<Vec<bool>>>()?;
+        match op.as_name().ok()? {
+            b"And" => Some(values.iter().all(|v| *v)),
+            b"Or" => Some(values.iter().any(|v| *v)),
+            b"Not" if values.len() == 1 => Some(!values[0]),
+            _ => None,
+        }
+    }
+
+    /// Hidden property names, hidden XObject names and visible forms of `resources`. Optional
+    /// content whose state cannot be told makes the rewrite incomplete.
+    fn scan(&mut self, doc: &Document, resources: &Dictionary) -> ResourceScan {
+        let mut scan = ResourceScan::default();
+        if let Some(props) = resources
+            .get(b"Properties")
+            .ok()
+            .and_then(|o| resolve_dict(doc, o))
+        {
+            for (name, value) in props.iter() {
+                // Only optional-content property lists matter; other marked content is kept.
+                let is_oc = value.as_reference().is_ok_and(|r| self.groups.contains(&r))
+                    || resolve_dict(doc, value).is_some_and(|d| {
+                        matches!(
+                            d.get(b"Type").and_then(Object::as_name).ok(),
+                            Some(b"OCG" | b"OCMD")
+                        ) || d.has(b"OCGs")
+                            || d.has(b"VE")
+                    });
+                if !is_oc {
+                    continue;
+                }
+                match self.state(doc, value) {
+                    OcState::Hidden => {
+                        scan.props.insert(name.clone());
+                    }
+                    OcState::Unknown => self.complete = false,
+                    OcState::Visible => {}
+                }
+            }
+        }
+        if let Some(xobjects) = resources
+            .get(b"XObject")
+            .ok()
+            .and_then(|o| resolve_dict(doc, o))
+        {
+            for (name, value) in xobjects.iter() {
+                let Some(dict) = resolve_dict(doc, value) else {
+                    continue;
+                };
+                let state = dict
+                    .get(b"OC")
+                    .map_or(OcState::Visible, |oc| self.state(doc, oc));
+                match state {
+                    OcState::Hidden => {
+                        scan.xobjects.insert(name.clone());
+                    }
+                    OcState::Unknown => self.complete = false,
+                    OcState::Visible => {
+                        if dict.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Form") {
+                            if let Ok(id) = value.as_reference() {
+                                scan.forms.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        scan
+    }
+
+    /// Rewrites a page: its content, the forms it draws, and its annotations (those tagged
+    /// with a hidden layer are removed, the others' appearance streams are rewritten).
+    fn page(&mut self, doc: &mut Document, page: ObjectId) {
+        if !self.visited.insert(page) {
+            return;
+        }
         let resources = doc
             .get_page_resources(page)
             .ok()
@@ -461,65 +628,218 @@ fn remove_hidden_layers(doc: &mut Document, root: ObjectId) -> u32 {
                 })
             })
             .unwrap_or_default();
-        let hidden_props: HashSet<Vec<u8>> = resources
-            .get(b"Properties")
-            .ok()
-            .and_then(|o| resolve_dict(doc, o))
-            .map(|p| {
-                p.iter()
-                    .filter(|(_, v)| is_hidden(doc, v))
-                    .map(|(k, _)| k.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let hidden_xobjects: HashSet<Vec<u8>> = resources
-            .get(b"XObject")
-            .ok()
-            .and_then(|o| resolve_dict(doc, o))
-            .map(|x| {
-                x.iter()
-                    .filter(|(_, v)| {
-                        resolve_dict(doc, v)
-                            .and_then(|d| d.get(b"OC").ok())
-                            .is_some_and(|oc| is_hidden(doc, oc))
-                    })
-                    .map(|(k, _)| k.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if hidden_props.is_empty() && hidden_xobjects.is_empty() {
-            continue;
-        }
-        let raw = doc.get_page_content(page);
-        if raw.is_empty() {
-            complete = false;
-            continue;
-        }
-        let Ok(content) = Content::decode(&raw) else {
-            complete = false;
-            continue;
-        };
-        let (kept, dropped) = strip_hidden(content.operations, &hidden_props, &hidden_xobjects);
-        if dropped == 0 {
-            continue;
-        }
-        match (Content { operations: kept }).encode() {
-            Ok(encoded) => {
-                if doc.change_page_content(page, encoded).is_err() {
-                    complete = false;
+        let scan = self.scan(doc, &resources);
+        if scan.hides_something() {
+            let raw = doc.get_page_content(page);
+            match Content::decode(&raw) {
+                Ok(content) if !raw.is_empty() => {
+                    let (kept, dropped) =
+                        strip_hidden(content.operations, &scan.props, &scan.xobjects);
+                    if dropped > 0 {
+                        let written = (Content { operations: kept })
+                            .encode()
+                            .ok()
+                            .is_some_and(|encoded| doc.change_page_content(page, encoded).is_ok());
+                        if !written {
+                            self.complete = false;
+                        }
+                    }
                 }
+                _ => self.complete = false,
             }
-            Err(_) => complete = false,
+        }
+        for form in scan.forms {
+            self.form(doc, form, &resources, 1);
+        }
+        self.annotations(doc, page);
+    }
+
+    /// Rewrites a Form XObject's content (with its own `/Resources`, or the drawing
+    /// context's when it has none) and the forms it draws in turn.
+    fn form(&mut self, doc: &mut Document, id: ObjectId, inherited: &Dictionary, depth: usize) {
+        if depth > MAX_DEPTH {
+            self.complete = false;
+            return;
+        }
+        if !self.visited.insert(id) {
+            return;
+        }
+        let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
+            return;
+        };
+        let resources = stream
+            .dict
+            .get(b"Resources")
+            .ok()
+            .and_then(|o| resolve_dict(doc, o))
+            .cloned()
+            .unwrap_or_else(|| inherited.clone());
+        let scan = self.scan(doc, &resources);
+        if scan.hides_something() {
+            let rewritten = stream
+                .get_plain_content()
+                .ok()
+                .and_then(|raw| Content::decode(&raw).ok())
+                .and_then(|content| {
+                    let (kept, dropped) =
+                        strip_hidden(content.operations, &scan.props, &scan.xobjects);
+                    if dropped == 0 {
+                        return Some(None);
+                    }
+                    (Content { operations: kept }).encode().ok().map(Some)
+                });
+            match rewritten {
+                Some(Some(encoded)) => {
+                    if let Ok(Object::Stream(stream)) = doc.get_object_mut(id) {
+                        stream.set_plain_content(encoded);
+                        let _ = stream.compress();
+                    }
+                }
+                Some(None) => {}
+                None => self.complete = false,
+            }
+        }
+        for form in scan.forms {
+            self.form(doc, form, &resources, depth + 1);
         }
     }
-    if !complete {
+
+    /// Drops annotations tagged with a hidden layer from the page's `/Annots` and rewrites
+    /// the appearance streams of the others.
+    fn annotations(&mut self, doc: &mut Document, page: ObjectId) {
+        let annots = doc
+            .get_dictionary(page)
+            .ok()
+            .and_then(|d| d.get(b"Annots").ok().cloned());
+        let (array_id, items) = match annots {
+            Some(Object::Array(items)) => (None, items),
+            Some(Object::Reference(r)) => match doc.get_object(r).and_then(Object::as_array) {
+                Ok(items) => (Some(r), items.clone()),
+                Err(_) => return,
+            },
+            _ => return,
+        };
+        let mut kept = Vec::with_capacity(items.len());
+        let mut appearances = Vec::new();
+        for item in &items {
+            let Some(annot) = resolve_dict(doc, item) else {
+                kept.push(item.clone());
+                continue;
+            };
+            let state = annot
+                .get(b"OC")
+                .map_or(OcState::Visible, |oc| self.state(doc, oc));
+            match state {
+                OcState::Hidden => continue,
+                OcState::Unknown => self.complete = false,
+                OcState::Visible => {}
+            }
+            kept.push(item.clone());
+            let ap = annot.get(b"AP").ok().and_then(|o| resolve_dict(doc, o));
+            for key in [b"N".as_slice(), b"R", b"D"] {
+                match ap.and_then(|ap| ap.get(key).ok()) {
+                    Some(Object::Reference(r)) => match doc.get_object(*r) {
+                        Ok(Object::Stream(_)) => appearances.push(*r),
+                        Ok(Object::Dictionary(states)) => appearances
+                            .extend(states.iter().filter_map(|(_, v)| v.as_reference().ok())),
+                        _ => {}
+                    },
+                    Some(Object::Dictionary(states)) => {
+                        appearances.extend(states.iter().filter_map(|(_, v)| v.as_reference().ok()))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if kept.len() < items.len() {
+            match array_id {
+                Some(r) => {
+                    if let Some(slot) = doc.objects.get_mut(&r) {
+                        *slot = Object::Array(kept);
+                    }
+                }
+                None => {
+                    if let Ok(d) = doc.get_dictionary_mut(page) {
+                        d.set("Annots", Object::Array(kept));
+                    }
+                }
+            }
+        }
+        for stream in appearances {
+            self.form(doc, stream, &Dictionary::new(), 1);
+        }
+    }
+
+    /// After the walk (and a prune): anything left in the file whose resources still name a
+    /// hidden layer and that the walk did not rewrite — a tiling pattern, a Type 3 font, a
+    /// form drawn only from one of those — would appear once `/OCProperties` is gone.
+    fn check_unvisited(&mut self, doc: &Document) {
+        for (id, object) in &doc.objects {
+            if self.visited.contains(id) {
+                continue;
+            }
+            let Some(dict) = dict_of(object) else {
+                continue;
+            };
+            // Page-tree nodes only hold inherited resources, which the pages used.
+            if matches!(
+                dict.get(b"Type").and_then(Object::as_name).ok(),
+                Some(b"Page" | b"Pages")
+            ) {
+                continue;
+            }
+            // Hidden itself: only drawn by a `Do` that was deleted (or flagged here).
+            if dict
+                .get(b"OC")
+                .is_ok_and(|oc| self.state(doc, oc) == OcState::Hidden)
+            {
+                continue;
+            }
+            let Some(resources) = dict
+                .get(b"Resources")
+                .ok()
+                .and_then(|o| resolve_dict(doc, o))
+            else {
+                continue;
+            };
+            if self.scan(doc, resources).hides_something() {
+                self.complete = false;
+            }
+        }
+    }
+}
+
+/// Deletes the content drawn by hidden layers — in page content, in every Form XObject the
+/// pages draw (at any depth) and in annotation appearances, plus annotations tagged with a
+/// hidden layer — then `/OCProperties`. Returns the number of hidden layers: 0 when there
+/// were none, or when anything they draw could not be deleted (the layers then stay hidden
+/// rather than appear).
+fn remove_hidden_layers(doc: &mut Document, root: ObjectId) -> u32 {
+    let groups = hidden_groups(doc, root);
+    if groups.is_empty() {
+        return 0;
+    }
+    let count = groups.len() as u32;
+    let mut layers = HiddenLayers {
+        groups,
+        visited: HashSet::new(),
+        complete: true,
+    };
+    let pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
+    for page in pages {
+        layers.page(doc, page);
+    }
+    // What the rewrite unlinked (hidden forms, removed annotations) goes before the check.
+    doc.prune_objects();
+    layers.check_unvisited(doc);
+    if !layers.complete {
         // Leave the layers hidden rather than reveal what could not be deleted.
         return 0;
     }
     if let Ok(catalog) = doc.get_dictionary_mut(root) {
         catalog.remove(b"OCProperties");
     }
-    hidden.len() as u32
+    count
 }
 
 /// The operations outside hidden marked-content sections, minus `Do`s of hidden XObjects,
@@ -573,9 +893,43 @@ fn strip_hidden(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::dictionary;
 
     fn op(name: &str, operands: Vec<Object>) -> Operation {
         Operation::new(name, operands)
+    }
+
+    #[test]
+    fn membership_dictionaries_follow_their_policy() {
+        let mut doc = Document::with_version("1.7");
+        let off = doc.add_object(dictionary! { "Type" => "OCG", "Name" => "Off" });
+        let on = doc.add_object(dictionary! { "Type" => "OCG", "Name" => "On" });
+        let mut ocmd = |p: &str| {
+            doc.add_object(dictionary! {
+                "Type" => "OCMD", "OCGs" => vec![off.into(), on.into()], "P" => p,
+            })
+        };
+        let (any_on, all_on, any_off, all_off) =
+            (ocmd("AnyOn"), ocmd("AllOn"), ocmd("AnyOff"), ocmd("AllOff"));
+        let mut ve = |e: Vec<Object>| doc.add_object(dictionary! { "Type" => "OCMD", "VE" => e });
+        let not_off = ve(vec!["Not".into(), off.into()]);
+        let and = ve(vec!["And".into(), on.into(), off.into()]);
+        let bad = ve(vec!["Xor".into(), on.into()]);
+        let layers = HiddenLayers {
+            groups: [off].into(),
+            visited: HashSet::new(),
+            complete: true,
+        };
+        let state = |id: ObjectId| layers.state(&doc, &Object::Reference(id));
+        assert_eq!(state(off), OcState::Hidden);
+        assert_eq!(state(on), OcState::Visible);
+        assert_eq!(state(any_on), OcState::Visible);
+        assert_eq!(state(all_on), OcState::Hidden);
+        assert_eq!(state(any_off), OcState::Visible);
+        assert_eq!(state(all_off), OcState::Hidden);
+        assert_eq!(state(not_off), OcState::Visible);
+        assert_eq!(state(and), OcState::Hidden);
+        assert_eq!(state(bad), OcState::Unknown);
     }
 
     #[test]

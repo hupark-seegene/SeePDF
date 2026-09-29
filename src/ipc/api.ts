@@ -114,6 +114,23 @@ export const MUTATING_COMMANDS: ReadonlySet<string> = new Set([
   "delete_objects", "duplicate_objects", "edit_paragraph", "ocr_apply",
   "sanitize_document", "add_attachment", "delete_attachment",
 ]);
+/** Commands that change the document only with some arguments (`args` as the command takes them). */
+const MUTATING_WHEN: Readonly<Record<string, (args: Record<string, unknown>) => boolean>> = {
+  // 페이지 추출 with 원본에서 삭제 deletes the extracted pages from the source document.
+  extract_pages: (a) => a.removeAfter === true,
+};
+/** The command's own arguments: a few commands take one struct argument (`{ args: … }`). */
+function commandArgs(args: object): Record<string, unknown> {
+  const inner = (args as { args?: unknown }).args;
+  const nested = inner !== null && typeof inner === "object" && !Array.isArray(inner);
+  return (nested ? inner : args) as Record<string, unknown>;
+}
+/** Whether `command` with `args` (as sent to `invoke`) changes a document, and the arguments to gate on. */
+export function mutatingCall(command: string, args: object): { docId?: unknown } | null {
+  const own = commandArgs(args);
+  if (MUTATING_COMMANDS.has(command)) return own;
+  return MUTATING_WHEN[command]?.(own) ? own : null;
+}
 /** Answers whether `command` on `args.docId` may go ahead; `false` rejects it with `cancelled`. */
 export type MutationGate = (command: string, args: { docId?: unknown }) => Promise<boolean>;
 let mutationGate: MutationGate | null = null;
@@ -125,7 +142,8 @@ export const DECLINED = "declined by the user";
 
 /** Run `mockImpl` in mock mode, otherwise `invoke(command, args)`. */
 async function call<T>(command: string, args: object, mockImpl: (mock: MockAdapter) => Promise<T>): Promise<T> {
-  if (mutationGate && MUTATING_COMMANDS.has(command) && !(await mutationGate(command, args as { docId?: unknown }))) {
+  const gated = mutationGate ? mutatingCall(command, args) : null;
+  if (mutationGate && gated && !(await mutationGate(command, gated))) {
     throw new SeePdfError({ code: "cancelled", message: DECLINED });
   }
   try {

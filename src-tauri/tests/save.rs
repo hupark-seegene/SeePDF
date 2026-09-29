@@ -421,6 +421,39 @@ fn save_detects_a_file_changed_on_disk() {
     save_to(&doc.doc_id, None).expect("the new file is this document's file now");
 }
 
+/// Verification round 2: Save As onto the document's own file after an outside change is the
+/// user's explicit choice (the save panel asked "Replace?"), so it writes — and re-records the
+/// file, so the next plain save goes through too.
+#[test]
+fn save_as_onto_the_own_file_after_an_outside_change() {
+    let path = working_copy("tracemonkey.pdf", "save-as-own-file.pdf");
+    let doc = open_path(&path, None);
+    rotate_first_page(&doc.doc_id);
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(90);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let own = path.display().to_string();
+    assert_eq!(
+        save_to(&doc.doc_id, None)
+            .expect_err("a plain save still refuses")
+            .code,
+        ErrorCode::FileChangedOnDisk
+    );
+    let before = std::fs::read(&path).unwrap();
+    save_to(&doc.doc_id, Some(&own)).expect("Save As onto the own file");
+    assert_ne!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the file was written"
+    );
+    rotate_first_page(&doc.doc_id);
+    save_to(&doc.doc_id, None).expect("the Save As re-recorded the file");
+}
+
 /// U2: `backup_root: None` writes no backup at all; `Some(root)` writes exactly one per save
 /// under `<root>/<stem>/`, holding the file as it was before the save.
 #[test]

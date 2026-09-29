@@ -32,9 +32,10 @@
 //!   was loaded (`OpenDoc::pristine`) is saved with `FPDF_INCREMENTAL`: the signed file's bytes
 //!   verbatim plus an appended update, so every existing signature still covers exactly what
 //!   it signed. Anything else is a full rewrite, which the UI warns invalidates signatures.
-//! * **H8** — a save over the document's own file first compares the file's size and
+//! * **H8** — a plain save over the document's own file first compares the file's size and
 //!   modification time with what was recorded at open / the last save; a mismatch is
-//!   `fileChangedOnDisk` unless the caller forces the save.
+//!   `fileChangedOnDisk` unless the caller forces the save. Save As (a path the user picked
+//!   and confirmed in the save panel) never checks, even when it is the own file.
 //! * **U2** — the backup is written only when asked for, under the root the caller passes
 //!   (the app data `backups/` folder; the temp directory only without an app).
 
@@ -165,11 +166,12 @@ pub fn save_with(
             )
         })?,
     };
-    // H8: saving over the document's own file must not silently drop someone else's change.
-    {
+    // H8: a plain save over the document's own file must not silently drop someone else's
+    // change. Save As never checks, even onto the own file: the user picked that file in the
+    // save panel, which already asked whether to replace it.
+    if target.is_none() && !options.force {
         let doc = st.doc(doc_id)?;
-        let own = doc.path.as_deref().is_some_and(|own| same_file(own, &path));
-        if own && !options.force {
+        if doc.path.as_deref().is_some_and(|own| same_file(own, &path)) {
             check_unchanged(&path, doc.disk_stamp)?;
         }
     }

@@ -266,6 +266,30 @@ pub fn ensure_security_change(doc: &OpenDoc<'_>) -> Result<(), EngineError> {
     .with_detail("security"))
 }
 
+/// v0.3 S5: a file used as a *source* of pages (병합, 다른 파일에서 페이지 삽입) lands in a
+/// document that has none of its restrictions, so its open must grant every permission — an
+/// unencrypted file, or one opened with its permissions (owner) password. `permissionDenied`,
+/// detail `security`, otherwise (the same rule as changing a document's security).
+pub fn ensure_source_unrestricted(
+    bindings: &dyn pdfium_render::prelude::PdfiumLibraryBindings,
+    source: &pdfium_render::prelude::PdfDocument<'_>,
+    path: &std::path::Path,
+) -> Result<(), EngineError> {
+    let p = registry::permissions_of(bindings, source);
+    if p.print && p.modify && p.extract_text && p.annotate && p.fill_forms && p.assemble {
+        return Ok(());
+    }
+    Err(EngineError::new(
+        ErrorCode::PermissionDenied,
+        format!(
+            "{} is restricted: its pages cannot be copied into another document without its \
+             permissions password",
+            path.display()
+        ),
+    )
+    .with_detail("security"))
+}
+
 /// [`ensure_permitted`] by document id — the one-line guard for `print_prepare` and
 /// `export_text`, which do not go through `registry::mutate`.
 pub fn ensure_doc_permitted(

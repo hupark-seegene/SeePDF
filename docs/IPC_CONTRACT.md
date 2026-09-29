@@ -1170,6 +1170,9 @@ refusal is `permissionDenied` with `detail` = the permission (`print` / `modify`
 with the owner password too). Wrong password, or the open (user) password → `passwordWrong`; an unencrypted
 document → `invalidArgument`. The view-only page route cannot tell printing from viewing, so the 인쇄 dialog's
 print-only DOM is gated in the frontend (`runPrint`); the clipboard is gated in the frontend as well.
+A file used as a page *source* — `merge_documents` inputs and `page_ops` `insertFrom` — must open with every
+permission (unencrypted, or its owner password as the input's `password`), since its pages land in a document
+without its restrictions: otherwise `permissionDenied`, detail `security`, and nothing changes.
 
 **S2 — lopdf rewrites of an encrypted document** (metadata, outline, page labels, page links, replies,
 sanitize). `registry::mutate_bytes` hands the closure PDFium's **decrypted** serialisation
@@ -1188,9 +1191,12 @@ action (`/S /JavaScript` or a `/JS` entry) in `/A`, `/OpenAction`, `/Next` and �
 JavaScript entries of `/AA`. `attachments`: `/Names /EmbeddedFiles`, the catalog `/AF` and every
 `FileAttachment` annotation with its popup. `actions`: an action `/OpenAction` (a plain destination is kept)
 and every `/AA`. `metadata`: trailer `/Info`, every `/Metadata` and `/PieceInfo`. `hiddenLayers`: optional
-content off in the default configuration — its marked-content sections and `/OC`-tagged XObject draws are
-deleted from the page content, then `/OCProperties` is removed; if any page could not be rewritten the layers
-stay hidden (count 0). Unreferenced objects are pruned. Counts are entries removed per category.
+content off in the default configuration (an OCG in `/D`, or an OCMD whose `/P` or `/VE` evaluates hidden) —
+its marked-content sections and `/OC`-tagged XObject draws are deleted from the page content, from every Form
+XObject the page draws (recursively, inheriting the caller's resources when a form has none) and from
+annotation appearance streams, annotations tagged with it are dropped from `/Annots`, then `/OCProperties` is
+removed; if anything a hidden layer draws could not be rewritten (unparsable content, a tiling pattern or Type 3
+font using it, an undecidable OCMD) the layers stay hidden (count 0). Unreferenced objects are pruned. Counts are entries removed per category.
 
 **S4 — attachments** go through PDFium (`FPDFDoc_*Attachment*`): `add_attachment` (name defaults to the file
 name; a taken name gets ` (2)` before the extension; ≤ 256 MiB) and `delete_attachment` are one undo step each
@@ -1202,7 +1208,8 @@ window bound (`window_bind_document`) to a document with that path, un-minimises
 returns its label (`null` when none). `openPath` calls it first and opens nothing when another window answers.
 The engine records the file's size and modification time at open and after every save; `save_document` over the
 document's own file compares them first and answers `fileChangedOnDisk` on a mismatch (nothing written);
-`force: true` overwrites and re-records. Save As to another path never checks.
+`force: true` overwrites and re-records. `save_document_as` never checks — not even onto the document's own
+file, which the user picked and confirmed (Replace?) in the save panel — and re-records the file it wrote.
 
 **U2 — backups.** `save_document` / `save_document_as` write a backup of the file being replaced only when
 `Settings.backupsEnabled` is on, under `<app data>/backups/<stem>/<millis>-<name>` (the newest three kept;

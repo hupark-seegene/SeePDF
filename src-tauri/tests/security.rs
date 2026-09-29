@@ -1307,6 +1307,259 @@ fn sanitize_keeps_an_encrypted_file_encrypted() {
     assert_eq!(result.info.permissions, before);
 }
 
+/// Pixels that are clearly red (the visible content next to the hidden layers).
+fn red_pixels(page: &(u32, u32, Vec<u8>)) -> usize {
+    let (w, h, px) = page;
+    px.chunks_exact(4)
+        .take((w * h) as usize)
+        .filter(|p| p[0] > 200 && p[1] < 60 && p[2] < 60)
+        .count()
+}
+
+/// Hidden-layer content (blue) that only Form XObjects and annotations draw: a compressed
+/// form (hidden and visible sections) drawing a nested form without its own resources, a
+/// Square annotation tagged with the hidden layer, and a visible annotation whose appearance
+/// has a hidden section. The visible layer draws red.
+fn layered_forms_pdf() -> Vec<u8> {
+    build_pdf(|doc, page, catalog| {
+        let hidden = doc.add_object(
+            dictionary! { "Type" => "OCG", "Name" => Object::string_literal("숨긴 메모") },
+        );
+        let shown = doc.add_object(
+            dictionary! { "Type" => "OCG", "Name" => Object::string_literal("Visible") },
+        );
+        let bbox = || vec![0.into(), 0.into(), 612.into(), 792.into()];
+        let inner = doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox() },
+            b"/OC /L1 BDC 0 0 1 rg 100 400 150 150 re f EMC".to_vec(),
+        ));
+        let mut outer = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => bbox(),
+                "Resources" => dictionary! {
+                    "Properties" => dictionary! { "L1" => hidden, "L2" => shown },
+                    "XObject" => dictionary! { "Fm2" => inner },
+                },
+            },
+            b"/OC /L1 BDC 0 0 1 rg 100 100 200 200 re f EMC \
+              /OC /L2 BDC 1 0 0 rg 400 100 50 50 re f EMC /Fm2 Do"
+                .to_vec(),
+        );
+        outer.compress().unwrap();
+        let outer = doc.add_object(outer);
+        let square_bbox = || vec![0.into(), 0.into(), 60.into(), 60.into()];
+        let hidden_ap = doc.add_object(Stream::new(
+            dictionary! { "Type" => "XObject", "Subtype" => "Form", "BBox" => square_bbox() },
+            b"0 0 1 rg 0 0 60 60 re f".to_vec(),
+        ));
+        let hidden_annot = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Square",
+            "Rect" => vec![400.into(), 600.into(), 460.into(), 660.into()],
+            "OC" => hidden, "AP" => dictionary! { "N" => hidden_ap },
+        });
+        let mixed_ap = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "BBox" => square_bbox(),
+                "Resources" => dictionary! { "Properties" => dictionary! { "L1" => hidden } },
+            },
+            b"1 0 0 rg 0 0 20 20 re f /OC /L1 BDC 0 0 1 rg 30 30 30 30 re f EMC".to_vec(),
+        ));
+        let mixed_annot = doc.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Square",
+            "Rect" => vec![480.into(), 600.into(), 540.into(), 660.into()],
+            "AP" => dictionary! { "N" => mixed_ap },
+        });
+        let content_id = doc
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Contents")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        if let Ok(Object::Stream(s)) = doc.get_object_mut(content_id) {
+            let mut content = s.content.clone();
+            content.extend_from_slice(b"\nq /Fm1 Do Q\n");
+            s.set_content(content);
+        }
+        let p = doc.get_dictionary_mut(page).unwrap();
+        p.set("Annots", vec![hidden_annot.into(), mixed_annot.into()]);
+        if let Ok(Object::Dictionary(res)) = p.get_mut(b"Resources") {
+            res.set("XObject", dictionary! { "Fm1" => outer });
+        }
+        doc.get_dictionary_mut(catalog).unwrap().set(
+            "OCProperties",
+            dictionary! {
+                "OCGs" => vec![hidden.into(), shown.into()],
+                "D" => dictionary! { "OFF" => vec![hidden.into()] },
+            },
+        );
+    })
+}
+
+/// Verification round 2: a hidden layer drawn from inside Form XObjects (at any depth) and
+/// annotations is deleted, not revealed when `/OCProperties` goes.
+#[test]
+fn sanitize_deletes_hidden_layers_inside_forms_and_annotations() {
+    let doc = reopen(layered_forms_pdf(), None).expect("the fixture opens");
+    let before = render_page0(&doc.doc_id);
+    // PDFium draws an annotation whatever its /OC (Acrobat hides it): only that 60x60 square.
+    assert_eq!(
+        blue_pixels(&before),
+        60 * 60,
+        "the layer is hidden by default"
+    );
+    let red_before = red_pixels(&before);
+    assert!(red_before > 2000, "the visible layer draws: {red_before}");
+
+    let d = doc.doc_id.clone();
+    let result = with_state(move |st| sanitize::sanitize(st, &d, &SanitizeOptions::default()))
+        .expect("sanitize");
+    assert_eq!(result.removed.hidden_layers, 1, "{:?}", result.removed);
+
+    let bytes = with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).unwrap();
+    let parsed = lopdf::Document::load_mem(&bytes).unwrap();
+    assert!(!parsed.catalog().unwrap().has(b"OCProperties"));
+    let annots = parsed
+        .get_dictionary(*parsed.get_pages().get(&1).unwrap())
+        .unwrap()
+        .get(b"Annots")
+        .and_then(Object::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    assert_eq!(annots, 1, "the annotation on the hidden layer is deleted");
+
+    let after = render_page0(&doc.doc_id);
+    assert_eq!(
+        blue_pixels(&after),
+        0,
+        "hidden content is deleted, not revealed"
+    );
+    assert_eq!(
+        red_pixels(&after),
+        red_before,
+        "the visible content is kept"
+    );
+}
+
+/// What the rewrite cannot reach (a tiling pattern's own content) keeps its layer hidden:
+/// `/OCProperties` stays and nothing is counted.
+#[test]
+fn sanitize_keeps_layers_it_cannot_delete_hidden() {
+    let bytes = build_pdf(|doc, page, catalog| {
+        let hidden = doc.add_object(
+            dictionary! { "Type" => "OCG", "Name" => Object::string_literal("Hidden") },
+        );
+        let pattern = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+                "BBox" => vec![0.into(), 0.into(), 20.into(), 20.into()],
+                "XStep" => 20, "YStep" => 20,
+                "Resources" => dictionary! { "Properties" => dictionary! { "L1" => hidden } },
+            },
+            b"/OC /L1 BDC 0 0 1 rg 0 0 20 20 re f EMC".to_vec(),
+        ));
+        let content_id = doc
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Contents")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        if let Ok(Object::Stream(s)) = doc.get_object_mut(content_id) {
+            let mut content = s.content.clone();
+            content.extend_from_slice(b"\n/Pattern cs /P1 scn 100 100 200 200 re f\n");
+            s.set_content(content);
+        }
+        let p = doc.get_dictionary_mut(page).unwrap();
+        if let Ok(Object::Dictionary(res)) = p.get_mut(b"Resources") {
+            res.set("Pattern", dictionary! { "P1" => pattern });
+        }
+        doc.get_dictionary_mut(catalog).unwrap().set(
+            "OCProperties",
+            dictionary! {
+                "OCGs" => vec![hidden.into()],
+                "D" => dictionary! { "OFF" => vec![hidden.into()] },
+            },
+        );
+    });
+    let (_, counts) = sanitize::sanitize_bytes(&bytes, &SanitizeOptions::default()).unwrap();
+    assert_eq!(counts.hidden_layers, 0, "{counts:?}");
+    let doc = reopen(bytes, None).expect("the fixture opens");
+    // (PDFium itself ignores optional content inside pattern cells; other viewers do not.)
+    let blue_before = blue_pixels(&render_page0(&doc.doc_id));
+    let d = doc.doc_id.clone();
+    let result = with_state(move |st| sanitize::sanitize(st, &d, &SanitizeOptions::default()))
+        .expect("sanitize");
+    assert_eq!(result.removed.hidden_layers, 0, "{:?}", result.removed);
+    let after = with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).unwrap();
+    let parsed = lopdf::Document::load_mem(&after).unwrap();
+    assert!(
+        parsed.catalog().unwrap().has(b"OCProperties"),
+        "the layer stays hidden"
+    );
+    assert_eq!(blue_pixels(&render_page0(&doc.doc_id)), blue_before);
+}
+
+/// Verification round 2 (S5): 병합 and 다른 파일에서 페이지 삽입 must not turn a restricted file's
+/// pages into an unrestricted document; with the permissions password they may.
+#[test]
+fn restricted_files_are_not_merged_or_inserted_without_the_owner_password() {
+    use seepdf_lib::ipc::types::{MergeInput, PageOp};
+    let src = open("tracemonkey.pdf");
+    let everything_off = PermissionsRequest {
+        print: false,
+        extract_text: false,
+        modify: false,
+        annotate: false,
+        assemble: false,
+        ..PermissionsRequest::default()
+    };
+    protect(
+        &src.doc_id,
+        "s5-merge-source.pdf",
+        None,
+        "own-s5",
+        everything_off,
+    )
+    .expect("protect");
+    let path = out_dir().join("s5-merge-source.pdf").display().to_string();
+
+    let merge = |password: Option<&str>| {
+        let input = MergeInput {
+            path: path.clone(),
+            range: None,
+            password: password.map(str::to_owned),
+        };
+        with_state(move |st| seepdf_lib::engine::pages::merge(st, &[input]))
+    };
+    let err = merge(None).expect_err("a restricted source is refused");
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(err.detail.as_deref(), Some("security"));
+    let merged = merge(Some("own-s5")).expect("the permissions password allows it");
+    assert!(merged.info.permissions.print && merged.info.page_count > 0);
+
+    // 다른 파일에서 페이지 삽입: refused, and the target document is unchanged.
+    let target = open("tracemonkey.pdf");
+    let pages_before = target.info.page_count;
+    let insert = |password: Option<&str>| {
+        let (d, op) = (
+            target.doc_id.clone(),
+            PageOp::InsertFrom {
+                at: 0,
+                path: path.clone(),
+                range: Some("1".into()),
+                password: password.map(str::to_owned),
+            },
+        );
+        with_state(move |st| seepdf_lib::engine::pages::apply_ops(st, &d, vec![op]))
+    };
+    let err = insert(None).expect_err("a restricted source is refused");
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(info_of(&target.doc_id).page_count, pages_before);
+    let after = insert(Some("own-s5")).expect("the permissions password allows it");
+    assert_eq!(after.page_count, pages_before + 1);
+}
+
 // ---------------------------------------------------------------------------------------
 // S4
 // ---------------------------------------------------------------------------------------

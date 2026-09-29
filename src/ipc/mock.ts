@@ -1480,6 +1480,8 @@ export const mock = {
     await delay(null, 120);
     d.info.path = a.path;
     writtenFiles.add(a.path);
+    // v0.3 H8: what was written is what is on disk now (Save As never checks, like the engine).
+    changedOnDisk.delete(a.path);
     d.info.name = baseName(a.path);
     d.info.dirty = false;
     // Like the engine (IPC_CONTRACT §8): a save changes nothing a cache is keyed on, so the

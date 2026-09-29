@@ -84,6 +84,20 @@ describe("H8 — the file changed on disk", () => {
     );
   });
 
+  it("다른 이름으로 저장… onto the same file saves (the save panel already asked to replace it)", async () => {
+    const saveAs = vi.spyOn(mock, "saveDocumentAs");
+    vi.spyOn(api, "saveFileDialog").mockResolvedValueOnce(A);
+    const { saving } = await prompt();
+    fireEvent.click(screen.getByRole("button", { name: "다른 이름으로 저장…" }));
+    expect(await saving).toBe(true);
+    expect(saveAs).toHaveBeenLastCalledWith(expect.objectContaining({ path: A }), expect.any(Function));
+    expect(useToastStore.getState().toasts.map((t) => t.messageKey)).not.toContain("error.saveFailed");
+    expect(useDocStore.getState().info?.dirty).toBe(false);
+    // the Save As re-recorded the file: the next plain save goes straight through
+    await api.pageOps({ docId: useDocStore.getState().info!.docId, ops: [{ kind: "rotate", pages: [0], delta: 90 }] });
+    expect(await saveFlow()).toBe(true);
+  });
+
   it("다시 불러오기 reopens the file from disk and drops this window's changes", async () => {
     const open = vi.spyOn(mock, "openDocument");
     const { info, saving } = await prompt();

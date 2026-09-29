@@ -366,9 +366,12 @@ fn load_source<'p>(
         return Err(EngineError::not_found(format!("{}", path.display())));
     }
     let bytes = std::fs::read(path).map_err(EngineError::from)?;
-    pdfium
+    let source = pdfium
         .load_pdf_from_byte_vec(bytes, password)
-        .map_err(|e| EngineError::pdfium(&format!("open {}", path.display()), e))
+        .map_err(|e| EngineError::pdfium(&format!("open {}", path.display()), e))?;
+    // v0.3 pkg3 (S5): a restricted file's pages must not become an unrestricted document.
+    crate::engine::security::ensure_source_unrestricted(raw::bindings(pdfium), &source, path)?;
+    Ok(source)
 }
 
 // ---------------------------------------------------------------------------------------

@@ -99,6 +99,46 @@ describe("S1 — a signed document", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  // Verification round 2: 자르기 sends one struct argument (`{ args }`), and 페이지 추출 changes the
+  // source only with 원본에서 삭제 — both must still ask.
+  it("자르기 (set_page_boxes, nested args) asks before it runs", async () => {
+    const info = (await useDocStore.getState().open(SIGNED))!;
+    render(<DialogHost />);
+    const boxes = vi.spyOn(mock, "setPageBoxes");
+    const attempt = api
+      .setPageBoxes({ docId: info.docId, pages: [0], crop: { margins: { top: 10, right: 10, bottom: 10, left: 10 } } })
+      .catch((e: unknown) => e);
+    await screen.findByText(/편집하면 서명이 무효화될 수 있습니다/);
+    expect(boxes).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "취소" }));
+    const err = await attempt;
+    expect(api.isSeePdfError(err) && err.code).toBe("cancelled");
+    expect(boxes).not.toHaveBeenCalled();
+  });
+
+  it("페이지 추출 asks only with 원본에서 삭제", async () => {
+    const info = (await useDocStore.getState().open(SIGNED))!;
+    render(<DialogHost />);
+    const extract = vi.spyOn(mock, "extractPages");
+    await api.extractPages({ docId: info.docId, pages: [0], outPath: "/tmp/copy.pdf", removeAfter: false });
+    expect(extract).toHaveBeenCalledTimes(1);
+    expect(useDialogStore.getState().stack).toHaveLength(0);
+    const moving = api.extractPages({ docId: info.docId, pages: [0], outPath: "/tmp/moved.pdf", removeAfter: true });
+    await screen.findByText(/편집하면 서명이 무효화될 수 있습니다/);
+    expect(extract).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "편집 계속" }));
+    await moving;
+    expect(extract).toHaveBeenCalledTimes(2);
+  });
+
+  it("mutatingCall reads nested args and conditional commands", () => {
+    expect(api.mutatingCall("set_page_boxes", { args: { docId: "d1" } })).toEqual({ docId: "d1" });
+    expect(api.mutatingCall("create_annotation", { docId: "d1", page: 0 })).toMatchObject({ docId: "d1" });
+    expect(api.mutatingCall("extract_pages", { docId: "d1", removeAfter: false })).toBeNull();
+    expect(api.mutatingCall("extract_pages", { docId: "d1", removeAfter: true })).toMatchObject({ docId: "d1" });
+    expect(api.mutatingCall("get_document_info", { docId: "d1" })).toBeNull();
+  });
+
   it("an unsigned document never asks", async () => {
     const info = (await useDocStore.getState().open("/Users/veri/Documents/SeePDF-샘플.pdf"))!;
     await highlight(info.docId);
