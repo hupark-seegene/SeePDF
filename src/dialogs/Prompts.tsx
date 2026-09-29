@@ -164,9 +164,77 @@ export function MultipleFilesDialog({
           </li>
         ))}
       </ul>
-      <p className="dlg-hint text-xs">{t("pages.merge.outlineWarning")}</p>
+      <p className="dlg-hint text-xs">{t("pages.merge.carries")}</p>
     </Dialog>
   );
+}
+
+/**
+ * v0.3 P2 — 위치 이동…: the selected pages as one block to 맨 앞, 맨 뒤 or so that the block starts
+ * at page N (1-based, counted in the document after the move). One `move` op = one undo step; the
+ * block stays selected at its new place.
+ */
+export function MoveToDialog({ pages, onClose }: { pages: PageIndex[]; onClose(): void }) {
+  const t = useT();
+  const info = useDocStore((s) => s.info);
+  const count = info?.pageCount ?? 0;
+  const sorted = [...new Set(pages)].sort((a, b) => a - b);
+  const last = Math.max(1, count - sorted.length + 1);
+  const [where, setWhere] = useState<"first" | "last" | "page">("page");
+  const [page, setPage] = useState(String(Math.min(last, (sorted[0] ?? 0) + 1)));
+  const n = Number(page);
+  const invalid = where === "page" && (!Number.isInteger(n) || n < 1 || n > last);
+  const to = where === "first" ? 0 : where === "last" ? count - sorted.length : n - 1;
+  return (
+    <Dialog
+      titleKey="pages.moveTo.title"
+      size="sm"
+      onClose={onClose}
+      primary={{
+        labelKey: "pages.moveTo.apply",
+        disabled: invalid || !info || sorted.length === 0,
+        onSelect: () => {
+          onClose();
+          void movePagesTo(sorted, to);
+        },
+      }}
+    >
+      <p className="text-base">{t("pages.selected", { count: sorted.length })}</p>
+      <div className="dlg-radio-group" role="radiogroup" aria-label={t("pages.moveTo.title")}>
+        <label className="dlg-radio text-base">
+          <input type="radio" name="moveTo" checked={where === "first"} onChange={() => setWhere("first")} />
+          <span>{t("pages.moveTo.first")}</span>
+        </label>
+        <label className="dlg-radio text-base">
+          <input type="radio" name="moveTo" checked={where === "last"} onChange={() => setWhere("last")} />
+          <span>{t("pages.moveTo.last")}</span>
+        </label>
+        <label className="dlg-radio text-base">
+          <input type="radio" name="moveTo" checked={where === "page"} onChange={() => setWhere("page")} />
+          <span>{t("pages.moveTo.page")}</span>
+        </label>
+        {where === "page" && (
+          <input
+            className="field num"
+            type="number"
+            min={1}
+            max={last}
+            value={page}
+            aria-label={t("pages.moveTo.page")}
+            onChange={(e) => setPage(e.target.value)}
+          />
+        )}
+      </div>
+      {invalid && <p className="dlg-hint danger text-xs">{t("pages.moveTo.invalid", { max: last })}</p>}
+    </Dialog>
+  );
+}
+
+/** One `move` op; the moved block stays selected (like a drag). */
+async function movePagesTo(pages: PageIndex[], to: number): Promise<void> {
+  const { usePagesStore } = await import("../store/pagesStore");
+  const ok = await runPageOps([{ kind: "move", pages, to }]);
+  if (ok) usePagesStore.getState().setSelected(pages.map((_, i) => to + i));
 }
 
 /** 페이지 추출: 새 파일로 저장 + 추출 후 원본에서 삭제. */

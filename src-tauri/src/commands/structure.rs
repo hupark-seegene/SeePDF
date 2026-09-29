@@ -36,10 +36,15 @@ pub async fn create_link(
     page: PageIndex,
     rect: Rect,
     target: LinkTarget,
+    // v0.3 pkg2 (P5): one quad per selected line (the click area is their union) and a
+    // visible border; both optional.
+    quads: Option<Vec<Rect>>,
+    border: Option<crate::ipc::types::LinkBorder>,
 ) -> Result<AnnotResult, EngineError> {
     engine
         .call(Lane::Edit, "create_link", move |st| {
-            links::create_link(st, &doc_id, page, rect, &target)
+            let quads = quads.unwrap_or_default();
+            links::create_link_styled(st, &doc_id, page, rect, &target, &quads, border)
         })
         .await
 }
@@ -53,10 +58,12 @@ pub async fn update_link(
     id: String,
     rect: Option<Rect>,
     target: Option<LinkTarget>,
+    // v0.3 pkg2 (P5): `{ width: 0 }` removes the border; absent leaves it.
+    border: Option<crate::ipc::types::LinkBorder>,
 ) -> Result<AnnotResult, EngineError> {
     engine
         .call(Lane::Edit, "update_link", move |st| {
-            links::update_link(st, &doc_id, page, &id, rect, target.as_ref())
+            links::update_link_styled(st, &doc_id, page, &id, rect, target.as_ref(), border)
         })
         .await
 }

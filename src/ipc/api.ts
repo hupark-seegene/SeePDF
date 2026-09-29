@@ -20,6 +20,9 @@ import type {
   ViewportHint, LinkTarget, PageLabelRange, ReadingOrder, WebLink,
   AppInfo, ProblemReport,
   AttachmentInfo, SanitizeOptions, SanitizeResult,
+  // v0.3 pkg2-pages-structure-forms
+  FormDataFormat, FormDataResult, FormEditResult, FormFieldPatch, FormFieldSpec, ImageFit, ImagePageSize, LinkBorder,
+  OutlineSplitMode,
 } from "./types";
 
 export { parseTextLayer, parseRawPage };
@@ -119,7 +122,15 @@ export const MUTATING_COMMANDS: ReadonlySet<string> = new Set([
   "sanitize_document", "add_attachment", "delete_attachment",
   // v0.3 pkg1 (R4 그룹 해제) — added at the v0.3 integration
   "ungroup_object",
+  // v0.3 pkg2 (F1 필드 만들기 / 양식 데이터 가져오기 / F2 평면화, P3 pages from another window) — added
+  // at the v0.3 integration; `import_pages_from_doc` gates on its target (`DOC_ARG`)
+  "create_form_field", "update_form_field", "delete_form_field", "import_form_data", "flatten_form",
+  "import_pages_from_doc",
 ]);
+/** Commands whose changed document is not `docId` but another argument. */
+const DOC_ARG: Readonly<Record<string, string>> = {
+  import_pages_from_doc: "dstDocId",
+};
 /** Commands that change the document only with some arguments (`args` as the command takes them). */
 const MUTATING_WHEN: Readonly<Record<string, (args: Record<string, unknown>) => boolean>> = {
   // 페이지 추출 with 원본에서 삭제 deletes the extracted pages from the source document.
@@ -134,6 +145,8 @@ function commandArgs(args: object): Record<string, unknown> {
 /** Whether `command` with `args` (as sent to `invoke`) changes a document, and the arguments to gate on. */
 export function mutatingCall(command: string, args: object): { docId?: unknown } | null {
   const own = commandArgs(args);
+  const docArg = DOC_ARG[command];
+  if (docArg && MUTATING_COMMANDS.has(command)) return { ...own, docId: own[docArg] };
   if (MUTATING_COMMANDS.has(command)) return own;
   return MUTATING_WHEN[command]?.(own) ? own : null;
 }
@@ -307,12 +320,15 @@ export function setAnnotationsHidden(
 // P2 links: a Link annotation that goes to a page (/Dest, written with lopdf) or a web address
 // (/A /URI, written by PDFium). Each call is one undo step; the result is the page's new list.
 
-export function createLink(a: { docId: DocId; page: PageIndex; rect: Rect; target: LinkTarget }): Promise<AnnotResult> {
+export function createLink(
+  // v0.3 P5: `quads` (a link from a text selection) and a visible `border` are optional
+  a: { docId: DocId; page: PageIndex; rect: Rect; target: LinkTarget; quads?: Rect[]; border?: LinkBorder },
+): Promise<AnnotResult> {
   return call("create_link", a, (mock) => mock.createLink(a));
 }
 
 export function updateLink(
-  a: { docId: DocId; page: PageIndex; id: string; rect?: Rect; target?: LinkTarget },
+  a: { docId: DocId; page: PageIndex; id: string; rect?: Rect; target?: LinkTarget; border?: LinkBorder },
 ): Promise<AnnotResult> {
   return call("update_link", a, (mock) => mock.updateLink(a));
 }
@@ -395,7 +411,7 @@ export function extractPages(
 }
 
 export function splitDocument(
-  a: { docId: DocId; mode: { everyN: number } | { ranges: string[] }; outDir: string },
+  a: { docId: DocId; mode: { everyN: number } | { ranges: string[] } | OutlineSplitMode; outDir: string },
   onProgress: (e: JobEvent) => void,
 ): Promise<JobId> {
   return call("split_document", { ...a, onProgress: channel(onProgress) }, (mock) => mock.splitDocument(a, onProgress));
@@ -955,4 +971,62 @@ export function addAttachment(a: { docId: DocId; path: string; name?: string }):
 }
 export function deleteAttachment(a: { docId: DocId; index: number }): Promise<AttachmentInfo[]> {
   return call("delete_attachment", a, (mock) => mock.deleteAttachment(a));
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg2-pages-structure-forms — images → PDF (§7.3b), pages between documents (§7.3),
+// form authoring / data / flattening (§7.2a)
+// ---------------------------------------------------------------------------
+
+/** 이미지로 PDF 만들기: a new untitled, dirty document, one page per PNG / JPEG, in order. */
+export function createFromImages(
+  a: { paths: string[]; pageSize: ImagePageSize; margin?: number; fit?: ImageFit },
+  onProgress: (e: JobEvent) => void,
+): Promise<DocInfo> {
+  return call("create_from_images", { ...a, onProgress: channel(onProgress) }, (mock) => mock.createFromImages(a, onProgress));
+}
+
+/** A clipboard image (PNG / JPEG bytes) as a temp file; resolves with its path. */
+export async function writeTempImage(bytes: Uint8Array): Promise<string> {
+  try {
+    if (useMock()) return await (await loadMock()).writeTempImage({ bytes: Array.from(bytes) });
+    // the raw request body — no JSON array of a multi-megabyte image
+    return await invoke<string>("write_temp_image", bytes);
+  } catch (e) {
+    throw toSeePdfError(e);
+  }
+}
+
+/** Pages of another open document (a drag between windows), inserted at `at`; one undo step on the target. */
+export function importPagesFromDoc(
+  a: { srcDocId: DocId; pages: PageIndex[]; dstDocId: DocId; at: PageIndex },
+): Promise<DocInfo> {
+  return call("import_pages_from_doc", a, (mock) => mock.importPagesFromDoc(a));
+}
+
+export function createFormField(a: { docId: DocId; spec: FormFieldSpec }): Promise<FormEditResult> {
+  return call("create_form_field", a, (mock) => mock.createFormField(a));
+}
+
+export function updateFormField(
+  a: { docId: DocId; page: PageIndex; index: number; patch: FormFieldPatch },
+): Promise<FormEditResult> {
+  return call("update_form_field", a, (mock) => mock.updateFormField(a));
+}
+
+export function deleteFormField(a: { docId: DocId; page: PageIndex; index: number }): Promise<FormEditResult> {
+  return call("delete_form_field", a, (mock) => mock.deleteFormField(a));
+}
+
+export function exportFormData(a: { docId: DocId; format: FormDataFormat; outPath: string }): Promise<FormDataResult> {
+  return call("export_form_data", a, (mock) => mock.exportFormData(a));
+}
+
+export function importFormData(a: { docId: DocId; path: string; format?: FormDataFormat }): Promise<FormDataResult> {
+  return call("import_form_data", a, (mock) => mock.importFormData(a));
+}
+
+/** 양식 평면화: every field drawn into its page, the form removed; one undo step. */
+export function flattenForm(a: { docId: DocId }): Promise<DocInfo> {
+  return call("flatten_form", a, (mock) => mock.flattenForm(a));
 }

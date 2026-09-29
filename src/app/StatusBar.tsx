@@ -48,6 +48,7 @@ export function StatusBar() {
   const t = useT();
   const os = useAppStore((s) => s.os);
   const info = useDocStore((s) => s.info);
+  const savedPageCount = useDocStore((s) => s.savedPageCount);
   const { currentPage, zoomPercent, zoomMode, layout } = useViewStore();
   const goToPage = useViewStore((s) => s.goToPage);
   const setLayout = useViewStore((s) => s.setLayout);
@@ -320,6 +321,12 @@ export function StatusBar() {
           <span className="status-badge text-xs" data-badge="encrypted">
             <ShieldCheck size={12} strokeWidth={1.75} aria-hidden />
             {t("status.encrypted")}
+          </span>
+        )}
+        {/* v0.3 P2 (pkg2): the page count differs from the one at open / last save */}
+        {info && savedPageCount !== null && savedPageCount !== info.pageCount && (
+          <span className="text-sm dim pages-changed" role="status">
+            {t("pages.changed", { from: savedPageCount, to: info.pageCount })}
           </span>
         )}
         {info && (

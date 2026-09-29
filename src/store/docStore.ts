@@ -31,6 +31,11 @@ export interface DocState {
   /** bumped by `doc-changed` so views that cache per page can invalidate cheaply */
   changeNonce: number;
   changedPages: PageIndex[] | "all";
+  /**
+   * v0.3 P2: the page count when the document was opened or last saved (clean), for the
+   * 변경됨 · 페이지 N → M chip; `null` with no document. Kept by the subscription below.
+   */
+  savedPageCount: number | null;
 
   /** `displayName`: what the title shows instead of the file name (a recovered copy, Stage 8) */
   open(path: string, password?: string, displayName?: string): Promise<DocInfo | null>;
@@ -53,6 +58,7 @@ export const useDocStore = create<DocState>((set, get) => ({
   error: null,
   changeNonce: 0,
   changedPages: "all",
+  savedPageCount: null,
 
   async open(path, password, displayName) {
     set({ status: "opening", error: null });
@@ -156,3 +162,17 @@ export const useDocStore = create<DocState>((set, get) => ({
     if (info) await get().reloadOutline();
   },
 }));
+
+// v0.3 P2 (pkg2): the page-count baseline follows the document — a new document (open, merge,
+// images) sets it, and so does every clean state (after a save, or undo back to the saved file).
+useDocStore.subscribe((s, prev) => {
+  const info = s.info;
+  if (!info) {
+    if (s.savedPageCount !== null) useDocStore.setState({ savedPageCount: null });
+    return;
+  }
+  const fresh = info.docId !== prev.info?.docId || prev.savedPageCount === null;
+  if ((fresh || !info.dirty) && s.savedPageCount !== info.pageCount) {
+    useDocStore.setState({ savedPageCount: info.pageCount });
+  }
+});

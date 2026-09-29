@@ -31,6 +31,8 @@ export type DialogName =
   | "pageLabels"
   // 여러 파일에서 검색 (P2)
   | "multiSearch"
+  // v0.3 pkg2-pages-structure-forms: 이미지로 PDF 만들기, 위치 이동…
+  | "imagesToPdf" | "moveTo"
   // 도움말 › 단축키
   | "shortcuts"
   // v0.3 pkg5 (H1 / H11): SeePDF 정보 + 오픈 소스 라이선스

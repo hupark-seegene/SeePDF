@@ -17,6 +17,9 @@
 //! 0-based. [`parse_range`] is the only converter and never mixes the two.
 
 pub mod boxes;
+// v0.3 pkg2-pages-structure-forms: images → PDF (D1) and the import carry-over (P1 / P3).
+pub mod carry;
+pub mod create;
 
 use crate::engine::raw;
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
@@ -25,7 +28,7 @@ use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
     BlankPageSize, ChangeReason, DocInfo, ExtractPagesResult, MergeInput, MergeResult,
-    MergeWarning, NamedPageSize, PageOp, SplitMode,
+    MergeWarning, NamedPageSize, OutlineNode, PageOp, SplitMode,
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
@@ -167,6 +170,28 @@ pub fn apply_ops<'p>(
 ) -> Result<DocInfo, EngineError> {
     if ops.is_empty() {
         return Ok(st.doc(doc_id)?.info());
+    }
+    // v0.3 P1: 파일에서 페이지 삽입 (always a one-op batch from the UI) keeps the source's
+    // outline, page labels and form fields — a byte-level rewrite, still one undo step.
+    if let [PageOp::InsertFrom {
+        at,
+        path,
+        range,
+        password,
+    }] = ops.as_slice()
+    {
+        if can_carry(st.doc(doc_id)?) {
+            if let Some(info) = insert_from_carrying(
+                st,
+                doc_id,
+                *at,
+                Path::new(path),
+                range.as_deref(),
+                password.as_deref(),
+            )? {
+                return Ok(info);
+            }
+        }
     }
     let pdfium: &'p Pdfium = st.pdfium;
     let label = undo_label(&ops);
@@ -375,6 +400,207 @@ fn load_source<'p>(
 }
 
 // ---------------------------------------------------------------------------------------
+// v0.3 P1 / P3: imports that keep the source's structure
+// ---------------------------------------------------------------------------------------
+
+/// Whether an import into `doc` may take the byte-level carry-over path ([`import_carrying`]).
+/// Not on an encrypted document (the carry path predates S2's re-encryption and is not verified
+/// against it), and — v0.3 integration (P1 × S1) — not on a signed document that still saves
+/// incrementally (`pristine`): the lopdf rewrite would force a full save, which invalidates its
+/// signatures. There PDFium's plain import is kept (fields, outline and labels of the source are
+/// not carried) and the signatures survive the next save.
+fn can_carry(doc: &registry::OpenDoc<'_>) -> bool {
+    !doc.encrypted && !doc.pristine
+}
+
+/// Imports `selected` (source indices, in this order) of `source` into `doc_id` at `at` as a
+/// byte-level rewrite — PDFium imports into a scratch copy, [`carry::apply`] puts back what
+/// the import leaves behind (fields, outline, labels as `carry` says; popups whenever the source
+/// was parsed) — then the open document is replaced: one undo step (`label`), rolled back on any
+/// failure. When the carry-over itself cannot be done (lopdf cannot parse the bytes) PDFium's
+/// plain import is kept, which is what every import did before v0.3.
+///
+/// `Ok(None)`: nothing to carry (no fields, outline or labels in the source, no labels in the
+/// destination) — the caller does PDFium's plain import in a `registry::mutate` instead, which
+/// costs no serialisation. Refuses an encrypted destination (the rewrite cannot re-encrypt);
+/// callers check first.
+#[allow(clippy::too_many_arguments)] // one private helper, two callers; a struct would only rename them
+fn import_carrying<'p>(
+    st: &mut EngineState<'p>,
+    doc_id: &str,
+    source: &PdfDocument<'p>,
+    name: &str,
+    selected: Vec<u16>,
+    at: u16,
+    carry_what: carry::Carry,
+    label: &'static str,
+) -> Result<Option<DocInfo>, EngineError> {
+    let count = st.doc(doc_id)?.page_count();
+    if at > count {
+        return Err(EngineError::invalid(format!(
+            "cannot insert at {at}: the document has {count} pages"
+        )));
+    }
+    if selected.is_empty() {
+        return Err(EngineError::invalid("no page was selected"));
+    }
+    let expected = u16::try_from(count as usize + selected.len()).map_err(|_| {
+        EngineError::new(
+            ErrorCode::Unsupported,
+            format!(
+                "the document would have more than {} pages",
+                registry::MAX_PAGES
+            ),
+        )
+    })?;
+    let pdfium = st.pdfium;
+    let bindings = raw::bindings(pdfium);
+    let src = carry::read_source(bindings, source, name, selected.clone(), carry_what);
+    // Nothing to carry and no labels of our own to keep in step: PDFium's plain import is
+    // enough, and much cheaper than a byte-level rewrite — the caller takes that path.
+    if !src.carries_anything() && st.doc(doc_id)?.page_labels().is_none() {
+        return Ok(None);
+    }
+    registry::mutate_bytes_resized(
+        st,
+        doc_id,
+        MutateOpts::new(label, ChangeReason::Pages).structural(),
+        expected,
+        move |bytes, doc| {
+            let scratch = pdfium
+                .load_pdf_from_byte_vec(bytes.to_vec(), doc.password.as_deref())
+                .map_err(|e| EngineError::pdfium("reload for import", e))?;
+            raw::page::import_pages_by_index(bindings, &scratch, source, &selected, at)?;
+            let imported =
+                raw::save::save_as_copy(bindings, &scratch, raw::save::SaveFlags::NoIncremental)?;
+            drop(scratch);
+            let placed = [carry::Placed { source: src, at }];
+            match carry::apply(&imported, &placed, carry::OutlineMode::OnlyOutlined) {
+                Ok(rewritten) => Ok(rewritten),
+                Err(e) => {
+                    tracing::warn!(error = %e, "import carry-over skipped");
+                    Ok(imported)
+                }
+            }
+        },
+        |_, _| Ok(()),
+    )
+    .map(Some)
+}
+
+/// `page_ops [insertFrom]` on an unencrypted document (v0.3 P1): the source's outline (under a
+/// node named after the file), page labels and form fields come along.
+fn insert_from_carrying(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    at: u16,
+    path: &Path,
+    range: Option<&str>,
+    password: Option<&str>,
+) -> Result<Option<DocInfo>, EngineError> {
+    let pdfium = st.pdfium;
+    let source = load_source(pdfium, path, password)?;
+    let selected = parse_range(range.unwrap_or(""), source.pages().len() as u16)?;
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Untitled".to_string());
+    let done = import_carrying(
+        st,
+        doc_id,
+        &source,
+        &name,
+        selected,
+        at,
+        carry::Carry::ALL,
+        "undo.pageInsertFrom",
+    )?;
+    Ok(match done {
+        Some(_) => Some(st.doc(doc_id)?.info()),
+        None => None,
+    })
+}
+
+/// `import_pages_from_doc` (v0.3 P3): pages of one open document copied into another at `at`
+/// — a drag between windows. `pages` are source indices in the order they land (duplicates
+/// dropped); the source's unsaved edits are included (it is serialised first). One undo step
+/// `undo.pageImport` on the target; the source is untouched. The imported widgets keep their
+/// fields (renamed on a clash) and popups their parent.
+pub fn import_pages_from_doc(
+    st: &mut EngineState<'_>,
+    src_doc_id: &str,
+    pages: &[u16],
+    dst_doc_id: &str,
+    at: u16,
+) -> Result<DocInfo, EngineError> {
+    if src_doc_id == dst_doc_id {
+        return Err(EngineError::invalid(
+            "source and target are the same document: use page_ops move",
+        ));
+    }
+    st.doc(dst_doc_id)?;
+    // v0.3 integration (P3 × S5): pages dragged out of a restricted document must not land in
+    // one without its restrictions — the rule `load_source` applies to a file source.
+    {
+        let src = st.doc(src_doc_id)?;
+        crate::engine::security::ensure_unrestricted_permissions(&src.permissions, &src.name())?;
+    }
+    let src_count = st.doc(src_doc_id)?.page_count();
+    let mut seen: BTreeSet<u16> = BTreeSet::new();
+    let mut ordered: Vec<u16> = Vec::with_capacity(pages.len());
+    for &p in pages {
+        if p >= src_count {
+            return Err(
+                EngineError::invalid(format!("page {p} is outside 0..{src_count}")).with_page(p),
+            );
+        }
+        if seen.insert(p) {
+            ordered.push(p);
+        }
+    }
+    if ordered.is_empty() {
+        return Err(EngineError::invalid("no page was selected"));
+    }
+    render::tiles::generate_appearances(st, src_doc_id)?;
+    let (bytes, password, name) = {
+        let src = st.doc(src_doc_id)?;
+        (src.to_bytes()?, src.password.clone(), src.name_stem())
+    };
+    let scratch = st
+        .pdfium
+        .load_pdf_from_byte_vec(bytes.to_vec(), password.as_deref())
+        .map_err(|e| EngineError::pdfium("reopen the source", e))?;
+    if can_carry(st.doc(dst_doc_id)?) {
+        if let Some(info) = import_carrying(
+            st,
+            dst_doc_id,
+            &scratch,
+            &name,
+            ordered.clone(),
+            at,
+            carry::Carry::PAGES_ONLY,
+            "undo.pageImport",
+        )? {
+            return Ok(info);
+        }
+    }
+    // An encrypted target, or nothing to carry: PDFium's plain import.
+    let count = st.doc(dst_doc_id)?.page_count();
+    if at > count {
+        return Err(EngineError::invalid(format!(
+            "cannot insert at {at}: the document has {count} pages"
+        )));
+    }
+    registry::mutate(
+        st,
+        dst_doc_id,
+        MutateOpts::new("undo.pageImport", ChangeReason::Pages).structural(),
+        |doc| raw::page::import_pages_by_index(doc.bindings(), doc.pdf(), &scratch, &ordered, at),
+    )?;
+    Ok(st.doc(dst_doc_id)?.info())
+}
+
+// ---------------------------------------------------------------------------------------
 // extract / split — copy the original, delete the rest
 // ---------------------------------------------------------------------------------------
 
@@ -456,8 +682,21 @@ pub fn split_plan(
     page_count: u16,
     stem: &str,
 ) -> Result<Vec<SplitPart>, EngineError> {
+    split_plan_with_outline(mode, page_count, stem, &[])
+}
+
+/// [`split_plan`] with the document's outline, which `SplitMode::ByOutline` (v0.3 P4) needs.
+pub fn split_plan_with_outline(
+    mode: &SplitMode,
+    page_count: u16,
+    stem: &str,
+    outline: &[OutlineNode],
+) -> Result<Vec<SplitPart>, EngineError> {
     let mut parts: Vec<SplitPart> = Vec::new();
     match mode {
+        SplitMode::ByOutline { by_outline } => {
+            parts = outline_parts(outline, by_outline.level, page_count, stem)?;
+        }
         SplitMode::EveryN { every_n } => {
             if *every_n == 0 {
                 return Err(EngineError::invalid("everyN must be at least 1"));
@@ -490,6 +729,105 @@ pub fn split_plan(
         return Err(EngineError::invalid("the split produced no file"));
     }
     Ok(parts)
+}
+
+/// v0.3 P4 — 책갈피로 분할: one part per outline node at `level` (1 = top level) that points at
+/// a page, from its page to the page before the next such node (the last runs to the end).
+/// Pages before the first node form a part of their own, named after the document. Nodes on
+/// the same page as an earlier one fold into it. Files are `NN 제목.pdf`, the title made safe
+/// for every file system (`\ / : * ? " < > |` and control characters become `_`, at most 80
+/// characters), numbered so they sort in reading order.
+fn outline_parts(
+    outline: &[OutlineNode],
+    level: u8,
+    page_count: u16,
+    stem: &str,
+) -> Result<Vec<SplitPart>, EngineError> {
+    if level == 0 {
+        return Err(EngineError::invalid("the outline level starts at 1"));
+    }
+    fn collect<'a>(nodes: &'a [OutlineNode], depth: u8, level: u8, out: &mut Vec<&'a OutlineNode>) {
+        for n in nodes {
+            if depth == level {
+                out.push(n);
+            } else {
+                collect(&n.children, depth + 1, level, out);
+            }
+        }
+    }
+    let mut nodes: Vec<&OutlineNode> = Vec::new();
+    collect(outline, 1, level, &mut nodes);
+    let mut starts: Vec<(u16, &str)> = Vec::new();
+    for n in nodes {
+        let Some(page) = n.page.filter(|p| *p < page_count) else {
+            continue;
+        };
+        if !starts.iter().any(|(p, _)| *p == page) {
+            starts.push((page, n.title.as_str()));
+        }
+    }
+    starts.sort_by_key(|(p, _)| *p);
+    if starts.is_empty() {
+        return Err(EngineError::invalid(format!(
+            "the outline has no bookmark with a page at level {level}"
+        )));
+    }
+    let mut parts: Vec<(u16, u16, String)> = Vec::new();
+    if starts[0].0 > 0 {
+        parts.push((0, starts[0].0 - 1, stem.to_string()));
+    }
+    for (i, (first, title)) in starts.iter().enumerate() {
+        let last = starts
+            .get(i + 1)
+            .map(|(next, _)| next - 1)
+            .unwrap_or(page_count - 1);
+        parts.push((*first, last, title.to_string()));
+    }
+    let width = if parts.len() >= 100 { 3 } else { 2 };
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    Ok(parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, (first, last, title))| {
+            let mut name = format!("{:0width$} {}", i + 1, safe_file_title(&title, stem));
+            let base = name.clone();
+            let mut n = 2;
+            while !used.insert(name.to_lowercase()) {
+                name = format!("{base} ({n})");
+                n += 1;
+            }
+            SplitPart {
+                pages: (first..=last).collect(),
+                name: format!("{name}.pdf"),
+            }
+        })
+        .collect())
+}
+
+/// A bookmark title as a file name: path and reserved characters out, trimmed, ≤ 80 chars.
+pub fn safe_file_title(title: &str, fallback: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let trimmed: String = cleaned
+        .trim()
+        .trim_end_matches('.')
+        .chars()
+        .take(80)
+        .collect();
+    let trimmed = trimmed.trim().to_string();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed
+    }
 }
 
 /// Writes one part of a split. Called once per part on `Lane::Background` so tiles interleave.
@@ -539,6 +877,10 @@ pub fn merge(st: &mut EngineState<'_>, inputs: &[MergeInput]) -> Result<MergeRes
             warnings.push(w);
         }
     };
+    // v0.3 P1: what PDFium's import leaves behind is put back by `carry::apply`; these are
+    // only reported when that fails.
+    let mut lost: Vec<MergeWarning> = Vec::new();
+    let mut placed: Vec<carry::Placed> = Vec::new();
     let bytes = {
         let mut out = pdfium
             .create_new_pdf()
@@ -552,14 +894,28 @@ pub fn merge(st: &mut EngineState<'_>, inputs: &[MergeInput]) -> Result<MergeRes
             }
             let selected = parse_range(input.range.as_deref().unwrap_or(""), source_count)?;
             if source.form().is_some() {
-                warn(MergeWarning::FormsDropped, &mut warnings);
+                warn(MergeWarning::FormsDropped, &mut lost);
             }
             if source.bookmarks().root().is_some() {
-                warn(MergeWarning::OutlineDropped, &mut warnings);
+                warn(MergeWarning::OutlineDropped, &mut lost);
             }
             if !source.metadata().is_empty() {
                 warn(MergeWarning::MetadataDropped, &mut warnings);
             }
+            let stem = Path::new(&input.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("{}", placed.len() + 1));
+            placed.push(carry::Placed {
+                source: carry::read_source(
+                    raw::bindings(pdfium),
+                    &source,
+                    &stem,
+                    selected.clone(),
+                    carry::Carry::ALL,
+                ),
+                at,
+            });
             let spec = range_string(&selected);
             // Page indices are u16: a merge past 65,535 pages is refused, never wrapped.
             let next = u16::try_from(at as usize + selected.len()).map_err(|_| {
@@ -585,7 +941,18 @@ pub fn merge(st: &mut EngineState<'_>, inputs: &[MergeInput]) -> Result<MergeRes
             raw::save::SaveFlags::NoIncremental,
         )?
     };
-    let info = registry::open(st, None, bytes, None)?;
+    let carried = carry::apply(&bytes, &placed, carry::OutlineMode::PerSource)
+        .map_err(|e| tracing::warn!(error = %e, "merge carry-over skipped"))
+        .ok();
+    let info = match carried.map(|b| registry::open(st, None, b, None)) {
+        Some(Ok(info)) => info,
+        _ => {
+            for w in lost {
+                warn(w, &mut warnings);
+            }
+            registry::open(st, None, bytes, None)?
+        }
+    };
     // The merge has never been saved: it opens **dirty**, so closing the window, quitting or
     // opening another file asks first, and autosave keeps a recovery copy of it.
     let doc = st.doc_mut(&info.doc_id)?;

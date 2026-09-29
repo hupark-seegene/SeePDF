@@ -161,10 +161,35 @@ export default function App() {
   useEffect(() => onDocChanged(applyDocChanged), [applyDocChanged]);
   useEffect(() => onOpenFile((e) => void import("./dialogs/flows").then((m) => m.openPaths([e.path]))), []);
   useEffect(() => onRecentsChanged(() => void refreshRecents()), [refreshRecents]);
+  // v0.3: in 페이지 mode a drop lands at the caret under the pointer (P2); anywhere else images go
+  // to 이미지로 PDF 만들기 and PDFs open (D1)
   useEffect(
-    () => onFileDrop((e) => e.paths.length && void import("./dialogs/flows").then((m) => m.openPaths(e.paths))),
+    () =>
+      onFileDrop((e) => {
+        if (!e.paths.length) return;
+        void (async () => {
+          if (useAppStore.getState().mode === "pages" && useDocStore.getState().info) {
+            const { dropFilesOnOrganizer } = await import("./organize/fileDrop");
+            if (await dropFilesOnOrganizer(e.paths, e.position)) return;
+          }
+          const { openDroppedPaths } = await import("./dialogs/flows");
+          await openDroppedPaths(e.paths);
+        })();
+      }),
     [],
   );
+  // v0.3 P3: pages dragged here from another window's 축소판 / 페이지 grid
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let cancelled = false;
+    void import("./organize/crossWindow").then((m) => {
+      if (!cancelled) off = m.startCrossWindowDrops();
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, []);
   useEffect(() => onMenuCommand((id) => run(id), MENU_IDS), [run]);
   // v0.3 pkg5: a panicking engine command closed this window's document (H4) → reopen it; another
   // window changed the theme (U4) → follow it, native chrome included

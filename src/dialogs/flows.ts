@@ -676,3 +676,10 @@ export async function resolveChangedOnDisk(info: DocInfo): Promise<boolean> {
   }
   return false;
 }
+
+// v0.3 pkg2-pages-structure-forms (D1): the window's file-drop route. Dropped images go to
+// 이미지로 PDF 만들기 instead of `open_document` (which cannot open a JPEG); PDFs open as before.
+export async function openDroppedPaths(paths: string[]): Promise<void> {
+  const { routeDroppedPaths } = await import("./imagesFlow");
+  await routeDroppedPaths(paths);
+}

@@ -229,11 +229,19 @@ fn style_of(name: Option<&[u8]>) -> PageLabelStyle {
 /// The lopdf rewrite: the old tree (and its `/Kids` nodes) out, `<< /Nums [...] >>` in.
 fn write_labels(bytes: &[u8], ranges: &[PageLabelRange]) -> Result<Vec<u8>, EngineError> {
     let mut doc = super::load(bytes)?;
+    set_in(&mut doc, ranges)?;
+    super::write(doc)
+}
+
+/// Replaces the catalog's `/PageLabels` of an already-parsed document with `ranges` (sorted,
+/// normalised — see [`normalize`]); `[]` removes it. v0.3: the merge / insert carry-over
+/// (`pages::carry`) writes through this too.
+pub(crate) fn set_in(doc: &mut Document, ranges: &[PageLabelRange]) -> Result<(), EngineError> {
     let old = doc
         .catalog_mut()
         .map_err(|e| save::lopdf_error("catalog", e))?
         .remove(b"PageLabels");
-    delete_tree(&mut doc, old);
+    delete_tree(doc, old);
     if !ranges.is_empty() {
         let mut nums = Vec::with_capacity(ranges.len() * 2);
         for r in ranges {
@@ -256,7 +264,7 @@ fn write_labels(bytes: &[u8], ranges: &[PageLabelRange]) -> Result<Vec<u8>, Engi
             .map_err(|e| save::lopdf_error("catalog", e))?
             .set("PageLabels", Object::Dictionary(tree));
     }
-    super::write(doc)
+    Ok(())
 }
 
 /// Deletes an old number tree's indirect nodes (root and `/Kids`).
@@ -284,7 +292,7 @@ fn delete_tree(doc: &mut Document, root: Option<Object>) {
 }
 
 /// `/PageLabels` as ranges, `/Nums` and `/Kids` both followed.
-fn read_ranges(doc: &Document) -> Vec<PageLabelRange> {
+pub(crate) fn read_ranges(doc: &Document) -> Vec<PageLabelRange> {
     let Ok(catalog) = doc.catalog() else {
         return Vec::new();
     };

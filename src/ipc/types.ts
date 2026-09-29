@@ -597,3 +597,27 @@ export interface SanitizeResult { removed: SanitizeCounts; info: DocInfo }
 
 /** S4: one document-level attachment; `index` is valid for the generation it was listed in. */
 export interface AttachmentInfo { index: number; name: string; size: number }
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg2-pages-structure-forms — images → PDF, split by bookmarks, form authoring and data,
+// link borders (IPC_CONTRACT §7.3b, §7.2a, §7.10)
+// ---------------------------------------------------------------------------
+
+/** `create_from_images`: the page each image goes on. */
+export type ImagePageSize = 'original' | 'a4' | 'letter';
+/** `contain` fills the page less its margins; `actual` keeps the image's own size unless it does not fit. */
+export type ImageFit = 'contain' | 'actual';
+/** `split_document` mode: one file per outline node of `level` (1 = top level). */
+export interface OutlineSplitMode { byOutline: { level: number } }
+export type NewFieldType = 'text' | 'checkbox' | 'radio' | 'combo' | 'signature';
+export interface FormFieldSpec {
+  page: PageIndex; rect: Rect; type: NewFieldType; name: string;
+  /** combo: the choices; radio: this button's export value (first entry) */
+  options?: string[]; maxLen?: number; required?: boolean; multiline?: boolean;
+}
+export interface FormFieldPatch { name?: string; options?: string[]; required?: boolean; maxLen?: number }
+export interface FormEditResult { info: DocInfo; fields: FormField[]; field?: FormField }
+export type FormDataFormat = 'csv' | 'xfdf';
+export interface FormDataResult { fields: number; unknown: string[]; docGeneration?: DocGeneration }
+/** A visible link border; `width: 0` = none. */
+export interface LinkBorder { width: number; color: Rgb }

@@ -106,6 +106,9 @@ pub const MENU_IDS: &[&str] = &[
     "help.reportProblem",
     "help.openLogs",
     "view.handTool",
+    // v0.3 pkg2-pages-structure-forms: 이미지로 PDF 만들기, 클립보드에서 새로 만들기
+    "file.imagesToPdf",
+    "file.newFromClipboard",
 ];
 
 /// `(key, 한국어, English)` — the `menu.*` rows of `UI_SPEC.md` §15.2, verbatim. The key is
@@ -140,6 +143,17 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("file.print", "인쇄…", "Print…"),
     ("file.docInfo", "문서 정보", "Document Properties"),
     ("file.revealInFinder", "Finder에서 보기", "Reveal in Finder"),
+    // v0.3 pkg2
+    (
+        "file.imagesToPdf",
+        "이미지로 PDF 만들기…",
+        "Create PDF from Images…",
+    ),
+    (
+        "file.newFromClipboard",
+        "클립보드에서 새로 만들기",
+        "New from Clipboard",
+    ),
     // edit
     ("edit.undo", "실행 취소", "Undo"),
     ("edit.redo", "다시 실행", "Redo"),
@@ -298,6 +312,9 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&item("file.open", Some("CmdOrCtrl+O"))?)
         .item(&item("file.openRecent", Some("CmdOrCtrl+Shift+O"))?)
         .item(&item("file.clearRecent", None)?)
+        // v0.3 pkg2: new documents from images; no shortcut.
+        .item(&item("file.imagesToPdf", None)?)
+        .item(&item("file.newFromClipboard", None)?)
         .separator()
         .item(&item("file.close", Some("CmdOrCtrl+W"))?)
         .item(&item("file.save", Some("CmdOrCtrl+S"))?)

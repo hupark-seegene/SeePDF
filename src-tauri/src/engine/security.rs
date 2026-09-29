@@ -275,16 +275,26 @@ pub fn ensure_source_unrestricted(
     source: &pdfium_render::prelude::PdfDocument<'_>,
     path: &std::path::Path,
 ) -> Result<(), EngineError> {
-    let p = registry::permissions_of(bindings, source);
+    ensure_unrestricted_permissions(
+        &registry::permissions_of(bindings, source),
+        &path.display().to_string(),
+    )
+}
+
+/// [`ensure_source_unrestricted`] for a source that is already open (v0.3 integration, P3 × S5:
+/// `import_pages_from_doc`, pages dragged in from another window): `name` names it in the error.
+pub fn ensure_unrestricted_permissions(
+    p: &crate::ipc::types::Permissions,
+    name: &str,
+) -> Result<(), EngineError> {
     if p.print && p.modify && p.extract_text && p.annotate && p.fill_forms && p.assemble {
         return Ok(());
     }
     Err(EngineError::new(
         ErrorCode::PermissionDenied,
         format!(
-            "{} is restricted: its pages cannot be copied into another document without its \
-             permissions password",
-            path.display()
+            "{name} is restricted: its pages cannot be copied into another document without its \
+             permissions password"
         ),
     )
     .with_detail("security"))

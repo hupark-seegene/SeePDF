@@ -397,6 +397,16 @@ pub fn run() {
             commands::app::third_party_notices,
             // --- v0.3 pkg1-redaction-and-text-objects (R4 그룹 해제) ---
             commands::objects::ungroup_object,
+            // --- v0.3 pkg2-pages-structure-forms ---
+            commands::documents::create_from_images,
+            commands::documents::write_temp_image,
+            commands::pages::import_pages_from_doc,
+            commands::forms::create_form_field,
+            commands::forms::update_form_field,
+            commands::forms::delete_form_field,
+            commands::forms::export_form_data,
+            commands::forms::import_form_data,
+            commands::forms::flatten_form,
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

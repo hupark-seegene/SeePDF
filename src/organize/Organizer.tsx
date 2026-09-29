@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeftRight, Copy, Crop, FilePlus2, Plus, RotateCcw, RotateCw, Scaling, Scissors, SplitSquareHorizontal,
+  ArrowLeftRight, Copy, Crop, FilePlus2, MoveRight, Plus, RotateCcw, RotateCw, Scaling, Scissors, SplitSquareHorizontal,
   Trash2, Tags,
 } from "lucide-react";
 import { useT } from "../i18n/useT";
@@ -27,11 +27,16 @@ import { displayLabel } from "../viewer/pageLabel";
 import { boxFromPoints, boxesIntersect, marqueeSelect, pressSelect, stepFocus, type Box } from "./selection";
 import { applyMove, identityOrder, moveOpFor } from "./moveOp";
 import type { PageGeom, PageIndex, PageOp } from "../ipc/types";
+// v0.3 pkg2-pages-structure-forms: OS file drops at the caret (P2), pages to other windows (P3)
+import { setOrganizerCaret } from "./fileDrop";
+import { publishPagesDrop, releasedOutside } from "./crossWindow";
 import "./organize.css";
 
 const GAP = 12;
 const LABEL_H = 26;
 const DRAG_SLOP = 5;
+/** v0.3 P2: a marquee this close to the grid's top / bottom edge scrolls it. */
+const AUTO_SCROLL_EDGE = 32;
 
 export function Organizer() {
   const t = useT();
@@ -110,6 +115,15 @@ export function Organizer() {
     [rows, rowH, cols, cellW, order.length],
   );
 
+  // v0.3 P2 / P3: a file or a page from another window dropped on the grid lands at this caret
+  useEffect(() => {
+    setOrganizerCaret((clientX, clientY) => {
+      const rect = contentRef.current?.getBoundingClientRect();
+      return caretAt(clientX - (rect?.left ?? 0), clientY - (rect?.top ?? 0));
+    });
+    return () => setOrganizerCaret(null);
+  }, [caretAt]);
+
   const commitMove = useCallback(
     async (caret: number) => {
       const selected = usePagesStore.getState().selected;
@@ -138,15 +152,46 @@ export function Organizer() {
       if (!mods.meta && !mods.shift) pages.clear();
       setMarquee({ x: point.x, y: point.y, w: 0, h: 0 });
       const startBase = base;
-      const move = (ev: PointerEvent) => {
-        const p = localPoint(ev);
+      let last = { clientX: e.clientX, clientY: e.clientY, additive: false };
+      const select = () => {
+        const p = localPoint(last);
         const rect = boxFromPoints(point.x, point.y, p.x, p.y);
         setMarquee(rect);
         const inside = order.filter((_, slot) => boxesIntersect(rect, cellBox(slot)));
-        const next = marqueeSelect(startBase, inside, ev.metaKey || ev.ctrlKey || ev.shiftKey);
+        const next = marqueeSelect(startBase, inside, last.additive);
         usePagesStore.getState().setSelected(next.selected);
       };
+      // v0.3 P2: a marquee held near the top / bottom edge scrolls the grid, faster the closer
+      let raf = 0;
+      const edgeSpeed = (): number => {
+        const el = scrollRef.current;
+        if (!el) return 0;
+        const r = el.getBoundingClientRect();
+        if (!r.height) return 0;
+        if (last.clientY < r.top + AUTO_SCROLL_EDGE) return -Math.ceil((r.top + AUTO_SCROLL_EDGE - last.clientY) / 3);
+        if (last.clientY > r.bottom - AUTO_SCROLL_EDGE) return Math.ceil((last.clientY - (r.bottom - AUTO_SCROLL_EDGE)) / 3);
+        return 0;
+      };
+      const tick = () => {
+        const el = scrollRef.current;
+        const speed = edgeSpeed();
+        if (!el || !speed) {
+          raf = 0;
+          return;
+        }
+        el.scrollTop += speed;
+        setScrollTop(el.scrollTop);
+        select();
+        raf = requestAnimationFrame(tick);
+      };
+      const move = (ev: PointerEvent) => {
+        last = { clientX: ev.clientX, clientY: ev.clientY, additive: ev.metaKey || ev.ctrlKey || ev.shiftKey };
+        select();
+        if (!raf && edgeSpeed()) raf = requestAnimationFrame(tick);
+      };
       const up = () => {
+        if (raf) cancelAnimationFrame(raf);
+        raf = 0;
         setMarquee(null);
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
@@ -173,7 +218,12 @@ export function Organizer() {
       const d = drag.current;
       drag.current = null;
       if (!d) return;
-      if (d.moved) {
+      if (d.moved && releasedOutside(ev.clientX, ev.clientY)) {
+        // v0.3 P3: released outside this window — another window may take the pages
+        usePagesStore.getState().setDropAt(null);
+        const selected = usePagesStore.getState().selected;
+        if (info) publishPagesDrop(info.docId, selected.length ? selected : [d.page], ev.screenX, ev.screenY);
+      } else if (d.moved) {
         const p = localPoint(ev);
         void commitMove(caretAt(p.x, p.y));
       } else if (!mods.meta && !mods.shift) {
@@ -257,6 +307,8 @@ export function Organizer() {
         await insertFromFileFlow(at);
       },
       split: () => openDialog("split"),
+      // v0.3 P2: 위치 이동… — the selection (or the focused page) as one block
+      moveTo: () => target.length && openDialog("moveTo", { pages: target }),
       // P2: the crop tool and 페이지 크기 변경 act on the selection (or the focused page)
       crop: () => openDialog("crop", { pages: selected.length ? selected : undefined }),
       resize: () => openDialog("resize", { pages: selected.length ? selected : undefined }),
@@ -278,6 +330,7 @@ export function Organizer() {
         { id: "duplicate", labelKey: "pages.duplicate", onSelect: actions.duplicate },
         { id: "extract", labelKey: "pages.extract", onSelect: actions.extract },
         { id: "insertAfter", labelKey: "pages.insertAfter", onSelect: () => void actions.insertFrom(page + 1) },
+        { id: "moveTo", labelKey: "pages.moveTo", onSelect: actions.moveTo },
         { id: "crop", labelKey: "pages.crop", onSelect: actions.crop },
         { id: "resize", labelKey: "pages.resize", onSelect: actions.resize },
         { id: "sep2", separator: true },
@@ -440,6 +493,8 @@ export function Organizer() {
         <RailButton icon={Scaling} labelKey="pages.resize" onSelect={actions.resize} />
         {/* P2 */}
         <RailButton icon={Tags} labelKey="pageLabels.open" onSelect={() => openDialog("pageLabels")} />
+        {/* v0.3 P2 */}
+        <RailButton icon={MoveRight} labelKey="pages.moveTo" disabled={!target.length} onSelect={actions.moveTo} />
 
         <span className="rail-spacer" />
         <label className="org-size text-xs dim">

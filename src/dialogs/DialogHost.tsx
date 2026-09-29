@@ -14,7 +14,7 @@ import { PrintDialog } from "./PrintDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import { DocInfoDialog } from "./DocInfoDialog";
 import { ShortcutsDialog } from "./ShortcutsDialog";
-import { ChoiceDialog, ConfirmDialog, ExtractDialog, InsertFromDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
+import { ChoiceDialog, ConfirmDialog, ExtractDialog, InsertFromDialog, MoveToDialog, MultipleFilesDialog, PasswordDialog, UnsavedDialog } from "./Prompts";
 import type { ChoiceRequest, MultipleFilesAnswer, UnsavedAnswer } from "./dialogState";
 import type { PageIndex, RecoveryEntry, StampRole } from "../ipc/types";
 import type { DrawnSignature, ImageSignature } from "./SignatureDialog";
@@ -45,6 +45,8 @@ const PageLabelsDialog = lazy(() => import("./PageLabelsDialog"));
 const MultiSearchDialog = lazy(() => import("../multisearch/MultiSearchDialog"));
 // v0.3 pkg5: SeePDF 정보 (H1) with 오픈 소스 라이선스 (H11) — rare, its own chunk.
 const AboutDialog = lazy(() => import("./AboutDialog"));
+// v0.3 pkg2-pages-structure-forms: 이미지로 PDF 만들기, its own chunk.
+const ImagesToPdfDialog = lazy(() => import("./ImagesToPdfDialog"));
 
 export default function DialogHost() {
   const stack = useDialogStore((s) => s.stack);
@@ -95,6 +97,15 @@ function Current({ entry }: { entry: DialogEntry }) {
       return <ShortcutsDialog onClose={close} />;
     case "extract":
       return <ExtractDialog pages={p.pages as PageIndex[]} onClose={close} />;
+    // v0.3 pkg2-pages-structure-forms
+    case "imagesToPdf":
+      return (
+        <Suspense fallback={null}>
+          <ImagesToPdfDialog onClose={close} paths={(p.paths as string[] | undefined) ?? []} />
+        </Suspense>
+      );
+    case "moveTo":
+      return <MoveToDialog pages={p.pages as PageIndex[]} onClose={close} />;
     case "insertFrom":
       return <InsertFromDialog at={p.at as PageIndex} path={p.path as string} onClose={close} />;
     case "password":

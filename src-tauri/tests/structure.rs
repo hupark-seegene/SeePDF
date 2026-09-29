@@ -797,3 +797,312 @@ fn structure_on_encrypted_keeps_encryption() {
     assert_eq!(r.annot.unwrap().uri.as_deref(), Some("https://example.com"));
     assert!(can_undo(&doc.doc_id));
 }
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg2-pages-structure-forms (P5): link borders and quads, outline fidelity
+// ---------------------------------------------------------------------------------------
+
+/// The link `/NM id`'s dictionary in saved bytes.
+fn link_dict(bytes: &[u8], id: &str) -> lopdf::Dictionary {
+    let doc = lopdf::Document::load_mem(bytes).unwrap();
+    for object in doc.objects.values() {
+        let Ok(dict) = object.as_dict() else { continue };
+        let name = dict
+            .get(b"NM")
+            .ok()
+            .and_then(|n| lopdf::decode_text_string(n).ok());
+        if name.as_deref() == Some(id) {
+            return dict.clone();
+        }
+    }
+    panic!("no annotation /NM {id}");
+}
+
+fn floats(o: &lopdf::Object) -> Vec<f32> {
+    o.as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_float().unwrap_or_else(|_| v.as_i64().unwrap() as f32))
+        .collect()
+}
+
+#[test]
+fn structure_link_quads_and_border() {
+    use seepdf_lib::ipc::types::LinkBorder;
+    let doc = open("tracemonkey.pdf");
+    let quads = vec![
+        Rect::new(100.0, 700.0, 300.0, 712.0),
+        Rect::new(72.0, 686.0, 180.0, 698.0),
+    ];
+    let red = LinkBorder {
+        width: 1.0,
+        color: [255, 0, 0],
+    };
+    for target in [page_target(3, None), url_target("https://example.com/q")] {
+        let (id, q) = (doc.doc_id.clone(), quads.clone());
+        let r = with_state(move |st| {
+            links::create_link_styled(st, &id, 0, Rect::ZERO, &target, &q, Some(red))
+        })
+        .expect("create_link with quads");
+        let link = r.annot.expect("the link");
+        let read = link.quads.clone().expect("quads read back");
+        assert_eq!(read.len(), 2, "a link with 2 quads reads back 2 quads");
+        assert!(
+            (link.rect.l - 72.0).abs() < 0.1 && (link.rect.t - 712.0).abs() < 0.1,
+            "the union rect: {:?}",
+            link.rect
+        );
+        let bytes = save_as(&doc.doc_id, "link-quads.pdf");
+        let dict = link_dict(&bytes, &link.id);
+        assert_eq!(floats(dict.get(b"Border").unwrap()), [0.0, 0.0, 1.0]);
+        assert_eq!(floats(dict.get(b"C").unwrap()), [1.0, 0.0, 0.0]);
+        assert_eq!(floats(dict.get(b"QuadPoints").unwrap()).len(), 16);
+
+        // The border off again, target untouched.
+        let (id, link_id) = (doc.doc_id.clone(), link.id.clone());
+        with_state(move |st| {
+            links::update_link_styled(
+                st,
+                &id,
+                0,
+                &link_id,
+                None,
+                None,
+                Some(LinkBorder {
+                    width: 0.0,
+                    color: [0, 0, 0],
+                }),
+            )
+        })
+        .expect("border off");
+        let bytes = save_as(&doc.doc_id, "link-quads.pdf");
+        assert_eq!(border_of(&bytes, &link.id), [0, 0, 0]);
+    }
+}
+
+/// `set_outline` keeps a named `/Dest` and `/C` `/F` on a node whose title and target did not
+/// change; a renamed node is written fresh.
+#[test]
+fn structure_outline_keeps_named_dests_and_styles() {
+    use lopdf::{Dictionary, Object};
+    // Build the fixture: /Dests << /chap1 [page 2 /Fit] >> and two items, one with a named
+    // destination and a red bold style.
+    let mut parsed = lopdf::Document::load(fixture("tracemonkey.pdf")).unwrap();
+    let pages: Vec<lopdf::ObjectId> = parsed.get_pages().into_values().collect();
+    let mut dests = Dictionary::new();
+    dests.set(
+        "chap1",
+        Object::Array(vec![
+            Object::Reference(pages[2]),
+            Object::Name(b"Fit".to_vec()),
+        ]),
+    );
+    let dests_id = parsed.add_object(Object::Dictionary(dests));
+    let root = parsed.new_object_id();
+    let (a, b) = (parsed.new_object_id(), parsed.new_object_id());
+    let mut item_a = Dictionary::new();
+    item_a.set("Title", Object::string_literal("Named"));
+    item_a.set("Parent", Object::Reference(root));
+    item_a.set("Next", Object::Reference(b));
+    item_a.set("Dest", Object::string_literal("chap1"));
+    item_a.set(
+        "C",
+        Object::Array(vec![
+            Object::Real(1.0),
+            Object::Real(0.0),
+            Object::Real(0.0),
+        ]),
+    );
+    item_a.set("F", Object::Integer(2));
+    let mut item_b = Dictionary::new();
+    item_b.set("Title", Object::string_literal("Plain"));
+    item_b.set("Parent", Object::Reference(root));
+    item_b.set("Prev", Object::Reference(a));
+    item_b.set(
+        "Dest",
+        Object::Array(vec![
+            Object::Reference(pages[5]),
+            Object::Name(b"Fit".to_vec()),
+        ]),
+    );
+    item_b.set(
+        "C",
+        Object::Array(vec![
+            Object::Real(0.0),
+            Object::Real(0.0),
+            Object::Real(1.0),
+        ]),
+    );
+    parsed.objects.insert(a, Object::Dictionary(item_a));
+    parsed.objects.insert(b, Object::Dictionary(item_b));
+    let mut outlines = Dictionary::new();
+    outlines.set("Type", Object::Name(b"Outlines".to_vec()));
+    outlines.set("First", Object::Reference(a));
+    outlines.set("Last", Object::Reference(b));
+    outlines.set("Count", Object::Integer(2));
+    parsed.objects.insert(root, Object::Dictionary(outlines));
+    let catalog = parsed.catalog_mut().unwrap();
+    catalog.set("Outlines", Object::Reference(root));
+    catalog.set("Dests", Object::Reference(dests_id));
+    let mut bytes = Vec::new();
+    parsed.save_to(&mut bytes).unwrap();
+    let doc = reopen(bytes);
+
+    let mut nodes = get_outline(&doc.doc_id);
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(
+        nodes[0].page,
+        Some(2),
+        "PDFium resolves the named destination"
+    );
+    nodes[1].title = "Plain, renamed".into();
+    set_outline(&doc.doc_id, nodes.clone()).expect("set_outline");
+    assert_eq!(get_outline(&doc.doc_id)[1].title, "Plain, renamed");
+
+    let saved = save_as(&doc.doc_id, "outline-named.pdf");
+    let reread = lopdf::Document::load_mem(&saved).unwrap();
+    let item = |title: &str| {
+        reread
+            .objects
+            .values()
+            .filter_map(|o| o.as_dict().ok())
+            .find(|d| {
+                d.get(b"Title")
+                    .ok()
+                    .and_then(|t| lopdf::decode_text_string(t).ok())
+                    .as_deref()
+                    == Some(title)
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("no item {title}"))
+    };
+    let named = item("Named");
+    assert_eq!(
+        named.get(b"Dest").unwrap().as_str().ok(),
+        Some(&b"chap1"[..]),
+        "the named destination is kept, not made explicit"
+    );
+    assert_eq!(floats(named.get(b"C").unwrap()), [1.0, 0.0, 0.0]);
+    assert_eq!(named.get(b"F").unwrap().as_i64().unwrap(), 2);
+    let renamed = item("Plain, renamed");
+    assert!(!renamed.has(b"C") || floats(renamed.get(b"C").unwrap()) == [0.0, 0.0, 1.0]);
+    assert!(
+        renamed.get(b"Dest").unwrap().as_array().is_ok(),
+        "an explicit destination"
+    );
+    // Round trip once more: still the same outline for PDFium.
+    let again = reopen(saved);
+    assert_eq!(get_outline(&again.doc_id)[0].page, Some(2));
+}
+
+/// One pixel of page `page` rendered at 100 % with annotations (`render_raw_buffer`).
+fn pixel(doc_id: &str, page: u16, x: usize, y: usize) -> [u8; 3] {
+    let doc_id = doc_id.to_string();
+    let buffer = with_state(move |st| {
+        seepdf_lib::engine::render::tiles::render_raw_buffer(st, &doc_id, page, 1.0, None)
+    })
+    .expect("render");
+    let width = u32::from_le_bytes(buffer[8..12].try_into().unwrap()) as usize;
+    let at = 32 + (y * width + x) * 4;
+    [buffer[at], buffer[at + 1], buffer[at + 2]]
+}
+
+fn is_red(p: &[u8; 3]) -> bool {
+    p[0] > 180 && p[1] < 100 && p[2] < 100
+}
+
+/// P5 (verification round 1): 테두리 표시 shows in SeePDF's own rendering — PDFium draws no
+/// `/Border` of a link without `/AP`, so the border is written as an appearance stream — for
+/// both writers (page target: lopdf, web address: PDFium); it follows a moved link and goes
+/// when the border is switched off.
+#[test]
+fn structure_link_border_is_visible() {
+    use seepdf_lib::ipc::types::LinkBorder;
+    let doc = open("tracemonkey.pdf");
+    let h = doc.info.pages[0].height_pt;
+    let y = (h - 350.0) as usize;
+    let red = LinkBorder {
+        width: 3.0,
+        color: [255, 0, 0],
+    };
+    let left_edge = |x: f32| -> Vec<[u8; 3]> {
+        (0..3)
+            .map(|dx| pixel(&doc.doc_id, 0, x as usize + dx, y))
+            .collect()
+    };
+    assert!(
+        !left_edge(8.0).iter().any(is_red),
+        "the margin starts blank"
+    );
+    for (i, target) in [page_target(3, None), url_target("https://example.com")]
+        .into_iter()
+        .enumerate()
+    {
+        let x = 8.0 + 60.0 * i as f32;
+        let rect = Rect::new(x, 300.0, x + 40.0, 400.0);
+        let r = with_state({
+            let id = doc.doc_id.clone();
+            move |st| links::create_link_styled(st, &id, 0, rect, &target, &[], Some(red))
+        })
+        .expect("create a bordered link");
+        let link = r.annot.expect("the link");
+        assert_eq!(link.border_width, 3.0);
+        assert!(
+            left_edge(x).iter().any(is_red),
+            "target {i}: the red border shows: {:?}",
+            left_edge(x)
+        );
+
+        // Moved down the margin: the border moves with it and the old place is clear again.
+        let moved = Rect::new(x, 200.0, x + 40.0, 280.0);
+        with_state({
+            let (id, link_id) = (doc.doc_id.clone(), link.id.clone());
+            move |st| links::update_link(st, &id, 0, &link_id, Some(moved), None)
+        })
+        .expect("move");
+        assert!(
+            !left_edge(x).iter().any(is_red),
+            "target {i}: old place clear"
+        );
+        let y2 = (h - 240.0) as usize;
+        let at_new: Vec<[u8; 3]> = (0..3)
+            .map(|dx| pixel(&doc.doc_id, 0, x as usize + dx, y2))
+            .collect();
+        assert!(
+            at_new.iter().any(is_red),
+            "target {i}: moved border {at_new:?}"
+        );
+
+        // Border off: nothing drawn, /AP gone.
+        with_state({
+            let (id, link_id) = (doc.doc_id.clone(), link.id.clone());
+            move |st| {
+                links::update_link_styled(
+                    st,
+                    &id,
+                    0,
+                    &link_id,
+                    None,
+                    None,
+                    Some(LinkBorder {
+                        width: 0.0,
+                        color: [0, 0, 0],
+                    }),
+                )
+            }
+        })
+        .expect("border off");
+        let after: Vec<[u8; 3]> = (0..3)
+            .map(|dx| pixel(&doc.doc_id, 0, x as usize + dx, y2))
+            .collect();
+        assert!(
+            !after.iter().any(is_red),
+            "target {i}: border off {after:?}"
+        );
+        let bytes = save_as(&doc.doc_id, "link-border-off.pdf");
+        assert!(
+            !link_dict(&bytes, &link.id).has(b"AP"),
+            "target {i}: /AP removed"
+        );
+    }
+}

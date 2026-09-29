@@ -19,6 +19,8 @@ export interface IconButtonProps {
   tone?: "default" | "danger";
   onClick?: () => void;
   badge?: ReactNode;
+  /** the tooltip's text when it differs from `label` (e.g. why the button is disabled) */
+  tooltip?: string;
 }
 
 /**
@@ -35,9 +37,10 @@ export function IconButton({
   tone = "default",
   onClick,
   badge,
+  tooltip,
 }: IconButtonProps) {
   return (
-    <Tooltip label={label} shortcut={shortcut}>
+    <Tooltip label={tooltip ?? label} shortcut={shortcut}>
       <button
         type="button"
         className="icon-btn"

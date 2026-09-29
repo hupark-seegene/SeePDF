@@ -157,6 +157,8 @@ export const MENU_ONLY_IDS: readonly string[] = [
   "edit.findInFiles",
   // v0.3 pkg5 (H10): 도움말 › 문제 보고… / 로그 폴더 열기 (also in ⋯)
   "help.reportProblem", "help.openLogs",
+  // v0.3 pkg2-pages-structure-forms: 파일 ▸ 이미지로 PDF 만들기… / 클립보드에서 새로 만들기
+  "file.imagesToPdf", "file.newFromClipboard",
 ];
 export const MENU_IDS: readonly string[] = [...KEYMAP.map((b) => b.id), ...MENU_ONLY_IDS];
 

@@ -18,6 +18,7 @@ import { shortcutFor } from "../keys/keymap";
 import { openContextMenu } from "../app/contextMenuStore";
 import { openDialog } from "../dialogs/dialogState";
 import * as api from "../ipc/api";
+import { onFileDragState } from "../ipc/events";
 import type { RecentEntry, Settings as AppSettings } from "../ipc/types";
 import "./welcome.css";
 
@@ -54,6 +55,9 @@ export function Welcome() {
   useEffect(() => {
     void refreshRecents();
   }, [refreshRecents]);
+
+  // v0.3 H7: the native drag-drop events drive the highlight (HTML5 dragover never fires on Windows)
+  useEffect(() => onFileDragState((state) => setDragOver(state === "over")), []);
 
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();

@@ -24,6 +24,9 @@ import type {
   ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus, LinkTarget, PageLabelRange, ReadingOrder, WebLink,
   AppInfo, ProblemReport,
   AttachmentInfo, SanitizeCounts, SanitizeOptions, SanitizeResult,
+  // v0.3 pkg2-pages-structure-forms
+  FormDataFormat, FormDataResult, FormEditResult, FormFieldPatch, FormFieldSpec, ImageFit, ImagePageSize, LinkBorder,
+  OutlineSplitMode,
 } from "./types";
 import { labelsFor, normalizeRanges } from "../dialogs/pageLabels";
 
@@ -884,24 +887,31 @@ export const mock = {
     return { viewNonce: Date.now() };
   },
   // P2 links ------------------------------------------------------------------
-  async createLink(a: { docId: DocId; page: PageIndex; rect: Rect; target: LinkTarget }): Promise<AnnotResult> {
+  async createLink(a: { docId: DocId; page: PageIndex; rect: Rect; target: LinkTarget; quads?: Rect[]; border?: LinkBorder }): Promise<AnnotResult> {
     const d = doc(a.docId);
-    validateLink(d, a.page, a.rect, a.target);
+    // v0.3 P5: quads (a link from a text selection) — the click area is their union
+    const rect = a.quads?.length ? a.quads.map(normRect).reduce(unionR) : a.rect;
+    validateLink(d, a.page, rect, a.target);
     // a go-to-page link is a lopdf rewrite in the engine: refused on an encrypted file
     if (!("url" in a.target)) refuseEncrypted(d);
-    const annot = linkAnnot(a.page, `mock-link-${nextAnnot++}`, a.rect, a.target);
+    const annot = linkAnnot(a.page, `mock-link-${nextAnnot++}`, rect, a.target);
+    if (a.quads?.length) annot.quads = a.quads.map(normRect);
+    if (a.border && a.border.width > 0) {
+      annot.borderWidth = a.border.width;
+      annot.color = a.border.color;
+    }
     return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.linkCreate" }, () => {
       d.annots.set(a.page, [...(d.annots.get(a.page) ?? []), annot]);
       return { list: listOf(d, a.page), annot: structuredClone(annot), previous: null };
     });
   },
-  async updateLink(a: { docId: DocId; page: PageIndex; id: string; rect?: Rect; target?: LinkTarget }): Promise<AnnotResult> {
+  async updateLink(a: { docId: DocId; page: PageIndex; id: string; rect?: Rect; target?: LinkTarget; border?: LinkBorder }): Promise<AnnotResult> {
     const d = doc(a.docId);
     const list = d.annots.get(a.page) ?? [];
     const idx = list.findIndex((x) => x.id === a.id);
     if (idx < 0) throw err("notFound", `annotation ${a.id}`);
     if (list[idx].kind !== "link") throw err("invalidArgument", `${a.id} is not a link`);
-    if (!a.rect && !a.target) throw err("invalidArgument", "update_link needs a rect or a target");
+    if (!a.rect && !a.target && !a.border) throw err("invalidArgument", "update_link needs a rect, a target or a border");
     validateLink(d, a.page, a.rect, a.target);
     const previous = structuredClone(list[idx]);
     const wasPage = previous.dest !== undefined;
@@ -910,6 +920,11 @@ export const mock = {
       const target: LinkTarget = a.target ?? (previous.uri !== undefined ? { url: previous.uri } : { ...previous.dest! });
       const next = linkAnnot(a.page, a.id, a.rect ?? previous.rect, target);
       next.created = previous.created;
+      if (previous.quads) next.quads = previous.quads;
+      // v0.3 P5: the border follows `border` when given, else stays
+      const border = a.border ?? { width: previous.borderWidth, color: previous.color };
+      next.borderWidth = border.width;
+      next.color = border.width > 0 ? border.color : [0, 0, 0];
       list[idx] = next;
       d.annots.set(a.page, list);
       return { list: listOf(d, a.page), annot: structuredClone(next), previous };
@@ -946,6 +961,16 @@ export const mock = {
       else if ("checked" in value) {
         field.checked = value.checked;
         field.value = value.checked ? "On" : "Off";
+        // like the engine: one button of a radio group on switches the others off (v0.3: and
+        // `checked: false` switches the whole group off)
+        if (field.type === "radio") {
+          for (const f of d.fields) {
+            if (f !== field && f.type === "radio" && f.name === field.name) {
+              f.checked = false;
+              f.value = field.value;
+            }
+          }
+        }
       } else if (field.options) {
         field.options = field.options.map((o, i) => ({ ...o, selected: value.selected.includes(i) }));
         field.value = field.options.find((o) => o.selected)?.label ?? null;
@@ -979,11 +1004,16 @@ export const mock = {
     return { bytes: 120_000 * Math.max(1, a.pages.length), docGeneration: d.info.docGeneration };
   },
   async splitDocument(
-    a: { docId: DocId; mode: { everyN: number } | { ranges: string[] }; outDir: string },
+    a: { docId: DocId; mode: { everyN: number } | { ranges: string[] } | OutlineSplitMode; outDir: string },
     onProgress: (e: JobEvent) => void,
   ): Promise<JobId> {
     const d = doc(a.docId);
-    const parts = "everyN" in a.mode ? Math.ceil(d.info.pageCount / a.mode.everyN) : a.mode.ranges.length;
+    const parts = "everyN" in a.mode
+      ? Math.ceil(d.info.pageCount / a.mode.everyN)
+      : "byOutline" in a.mode
+        ? outlineAtLevel(d.outline, a.mode.byOutline.level).length
+        : a.mode.ranges.length;
+    if ("byOutline" in a.mode && parts === 0) throw err("invalidArgument", "the outline has no bookmark at that level");
     return runJob(Math.max(1, parts), onProgress, {
       stepMs: 140,
       outputs: Array.from({ length: Math.max(1, parts) }, (_, i) => `${a.outDir}/${d.info.name}-${i + 1}.pdf`),
@@ -995,7 +1025,8 @@ export const mock = {
     merged.info.name = "merged.pdf";
     merged.info.dirty = true;
     docs.set(merged.info.docId, merged);
-    const warnings: MergeWarning[] = ["outlineDropped"];
+    // v0.3 P1: the engine carries fields and outlines over; only the metadata is still lost
+    const warnings: MergeWarning[] = ["metadataDropped"];
     return { info: structuredClone(merged.info), warnings };
   },
 
@@ -1838,7 +1869,180 @@ export const mock = {
   async thirdPartyNotices(): Promise<string> {
     return delay("SeePDF — third-party notices\n\n==== pdfium-render 0.9.0 (MIT OR Apache-2.0) ====\n\n==== react 19.1.0 (MIT) ====\n", 10);
   },
+  // v0.3 pkg2-pages-structure-forms ---------------------------------------------
+  async createFromImages(
+    a: { paths: string[]; pageSize: ImagePageSize; margin?: number; fit?: ImageFit },
+    onProgress: (e: JobEvent) => void,
+  ): Promise<DocInfo> {
+    if (a.paths.length === 0) throw err("invalidArgument", "no image was given");
+    const bad = a.paths.find((p) => !IMAGE_PATH.test(p));
+    if (bad) throw err("unsupported", `${bad} is not a PNG or JPEG image`);
+    const jobId = nextJob++;
+    const total = a.paths.length + 1;
+    onProgress({ type: "started", jobId, total });
+    a.paths.forEach((_, i) => onProgress({ type: "progress", jobId, done: i + 1, total }));
+    // the fake images are 400 × 300 px at 96 dpi = 300 × 225 pt; A4 / Letter turn landscape for them
+    const size =
+      a.pageSize === "a4" ? { w: 841.89, h: 595.28 } : a.pageSize === "letter" ? { w: 792, h: 612 } : { w: 300 + 2 * (a.margin ?? 0), h: 225 + 2 * (a.margin ?? 0) };
+    const d = makeDoc(a.paths[0], a.paths.length);
+    d.info.pages = d.info.pages.map((p) => ({ ...p, widthPt: size.w, heightPt: size.h, crop: { l: 0, b: 0, r: size.w, t: size.h } }));
+    d.info.path = null;
+    d.info.name = `${baseName(a.paths[0]).replace(/\.[^.]+$/, "")}.pdf`;
+    d.info.dirty = true;
+    d.info.hasOutline = false;
+    d.info.hasForm = false;
+    d.annots.clear();
+    d.fields = [];
+    d.outline = [];
+    docs.set(d.info.docId, d);
+    onProgress({ type: "done", jobId, elapsedMs: 5 });
+    return delay(structuredClone(d.info), 20);
+  },
+  async writeTempImage(a: { bytes: number[] }): Promise<string> {
+    const png = a.bytes[0] === 0x89 && a.bytes[1] === 0x50;
+    const jpeg = a.bytes[0] === 0xff && a.bytes[1] === 0xd8;
+    if (!png && !jpeg) throw err("unsupported", "the clipboard image is not a PNG or JPEG");
+    const path = `/mock/tmp/seepdf-clipboard/clip-${nextTempImage++}.${png ? "png" : "jpg"}`;
+    writtenFiles.add(path);
+    return path;
+  },
+  async importPagesFromDoc(a: { srcDocId: DocId; pages: PageIndex[]; dstDocId: DocId; at: PageIndex }): Promise<DocInfo> {
+    if (a.srcDocId === a.dstDocId) throw err("invalidArgument", "source and target are the same document");
+    const src = doc(a.srcDocId);
+    // v0.3 integration (P3 × S5): a restricted source cannot hand its pages to another document
+    refuseSecurityChange(src);
+    const d = doc(a.dstDocId);
+    const pages = [...new Set(a.pages)];
+    if (!pages.length) throw err("invalidArgument", "no page was selected");
+    const bad = pages.find((p) => p < 0 || p >= src.info.pageCount);
+    if (bad !== undefined) throw err("invalidArgument", `page ${bad} is outside the source`);
+    if (a.at < 0 || a.at > d.info.pageCount) throw err("invalidArgument", `cannot insert at ${a.at}`);
+    return mutate(d, { reason: "pages", pages: "all", structure: true, undoLabel: "undo.pageImport" }, () => {
+      const copies = pages.map((p) => ({ ...structuredClone(src.info.pages[p]), label: null }));
+      d.info.pages = [...d.info.pages.slice(0, a.at), ...copies, ...d.info.pages.slice(a.at)].map((p, index) => ({ ...p, index }));
+      d.info.pageCount = d.info.pages.length;
+      return () => structuredClone(d.info);
+    })();
+  },
+  async createFormField(a: { docId: DocId; spec: FormFieldSpec }): Promise<FormEditResult> {
+    const d = doc(a.docId);
+    refuseEncrypted(d);
+    const s = a.spec;
+    const name = s.name.trim();
+    if (!name || name.includes(".")) throw err("invalidArgument", "a field needs a name without '.'");
+    if (s.page < 0 || s.page >= d.info.pageCount) throw err("invalidArgument", `page ${s.page}`);
+    const taken = d.fields.find((f) => f.name === name);
+    if (taken && !(s.type === "radio" && taken.type === "radio")) throw err("invalidArgument", `a field named '${name}' already exists`);
+    if (Math.abs(s.rect.r - s.rect.l) < 4 || Math.abs(s.rect.t - s.rect.b) < 4) throw err("invalidArgument", "a field needs at least 4 pt × 4 pt");
+    if (s.type === "combo" && !(s.options ?? []).some((o) => o.trim())) throw err("invalidArgument", "a combo box needs at least one choice");
+    const onPage = d.fields.filter((f) => f.page === s.page);
+    const index = onPage.length ? Math.max(...onPage.map((f) => f.index)) + 1 : (d.annots.get(s.page)?.length ?? 0);
+    const field: FormField = {
+      page: s.page, index, name, type: s.type, rect: normRect(s.rect),
+      value: s.type === "checkbox" || s.type === "radio" ? "Off" : null,
+      readOnly: false, required: s.required ?? false,
+      ...(s.type === "checkbox" || s.type === "radio" ? { checked: false } : null),
+      ...(s.type === "combo" ? { options: (s.options ?? []).filter((o) => o.trim()).map((label) => ({ label, selected: false })) } : null),
+      ...(s.type === "text" ? { multiline: s.multiline ?? false, comb: false, ...(s.maxLen ? { maxLen: s.maxLen } : null) } : null),
+    };
+    return mutate(d, { reason: "edit", pages: [s.page], undoLabel: "undo.formFieldCreate" }, () => {
+      d.fields.push(field);
+      d.info.hasForm = true;
+      return () => ({ info: structuredClone(d.info), fields: structuredClone(d.fields), field: structuredClone(field) });
+    })();
+  },
+  async updateFormField(a: { docId: DocId; page: PageIndex; index: number; patch: FormFieldPatch }): Promise<FormEditResult> {
+    const d = doc(a.docId);
+    refuseEncrypted(d);
+    const field = d.fields.find((f) => f.page === a.page && f.index === a.index);
+    if (!field) throw err("notFound", `field ${a.index}`);
+    const name = a.patch.name?.trim();
+    if (name !== undefined) {
+      if (!name || name.includes(".")) throw err("invalidArgument", "a field needs a name without '.'");
+      const taken = d.fields.filter((f) => f !== field && f.name === name && f.name !== field.name);
+      // a radio group renamed after another radio group joins it (the engine merges the groups)
+      const joins = field.type === "radio" && taken.every((f) => f.type === "radio");
+      if (taken.length && !joins) throw err("invalidArgument", `a field named '${name}' already exists`);
+    }
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.formFieldEdit" }, () => {
+      const group = d.fields.filter((f) => f.name === field.name);
+      for (const f of group) {
+        if (name) f.name = name;
+        if (a.patch.required !== undefined) f.required = a.patch.required;
+        if (a.patch.maxLen !== undefined && f.type === "text") {
+          if (a.patch.maxLen > 0) f.maxLen = a.patch.maxLen;
+          else delete f.maxLen;
+        }
+        if (a.patch.options && f.type === "combo") f.options = a.patch.options.filter((o) => o.trim()).map((label) => ({ label, selected: false }));
+      }
+      return () => ({ info: structuredClone(d.info), fields: structuredClone(d.fields), field: structuredClone(field) });
+    })();
+  },
+  async deleteFormField(a: { docId: DocId; page: PageIndex; index: number }): Promise<FormEditResult> {
+    const d = doc(a.docId);
+    refuseEncrypted(d);
+    const field = d.fields.find((f) => f.page === a.page && f.index === a.index);
+    if (!field) throw err("notFound", `field ${a.index}`);
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.formFieldDelete" }, () => {
+      d.fields = d.fields.filter((f) => f !== field);
+      return () => ({ info: structuredClone(d.info), fields: structuredClone(d.fields) });
+    })();
+  },
+  async exportFormData(a: { docId: DocId; format: FormDataFormat; outPath: string }): Promise<FormDataResult> {
+    const d = doc(a.docId);
+    const values = new Map<string, string>();
+    for (const f of d.fields) {
+      if (f.type === "button" || f.type === "signature" || values.has(f.name)) continue;
+      values.set(f.name, f.value ?? "");
+    }
+    writtenFiles.add(a.outPath);
+    mockFiles.set(a.outPath, values);
+    return { fields: values.size, unknown: [] };
+  },
+  async importFormData(a: { docId: DocId; path: string; format?: FormDataFormat }): Promise<FormDataResult> {
+    const d = doc(a.docId);
+    const values = mockFiles.get(a.path);
+    if (!values) throw err("notFound", a.path);
+    const unknown = [...values.keys()].filter((n) => !d.fields.some((f) => f.name === n));
+    let count = 0;
+    mutate(d, { reason: "edit", pages: "all", undoLabel: "undo.formImport" }, () => {
+      for (const f of d.fields) {
+        const v = values.get(f.name);
+        if (v === undefined || f.readOnly) continue;
+        f.value = v;
+        if (f.type === "checkbox" || f.type === "radio") f.checked = v !== "Off" && v !== "";
+        count += 1;
+      }
+    });
+    return { fields: count, unknown, docGeneration: d.info.docGeneration };
+  },
+  async flattenForm(a: { docId: DocId }): Promise<DocInfo> {
+    const d = doc(a.docId);
+    refuseEncrypted(d);
+    if (!d.fields.length) throw err("invalidArgument", "the document has no form field");
+    return mutate(d, { reason: "edit", pages: "all", undoLabel: "undo.formFlatten" }, () => {
+      d.fields = [];
+      d.info.hasForm = false;
+      return () => structuredClone(d.info);
+    })();
+  },
 };
+
+/** v0.3: file names `create_from_images` accepts in the mock (the engine sniffs magic bytes). */
+const IMAGE_PATH = /\.(png|jpe?g)$/i;
+let nextTempImage = 1;
+/** v0.3: what `export_form_data` "wrote", so `import_form_data` can read it back. */
+const mockFiles = new Map<string, Map<string, string>>();
+
+/** v0.3 P4: the outline nodes of `level` (1 = top) that point at a page. */
+function outlineAtLevel(nodes: OutlineNode[], level: number, depth = 1): OutlineNode[] {
+  if (depth === level) return nodes.filter((n) => n.page !== null && n.page !== undefined);
+  return nodes.flatMap((n) => outlineAtLevel(n.children ?? [], level, depth + 1));
+}
+
+function normRect(r: Rect): Rect {
+  return { l: Math.min(r.l, r.r), b: Math.min(r.b, r.t), r: Math.max(r.l, r.r), t: Math.max(r.b, r.t) };
+}
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -2607,6 +2811,8 @@ export function resetMock(): void {
   riskyOf.clear();
   changedOnDisk.clear();
   otherWindows.clear();
+  nextTempImage = 1;
+  mockFiles.clear();
   recents = structuredClone(recentsFixture) as unknown as RecentEntry[];
   settings = seedSettings();
 }

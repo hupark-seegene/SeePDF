@@ -329,7 +329,8 @@ fn pages_split_writes_every_part() {
     assert_eq!(ranged[1].pages, vec![13]);
 }
 
-/// Merge is the one importer, and it says out loud what import destroyed.
+/// Merge is the one importer, and it says out loud what import destroyed — since v0.3 only the
+/// metadata: the fields and the outline are carried over (`pages::carry`).
 #[test]
 fn pages_merge_reports_what_it_lost() {
     let merged = with_state(move |st| {
@@ -362,14 +363,15 @@ fn pages_merge_reports_what_it_lost() {
     assert_eq!(doc.info.page_count, 4, "2 + 1 + 1");
     assert!(doc.info.path.is_none(), "a merge is untitled until Save As");
     assert!(
-        merged.warnings.contains(&MergeWarning::FormsDropped),
-        "160F-2019.pdf has an AcroForm that import cannot carry over"
+        !merged.warnings.contains(&MergeWarning::FormsDropped),
+        "v0.3: 160F-2019.pdf's AcroForm is carried over"
     );
     assert!(
-        merged.warnings.contains(&MergeWarning::OutlineDropped),
-        "outline-labels.pdf has bookmarks"
+        !merged.warnings.contains(&MergeWarning::OutlineDropped),
+        "v0.3: outline-labels.pdf's bookmarks are carried over"
     );
     assert!(merged.warnings.contains(&MergeWarning::MetadataDropped));
+    assert!(doc.info.has_form, "the merged document has the fields");
 
     // A human-openable sample.
     let bytes = with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).expect("bytes");
@@ -503,4 +505,335 @@ fn pages_merge_result_is_dirty() {
     .expect("save as");
     assert!(!saved.dirty, "Save As makes the merge clean");
     let _ = std::fs::remove_file(&target);
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg2-pages-structure-forms: P1 (merge / insert carry-over), P3 (import between open
+// documents), P4 (split by bookmarks)
+// ---------------------------------------------------------------------------------------
+
+use seepdf_lib::engine::form;
+use seepdf_lib::ipc::types::{FieldType, FieldValue, FormField, OutlineNode, OutlineSplit};
+
+fn outline_of(doc_id: &str) -> Vec<OutlineNode> {
+    with_doc(doc_id, |d| Ok(d.outline())).expect("outline")
+}
+
+fn fields_of(doc_id: &str) -> Vec<FormField> {
+    with_doc(doc_id, |d| form::list(d, None)).expect("fields")
+}
+
+fn merge_docs(inputs: Vec<MergeInput>) -> (TestDoc, Vec<MergeWarning>) {
+    let merged = with_state(move |st| pages::merge(st, &inputs)).expect("merge_documents");
+    let doc = TestDoc {
+        doc_id: merged.info.doc_id.clone(),
+        info: merged.info.clone(),
+    };
+    (doc, merged.warnings)
+}
+
+fn input(name: &str) -> MergeInput {
+    MergeInput {
+        path: fixture(name).display().to_string(),
+        range: None,
+        password: None,
+    }
+}
+
+/// `node` with every page shifted by `by` (what the carried tree must read back as).
+fn shifted(nodes: &[OutlineNode], by: u16) -> Vec<(String, Option<u16>, usize)> {
+    fn walk(
+        nodes: &[OutlineNode],
+        by: u16,
+        depth: usize,
+        out: &mut Vec<(String, Option<u16>, usize)>,
+    ) {
+        for n in nodes {
+            out.push((n.title.clone(), n.page.map(|p| p + by), depth));
+            walk(&n.children, by, depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(nodes, by, 0, &mut out);
+    out
+}
+
+/// P1: two outlined files merge into one document with both trees, each under a node named
+/// after its file, every target on the right page; the page labels of both survive.
+#[test]
+fn pages_merge_keeps_both_outlines_and_labels() {
+    let a = open("gen/outline-labels.pdf");
+    let b = open("TAMReview.pdf");
+    let (a_outline, b_outline) = (outline_of(&a.doc_id), outline_of(&b.doc_id));
+    let (a_pages, b_pages) = (a.info.page_count, b.info.page_count);
+
+    let (doc, warnings) = merge_docs(vec![
+        input("gen/outline-labels.pdf"),
+        input("TAMReview.pdf"),
+    ]);
+    assert!(
+        !warnings.contains(&MergeWarning::OutlineDropped),
+        "{warnings:?}"
+    );
+    assert_eq!(doc.info.page_count, a_pages + b_pages);
+    let merged = outline_of(&doc.doc_id);
+    assert_eq!(merged.len(), 2, "one top-level node per file");
+    assert_eq!(merged[0].title, "outline-labels");
+    assert_eq!(merged[0].page, Some(0));
+    assert_eq!(merged[1].title, "TAMReview");
+    assert_eq!(merged[1].page, Some(a_pages));
+    assert_eq!(shifted(&merged[0].children, 0), shifted(&a_outline, 0));
+    assert_eq!(
+        shifted(&merged[1].children, 0),
+        shifted(&b_outline, a_pages),
+        "the second file's targets are offset by the first file's page count"
+    );
+    // outline-labels.pdf: i, ii, 1, 2, App-A, App-B; TAMReview: 1…23 (its own labels)
+    let labels = doc.info.page_labels.clone().expect("labels carried");
+    assert_eq!(&labels[..6], ["i", "ii", "1", "2", "App-A", "App-B"]);
+    assert_eq!(labels[6], "1");
+    assert_eq!(labels[6 + 22], "23");
+}
+
+/// P1: two form files merge with every field of both, none sharing a name, each fillable on
+/// its own.
+#[test]
+fn pages_merge_keeps_both_forms_without_collision() {
+    let original = open("160F-2019.pdf");
+    let per_copy = fields_of(&original.doc_id).len();
+    let (doc, warnings) = merge_docs(vec![input("160F-2019.pdf"), input("160F-2019.pdf")]);
+    assert!(
+        !warnings.contains(&MergeWarning::FormsDropped),
+        "{warnings:?}"
+    );
+    assert!(doc.info.has_form);
+    let fields = fields_of(&doc.doc_id);
+    let first: Vec<&FormField> = fields.iter().filter(|f| f.page == 0).collect();
+    let second: Vec<&FormField> = fields.iter().filter(|f| f.page == 1).collect();
+    assert_eq!(first.len(), per_copy, "every widget of copy 1 is a field");
+    assert_eq!(second.len(), per_copy, "every widget of copy 2 is a field");
+    for f in &second {
+        assert!(
+            !first.iter().any(|g| g.name == f.name),
+            "'{}' of the second copy was renamed away from the first",
+            f.name
+        );
+    }
+    // The same text field in both copies takes two different values.
+    let text = first
+        .iter()
+        .find(|f| f.field_type == FieldType::Text && !f.read_only && f.rect.width() > 80.0)
+        .expect("a text field");
+    let twin = second
+        .iter()
+        .find(|f| f.index == text.index)
+        .expect("its twin on page 2");
+    for (f, value) in [(text, "first copy"), (twin, "second copy")] {
+        let doc_id = doc.doc_id.clone();
+        let (page, index) = (f.page, f.index);
+        let value = FieldValue::Text {
+            text: value.to_string(),
+        };
+        with_state(move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                registry::MutateOpts::new(
+                    "undo.formFill",
+                    seepdf_lib::ipc::types::ChangeReason::Edit,
+                )
+                .page(page),
+                |d| form::set_value(d, page, index, &value),
+            )
+        })
+        .expect("set_form_field_value");
+    }
+    let after = fields_of(&doc.doc_id);
+    let get = |f: &FormField| {
+        after
+            .iter()
+            .find(|g| g.page == f.page && g.index == f.index)
+            .and_then(|g| g.value.clone())
+    };
+    assert_eq!(get(text).as_deref(), Some("first copy"));
+    assert_eq!(get(twin).as_deref(), Some("second copy"));
+
+    // Saved, the file is a valid form: every widget's /Parent is a field, not a stray object.
+    let bytes = with_doc(&doc.doc_id, |d| Ok(d.to_bytes()?.to_vec())).unwrap();
+    let parsed = lopdf::Document::load_mem(&bytes).unwrap();
+    for (_, obj) in parsed.objects.iter() {
+        let Ok(dict) = obj.as_dict() else { continue };
+        if dict.get(b"Subtype").and_then(|s| s.as_name()).ok() != Some(b"Widget") {
+            continue;
+        }
+        if let Ok(parent) = dict.get(b"Parent").and_then(|p| p.as_reference()) {
+            let parent = parsed
+                .get_dictionary(parent)
+                .expect("parent is a dictionary");
+            assert!(
+                parent.has(b"Kids"),
+                "a widget's /Parent is a field with /Kids, not whatever the source number was"
+            );
+        }
+    }
+    std::fs::write(out_dir().join("merged-forms.pdf"), &bytes).unwrap();
+}
+
+/// P1: 파일에서 페이지 삽입 brings the source's outline (under its file name) and page labels,
+/// shifts nothing it should not, and is one undo step.
+#[test]
+fn pages_insert_from_keeps_outline_and_labels() {
+    let doc = open("tracemonkey.pdf");
+    let source = open("gen/outline-labels.pdf");
+    let source_outline = outline_of(&source.doc_id);
+    let info = ops(
+        &doc.doc_id,
+        vec![PageOp::InsertFrom {
+            at: 1,
+            path: fixture("gen/outline-labels.pdf").display().to_string(),
+            range: None,
+            password: None,
+        }],
+    );
+    assert_eq!(info.page_count, 14 + 6);
+    let outline = outline_of(&doc.doc_id);
+    assert_eq!(outline.len(), 1);
+    assert_eq!(outline[0].title, "outline-labels");
+    assert_eq!(outline[0].page, Some(1));
+    assert_eq!(
+        shifted(&outline[0].children, 0),
+        shifted(&source_outline, 1)
+    );
+    let labels = info.page_labels.expect("labels");
+    assert_eq!(
+        &labels[..9],
+        ["1", "i", "ii", "1", "2", "App-A", "App-B", "2", "3"],
+        "the inserted pages keep their labels and the document's resume after them"
+    );
+    let undone = with_state({
+        let doc_id = doc.doc_id.clone();
+        move |st| registry::undo(st, &doc_id, false)
+    })
+    .expect("undo");
+    assert_eq!(undone.page_count, 14, "one undo step");
+    assert!(outline_of(&doc.doc_id).is_empty());
+}
+
+/// P3: pages of one open document copied into another, in the order given, one undo step on
+/// the target, the source untouched; imported form widgets stay fields.
+#[test]
+fn pages_import_between_open_documents() {
+    let src = open("gen/500p.pdf");
+    let dst = open("tracemonkey.pdf");
+    let info = with_state({
+        let (s, d) = (src.doc_id.clone(), dst.doc_id.clone());
+        move |st| pages::import_pages_from_doc(st, &s, &[3, 1], &d, 2)
+    })
+    .expect("import_pages_from_doc");
+    assert_eq!(info.page_count, 16);
+    assert_eq!(page_number(&dst.doc_id, 2), "Page 4");
+    assert_eq!(page_number(&dst.doc_id, 3), "Page 2");
+    assert_eq!(
+        with_doc(&src.doc_id, |d| Ok(d.page_count())).unwrap(),
+        500,
+        "the source is untouched"
+    );
+    let undone = with_state({
+        let doc_id = dst.doc_id.clone();
+        move |st| registry::undo(st, &doc_id, false)
+    })
+    .expect("undo");
+    assert_eq!(undone.page_count, 14);
+
+    // A form page dragged over keeps working fields.
+    let form_src = open("160F-2019.pdf");
+    let expected = fields_of(&form_src.doc_id).len();
+    with_state({
+        let (s, d) = (form_src.doc_id.clone(), dst.doc_id.clone());
+        move |st| pages::import_pages_from_doc(st, &s, &[0], &d, 0)
+    })
+    .expect("import a form page");
+    let fields = fields_of(&dst.doc_id);
+    assert_eq!(fields.iter().filter(|f| f.page == 0).count(), expected);
+
+    let same = with_state({
+        let s = src.doc_id.clone();
+        move |st| pages::import_pages_from_doc(st, &s, &[0], &s, 0)
+    });
+    assert!(same.is_err(), "a document cannot import from itself");
+}
+
+/// P4: 책갈피로 분할 — one file per top-level bookmark, named after it, the right page counts.
+#[test]
+fn pages_split_by_outline() {
+    let doc = open("gen/outline-labels.pdf");
+    let outline = outline_of(&doc.doc_id);
+    let plan = pages::split_plan_with_outline(
+        &SplitMode::ByOutline {
+            by_outline: OutlineSplit { level: 1 },
+        },
+        doc.info.page_count,
+        "outline-labels",
+        &outline,
+    )
+    .expect("plan");
+    // Chapter A / B / C, each from its page to the page before the next chapter.
+    let starts: Vec<u16> = outline.iter().filter_map(|n| n.page).collect();
+    let front = usize::from(starts[0] > 0);
+    assert_eq!(plan.len(), starts.len() + front);
+    for (i, node) in outline.iter().enumerate() {
+        let part = &plan[i + front];
+        let first = node.page.unwrap();
+        let last = starts
+            .get(i + 1)
+            .map(|n| n - 1)
+            .unwrap_or(doc.info.page_count - 1);
+        assert_eq!(
+            part.pages,
+            (first..=last).collect::<Vec<_>>(),
+            "{}",
+            node.title
+        );
+        assert!(
+            part.name.ends_with(&format!("{}.pdf", node.title)),
+            "{}",
+            part.name
+        );
+    }
+    let level2 = pages::split_plan_with_outline(
+        &SplitMode::ByOutline {
+            by_outline: OutlineSplit { level: 2 },
+        },
+        doc.info.page_count,
+        "outline-labels",
+        &outline,
+    )
+    .expect("level 2");
+    assert!(level2.iter().any(|p| p.name.contains("A.1 Introduction")));
+
+    // Written for real: every part opens with its page count.
+    let dir = out_dir().join("split-by-outline");
+    let _ = std::fs::remove_dir_all(&dir);
+    for part in &plan {
+        let path = with_state({
+            let (doc_id, part, dir) = (doc.doc_id.clone(), part.clone(), dir.clone());
+            move |st| pages::write_split_part(st, &doc_id, &part, &dir)
+        })
+        .expect("write part");
+        let written = open_file(path);
+        assert_eq!(written.info.page_count as usize, part.pages.len());
+    }
+    let none = pages::split_plan_with_outline(
+        &SplitMode::ByOutline {
+            by_outline: OutlineSplit { level: 1 },
+        },
+        14,
+        "x",
+        &[],
+    );
+    assert!(none.is_err(), "no outline, no split");
+    assert_eq!(
+        pages::safe_file_title("제1장: 서론/개요?", "x"),
+        "제1장_ 서론_개요_"
+    );
 }

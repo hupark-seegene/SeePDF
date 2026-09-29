@@ -429,6 +429,67 @@ fallback behind a unit test) → `FORM_ForceToKillFocus`. Owner (a). Feature F-2
 Field highlight is **not** a command: it is the `hl=1` tile-URL parameter (§9). Neither is
 suppressing the widget the overlay replaces: that is `forms=0` on the same URLs (§9, F-20).
 
+### 7.2a Form authoring, form data, flattening (v0.3, pkg2)
+
+```ts
+export type NewFieldType = 'text' | 'checkbox' | 'radio' | 'combo' | 'signature';
+export interface FormFieldSpec {
+  page: PageIndex; rect: Rect; type: NewFieldType; name: string;
+  options?: string[];      // combo: the choices; radio: this button's export value (first entry)
+  maxLen?: number; required?: boolean; multiline?: boolean;
+}
+export interface FormFieldPatch { name?: string; options?: string[]; required?: boolean; maxLen?: number }  // maxLen 0 removes
+export interface FormEditResult { info: DocInfo; fields: FormField[]; field?: FormField }
+export type FormDataFormat = 'csv' | 'xfdf';
+export interface FormDataResult { fields: number; unknown: string[]; docGeneration?: DocGeneration }
+
+create_form_field(a: { docId: DocId; spec: FormFieldSpec }): Promise<FormEditResult>                 // undo.formFieldCreate
+update_form_field(a: { docId: DocId; page: PageIndex; index: number; patch: FormFieldPatch }): Promise<FormEditResult>  // undo.formFieldEdit
+delete_form_field(a: { docId: DocId; page: PageIndex; index: number }): Promise<FormEditResult>        // undo.formFieldDelete
+export_form_data(a: { docId: DocId; format: FormDataFormat; outPath: string }): Promise<FormDataResult>  // no document change
+import_form_data(a: { docId: DocId; path: string; format?: FormDataFormat }): Promise<FormDataResult>     // undo.formImport
+flatten_form(a: { docId: DocId }): Promise<DocInfo>                                                   // undo.formFlatten
+```
+
+* **Authoring** is a lopdf rewrite (`registry::mutate_bytes`, one undo step, reopened by PDFium): PDFium can
+  fill a field but not make one. A new field is one widget + field dictionary (`/FT /Tx|/Btn|/Ch|/Sig`, `/T`,
+  `/Ff` required 2 / multiline 4096 / combo 131072, `/MaxLen`, `/Opt`, `/DA (/Helv 0 Tf 0 g)` or `/ZaDb` for
+  toggles, `/F 4`, `/P`, a grey `/MK /BC` border and a basic `/AP`); a radio button is a kid widget of a group
+  field (`/Ff 49152`) whose on-state is its export value — a button named after an existing radio group joins
+  it (an export value the group already has is renumbered: `선택 1` → `선택 2`). `update_form_field` renaming a
+  radio group after another radio group **merges** them: its buttons join that group (clashing export values
+  renumbered), the target keeps its value. `/AcroForm` gains `/Fields`, `/DA` and `/DR /Font` (`/Helv`, `/ZaDb`) as needed; a document that had no
+  form gets its form handle on the reload. `field` in the result is the created / edited field (PDFium's
+  listing). Errors: `invalidArgument` for an empty name or one with `.`, a name another root field has (except a
+  radio joining its group), a rect under 4 × 4 pt, a page out of range, a combo without choices;
+  `unsupported` on an encrypted or XFA document; `notFound` for a `(page, index)` that is not a widget.
+  `delete_form_field` removes the widget, and its field (and any ancestor left empty) with it.
+* **Data**: CSV is UTF-8 with a BOM, header `name,value`, one row per field (a multi-select list: one row per
+  selected option), RFC 4180 quoting; XFDF is `<xfdf><fields><field name><value>` with dotted names nested
+  (import accepts nested and dotted). Values are what `list_form_fields` reports (a checkbox / radio: its state
+  name, `Off` or the export value — read with lopdf as UTF-8, so a Hangul export value such as `여` or `선택2`
+  is written and matched exactly as typed; `FormField.value` of a checkbox / radio reports it the same way,
+  where PDFium's own reading garbles it); push buttons and signatures are skipped. Import writes every matching field
+  in **one** undo step; `unknown` lists names with no field. `format` absent = sniffed (`<` first → XFDF).
+* **`reset_form`** (changed in v0.3): every writable field goes back to its **`/DV`** — text / combo to the `/DV`
+  string or empty, a list to the options `/DV` names, a checkbox on only when `/DV` names its on-state, a radio
+  group to the button whose export value `/DV` names, or **switched off** when it has none — except where no
+  group can be switched off (a lopdf rewrite): a document whose permissions forbid "modify" (v0.3 integration:
+  since S2 / S5 an encrypted document opened with full rights is rewritten and re-encrypted, so there it is
+  switched off) or a signed document that still saves incrementally (S1 `pristine`: the rewrite would invalidate
+  its signatures). Radio groups are then left as they are and every other field is still reset (import likewise
+  skips a radio set to `Off`). `/DV` and `/MaxLen`
+  are read with lopdf from the bytes the document was loaded from (matched by field name + rect).
+* **`set_form_field_value { checked: false }` on a radio button that is on** (v0.3) switches its whole group off
+  (`/V /Off`, every kid `/AS /Off`, a lopdf rewrite after the form-fill environment wrote the rest) instead of
+  answering `unsupported`; refused (`permissionDenied`, v0.3 integration) on a document that forbids "modify".
+* **`FormField.maxLen`** is now reported for text fields (lopdf `/MaxLen`, inherited through `/Parent`).
+* **`flatten_form`**: every widget's normal appearance (`/AP /N`, the `/AS` state for a toggle) is drawn into its
+  page as a Form XObject mapped from `/BBox` × `/Matrix` onto `/Rect`; hidden (`/F` 2) and no-view (`/F` 32)
+  widgets are dropped undrawn; the page's old content is wrapped in `q … Q`; the widgets leave `/Annots`
+  (**every other annotation stays** — not `FPDFPage_Flatten`, which flattens all of them) and `/AcroForm`
+  leaves the catalog. `invalidArgument` when there is no field; the reopened document must have no form.
+
 ### 7.3 Pages
 
 ```ts
@@ -458,6 +519,66 @@ never been saved, so it opens **dirty** (`path: null`, `dirty: true`) — close 
 repeated indices count once). An op that would take the document past 65,535 pages is `unsupported` and
 rolled back.
 Owner (b). Feature F-16.
+
+#### v0.3 additions (pkg2)
+
+```ts
+split_document(a: { docId; mode: { everyN } | { ranges } | { byOutline: { level: number } }; outDir }, onProgress)
+import_pages_from_doc(a: { srcDocId: DocId; pages: PageIndex[]; dstDocId: DocId; at: PageIndex }): Promise<DocInfo>  // undo.pageImport
+write_temp_image(body: Uint8Array /* raw request body: PNG or JPEG bytes */): Promise<string>   // a temp file path
+```
+
+* **Merge and insert-from-file carry the source's structure** (P1). `FPDF_ImportPages*` copies page
+  dictionaries but not the catalog, and leaves the keys `Parent` / `Prev` / `First` of what it copies pointing at
+  the *source's* object numbers — a widget's field and a popup's parent come out dangling. After the import the
+  bytes are rewritten with lopdf (`engine/pages/carry.rs`): widgets are re-parented to copies of their source
+  fields (values, flags, `/DA`, `/Opt`, `/AA`; `/Kids` rebuilt from the imported widgets only), the new root
+  fields join `/AcroForm /Fields` — a root whose `/T` is taken is renamed `name_2`, `name_3`, … — and the
+  source's `/DR` fonts and `/DA` join the destination's; popups get their `/Parent` back; the source's outline
+  (read with PDFium) goes under a new top-level node named after the file, pages mapped to their new indices (a
+  node whose page was not imported keeps its title only when a child survives); page labels are recomputed page
+  by page from each document's own ranges and compressed back into ranges, so the destination's pages after the
+  insertion keep their numbers. `merge_documents` adds one top-level node per file when any file has an outline
+  and reports `formsDropped` / `outlineDropped` only if the rewrite could not be done (PDFium's plain import is
+  kept then); `metadataDropped` is unchanged. `page_ops [insertFrom]` takes this path when it is the **only** op
+  of the batch and the document is not encrypted (a byte-level rewrite through
+  `registry::mutate_bytes_resized` — still one undo step `undo.pageInsertFrom`); a multi-op batch, an
+  encrypted document and (v0.3 integration, S1) a signed document that still saves incrementally keep the plain
+  import, so its signatures survive the next save. `import_pages_from_doc` follows the same rule.
+* **`import_pages_from_doc`** (P3): pages of one open document copied into another at `at`, in the order given
+  (duplicates dropped); the source's unsaved edits are included and it is not changed; the target gets one undo
+  step `undo.pageImport`; widgets keep their fields (renamed on a clash) and popups their parent (fields only —
+  no outline or labels). Same document on both sides → `invalidArgument`. An encrypted target, or a signed one
+  that still saves incrementally, takes PDFium's plain import. v0.3 integration (S5): a **restricted source**
+  (opened without every permission) → `permissionDenied`, detail `security`, like a restricted file given to
+  `insertFrom` / `merge_documents`. The signed-document gate (`MUTATING_COMMANDS`) asks about the target.
+* **`split_document { byOutline: { level } }`** (P4): one file per outline node of `level` (1 = top level) that
+  points at a page, from its page to the page before the next such node; pages before the first node are a part
+  named after the document; nodes on the same page fold into the first. Files are `NN 제목.pdf` (the title with
+  `\ / : * ? " < > |` and control characters replaced by `_`, ≤ 80 characters, `(2)` on a clash).
+  `invalidArgument` when the outline has no node with a page at that level.
+
+### 7.3b Images to PDF — 이미지로 PDF 만들기 (v0.3 D1, pkg2)
+
+```ts
+export type ImagePageSize = 'original' | 'a4' | 'letter';
+export type ImageFit = 'contain' | 'actual';
+create_from_images(a: { paths: string[]; pageSize: ImagePageSize; margin?: number /* pt, 0…200 */; fit?: ImageFit },
+                   onProgress: Channel<JobEvent>): Promise<DocInfo>
+```
+
+A new **untitled, dirty** document (like a merge), named `<first image>.pdf`, one page per image in order.
+The images are read on a blocking worker (no PDFium): format by magic bytes (PNG, JPEG; anything else →
+`unsupported`), resolution from PNG `pHYs`, JPEG JFIF density or EXIF `XResolution`/`ResolutionUnit` (96 DPI
+when none), EXIF orientation applied (the page follows the displayed orientation). A JPEG without an EXIF
+rotation is embedded **as its own bytes** (`/DCTDecode`, `FPDFImageObj_LoadJpegFileInline`); PNGs and rotated
+JPEGs as bitmaps. `original` = the image at its resolution plus `margin` on each side (scaled down to the
+14 400 pt limit); `a4` / `letter` = portrait, landscape for a landscape image, the image centred in the page less
+its margins — `contain` scales it to fill that box, `actual` keeps its size unless it does not fit. Progress:
+`started` (total = images + 1), one `progress` per image read, one for the build, `done`; `cancel_job` between
+images → `cancelled`. `write_temp_image` writes clipboard bytes (the raw request body) to
+`$TMPDIR/seepdf-clipboard/<uuid>.png|jpg` for 클립보드에서 새로 만들기 and for pasting an image in 편집 (then
+`add_image_object`).
 
 ### 7.3a Page boxes and page size — 자르기 / 페이지 크기 변경 (P2)
 
@@ -1293,6 +1414,29 @@ Semantics:
   would need the owner password, exactly as for `set_metadata`. Web links, rect moves and `delete_link` go
   through PDFium and work on encrypted documents.
 
+#### v0.3 additions (pkg2, P5)
+
+```ts
+export interface LinkBorder { width: number; color: Rgb }   // width 0 = no border
+create_link(a: { docId; page; rect; target; quads?: Rect[]; border?: LinkBorder }): Promise<AnnotResult>
+update_link(a: { docId; page; id; rect?; target?; border?: LinkBorder }): Promise<AnnotResult>
+```
+
+* `quads` — a link made from a text selection, one rectangle per line: written as `/QuadPoints` (8 numbers per
+  quad, top-left, top-right, bottom-left, bottom-right) and the click area `/Rect` is their union (`rect` is then
+  ignored); read back as `Annot.quads`. Works for web links (PDFium) and page links (lopdf).
+* `border` — `/Border [0 0 w]` and `/C` (0…1 per channel); `width` 0…12 pt, `0` writes `/Border [0 0 0]` and
+  drops `/C`. Absent on `create_link` = invisible (as before); absent on `update_link` = unchanged; a border-only
+  `update_link` is valid (it no longer needs a rect or a target). Read back as `Annot.borderWidth` / `color`.
+  A visible border is also written as a small `/AP /N` (a `w`-wide stroke in `/C` inside the click area, one box
+  per quad) because PDFium — SeePDF's own view — draws no `/Border` of a link without an appearance; the stream is
+  rebuilt when a bordered link moves and removed with `width: 0` (verification round 1).
+* `set_outline` (v0.3) keeps what the contract cannot carry for **untouched nodes**: the old items are walked
+  in document order beside PDFium's reading of them, and a new node whose title, page, view and url equal an old
+  item's gets that item's original target object back (a named `/Dest`, a GoTo `/A` with a named `/D`, or any
+  other action — Launch, JavaScript, GoToR) and its `/C` / `/F`. A renamed or re-targeted node is written fresh
+  (explicit `/Dest`, no colour). When the two walks disagree (a malformed tree) nothing is kept.
+
 ---
 
 ### 7.11 Security and save integrity (v0.3, pkg3)
@@ -1400,7 +1544,13 @@ the temp directory only without an app). `backup_folder` returns that folder (cr
 // v0.3 pkg5
 'engine-crashed'   { docIds: DocId[]; label: string }   // H4: a panicking command closed these; their windows reopen them
 'theme-changed'    { theme: 'system' | 'light' | 'dark' } // U4: emitted by the window that changed 테마; every window follows
+// v0.3 pkg2 (P3), emitted by the frontend to every window: pages released outside their window
+'pages-drop'       { srcDocId: DocId; pages: PageIndex[]; from: string /* window label */; screen: { x: number; y: number } }
 ```
+
+v0.3 pkg2: the webview's native drag-drop event now also feeds `onFileDragState` (`over` / `leave` / `drop`,
+the Welcome highlight — H7) and `onFileDrop` carries the drop `position` in CSS pixels (the 페이지 grid inserts
+there — P2).
 
 ```ts
 // per-invocation progress (tauri::ipc::Channel<JobEvent>)
@@ -1704,6 +1854,9 @@ third_party_notices(): Promise<string>          // H11: SeePDF 정보 › 오픈
 | `get_default_settings`, `clear_render_cache`, `save_snapshot_png` | v0.3 pkg6, `commands/app.rs` | U3, V1 |
 | `unlock_document`, `sanitize_document`, `list_attachments`, `save_attachment`, `add_attachment`, `delete_attachment` | v0.3 pkg3, `engine/security.rs`, `engine/sanitize.rs`, `engine/attachments.rs` + `commands/security.rs` | S5, S3, S4 |
 | `focus_document_window`, `backup_folder` (+ `save_document { force }`) | v0.3 pkg3, `app/windows.rs`, `commands/save.rs`, `engine/save/mod.rs` | H8, U2 |
+| `create_from_images`, `write_temp_image` | v0.3 pkg2, `engine/pages/create.rs` + `commands/documents.rs` | D1 images → PDF |
+| `import_pages_from_doc` (+ merge / insert carry-over, `split_document { byOutline }`) | v0.3 pkg2, `engine/pages/{mod,carry}.rs` | P1, P3, P4 |
+| `create_form_field`, `update_form_field`, `delete_form_field`, `export_form_data`, `import_form_data`, `flatten_form` | v0.3 pkg2, `engine/form/{author,data,flatten,extras}.rs` + `commands/forms.rs` | F1, F2 |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

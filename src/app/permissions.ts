@@ -33,6 +33,14 @@ const NEEDS: Record<string, PermKey> = {
   "tools.redact": "modify",
   // v0.3 integration (pkg6 V1 스냅샷): a snapshot copies the page content, like 복사
   "tool.snapshot": "extractText",
+  // v0.3 integration (pkg2 F1 / F2 × S5): 필드 만들기 and 양식 평면화 change the form's structure,
+  // which a PDF allows only with "modify" on top of "fill forms" (the engine's `refuse_encrypted`)
+  "tool.fieldText": "modify",
+  "tool.fieldCheckbox": "modify",
+  "tool.fieldRadio": "modify",
+  "tool.fieldCombo": "modify",
+  "tool.fieldSignature": "modify",
+  "tool.formFlatten": "modify",
 };
 
 /** The i18n key of the reason `id` is not allowed on this document, or `null` when it is. */

@@ -96,7 +96,12 @@ pub async fn split_document(
         engine
             .call(Lane::Edit, "split_plan", move |st| {
                 let doc = st.doc(&doc_id)?;
-                pages::split_plan(&mode, doc.page_count(), &pages::output_stem(doc))
+                pages::split_plan_with_outline(
+                    &mode,
+                    doc.page_count(),
+                    &pages::output_stem(doc),
+                    &doc.outline(),
+                )
             })
             .await?
     };
@@ -149,6 +154,25 @@ pub async fn merge_documents(
     engine
         .call(Lane::Edit, "merge_documents", move |st| {
             pages::merge(st, &inputs)
+        })
+        .await
+}
+
+// v0.3 pkg2-pages-structure-forms
+
+/// P3: pages of one open document copied into another at `at` (a drag between windows);
+/// one undo step `undo.pageImport` on the target, the source untouched.
+#[tauri::command]
+pub async fn import_pages_from_doc(
+    engine: State<'_, EngineHandle>,
+    src_doc_id: String,
+    pages: Vec<PageIndex>,
+    dst_doc_id: String,
+    at: PageIndex,
+) -> Result<DocInfo, EngineError> {
+    engine
+        .call(Lane::Edit, "import_pages_from_doc", move |st| {
+            crate::engine::pages::import_pages_from_doc(st, &src_doc_id, &pages, &dst_doc_id, at)
         })
         .await
 }

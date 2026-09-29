@@ -31,6 +31,8 @@ export function Thumbnails() {
   const dpr = useDevicePixelRatio();
 
   const listRef = useRef<HTMLDivElement>(null);
+  /** a drag just ended on a thumbnail: its click must not jump to the page */
+  const dragged = useRef(false);
   const [box, setBox] = useState({ w: 0, h: 0 });
   const [scrollTop, setScrollTop] = useState(0);
 
@@ -103,6 +105,36 @@ export function Thumbnails() {
 
   if (!info) return null;
 
+  /**
+   * v0.3 P3: a thumbnail dragged out of the window and released over another SeePDF window's
+   * 축소판 or page grid is copied there (`crossWindow.ts`). Inside the window nothing happens; the
+   * click that follows a drag is swallowed.
+   */
+  function beginPageDrag(e: React.PointerEvent, docId: string, page: number) {
+    if (e.button !== 0) return;
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.hypot(ev.clientX - x0, ev.clientY - y0) >= 6) moved = true;
+    };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (!moved) return;
+      // the click (if any) is dispatched right after this pointerup; clear the flag after it
+      dragged.current = true;
+      setTimeout(() => {
+        dragged.current = false;
+      }, 0);
+      void import("../organize/crossWindow").then((m) => {
+        if (m.releasedOutside(ev.clientX, ev.clientY)) m.publishPagesDrop(docId, [page], ev.screenX, ev.screenY);
+      });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
   return (
     <div
       className="thumb-list"
@@ -123,8 +155,17 @@ export function Thumbnails() {
             aria-selected={row.page === currentPage}
             aria-label={t("a11y.pageThumbnail", { n: row.page + 1 })}
             data-current={row.page === currentPage || undefined}
+            // v0.3 H3: the current page, for screen readers
+            aria-current={row.page === currentPage ? "page" : undefined}
             style={{ top: row.y, height: row.h - GAP }}
-            onClick={() => goToPage(row.page)}
+            onPointerDown={(e) => beginPageDrag(e, info.docId, row.page)}
+            onClick={() => {
+              if (dragged.current) {
+                dragged.current = false;
+                return;
+              }
+              goToPage(row.page);
+            }}
           >
             <span className="thumb-page" style={{ width: row.w, height: row.imgH }}>
               <img

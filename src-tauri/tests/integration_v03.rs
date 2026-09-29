@@ -9,6 +9,12 @@
 //! pkg1 (R5) keeps an edited paragraph's reading order with a `lopdf` pass after the write;
 //! pkg3 (S1) saves a signed file incrementally only while nothing but PDFium has changed it.
 //! On a signed file the reorder is skipped, so a paragraph edit still saves incrementally.
+//!
+//! pkg2 (P1) carries a source's outline, labels and fields into an import with a `lopdf`
+//! rewrite, and (F2) switches radio groups off in 모든 필드 지우기 with one; both are skipped on
+//! a signed file that still saves incrementally (pkg3 S1). pkg2 (P3) imports pages from
+//! another open document; pkg3 (S5)'s rule that a restricted source cannot hand its pages to
+//! an unrestricted document applies to it as to a file source.
 
 mod common;
 
@@ -19,9 +25,12 @@ use seepdf_lib::engine::registry;
 use seepdf_lib::engine::render::tiles;
 use seepdf_lib::engine::save;
 use seepdf_lib::engine::text::{layer, structtree};
+use seepdf_lib::engine::{form, pages};
 use seepdf_lib::ipc::types::{
-    PageIndex, ParagraphEdit, ParagraphFlow, ReadingOrder, Rect, RedactBatchMark, RedactOptions,
+    PageIndex, PageOp, ParagraphEdit, ParagraphFlow, ReadingOrder, Rect, RedactBatchMark,
+    RedactOptions,
 };
+use seepdf_lib::ipc::ErrorCode;
 
 /// A minimal PDF from `(number, body)` objects with a correct xref table; object 1 is the
 /// catalog.
@@ -403,4 +412,222 @@ fn a_paragraph_edit_on_a_signed_file_still_saves_incrementally() {
         "R5 keeps the unsigned edit second: {text:?}"
     );
     close(unsigned);
+}
+
+// ---------------------------------------------------------------------------------------
+// pkg2 (P1 import carry-over, F2 radio reset, P3 pages between windows) × pkg3 (S1, S5)
+// ---------------------------------------------------------------------------------------
+
+/// [`signed_paragraphs_pdf`]'s page with a radio group `Choice` (buttons `A` on, `B` off, no
+/// `/DV`) next to the signature field.
+fn signed_radio_pdf() -> Vec<u8> {
+    let content = "BT /F1 12 Tf 72 700 Td (Signed form with a radio group) Tj ET\n";
+    let ap = "<< /Type /XObject /Subtype /Form /BBox [0 0 18 18] /Length 0 >>\nstream\n\nendstream";
+    pdf(&[
+        (
+            1,
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 8 0 R] /SigFlags 3 >> >>"
+                .into(),
+        ),
+        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        (
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R \
+             /Annots [6 0 R 9 0 R 10 0 R] >>"
+                .into(),
+        ),
+        (
+            4,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .into(),
+        ),
+        (
+            5,
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+        ),
+        (
+            6,
+            "<< /Type /Annot /Subtype /Widget /FT /Sig /T (Signature1) /V 7 0 R \
+             /Rect [0 0 0 0] /F 132 /P 3 0 R >>"
+                .into(),
+        ),
+        (
+            7,
+            "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached \
+             /ByteRange [0 0 0 0] /Contents <30820100> >>"
+                .into(),
+        ),
+        (
+            8,
+            "<< /FT /Btn /Ff 49152 /T (Choice) /V /A /Kids [9 0 R 10 0 R] >>".into(),
+        ),
+        (
+            9,
+            "<< /Type /Annot /Subtype /Widget /Parent 8 0 R /Rect [72 600 90 618] /F 4 \
+             /AS /A /AP << /N << /A 11 0 R /Off 12 0 R >> >> /P 3 0 R >>"
+                .into(),
+        ),
+        (
+            10,
+            "<< /Type /Annot /Subtype /Widget /Parent 8 0 R /Rect [100 600 118 618] /F 4 \
+             /AS /Off /AP << /N << /B 13 0 R /Off 14 0 R >> >> /P 3 0 R >>"
+                .into(),
+        ),
+        (11, ap.into()),
+        (12, ap.into()),
+        (13, ap.into()),
+        (14, ap.into()),
+    ])
+}
+
+/// Writes `bytes` to `fixtures/out/v03-integration/<name>` and opens it from there (a signed
+/// document saves incrementally only when it has a path).
+fn open_signed(name: &str, bytes: &[u8]) -> (String, std::path::PathBuf) {
+    let dir = fixture("out").join("v03-integration");
+    std::fs::create_dir_all(&dir).expect("create fixtures/out/v03-integration");
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).expect("write the fixture");
+    let (owned, bytes) = (path.clone(), bytes.to_vec());
+    let info = with_state(move |st| registry::open(st, Some(owned), bytes, None)).expect("open");
+    assert_eq!(info.signatures.len(), 1, "the fixture is signed");
+    assert_eq!(incremental_save(&info.doc_id), Some(true));
+    (info.doc_id, path)
+}
+
+fn save_in_place(doc_id: &str) {
+    let d = doc_id.to_string();
+    with_state(move |st| save::save_with(st, &d, None, &save::SaveOptions::default()).map(|_| ()))
+        .expect("save");
+}
+
+fn has_outline(doc_id: &str) -> bool {
+    with_doc(doc_id, |d| Ok(d.info().has_outline)).unwrap()
+}
+
+/// P1 × S1: 파일에서 페이지 삽입 into a signed file takes PDFium's plain import — the carry-over
+/// is a `lopdf` rewrite that would force a full save — so the signed revision survives the
+/// save. The same insert into an unsigned file still carries the source's bookmarks (P1).
+#[test]
+fn inserting_pages_into_a_signed_file_still_saves_incrementally() {
+    let original = signed_paragraphs_pdf();
+    let (doc_id, path) = open_signed("signed-insert-from.pdf", &original);
+    let source = fixture("gen/outline-labels.pdf").display().to_string();
+    let insert = |doc_id: &str| {
+        let (d, source) = (doc_id.to_string(), source.clone());
+        with_state(move |st| {
+            pages::apply_ops(
+                st,
+                &d,
+                vec![PageOp::InsertFrom {
+                    at: 1,
+                    path: source,
+                    range: Some("1-2".into()),
+                    password: None,
+                }],
+            )
+        })
+        .expect("insertFrom")
+    };
+    let info = insert(&doc_id);
+    assert_eq!(info.page_count, 3);
+    assert_eq!(
+        incremental_save(&doc_id),
+        Some(true),
+        "the import kept the signed file incrementally saveable"
+    );
+    assert!(!has_outline(&doc_id), "no carry-over on a signed file");
+    save_in_place(&doc_id);
+    let saved = std::fs::read(&path).expect("read the saved file");
+    assert!(
+        saved.starts_with(&original),
+        "the signed revision stays byte-identical"
+    );
+    let reopened = open_bytes(saved);
+    assert_eq!(
+        with_doc(&reopened, |d| Ok(d.page_count())).unwrap(),
+        3,
+        "the inserted pages were saved"
+    );
+    close(reopened);
+    close(doc_id);
+
+    // Unsigned: the carry-over still brings the source's bookmarks along.
+    let unsigned = open("tracemonkey.pdf");
+    assert!(!has_outline(&unsigned.doc_id));
+    insert(&unsigned.doc_id);
+    assert!(has_outline(&unsigned.doc_id), "P1 carried the outline");
+}
+
+/// F2 × S1: 모든 필드 지우기 on a signed file leaves a radio group without `/DV` as it is (its
+/// switch-off is a `lopdf` rewrite) and resets everything else through PDFium, so the file
+/// still saves incrementally.
+#[test]
+fn resetting_a_signed_form_keeps_the_signature() {
+    let original = signed_radio_pdf();
+    let (doc_id, path) = open_signed("signed-radio-reset.pdf", &original);
+    let radio_on = |doc_id: &str| {
+        with_doc(doc_id, |d| {
+            Ok(form::list(d, None)?
+                .into_iter()
+                .filter(|f| f.name == "Choice")
+                .filter_map(|f| f.checked)
+                .collect::<Vec<bool>>())
+        })
+        .unwrap()
+    };
+    assert_eq!(radio_on(&doc_id), vec![true, false]);
+    let d = doc_id.clone();
+    with_state(move |st| form::reset_form(st, &d)).expect("reset_form");
+    assert_eq!(
+        incremental_save(&doc_id),
+        Some(true),
+        "reset kept the signed file incrementally saveable"
+    );
+    assert_eq!(
+        radio_on(&doc_id),
+        vec![true, false],
+        "the radio group is kept"
+    );
+    save_in_place(&doc_id);
+    let saved = std::fs::read(&path).expect("read the saved file");
+    assert!(saved.starts_with(&original));
+    close(doc_id);
+
+    // Unsigned (the same bytes opened without a path, so no incremental base): the group is
+    // switched off as pkg2 F2 does.
+    let unsigned = open_bytes(original);
+    let d = unsigned.clone();
+    with_state(move |st| form::reset_form(st, &d)).expect("reset_form");
+    assert_eq!(radio_on(&unsigned), vec![false, false]);
+    close(unsigned);
+}
+
+/// P3 × S5: pages dragged out of a restricted document cannot land in an unrestricted one —
+/// the rule `insertFrom` / 병합 apply to a restricted file.
+#[test]
+fn pages_from_a_restricted_open_document_are_refused() {
+    let restricted =
+        try_open("gen/encrypted-rc4-40.pdf", Some("user")).expect("open with the password");
+    assert!(
+        !restricted.info.permissions.print,
+        "the fixture is restricted"
+    );
+    let dst = open("tracemonkey.pdf");
+    let before = dst.info.page_count;
+    let err = with_state({
+        let (s, d) = (restricted.doc_id.clone(), dst.doc_id.clone());
+        move |st| pages::import_pages_from_doc(st, &s, &[0], &d, 0)
+    })
+    .expect_err("a restricted source is refused");
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(err.detail.as_deref(), Some("security"));
+    assert_eq!(
+        with_doc(&dst.doc_id, |d| Ok(d.page_count())).unwrap(),
+        before,
+        "the target is untouched"
+    );
 }

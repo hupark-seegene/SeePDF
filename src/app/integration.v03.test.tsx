@@ -7,6 +7,12 @@
  * - pkg3 S5 (permission flags) × pkg6 V1 / V2 / caret, × pkg1 R4: a document that forbids copying
  *   forbids 스냅샷 (every entry point); one that forbids comments disables the canvas menu's 주석
  *   entries and caret N / H / U / K; 그룹 해제 asks first on a signed document (S1's gate).
+ * - pkg3 S1 / S5 × pkg2 F1 / F2 / P3: the form-authoring commands and pages dragged in from another
+ *   window go through the signed-document gate (the latter on its target); 필드 만들기 / 양식
+ *   평면화 are off on a document that forbids changes; pages of a restricted document cannot be
+ *   dragged into another one.
+ * - pkg3 H8 × pkg2 D1: a PDF dropped together with images that another window already shows is
+ *   focused there, not opened a second time.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -23,7 +29,8 @@ import { mutatingCall } from "../ipc/api";
 import { permissionBlock } from "./permissions";
 import { onCaretKey } from "../viewer/text/caretKeys";
 import { useCaretStore } from "../viewer/text/caret";
-import { mockEvents } from "../ipc/mock";
+import { mock, mockEvents, mockOpenInOtherWindow } from "../ipc/mock";
+import * as api from "../ipc/api";
 
 const SAMPLE = "/Users/veri/Documents/SeePDF-샘플.pdf";
 /** pkg3's mock fixture: print, copy, modify and assemble are forbidden; comments are allowed. */
@@ -167,5 +174,68 @@ describe("S5 × caret browsing: N / H / U / K make comments", () => {
 describe("S1 × R4: 그룹 해제 is an edit", () => {
   it("ungroup_object goes through the signed-document gate", () => {
     expect(mutatingCall("ungroup_object", { docId: "d1", page: 0, objectId: 3 })).toMatchObject({ docId: "d1" });
+  });
+});
+
+describe("S1 / S5 × pkg2: form authoring and pages from another window", () => {
+  it("the new form and page-import commands go through the signed-document gate", () => {
+    for (const command of ["create_form_field", "update_form_field", "delete_form_field", "import_form_data", "flatten_form"]) {
+      expect(mutatingCall(command, { docId: "d1", page: 0, index: 0 })).toMatchObject({ docId: "d1" });
+    }
+    // exporting reads the form only
+    expect(mutatingCall("export_form_data", { docId: "d1", format: "csv", outPath: "/x.csv" })).toBeNull();
+    // pages dragged in from another window change the *target*, which is what the gate asks about
+    expect(mutatingCall("import_pages_from_doc", { srcDocId: "src", pages: [0], dstDocId: "dst", at: 0 })).toMatchObject({
+      docId: "dst",
+    });
+  });
+
+  it("필드 만들기 and 양식 평면화 are off, with the reason, when the document forbids changes", async () => {
+    render(<App />);
+    const info = (await useDocStore.getState().open(RESTRICTED))!;
+    // the restricted fixture still allows filling forms, so 양식 mode itself is open
+    expect(permissionBlock("mode.form", info)).toBeNull();
+    act(() => useAppStore.getState().setMode("form"));
+    const reason = "security.restricted.reason.modify";
+    for (const name of ["텍스트 필드", "확인란", "라디오 단추", "목록 상자", "서명 필드", "양식 평면화"]) {
+      expect(await screen.findByRole("button", { name })).toBeDisabled();
+    }
+    expect(permissionBlock("tool.fieldText", info)).toBe(reason);
+    // filling and the form data stay available
+    expect(screen.getByRole("button", { name: "양식 데이터 가져오기…" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "양식 데이터 내보내기…" })).toBeEnabled();
+  });
+
+  it("an unrestricted document keeps 필드 만들기", async () => {
+    render(<App />);
+    await useDocStore.getState().open(SAMPLE);
+    act(() => useAppStore.getState().setMode("form"));
+    expect(await screen.findByRole("button", { name: "텍스트 필드" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "양식 평면화" })).toBeEnabled();
+  });
+
+  it("pages of a restricted document cannot be dragged into another one", async () => {
+    const src = await api.openDocument({ path: RESTRICTED });
+    const dst = await api.openDocument({ path: SAMPLE });
+    await expect(api.importPagesFromDoc({ srcDocId: src.docId, pages: [0], dstDocId: dst.docId, at: 0 })).rejects.toMatchObject({
+      code: "permissionDenied",
+      detail: "security",
+    });
+    const ok = await api.openDocument({ path: "/Users/veri/Documents/other.pdf" });
+    const info = await api.importPagesFromDoc({ srcDocId: ok.docId, pages: [0], dstDocId: dst.docId, at: 0 });
+    expect(info.pageCount).toBe(dst.pageCount + 1);
+  });
+});
+
+describe("H8 × D1: a PDF dropped with images", () => {
+  it("is focused in the window that already shows it instead of opening twice", async () => {
+    const newWindow = vi.spyOn(mock, "openInNewWindow");
+    mockOpenInOtherWindow("/p/already-open.pdf", "doc-7");
+    const { routeDroppedPaths } = await import("../dialogs/imagesFlow");
+    await routeDroppedPaths(["/p/already-open.pdf", "/p/new.pdf", "/p/scan.png"]);
+    expect(useDialogStore.getState().stack.at(-1)?.name).toBe("imagesToPdf");
+    expect(newWindow).toHaveBeenCalledTimes(1);
+    expect(newWindow).toHaveBeenCalledWith({ path: "/p/new.pdf" });
+    expect(useToastStore.getState().toasts.at(-1)?.params).toEqual({ count: 1 });
   });
 });

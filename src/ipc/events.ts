@@ -114,7 +114,11 @@ export function onMenuCommand(handler: (id: string) => void, ids: readonly strin
   return () => offs.forEach((off) => off());
 }
 
-export interface DropPayload { paths: string[] }
+export interface DropPayload {
+  paths: string[];
+  /** v0.3: where the files were dropped, in CSS pixels of the window (the organizer inserts there) */
+  position?: { x: number; y: number };
+}
 
 /**
  * PDFs dropped on the window. Tauri gives real filesystem paths; in the browser (mock) we only get
@@ -126,7 +130,7 @@ export function onFileDrop(handler: (e: DropPayload) => void): Unsubscribe {
     const drop = (ev: globalThis.DragEvent) => {
       ev.preventDefault();
       const files = [...(ev.dataTransfer?.files ?? [])].map((f) => f.name);
-      if (files.length) handler({ paths: files });
+      if (files.length) handler({ paths: files, position: { x: ev.clientX, y: ev.clientY } });
     };
     window.addEventListener("dragover", prevent);
     window.addEventListener("drop", drop);
@@ -139,7 +143,11 @@ export function onFileDrop(handler: (e: DropPayload) => void): Unsubscribe {
   let cancelled = false;
   void getCurrentWebview()
     .onDragDropEvent((e) => {
-      if (e.payload.type === "drop") handler({ paths: e.payload.paths });
+      if (e.payload.type === "drop") {
+        const scale = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
+        const p = e.payload.position;
+        handler({ paths: e.payload.paths, position: p ? { x: p.x / scale, y: p.y / scale } : undefined });
+      }
     })
     .then((fn) => {
       stop = once(fn);
@@ -150,4 +158,81 @@ export function onFileDrop(handler: (e: DropPayload) => void): Unsubscribe {
     cancelled = true;
     stop.call();
   };
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg2-pages-structure-forms
+// ---------------------------------------------------------------------------
+
+export type FileDragState = "over" | "leave" | "drop";
+
+/**
+ * H7: files being dragged over the window. With Tauri's native drag-drop handler on (it must be:
+ * it is what gives us real paths), the webview's HTML5 `dragover` never fires on Windows, so the
+ * Welcome drop zone's highlight follows the native `enter` / `over` / `leave` / `drop` instead.
+ * In mock mode the window's HTML5 events stand in.
+ */
+export function onFileDragState(handler: (state: FileDragState) => void): Unsubscribe {
+  if (useMock()) {
+    const over = () => handler("over");
+    const leave = (ev: globalThis.DragEvent) => {
+      // leaving for a child element is not leaving the window
+      if (!ev.relatedTarget) handler("leave");
+    };
+    const drop = () => handler("drop");
+    window.addEventListener("dragenter", over);
+    window.addEventListener("dragover", over);
+    window.addEventListener("dragleave", leave);
+    window.addEventListener("drop", drop);
+    return () => {
+      window.removeEventListener("dragenter", over);
+      window.removeEventListener("dragover", over);
+      window.removeEventListener("dragleave", leave);
+      window.removeEventListener("drop", drop);
+    };
+  }
+  let stop = once(null);
+  let cancelled = false;
+  void getCurrentWebview()
+    .onDragDropEvent((e) => {
+      const type = e.payload.type;
+      handler(type === "leave" ? "leave" : type === "drop" ? "drop" : "over");
+    })
+    .then((fn) => {
+      stop = once(fn);
+      if (cancelled) stop.call();
+    })
+    .catch(() => undefined);
+  return () => {
+    cancelled = true;
+    stop.call();
+  };
+}
+
+/**
+ * P3: pages dragged out of one window's 축소판 / 페이지 grid and released outside it. Every
+ * window hears it; the one whose client area contains `screen` (CSS pixels, screen space) drops
+ * the pages there with `import_pages_from_doc`.
+ */
+export interface PagesDropEvent {
+  srcDocId: string;
+  pages: number[];
+  /** the window the drag started in (it ignores its own event) */
+  from: string;
+  screen: { x: number; y: number };
+}
+
+const PAGES_DROP = "pages-drop";
+
+export function onPagesDrop(handler: (e: PagesDropEvent) => void): Unsubscribe {
+  return subscribe(PAGES_DROP, handler);
+}
+
+export async function emitPagesDrop(e: PagesDropEvent): Promise<void> {
+  if (useMock()) {
+    appBus.emit(PAGES_DROP, e);
+    return;
+  }
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(PAGES_DROP, e);
 }

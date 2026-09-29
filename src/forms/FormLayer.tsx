@@ -16,8 +16,11 @@
  * one bug that makes a Korean form overlay unusable. Checkboxes, radios and selects commit
  * immediately because they have no composition.
  */
-import { memo, useRef } from "react";
-import type { FormField } from "../ipc/types";
+import { memo, useRef, useState } from "react";
+import type { FormField, NewFieldType, Rect } from "../ipc/types";
+import { pageUrl, scaleKey } from "../ipc/protocol";
+import type { ToolId } from "../store/appStore";
+import "./forms.css";
 import type { PageLayerContext } from "../viewer";
 import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
@@ -47,6 +50,14 @@ function FieldControl({ field, ctx }: { field: FormField; ctx: PageLayerContext 
     onFocus: () => setFocused(key),
     onBlur: () => setFocused(null),
     onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+    // v0.3 F2: a field has its own menu (값 지우기 · 모든 필드 지우기 · 필드 강조 표시 전환), not the page's
+    "data-context-menu": "",
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const { clientX, clientY } = e;
+      void import("./formActions").then((m) => m.openFieldMenu(field, clientX, clientY));
+    },
   };
 
   switch (field.type) {
@@ -102,20 +113,43 @@ function FieldControl({ field, ctx }: { field: FormField; ctx: PageLayerContext 
       );
     }
     case "button":
+      // v0.3 F2: a pushbutton's caption lives in its widget appearance, which `forms=0`
+      // suppresses while this overlay is mounted (F-20). The button's own rectangle of the page
+      // rendered *with* the widgets (the ordinary page bitmap, cached like any other) is shown
+      // here instead — the caption exactly as the file draws it, and only inside the widget.
+      return (
+        <div
+          className="form-field form-readonly form-button"
+          style={{
+            ...style,
+            backgroundImage: `url("${pageUrl({ doc: ctx.docId, gen: ctx.docGeneration, page: ctx.index, sk: scaleKey(ctx.zoomPercent), rot: ctx.rotation })}")`,
+            backgroundSize: `${ctx.width}px ${ctx.height}px`,
+            backgroundPosition: `${-box.x - 1}px ${-box.y - 1}px`,
+          }}
+          data-highlight={highlight || undefined}
+          data-context-menu=""
+          title={field.name}
+          aria-label={field.name}
+          role="img"
+          onContextMenu={common.onContextMenu}
+        />
+      );
     case "signature":
-      // A pushbutton's caption lives in its widget appearance, which `forms=0` suppresses
-      // while this overlay is mounted (F-20), so printing `field.name` here would put
-      // "B.Reset" or "link" on top of the page's own text. The box marks where the widget is;
-      // the name is in the tooltip and in the 양식 inspector.
       return (
         <div
           className="form-field form-readonly"
           style={style}
           data-highlight={highlight || undefined}
+          data-context-menu=""
           title={field.name}
           aria-label={field.name}
+          onContextMenu={common.onContextMenu}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            setFocused(key);
+          }}
         >
-          {field.type === "signature" ? t("sign.title") : null}
+          {t("sign.title")}
         </div>
       );
     default: {
@@ -164,14 +198,103 @@ function shownValue(field: FormField): string {
   return JSON.stringify([field.value ?? "", field.checked ?? null, (field.options ?? []).map((o) => o.selected)]);
 }
 
+/** The field tools of the 양식 strip (v0.3 F1) and the type each draws. */
+const FIELD_TOOL: Partial<Record<ToolId, NewFieldType>> = {
+  fieldText: "text",
+  fieldCheckbox: "checkbox",
+  fieldRadio: "radio",
+  fieldCombo: "combo",
+  fieldSignature: "signature",
+};
+
+/** Smallest field a drag makes (points); a click makes a default-sized one. */
+const MIN_FIELD_PT = 4;
+const DEFAULT_SIZE_PT: Record<NewFieldType, [number, number]> = {
+  text: [160, 20],
+  checkbox: [14, 14],
+  radio: [14, 14],
+  combo: [120, 20],
+  signature: [150, 40],
+};
+
+/** The page-space rectangle (PDF points) spanned by two points of the page box (CSS px). */
+function viewRectToPage(ctx: PageLayerContext, x0: number, y0: number, x1: number, y1: number): Rect {
+  const [a0, b0] = ctx.toPage(x0, y0);
+  const [a1, b1] = ctx.toPage(x1, y1);
+  return { l: Math.min(a0, a1), b: Math.min(b0, b1), r: Math.max(a0, a1), t: Math.max(b0, b1) };
+}
+
+/**
+ * 필드 만들기 (v0.3 F1): with a field tool armed, a drag on the page draws the new field's
+ * rectangle (a click places a default-sized one). Under the controls, so clicking an existing
+ * field still selects it for 필드 속성.
+ */
+function AuthorSurface({ ctx, type }: { ctx: PageLayerContext; type: NewFieldType }) {
+  const [draft, setDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const surface = useRef<HTMLDivElement>(null);
+  const local = (e: { clientX: number; clientY: number }) => {
+    const r = surface.current?.getBoundingClientRect();
+    return { x: e.clientX - (r?.left ?? 0), y: e.clientY - (r?.top ?? 0) };
+  };
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const p = local(e);
+    // Alt (⌥) while drawing a radio button starts a new group instead of joining the selected one.
+    const newGroup = e.altKey;
+    const start = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+    setDraft(start);
+    let last = start;
+    const move = (ev: PointerEvent) => {
+      const q = local(ev);
+      last = { ...start, x1: q.x, y1: q.y };
+      setDraft(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDraft(null);
+      let rect = viewRectToPage(ctx, last.x0, last.y0, last.x1, last.y1);
+      if (rect.r - rect.l < MIN_FIELD_PT || rect.t - rect.b < MIN_FIELD_PT) {
+        // A click: the default size as it is *displayed* (w × h across the view, from the
+        // click down-right), so on a rotated page the field is not turned sideways.
+        const [w, h] = DEFAULT_SIZE_PT[type];
+        rect = viewRectToPage(ctx, last.x0, last.y0, last.x0 + w * ctx.scale, last.y0 + h * ctx.scale);
+      }
+      void import("./formActions").then((m) => m.createFieldAt(ctx.index, rect, type, { newGroup }));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  return (
+    <div ref={surface} className="form-author" data-context-menu="" onPointerDown={onPointerDown}>
+      {draft && (
+        <span
+          className="form-author-draft"
+          style={{
+            left: Math.min(draft.x0, draft.x1),
+            top: Math.min(draft.y0, draft.y1),
+            width: Math.abs(draft.x1 - draft.x0),
+            height: Math.abs(draft.y1 - draft.y0),
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 export const FormLayer = memo(function FormLayer({ ctx }: { ctx: PageLayerContext }) {
   const mode = useAppStore((s) => s.mode);
+  const tool = useAppStore((s) => s.tool);
   const fields = useFormStore((s) => s.fields);
   if (mode !== "form") return null;
+  const authoring = FIELD_TOOL[tool] ?? null;
   const onPage = fields.filter((f) => f.page === ctx.index);
-  if (onPage.length === 0) return null;
+  if (onPage.length === 0 && !authoring) return null;
   return (
-    <div className="form-layer">
+    <div className="form-layer" data-authoring={authoring ?? undefined}>
+      {authoring && <AuthorSurface ctx={ctx} type={authoring} />}
       {onPage.map((field) => (
         <FieldControl key={`${fieldKey(field.page, field.index)}:${shownValue(field)}`} field={field} ctx={ctx} />
       ))}

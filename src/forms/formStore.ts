@@ -20,6 +20,8 @@ export interface FormState {
   fields: FormField[];
   /** the focused field, as `page:index` — drives the 양식 inspector panel */
   focused: string | null;
+  /** v0.3: the last field focused, created or picked — the inspector's 필드 속성 keep showing it after blur */
+  selected: string | null;
   /** 필드 강조 표시 (UI_SPEC §3) — a tile-URL parameter, not a command */
   highlight: boolean;
   loading: boolean;
@@ -39,6 +41,7 @@ export const useFormStore = create<FormState>((set, get) => ({
   generation: 0,
   fields: [],
   focused: null,
+  selected: null,
   highlight: true,
   loading: false,
 
@@ -47,13 +50,13 @@ export const useFormStore = create<FormState>((set, get) => ({
     set({ docId, generation, fields, loading: false });
   },
   setFocused(focused) {
-    set({ focused });
+    set(focused ? { focused, selected: focused } : { focused });
   },
   toggleHighlight(on) {
     set((s) => ({ highlight: on ?? !s.highlight }));
   },
   reset() {
-    set({ docId: null, generation: 0, fields: [], focused: null, loading: false });
+    set({ docId: null, generation: 0, fields: [], focused: null, selected: null, loading: false });
   },
 }));
 
