@@ -4,7 +4,7 @@
  * a handle is 8 CSS px at 25 % and at 400 % alike.
  */
 import type { Annot, AnnotId, AnnotPatch, Rect } from "../ipc/types";
-import { distanceToPath, mapPath, mapRect, normalizeRect, rectContains, rectsIntersect, translatePath, translateRect } from "./geometry";
+import { distanceToPath, mapPath, mapRect, normalizeRect, polygonPath, rectContains, rectsIntersect, translatePath, translateRect } from "./geometry";
 
 /** The eight resize handles plus the body. `null` = the gesture missed the annotation. */
 export type HandleId = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "body";
@@ -34,7 +34,9 @@ export function handlePoint(rect: Rect, handle: HandleId): [number, number] {
 export function isResizable(a: Annot): boolean {
   if (a.locked || a.editable !== "full") return false;
   return a.kind === "square" || a.kind === "circle" || a.kind === "textbox" || a.kind === "stamp" ||
-    a.kind === "signature" || a.kind === "ink" || a.kind === "line" || a.kind === "arrow";
+    a.kind === "signature" || a.kind === "ink" || a.kind === "line" || a.kind === "arrow" ||
+    // v0.3 pkg4
+    a.kind === "polygon" || a.kind === "polyline" || a.kind === "callout";
 }
 
 export function isMovable(a: Annot): boolean {
@@ -59,6 +61,11 @@ export function hitsAnnot(a: Annot, x: number, y: number, tolerance: number): bo
   if ((a.kind === "line" || a.kind === "arrow") && (a.linePoints || a.inkPaths?.length)) {
     const paths = a.inkPaths?.length ? a.inkPaths : [a.linePoints as number[]];
     return paths.some((path) => distanceToPath(path, x, y) <= tolerance + a.borderWidth / 2);
+  }
+  // v0.3 A2: a polyline is its stroke; a polygon its outline, or its inside when filled
+  if (a.vertices?.length && (a.kind === "polygon" || a.kind === "polyline")) {
+    if (distanceToPath(polygonPath(a.vertices, a.kind === "polygon"), x, y) <= tolerance + a.borderWidth / 2) return true;
+    return a.kind === "polygon" && !!a.fillColor && rectContains(a.rect, x, y, 0);
   }
   if (a.inkPaths?.length) {
     if (a.inkPaths.some((path) => distanceToPath(path, x, y) <= tolerance + a.borderWidth / 2)) return true;
@@ -93,6 +100,9 @@ export function movePatch(a: Annot, dx: number, dy: number): AnnotPatch {
     patch.p1 = [a.linePoints[0] + dx, a.linePoints[1] + dy];
     patch.p2 = [a.linePoints[2] + dx, a.linePoints[3] + dy];
   }
+  // v0.3 A2: a polygon's vertices and a callout's leader move with it
+  if (a.vertices?.length) patch.vertices = translatePath(a.vertices, dx, dy);
+  if (a.callout?.length) patch.callout = translatePath(a.callout, dx, dy);
   return patch;
 }
 
@@ -130,6 +140,8 @@ export function resizePatch(a: Annot, to: Rect): AnnotPatch {
     patch.p1 = p1;
     patch.p2 = p2;
   }
+  // v0.3 A2: a polygon's vertices scale with its box; a callout's box resizes, its tip stays
+  if (a.vertices?.length) patch.vertices = mapPath(a.vertices, a.rect, to);
   return patch;
 }
 

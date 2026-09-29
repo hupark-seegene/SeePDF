@@ -110,24 +110,23 @@ pub async fn scan_annotations(
     Ok(token.id)
 }
 
+/// v0.3 A9: the author is 설정 ▸ 주석 작성자, read here on the command side (never taken
+/// from the webview) and written as `/T` on every new annotation, stamp and signature.
+/// v0.3 A2: `create_in` picks PDFium or lopdf per kind — still one undo step.
 #[tauri::command]
 pub async fn create_annotation(
+    app: tauri::AppHandle,
     engine: State<'_, EngineHandle>,
     doc_id: String,
     page: PageIndex,
     spec: AnnotSpec,
     id: Option<String>,
 ) -> Result<AnnotResult, EngineError> {
+    let author = crate::app::store::get_settings(&app).author;
     engine
         .call(Lane::Edit, "create_annotation", move |st| {
-            let new_id = registry::mutate(
-                st,
-                &doc_id,
-                MutateOpts::new("undo.annotCreate", ChangeReason::Edit)
-                    .page(page)
-                    .keeps_text(),
-                |doc| annot::create::create(doc, page, &spec, id),
-            )?;
+            let new_id =
+                annot::create::create_in(st, &doc_id, page, &spec, id, Some(author.as_str()))?;
             result_for(st, &doc_id, page, Some(new_id), None)
         })
         .await
@@ -143,14 +142,7 @@ pub async fn update_annotation(
 ) -> Result<AnnotResult, EngineError> {
     engine
         .call(Lane::Edit, "update_annotation", move |st| {
-            let previous = registry::mutate(
-                st,
-                &doc_id,
-                MutateOpts::new("undo.annotEdit", ChangeReason::Edit)
-                    .page(page)
-                    .keeps_text(),
-                |doc| annot::update::update(doc, page, &id, &patch),
-            )?;
+            let previous = annot::update::update_in(st, &doc_id, page, &id, &patch)?;
             result_for(st, &doc_id, page, Some(previous.id.clone()), Some(previous))
         })
         .await

@@ -9,7 +9,7 @@
  *
  * Pure and React-free so `Inspector/patch.test.ts` can assert the payload directly.
  */
-import type { AnnotPatch, Rgb } from "../../ipc/types";
+import type { AnnotKind, AnnotPatch, Rgb } from "../../ipc/types";
 import type { ToolStyle } from "../../store/annotStore";
 
 export type PropertyId =
@@ -23,9 +23,12 @@ export type PropertyId =
   | "contents"
   | "author"
   | "text"
-  | "eraserSize";
+  | "eraserSize"
+  // v0.3 pkg4: 인쇄 (A10) and 선 스타일 (A6) exist on a selection only
+  | "printed"
+  | "dashed";
 
-export type PropertyValue = Rgb | null | number | string | boolean[] | "left" | "center" | "right";
+export type PropertyValue = Rgb | null | number | string | boolean | boolean[] | "left" | "center" | "right";
 
 /** What `update_annotation` gets for one control. `null` = the control does not touch the file. */
 export function patchFor(id: PropertyId, value: PropertyValue): AnnotPatch | null {
@@ -48,12 +51,39 @@ export function patchFor(id: PropertyId, value: PropertyValue): AnnotPatch | nul
       // A free-text annotation keeps its string in both places: `/Contents` is what other viewers
       // read, `text` is what the engine renders (spikes/annotations §3.2).
       return { text: value as string, contents: value as string };
+    // v0.3 A1: the text box's alignment and the line's heads are real patch fields now
     case "align":
+      return { align: value as "left" | "center" | "right" };
     case "heads":
+      return { heads: value as [boolean, boolean] };
+    case "printed":
+      return { printed: value as boolean };
+    case "dashed":
+      return { dashed: value as boolean };
     case "eraserSize":
-      // Stored in the tool style only: `AnnotPatch` has no field for them, so changing them on a
-      // selected annotation would silently do nothing — the UI hides them instead.
+      // a tool setting only: an annotation has no eraser size
       return null;
+  }
+}
+
+/**
+ * v0.3: whether a control means anything on an annotation of `kind` — 정렬 on a text box, 화살표
+ * on a line, 선 스타일 on a stroked shape. A mixed selection patches only the ones it applies to
+ * (one needless `update_annotation` would still be an undo step).
+ */
+export function appliesTo(id: PropertyId, kind: AnnotKind): boolean {
+  switch (id) {
+    case "align":
+      return kind === "textbox" || kind === "callout";
+    case "heads":
+      return kind === "line" || kind === "arrow";
+    case "dashed":
+      return ["square", "circle", "ink", "line", "arrow", "polygon", "polyline"].includes(kind);
+    case "fontSize":
+    case "text":
+      return kind === "textbox" || kind === "callout";
+    default:
+      return true;
   }
 }
 
@@ -79,6 +109,8 @@ export function styleFor(id: PropertyId, value: PropertyValue): Partial<ToolStyl
     case "contents":
     case "author":
     case "text":
+    case "printed":
+    case "dashed":
       return null;
   }
 }

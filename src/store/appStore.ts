@@ -17,7 +17,9 @@ export type ToolId =
   | "highlight" | "underline" | "strikeout" | "squiggly" | "note" | "pen" | "eraser"
   | "rectangle" | "ellipse" | "line" | "arrow" | "textbox" | "stamp" | "signature"
   | "editText" | "addText" | "addImage" | "redact" | "link"
-  | "fillForm" | "highlightFields";
+  | "fillForm" | "highlightFields"
+  // v0.3 pkg4-annotations-stamps-objects
+  | "polygon" | "callout";
 
 export interface AppState {
   os: OsName;

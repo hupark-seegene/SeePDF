@@ -564,6 +564,50 @@ Where lucide is wrong for a PDF concept (도장, 서명) draw two custom 20×20 
 
 ---
 
+## 14a. v0.3 pkg4-annotations-stamps-objects — additions to §3, §6, §7, §10, §12
+
+**Tool strip (§3, 주석).** Two tools join the strip: **다각형** (`pentagon`, after 화살표) and **설명선**
+(`message-square-quote`, after 텍스트 상자). 도장 gets a ⌄ beside its button that opens a small menu —
+**확인 표시 ✓ · X 표시 ✗ · 점 ● · 오늘 날짜** — which arms 도장 with that mark (no picker).
+
+**Tool behaviour (§6).**
+
+| tool | gesture |
+|---|---|
+| 다각형 | click per vertex (rubber band follows the pointer); **double-click** (a second click on the last vertex), a click on the first vertex or ↵ finishes; ⌫ drops the last vertex; Esc cancels. The panel's 모양 picks 다각형 / 꺾은선 / 구름 |
+| 설명선 | press where the arrow points, drag to where the box goes, release, type (the text-box editor); a click without a drag puts the box up-right of the tip |
+| 선 / 화살표 / 다각형 | 측정 (없음 / mm / pt) labels the line's length or the polygon's area — live in the preview, drawn into the annotation |
+| 펜 | pressure (a pen) varies the width; with **펜으로만 그리기** a finger pans the page and only a pen or a mouse draws. It switches itself on the first time a pen touches the page; the choice is remembered on the device |
+| 지우개 | 지우기 방식 **전체 획** (default: whole annotations) or **부분** (cuts ink strokes where the circle passes; applied on release, one change per stroke) |
+| 도장 | a picked image follows the pointer as a 50 % ghost of the image itself and is placed at its own aspect (a drag keeps the aspect); a text stamp previews its text in its border |
+
+**Properties panel (§7).** With an annotation selected, 정렬 (text box, 설명선) and 시작 / 끝 화살표 (선, 화살표)
+show **that annotation's** values and edit it — no longer the tool default. New rows: **선 스타일 실선 / 점선**
+(사각형, 타원, 펜, 선, 화살표, 다각형, 꺾은선; selection only) and **인쇄** (a checkbox for every selection: off =
+on screen, not printed). With a tool armed and nothing selected: 지우기 방식 (지우개), 펜으로만 그리기 (펜),
+모양 + 측정 (다각형), 측정 (선 / 화살표). 편집 mode, image object: **비율 고정** (on by default for an image: 너비
+derives 높이 and back), **이미지 바꾸기…** (exactly one image selected); any movable selection: **맨 앞으로 /
+맨 뒤로**.
+
+**Quick popover (§7).** A single selected highlight / underline / strikeout / squiggly, shape (사각형, 타원, 다각형,
+꺾은선), 선 / 화살표 or ink gets a 280 px popover 8 px above it (below it at the top of the page): the 8
+swatches, 불투명도, 굵기 chips (not for text markup), **메모** (opens an inline note field) and **삭제**. Hidden
+while the annotation is dragged and while the 메모 popover, a thread or the text editor is open.
+
+**Dialogs (§10).**
+* **도장 선택** — 기본 도장 grid, then **빠른 표시** (✓ ✗ ● 오늘 날짜), then **내 도장 (n/30)**: the user's own
+  stamps (click = arm, × = delete) and an add row — 문구 (with `{{date}}` / `{{author}}`, explained under it),
+  colour (인주 빨강 / 파랑 / 검정), 테두리 사각 / 둥근 / 없음, **텍스트 도장 추가**, **이미지 도장 추가…** (the
+  picked file is copied into the app's own folder).
+* **서명 만들기 ▸ 이미지** — beside 이미지 선택… (place once) a **이미지 저장…** button adds the picked image to
+  저장된 서명 (thumbnail; click places it at its own aspect; × deletes it and its copy).
+* **워터마크 / 머리글·바닥글** — 내용 gains **배경색** (pale paper tones + the palette + custom; fills the page
+  behind the content; the preview multiplies it over the thumbnail); a **뒤에 배치 (내용 아래)** checkbox for
+  text / image stamps. An image stamp's preview shows the image itself at its real aspect; 이미지를 선택하세요
+  is shown until one is picked, 이미지를 읽을 수 없습니다 when it cannot be read.
+
+**Context menus (§12).** 편집 mode, right-click on an image object: **이미지 바꾸기…** first.
+
 ## 15. i18n catalogue (ko = default and design reference, en = second)
 
 Flat dotted keys in `src/i18n/ko.json` and `src/i18n/en.json`. `{{placeholders}}` must be identical in

@@ -5,6 +5,32 @@ import { useAppStore } from "../store/appStore";
 import { shortcutFor } from "../keys/keymap";
 import { toolController } from "../tools/ToolController";
 import { resetFormFields, useFormStore } from "../forms/formStore";
+import { ChevronDown } from "lucide-react";
+import { openContextMenu } from "./contextMenuStore";
+import type { ToolId } from "../store/appStore";
+
+/**
+ * v0.3 T2: the 도장 flyout — ✓ ✗ ● and 오늘 날짜 arm the 도장 tool with that mark. The stamp module
+ * is fetched on demand (it lives in the annotation chunk, not the entry one).
+ */
+function openStampFlyout(x: number, y: number, arm: (tool: ToolId) => void): void {
+  const choose = (image: { builtin: string } | { text: string; color: [number, number, number]; shape: "none" }) => () =>
+    void import("../tools/stamp").then((m) => {
+      m.setStampImage("stamp", image);
+      arm("stamp");
+    });
+  openContextMenu({
+    x,
+    y,
+    labelKey: "stampPick.quick",
+    items: [
+      { id: "stamp-check", labelKey: "stampPick.mark.check", onSelect: choose({ builtin: "check" }) },
+      { id: "stamp-cross", labelKey: "stampPick.mark.cross", onSelect: choose({ builtin: "cross" }) },
+      { id: "stamp-dot", labelKey: "stampPick.mark.dot", onSelect: choose({ builtin: "dot" }) },
+      { id: "stamp-today", labelKey: "stampPick.today", onSelect: choose({ text: "{{date}}", color: [206, 32, 41], shape: "none" }) },
+    ],
+  });
+}
 
 /**
  * The 40 px contextual tool strip — 주석 / 편집 / 양식 only (UI_SPEC §3).
@@ -25,8 +51,8 @@ export function ToolStrip() {
   return (
     <div className="toolstrip" role="toolbar" aria-label={t("menu.tools")}>
       {tools.map((def) => (
+        <span key={def.id} className="toolstrip-item">
         <IconButton
-          key={def.id}
           icon={def.icon}
           label={t(def.labelKey)}
           shortcut={def.keyId ? shortcutFor(def.keyId, os) : undefined}
@@ -45,6 +71,24 @@ export function ToolStrip() {
             toolController.arm(def.id);
           }}
         />
+        {def.flyout === "stamp" && (
+          <button
+            type="button"
+            className="toolstrip-flyout"
+            aria-label={t("stampPick.quick")}
+            aria-haspopup="menu"
+            onClick={(e) => {
+              const box = e.currentTarget.getBoundingClientRect();
+              openStampFlyout(box.left, box.bottom + 4, (id) => {
+                setTool(id);
+                toolController.arm(id);
+              });
+            }}
+          >
+            <ChevronDown size={12} strokeWidth={2} aria-hidden />
+          </button>
+        )}
+        </span>
       ))}
     </div>
   );

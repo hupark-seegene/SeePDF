@@ -27,10 +27,13 @@ describe("Inspector.patch — control → AnnotPatch", () => {
     expect(patchFor("text", "한글 테스트")).toEqual({ text: "한글 테스트", contents: "한글 테스트" });
   });
 
-  it("has no wire field for the controls that only exist in the tool defaults", () => {
-    expect(patchFor("align", "center")).toBeNull();
-    expect(patchFor("heads", [true, false])).toBeNull();
+  it("maps 정렬 / 화살표 / 인쇄 / 선 스타일 to the patch (v0.3), 지우개 크기 stays a tool setting", () => {
+    expect(patchFor("align", "center")).toEqual({ align: "center" });
+    expect(patchFor("heads", [true, false])).toEqual({ heads: [true, false] });
+    expect(patchFor("printed", false)).toEqual({ printed: false });
+    expect(patchFor("dashed", true)).toEqual({ dashed: true });
     expect(patchFor("eraserSize", 20)).toBeNull();
+    expect(styleFor("printed", false)).toBeNull();
     expect(styleFor("align", "center")).toEqual({ align: "center" });
     expect(styleFor("heads", [true, false])).toEqual({ heads: [true, false] });
     expect(styleFor("eraserSize", 20)).toEqual({ eraserSize: 20 });

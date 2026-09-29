@@ -82,7 +82,8 @@
 //!   distance past the floor is reported separately (`pastBottomPt`).
 //! * **Annotations** in the column below the paragraph whose vertical centre lies inside the
 //!   moved band (top ≤ the paragraph's bottom + tolerance, bottom ≥ the stack's bottom −
-//!   tolerance) move by the same distance; widgets and popups never move. See [`move_annots`]
+//!   tolerance) move by the same distance; widgets never move, a popup only with its parent
+//!   (v0.3 A8). See [`move_annots`]
 //!   for what "move" means per kind. The band is reported (`movedBand`) so the UI can move
 //!   pending 영역 표시 marks the same way.
 
@@ -869,8 +870,10 @@ pub fn read_annots(
 ///   appearance is kept and follows the rect.
 ///
 /// Geometry keys PDFium cannot write (`/L` of a Line, `/Vertices` of a Polygon, `/CL` of a
-/// FreeText callout) keep their old values; the appearance, which is what every viewer draws,
-/// moves.
+/// FreeText callout) keep their old values here; the appearance, which is what every viewer
+/// draws, moves. (A page resize maps them with lopdf, v0.3 A8; the paragraph flow does not
+/// yet — that pass would belong in `edit_paragraph`.) A moved annotation's `/Popup` moves
+/// with it (v0.3 A8).
 pub fn move_annots(
     bindings: &'static dyn PdfiumLibraryBindings,
     page: &PdfPage<'_>,
@@ -913,6 +916,12 @@ pub fn move_annots(
         }
         if a.set_rect(Rect::new(rect.l, rect.b + dy, rect.r, rect.t + dy)) {
             moved += 1;
+            // v0.3 A8 (pkg4): the annotation's popup travels with it.
+            if let Some(mut popup) = a.linked("Popup") {
+                if let Some(r) = popup.rect() {
+                    popup.set_rect(Rect::new(r.l, r.b + dy, r.r, r.t + dy));
+                }
+            }
         }
     }
     Ok(moved)

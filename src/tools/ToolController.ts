@@ -21,12 +21,20 @@ import type {
 import type { ToolId } from "../store/appStore";
 
 /** What a 도장 / 서명 places: a picked file or one of the built-in stamps (IPC_CONTRACT §7.1). */
-export type StampImage = { path: string } | { builtin: string };
+export type StampImage =
+  | { path: string }
+  | { builtin: string }
+  // v0.3 T2: a text stamp (내 도장 / 오늘 날짜); {{date}} / {{author}} expand at placement
+  | { text: string; color: Rgb; shape?: "rect" | "round" | "none" };
 
 /** A point in PDF user space on one page (points, y-up, unrotated — IPC_CONTRACT §3). */
 export interface PagePoint {
   page: PageIndex;
   pt: Point;
+  /** v0.3 A4: `PointerEvent.pointerType` ("mouse" | "pen" | "touch"); absent in tests = mouse */
+  pointerType?: string;
+  /** v0.3 A4: `PointerEvent.pressure`, 0..1 (a mouse reports 0.5 while pressed) */
+  pressure?: number;
 }
 
 export interface ToolModifiers {
@@ -66,7 +74,7 @@ export interface ToolContext {
 /** What the tool wants drawn right now, before anything is committed (optimistic overlay). */
 export interface ToolPreview {
   page: PageIndex;
-  kind: "rect" | "ellipse" | "ink" | "line" | "marquee" | "quads" | "eraser" | "stamp";
+  kind: "rect" | "ellipse" | "ink" | "line" | "marquee" | "quads" | "eraser" | "stamp" | "poly" | "callout";
   rect?: Rect;
   points?: number[];
   quads?: Rect[];
@@ -80,6 +88,14 @@ export interface ToolPreview {
   ids?: AnnotId[];
   /** a built-in 도장's label, drawn inside the placement ghost (P1-12) */
   label?: string;
+  /** v0.3 T1: the picked image of a 도장 / 서명 ghost (a `blob:` URL), drawn at 50 % */
+  imageUrl?: string;
+  /** v0.3 T2: a text stamp's border */
+  shape?: "rect" | "round" | "none";
+  /** v0.3 A2: polygon / polyline being drawn — closed ring or not; a measuring label */
+  closed?: boolean;
+  cloudy?: boolean;
+  measureText?: string;
 }
 
 export interface ToolResult<S = unknown> {
@@ -95,7 +111,11 @@ export interface ToolResult<S = unknown> {
   /** changes to existing annotations (move / resize); `live` coalesces while the drag continues */
   patch?: { page: PageIndex; edits: { id: AnnotId; patch: AnnotPatch }[]; live?: boolean };
   /** open an inline editor at this rectangle (텍스트 상자) or annotation (메모) */
-  edit?: { page: PageIndex; rect?: Rect; id?: AnnotId };
+  edit?: { page: PageIndex; rect?: Rect; id?: AnnotId; callout?: number[] };
+  /** v0.3 A4: several annotations from one gesture (a pen stroke whose pressure varies) */
+  commits?: { page: PageIndex; spec: AnnotSpec }[];
+  /** v0.3 A3 부분 지우개: what is left of each touched ink annotation (empty paths = delete it) */
+  partialErase?: { page: PageIndex; edits: { id: AnnotId; paths: number[][] }[] };
   /** the tool wants to hand control back (Esc, or a one-shot tool that finished) */
   done?: boolean;
 }
@@ -117,6 +137,11 @@ export interface ToolModule<S = unknown> {
    * the stamp's ghost preview both track a hovering pointer).
    */
   hoverPreview?: boolean;
+  /**
+   * v0.3: the tool's state survives pointer-up — a gesture of several clicks (다각형). The tool
+   * returns its empty state itself when it commits or cancels.
+   */
+  keepsState?: boolean;
 }
 
 /** What the annotation host plugs in so a finished gesture becomes an IPC call. */
@@ -125,7 +150,9 @@ export interface ToolSink {
   erase(page: PageIndex, ids: AnnotId[]): void;
   patch(page: PageIndex, edits: { id: AnnotId; patch: AnnotPatch }[], live: boolean): void;
   select(ids: AnnotId[], additive: boolean): void;
-  edit(target: { page: PageIndex; rect?: Rect; id?: AnnotId }): void;
+  edit(target: { page: PageIndex; rect?: Rect; id?: AnnotId; callout?: number[] }): void;
+  /** v0.3 A3: the partial eraser's result — patch `paths`, delete what is empty (optional sink) */
+  erasePartial?(page: PageIndex, edits: { id: AnnotId; paths: number[][] }[]): void;
   /** the tool finished and asked to go back to 선택 */
   done(): void;
 }
@@ -149,6 +176,8 @@ export interface ToolController {
   preview(): ToolPreview | null;
   /** `true` while a gesture is in flight — the surface uses it to keep pointer capture */
   active(): boolean;
+  /** v0.3: the armed tool's state between gestures (a multi-click tool's), `null` when idle */
+  pendingState(): unknown;
   /** re-render hook for the overlay; returns an unsubscribe */
   subscribe(listener: () => void): () => void;
   /** monotonic counter, a `useSyncExternalStore` snapshot */
@@ -171,6 +200,8 @@ const CURSORS: Partial<Record<ToolId, string>> = {
   ellipse: "crosshair",
   line: "crosshair",
   arrow: "crosshair",
+  polygon: "crosshair",
+  callout: "crosshair",
   textbox: "crosshair",
   stamp: "copy",
   signature: "copy",
@@ -194,6 +225,9 @@ export const DRAWING_TOOLS: ToolId[] = [
   "textbox",
   "stamp",
   "signature",
+  // v0.3 pkg4
+  "polygon",
+  "callout",
 ];
 
 /** The text-anchored tools: the viewer owns the drag, the tool only reads the selection on up. */
@@ -263,8 +297,10 @@ class RealToolController implements ToolController {
     this.down = false;
     this.ensureState(module, ctx);
     this.apply(module.onUp(this.state, p, ctx));
-    this.started = false;
-    this.state = null;
+    if (!module.keepsState) {
+      this.started = false;
+      this.state = null;
+    }
   }
 
   key(key: string, ctx: ToolContext): void {
@@ -290,6 +326,10 @@ class RealToolController implements ToolController {
 
   active(): boolean {
     return this.down;
+  }
+
+  pendingState(): unknown {
+    return this.started ? this.state : null;
   }
 
   subscribe(listener: () => void): () => void {
@@ -321,6 +361,8 @@ class RealToolController implements ToolController {
       if (result.erase && result.erase.ids.length) sink.erase(result.erase.page, result.erase.ids);
       if (result.patch?.edits.length) sink.patch(result.patch.page, result.patch.edits, result.patch.live ?? false);
       if (result.commit) sink.commit(result.commit.page, result.commit.spec);
+      for (const c of result.commits ?? []) sink.commit(c.page, c.spec);
+      if (result.partialErase?.edits.length) sink.erasePartial?.(result.partialErase.page, result.partialErase.edits);
       if (result.edit) sink.edit(result.edit);
     }
     if (result.done) {

@@ -67,3 +67,36 @@ export function builtinColor(id: string): Rgb {
       return [40, 70, 160];
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// v0.3 pkg4-annotations-stamps-objects (T2)
+// ---------------------------------------------------------------------------------------------
+
+/** ✓ ✗ ● — built-in ids the engine draws as vector marks (`create.rs` `QUICK_MARKS`). */
+export const QUICK_MARKS = ["check", "cross", "dot"] as const;
+export type QuickMark = (typeof QUICK_MARKS)[number];
+
+/** Ink blue of the quick marks — `QUICK_MARK_COLOR` in `create.rs`. */
+export const QUICK_MARK_COLOR: Rgb = [24, 64, 170];
+
+export function isQuickMark(id: string | null | undefined): id is QuickMark {
+  return !!id && (QUICK_MARKS as readonly string[]).includes(id);
+}
+
+/** 오늘 날짜: a borderless text stamp that says today's date (`{{date}}` expands at placement). */
+export const TODAY_STAMP = { text: "{{date}}", color: [206, 32, 41] as Rgb, shape: "none" as const };
+
+/** The `/Subj` of a custom text stamp — what `Annot.stampKind` reads back. */
+export const TEXT_STAMP_KIND = "SeePDF:TextStamp";
+
+/**
+ * Default placement size of a text stamp: 40 pt high, as wide as the text at the engine's label
+ * size (half the height), tokens counted at their expanded length.
+ */
+export function textStampSize(text: string): { w: number; h: number } {
+  const shown = text.replaceAll("{{date}}", "0000.00.00").replaceAll("{{author}}", "홍길동");
+  let em = 0;
+  for (const ch of shown) em += /[ㄱ-힝]/.test(ch) ? 1 : 0.6;
+  const w = Math.min(260, Math.max(64, em * 20 / 0.84 + 12));
+  return { w: Math.round(w), h: 40 };
+}

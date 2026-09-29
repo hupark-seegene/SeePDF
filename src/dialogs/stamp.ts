@@ -11,7 +11,8 @@ export const ANCHORS: StampAnchor[] = ["tl", "tc", "tr", "ml", "mc", "mr", "bl",
 
 export interface StampForm {
   role: StampRole;
-  source: "text" | "image";
+  /** v0.3 T4: `background` = a solid colour filling the page, always behind the content */
+  source: "text" | "image" | "background";
   text: string;
   fontSizePt: number;
   color: Rgb;
@@ -27,7 +28,14 @@ export interface StampForm {
   batesDigits: number;
   batesPrefix: string;
   batesSuffix: string;
+  /** v0.3 T4 뒤에 배치: under the page content instead of on top */
+  behind: boolean;
+  /** v0.3 T4: the 배경색 source's colour */
+  backgroundColor: Rgb;
 }
+
+/** v0.3 T4: the default 배경색 — a pale paper yellow. */
+export const DEFAULT_BACKGROUND: Rgb = [255, 248, 220];
 
 /** Bates limits, the engine's (`stamp::BATES_MAX_DIGITS`, `BATES_MAX_AFFIX`). */
 export const BATES_MAX_DIGITS = 12;
@@ -67,6 +75,8 @@ export function initialStampForm(role: StampRole, watermarkText: string): StampF
     batesDigits: 6,
     batesPrefix: "",
     batesSuffix: "",
+    behind: false,
+    backgroundColor: DEFAULT_BACKGROUND,
   };
 }
 
@@ -197,11 +207,15 @@ export function buildStampSpec(form: StampForm, pages: PageIndex[], allPages: bo
       : {};
   return {
     ...bates,
+    // v0.3 T4: only sent when set (a background is behind by itself)
+    ...(form.behind && form.source !== "background" ? { behind: true } : {}),
     role: form.role,
     source:
       form.source === "text"
         ? { kind: "text", text: form.text, fontSizePt: clamp(form.fontSizePt, 4, 400), color: form.color }
-        : { kind: "image", path: form.imagePath ?? "", widthPt: clamp(form.imageWidthPt, 8, 2000) },
+        : form.source === "background"
+          ? { kind: "background", color: form.backgroundColor }
+          : { kind: "image", path: form.imagePath ?? "", widthPt: clamp(form.imageWidthPt, 8, 2000) },
     anchor: form.anchor,
     marginPt: clamp(form.marginPt, 0, 500),
     rotateDeg: form.role === "watermark" ? clamp(form.rotateDeg, -180, 180) : 0,

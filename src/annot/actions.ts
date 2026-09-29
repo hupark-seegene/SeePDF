@@ -80,18 +80,38 @@ export function ghostFromSpec(page: PageIndex, spec: AnnotSpec, author: string |
     case "arrow":
       return {
         ...base,
-        subtype: "Ink",
+        // v0.3: a real /Line (the engine falls back to Ink only in an encrypted document)
+        subtype: "Line",
         linePoints: [spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]],
-        inkPaths: [[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]],
+        heads: spec.heads ?? (spec.kind === "arrow" ? [false, true] : [false, false]),
+        measure: spec.measure,
         rect: boundsOfPaths([[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]]),
         color: spec.color,
         borderWidth: spec.width,
         opacity: spec.opacity,
       };
     case "textbox":
-      return { ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, contents: spec.text, fontSize: spec.fontSize, color: spec.color, fillColor: spec.fillColor };
+      return { ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, contents: spec.text, fontSize: spec.fontSize, color: spec.color, fillColor: spec.fillColor, align: spec.align };
+    case "callout":
+      return {
+        ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, contents: spec.text, fontSize: spec.fontSize,
+        color: spec.color, fillColor: spec.fillColor, align: spec.align, callout: spec.callout,
+      };
+    case "polygon":
+    case "polyline":
+      return {
+        ...base, subtype: spec.kind === "polygon" ? "Polygon" : "PolyLine", vertices: spec.vertices, rect: boundsOfPaths([spec.vertices]),
+        color: spec.color, fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity,
+        cloudy: spec.cloudy, dashed: spec.dashed, measure: spec.measure,
+      };
     case "stamp":
-      return { ...base, subtype: "Stamp", rect: spec.rect, stampKind: "builtin" in spec.image ? spec.image.builtin : "image" };
+      return {
+        ...base,
+        subtype: "Stamp",
+        rect: spec.rect,
+        stampKind: "builtin" in spec.image ? spec.image.builtin : "text" in spec.image ? "SeePDF:TextStamp" : "image",
+        ...("text" in spec.image ? { contents: spec.image.text, color: spec.image.color } : {}),
+      };
   }
 }
 
@@ -113,7 +133,8 @@ export async function createAnnotation(page: PageIndex, spec: AnnotSpec, opts: C
   const id = docId();
   if (!id) return null;
   const store = useAnnotStore.getState();
-  const author = useAppStore.getState().settings?.author ?? null;
+  // v0.3 A9: the engine writes 설정 ▸ 작성자 as /T (blank = none); the ghost says the same
+  const author = useAppStore.getState().settings?.author?.trim() || null;
   const ghost = ghostFromSpec(page, spec, author);
   store.addGhost(ghost);
   try {
@@ -190,6 +211,16 @@ function applyLocally(page: PageIndex, id: AnnotId, patch: AnnotPatch): void {
   if (patch.text !== undefined) next.text = patch.text;
   if (patch.fontSize !== undefined) next.fontSize = patch.fontSize;
   if (patch.locked !== undefined) next.locked = patch.locked;
+  // v0.3 pkg4
+  if (patch.align !== undefined) next.align = patch.align;
+  if (patch.heads !== undefined) {
+    next.heads = patch.heads;
+    if (next.kind === "line" || next.kind === "arrow") next.kind = patch.heads[0] || patch.heads[1] ? "arrow" : "line";
+  }
+  if (patch.printed !== undefined) next.printed = patch.printed;
+  if (patch.dashed !== undefined) next.dashed = patch.dashed;
+  if (patch.vertices) next.vertices = patch.vertices;
+  if (patch.callout) next.callout = patch.callout;
   if (found) useAnnotStore.getState().upsert(next);
   if (ghost) {
     useAnnotStore.setState((s) => ({
@@ -395,10 +426,29 @@ export function specFromAnnot(a: Annot, dx = 0, dy = 0): AnnotSpec | null {
     case "line":
     case "arrow": {
       const p = a.linePoints ?? [a.rect.l, a.rect.b, a.rect.r, a.rect.t];
-      return { kind: a.kind, p1: [p[0] + dx, p[1] - dy], p2: [p[2] + dx, p[3] - dy], color: a.color, width: a.borderWidth, opacity: a.opacity };
+      return {
+        kind: a.kind, p1: [p[0] + dx, p[1] - dy], p2: [p[2] + dx, p[3] - dy], color: a.color, width: a.borderWidth, opacity: a.opacity,
+        // v0.3 A1: the copy keeps its heads (and its measuring label)
+        ...(a.heads ? { heads: a.heads } : {}),
+        ...(a.measure ? { measure: a.measure } : {}),
+      };
     }
     case "textbox":
-      return { kind: "textbox", rect: move(a.rect), text: a.text ?? a.contents, fontSize: a.fontSize ?? 12, color: a.color, align: "left", fillColor: a.fillColor };
+      // v0.3 A1: 복제 / 붙여넣기 keep the alignment
+      return { kind: "textbox", rect: move(a.rect), text: a.text ?? a.contents, fontSize: a.fontSize ?? 12, color: a.color, align: a.align ?? "left", fillColor: a.fillColor };
+    case "callout":
+      return {
+        kind: "callout", rect: move(a.rect), text: a.text ?? a.contents, fontSize: a.fontSize ?? 12, color: a.color,
+        align: a.align ?? "left", fillColor: a.fillColor,
+        callout: (a.callout ?? []).map((v, i) => (i % 2 === 0 ? v + dx : v - dy)),
+      };
+    case "polygon":
+    case "polyline":
+      if (!a.vertices?.length) return null;
+      return {
+        kind: a.kind, vertices: a.vertices.map((v, i) => (i % 2 === 0 ? v + dx : v - dy)), color: a.color, fillColor: a.fillColor,
+        width: a.borderWidth, opacity: a.opacity, cloudy: a.cloudy, dashed: a.dashed, measure: a.measure,
+      };
     default:
       return null;
   }
@@ -432,4 +482,19 @@ export async function reloadPage(page: PageIndex): Promise<void> {
   } catch {
     // `unsupported` while (a) is still landing: leave whatever we have rather than blanking it.
   }
+}
+
+// ---------------------------------------------------------------- v0.3 pkg4-annotations-stamps-objects
+
+/**
+ * A3 부분 지우개: the pieces left of each touched ink annotation — one `update_annotation {paths}`
+ * per annotation (one undo step each, sent at once, not coalesced), or a delete when nothing is
+ * left.
+ */
+export function erasePartial(page: PageIndex, edits: { id: AnnotId; paths: number[][] }[]): void {
+  const gone = edits.filter((e) => e.paths.length === 0).map((e) => e.id);
+  for (const e of edits) {
+    if (e.paths.length) patchAnnotation(page, e.id, { paths: e.paths });
+  }
+  if (gone.length) void deleteAnnotations(page, gone);
 }

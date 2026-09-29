@@ -3,8 +3,9 @@
  * (anchor, rotation, size, opacity) and the undo label; the engine lays the stamp out from the
  * anchor + margin. The preview is a CSS approximation over the first page of the range (its
  * thumbnail, in the page's visual size: crop box, `/Rotate` applied — the space the engine lays
- * the stamp out in). An image stamp shows the picked file when the webview can load it
- * (`convertFileSrc`, the Tauri asset protocol), else a placeholder box.
+ * the stamp out in). An image stamp shows the picked file itself (v0.3 T1: `image_preview` → a
+ * `blob:` URL — no asset protocol, no fs scope) at its real aspect; a placeholder box until then.
+ * v0.3 T4: 뒤에 배치 puts the stamp under the page content, and 배경색 fills the page behind it.
  *
  * 워터마크 제거 (Stage 8): `remove_stamps` over the same page range, for the current role or every
  * SeePDF stamp (모두 제거 — the only way to reach stamps written before roles were recorded).
@@ -13,7 +14,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Image as ImageIcon } from "lucide-react";
 import * as api from "../ipc/api";
-import { tauriInternals } from "../ipc/env";
 import { thumbUrl } from "../ipc/protocol";
 import { devicePixelRatio } from "../viewer/geometry";
 import { useT } from "../i18n/useT";
@@ -34,18 +34,22 @@ import {
 } from "./stamp";
 
 const ROLES: StampRole[] = ["watermark", "header", "footer"];
+/** v0.3 T4: 배경색 choices — pale paper tones. */
+const BACKGROUND_COLORS: [number, number, number][] = [
+  [255, 248, 220], [255, 243, 205], [232, 244, 253], [234, 248, 234], [253, 236, 240], [240, 240, 240],
+];
 /** preview page width in CSS px */
 const PREVIEW_W = 168;
 
 /**
- * A local image as a URL the webview can load: the Tauri asset protocol via `convertFileSrc`, when
- * there is one. `null` (mock / browser) keeps the placeholder; so does a load error (the protocol
- * not enabled, or the CSP refusing it). Replaceable in tests.
+ * A picked image as the preview needs it (v0.3 T1): its own pixel size and a `blob:` URL of a
+ * small PNG from `image_preview` (`url` is `null` where the platform has no object URLs).
+ * Replaceable in tests.
  */
 export const stampImageSource = {
-  resolve(path: string): string | null {
-    const convert = tauriInternals()?.convertFileSrc;
-    return convert ? convert(path, "asset") : null;
+  async preview(path: string): Promise<{ url: string | null; w: number; h: number }> {
+    const p = await api.imagePreview({ path, maxPx: 512 });
+    return { url: api.previewUrl(p), w: p.width, h: p.height };
   },
 };
 
@@ -58,8 +62,8 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
   const [form, setForm] = useState<StampForm>(() => initialStampForm(initialRole ?? "watermark", watermarkText));
   const [range, setRange] = useState<RangeChoice>({ mode: "all", text: "" });
   const [busy, setBusy] = useState(false);
-  /** the picked image as the webview loaded it: its URL and natural size */
-  const [image, setImage] = useState<{ path: string; src: string; w: number; h: number } | null>(null);
+  /** the picked image as `image_preview` described it: its preview URL and its own size */
+  const [image, setImage] = useState<{ path: string; src: string | null; w: number; h: number } | null>(null);
   const [imageFailed, setImageFailed] = useState<string | null>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
 
@@ -76,11 +80,8 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
   const previewPage = pages?.[0] ?? 0;
   const { widthPt: pageW, heightPt: pageH } = visualPageSize(info.pages[previewPage]);
   const scale = PREVIEW_W / pageW;
-  const imageSrc =
-    form.source === "image" && form.imagePath && imageFailed !== form.imagePath
-      ? stampImageSource.resolve(form.imagePath)
-      : null;
-  const loaded = image && image.path === form.imagePath ? image : null;
+  const loaded = form.source === "image" && image && image.path === form.imagePath && imageFailed !== form.imagePath ? image : null;
+  const imageSrc = loaded?.src ?? null;
 
   const addToken = (token: StampToken) => {
     const el = textRef.current;
@@ -96,7 +97,15 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
     const picked = await api
       .openFileDialog({ multiple: false, filters: [{ name: "PNG / JPEG", extensions: ["png", "jpg", "jpeg"] }] })
       .catch(() => null);
-    if (picked?.length) patch({ imagePath: picked[0] });
+    if (!picked?.length) return;
+    const path = picked[0];
+    patch({ imagePath: path });
+    try {
+      const p = await stampImageSource.preview(path);
+      setImage({ path, src: p.url, w: p.w, h: p.h });
+    } catch {
+      setImageFailed(path);
+    }
   };
 
   const apply = async () => {
@@ -190,7 +199,7 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
 
           <Row labelKey="stamp.source">
             <div className="segmented small" role="radiogroup" aria-label={t("stamp.source")}>
-              {(["text", "image"] as const).map((s) => (
+              {(["text", "image", "background"] as const).map((s) => (
                 <button
                   key={s}
                   type="button"
@@ -206,7 +215,28 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
             </div>
           </Row>
 
-          {form.source === "text" ? (
+          {form.source === "background" ? (
+            <Row labelKey="stamp.background.color">
+              {/* v0.3 T4: pale paper tones first (they read better behind text), then the palette + custom */}
+              <div className="swatches" role="radiogroup" aria-label={t("stamp.background.paper")}>
+                {BACKGROUND_COLORS.map((c) => (
+                  <button
+                    key={c.join()}
+                    type="button"
+                    role="radio"
+                    aria-checked={c.join() === form.backgroundColor.join()}
+                    aria-label={rgbCss(c)}
+                    className="swatch"
+                    data-selected={c.join() === form.backgroundColor.join() || undefined}
+                    style={{ background: rgbCss(c) }}
+                    onClick={() => patch({ backgroundColor: c })}
+                  />
+                ))}
+              </div>
+              <Swatches value={form.backgroundColor} label={t("stamp.background.color")} onPick={(backgroundColor) => patch({ backgroundColor })} />
+              <p className="dlg-hint text-xs">{t("stamp.background.hint")}</p>
+            </Row>
+          ) : form.source === "text" ? (
             <>
               <Row labelKey="stamp.text">
                 <textarea
@@ -311,6 +341,8 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
                   </button>
                   <span className="text-sm dim stamp-file">{form.imagePath ? baseName(form.imagePath) : t("stamp.image.none")}</span>
                 </div>
+                {error === "noImage" && <p className="dlg-hint danger text-xs">{t("stamp.error.noImage")}</p>}
+                {form.imagePath && imageFailed === form.imagePath && <p className="dlg-hint danger text-xs">{t("stamp.image.unreadable")}</p>}
               </Row>
               <Row labelKey="stamp.image.width">
                 <div className="inline-row">
@@ -345,7 +377,14 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
             </div>
           </Row>
 
-          {form.role === "watermark" && (
+          {form.source !== "background" && (
+            <label className="inline-row text-sm">
+              <input type="checkbox" checked={form.behind} onChange={(e) => patch({ behind: e.currentTarget.checked })} />
+              {t("stamp.behind")}
+            </label>
+          )}
+
+          {form.role === "watermark" && form.source !== "background" && (
             <Row labelKey="stamp.rotation">
               <div className="inline-row">
                 <input
@@ -441,9 +480,18 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
               alt=""
               draggable={false}
             />
+            {form.source === "background" && (
+              <div
+                className="stamp-background"
+                data-testid="stamp-preview-background"
+                style={{ background: rgbCss(form.backgroundColor), opacity: form.opacityPct / 100 }}
+              />
+            )}
             <div
               className="stamp-mark"
               data-testid="stamp-preview-mark"
+              data-behind={form.behind || undefined}
+              hidden={form.source === "background"}
               style={{
                 ...pos.style,
                 transform: `${pos.translate} rotate(${-form.rotateDeg}deg)`,
@@ -472,15 +520,10 @@ export default function StampDialog({ onClose, role: initialRole }: { onClose():
                       alt=""
                       data-testid="stamp-preview-image"
                       draggable={false}
-                      hidden={!loaded}
-                      onLoad={(e) => {
-                        const el = e.currentTarget;
-                        setImage({ path: form.imagePath ?? "", src: imageSrc, w: el.naturalWidth, h: el.naturalHeight });
-                      }}
                       onError={() => setImageFailed(form.imagePath)}
                     />
                   ) : null}
-                  {!loaded && <ImageIcon size={12} strokeWidth={1.75} aria-hidden />}
+                  {!imageSrc && <ImageIcon size={12} strokeWidth={1.75} aria-hidden />}
                 </span>
               )}
             </div>

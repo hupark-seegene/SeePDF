@@ -28,6 +28,7 @@
 
 pub mod create;
 pub mod font;
+pub mod lopdf_annots;
 pub mod read;
 pub mod reply;
 pub mod update;
@@ -50,6 +51,26 @@ pub const SUBJ_LINE: &str = "SeePDF:Line";
 pub const SUBJ_ARROW: &str = "SeePDF:Arrow";
 pub const SUBJ_TEXTBOX: &str = "SeePDF:TextBox";
 pub const SUBJ_SIGNATURE: &str = "SeePDF:Signature";
+// v0.3 pkg4-annotations-stamps-objects: the lopdf-written kinds (`lopdf_annots`).
+pub const SUBJ_POLYGON: &str = "SeePDF:Polygon";
+pub const SUBJ_POLYLINE: &str = "SeePDF:PolyLine";
+pub const SUBJ_CALLOUT: &str = "SeePDF:Callout";
+
+/// v0.3 A1: text-box alignment mirror, `"0"` / `"1"` / `"2"` like `/Q`.
+pub const KEY_ALIGN: &str = "SeePDFQ";
+/// v0.3 A1: line / arrow heads mirror, `"<start> <end>"` as 0 / 1.
+pub const KEY_HEADS: &str = "SeePDFHeads";
+/// v0.3 A6: dashed border mirror (`"1"`); PDFium cannot read `/BS`.
+pub const KEY_DASH: &str = "SeePDFDash";
+/// v0.3 A2: measuring unit of a line / polygon (`"mm"` / `"pt"`).
+pub const KEY_MEASURE: &str = "SeePDFMeasure";
+/// v0.3 A2: geometry mirrors of the lopdf kinds — PDFium reads `/L` and `/Vertices` but not
+/// `/CL`, so a callout's leader line is mirrored as a number list.
+pub const KEY_CALLOUT: &str = "SeePDFCL";
+/// v0.3 A2: a cloudy polygon (`"1"`); PDFium cannot read `/BE`.
+pub const KEY_CLOUD: &str = "SeePDFCloud";
+/// v0.3 A2: the text box of a callout inside its grown `/Rect` (`"l b r t"`, what `/RD` says).
+pub const KEY_BOX: &str = "SeePDFBox";
 
 /// Where SeePDF mirrors `/C` and `/IC`, because **`FPDFAnnot_GetColor` refuses to read a
 /// colour once the annotation has an `/AP`** — the same guard that makes `SetColor` fail
@@ -171,10 +192,18 @@ pub fn kind_of(subtype: c_int, subj: Option<&str>) -> AnnotKind {
         k::FPDF_ANNOT_SQUARE => AnnotKind::Square,
         k::FPDF_ANNOT_CIRCLE => AnnotKind::Circle,
         k::FPDF_ANNOT_TEXT => AnnotKind::Note,
-        k::FPDF_ANNOT_FREETEXT => AnnotKind::Textbox,
+        k::FPDF_ANNOT_FREETEXT => match subj {
+            Some(SUBJ_CALLOUT) => AnnotKind::Callout,
+            _ => AnnotKind::Textbox,
+        },
         k::FPDF_ANNOT_LINK => AnnotKind::Link,
         k::FPDF_ANNOT_WIDGET => AnnotKind::Widget,
-        k::FPDF_ANNOT_LINE => AnnotKind::Line,
+        k::FPDF_ANNOT_LINE => match subj {
+            Some(SUBJ_ARROW) => AnnotKind::Arrow,
+            _ => AnnotKind::Line,
+        },
+        k::FPDF_ANNOT_POLYGON => AnnotKind::Polygon,
+        k::FPDF_ANNOT_POLYLINE => AnnotKind::Polyline,
         k::FPDF_ANNOT_INK => match subj {
             Some(SUBJ_LINE) => AnnotKind::Line,
             Some(SUBJ_ARROW) => AnnotKind::Arrow,

@@ -660,6 +660,7 @@ fn resize_then_stamp_survives_save_and_reopen() {
         opacity: 1.0,
         pages: PageSelection::All(AllPages::All),
         bates: Default::default(),
+        behind: false,
     };
     let id = doc.doc_id.clone();
     with_state(move |st| stamp::add_stamp(st, &id, &spec)).unwrap();

@@ -12,6 +12,9 @@ import { textBoxTool } from "./textbox";
 import { makeStampTool } from "./stamp";
 import { eraserTool } from "./eraser";
 import { selectTool } from "./select";
+// v0.3 pkg4-annotations-stamps-objects
+import { polygonTool } from "./polygon";
+import { calloutTool } from "./callout";
 
 let registered = false;
 
@@ -33,6 +36,9 @@ export function registerTools(): void {
   toolController.register(textBoxTool);
   toolController.register(makeStampTool("stamp"));
   toolController.register(makeStampTool("signature"));
+  // v0.3 pkg4-annotations-stamps-objects
+  toolController.register(polygonTool);
+  toolController.register(calloutTool);
 }
 
 /** Test seam: lets a suite re-register after `toolController` was driven by another test. */

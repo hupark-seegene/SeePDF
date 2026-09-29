@@ -261,6 +261,15 @@ impl History {
         }
     }
 
+    /// v0.3 pkg4: restarts the coalescing window of the newest undo entry, so the **second
+    /// half of a two-step edit** (a PDFium step, then a lopdf step pushed with `coalesce`)
+    /// joins it however long the first half took. Callers invoke it right before that step.
+    pub fn refresh_last(&mut self) {
+        if let Some(last) = self.undo.last_mut() {
+            last.at_ms = now_ms();
+        }
+    }
+
     /// Loads the newest undo (`redo == false`) or redo entry and stores `current`, **without
     /// moving either stack** — see [`Step`]. `None` when there is nothing to undo / redo; an
     /// error (snapshot unreadable, spill failed) leaves everything as it was.

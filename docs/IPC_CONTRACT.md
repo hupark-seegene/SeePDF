@@ -1120,6 +1120,133 @@ Semantics:
 
 ---
 
+### 7.11 v0.3 pkg4-annotations-stamps-objects — additions to §7.1, §7.4, §7.4a, §7.7a, §11
+
+```ts
+// §7.1 — kinds, fields and specs
+export type AnnotKind = /* … §7.1 … */ | 'polygon' | 'polyline' | 'callout';
+export type MeasureUnit = 'mm' | 'pt';
+export type StampShape = 'rect' | 'round' | 'none';
+export interface Annot {
+  /* … §7.1 … */
+  align?: 'left' | 'center' | 'right';   // textbox / callout (the `SeePDFQ` mirror, or a foreign FreeText's /Q)
+  heads?: [start: boolean, end: boolean];   // line / arrow
+  vertices?: number[];                   // polygon / polyline (/Vertices)
+  cloudy?: boolean;                      // polygon with /BE << /S /C >>
+  callout?: number[];                    // callout: /CL, 4 or 6 numbers, tip first; `rect` is then the TEXT BOX
+  dashed?: boolean;                      // /BS << /S /D >>
+  measure?: MeasureUnit;                 // line / polygon / polyline drawn with a length / area label
+}
+export type AnnotSpec = /* … §7.1 … */
+  | { kind: 'line' | 'arrow'; /* … */ measure?: MeasureUnit }
+  | { kind: 'stamp'; rect: Rect; image: { path: string } | { builtin: string }
+      | { text: string; color: Rgb; shape?: StampShape };   // text stamp: {{date}} / {{author}} expand at placement
+      rotate?: number; signature?: boolean }
+  | { kind: 'polygon' | 'polyline'; vertices: number[]; color: Rgb; fillColor: Rgb | null; width: number;
+      opacity: number; cloudy?: boolean; dashed?: boolean; measure?: MeasureUnit }
+  | { kind: 'callout'; rect: Rect; text: string; fontSize: number; color: Rgb;
+      align: 'left' | 'center' | 'right'; fillColor: Rgb | null; callout: number[] };
+    // builtin (v0.3 T2) also 'check' | 'cross' | 'dot' — quick marks ✓ ✗ ●, drawn as vector paths
+export interface AnnotPatch {
+  /* … §7.1 … */
+  align?: 'left' | 'center' | 'right'; heads?: [boolean, boolean]; printed?: boolean;
+  dashed?: boolean; vertices?: number[]; callout?: number[];
+}
+
+// §7.4 — objects
+restack_objects(a: { docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration;
+  toFront: boolean }): Promise<{ objects: PageObject[]; docGeneration: DocGeneration }>
+
+// §7.4a — page stamps
+export type StampSource = /* … */ | { kind: 'background'; color: Rgb };
+export interface StampSpec { /* … */ behind?: boolean }
+
+// §11 — app, settings
+export interface Settings { /* … */ stamps: CustomStamp[] }       // 내 도장, ≤ 30, newest last; absent → []
+export type CustomStamp =
+  | { kind: 'image'; id: string; path: string; aspect: number; createdAt: string }
+  | { kind: 'text'; id: string; text: string; color: Rgb; shape: StampShape; createdAt: string };
+export type SavedSignature = /* … */ | { kind: 'image'; id: string; path: string; aspect: number; createdAt: string };
+image_preview(a: { path: string; maxPx?: number }): Promise<ArrayBuffer>   // u32 LE width, u32 LE height, PNG
+copy_library_image(a: { path: string; library: 'stamp' | 'signature' }): Promise<{ path: string; width: number; height: number }>
+remove_library_image(a: { path: string; library: 'stamp' | 'signature' }): Promise<boolean>
+```
+
+**Author (A9).** `create_annotation` reads 설정 ▸ 주석 작성자 on the **command side**
+(`app::store::get_settings`, never from the webview) and writes it as `/T` on every new annotation, stamp and
+signature (trimmed; blank = no `/T`). On the first run of a settings file with an empty author the app fills it
+once from the OS user name (`USERNAME` / `USER`, else `whoami`; `DOMAIN\user` keeps the user); a store flag
+`authorPrefilled` records it, so an author the user cleared on purpose is never filled in again.
+
+**Alignment, heads, 인쇄 (A1, A10).** A text box stores its alignment in the private `SeePDFQ` key ("0" / "1" /
+"2"): `/Q` is an integer PDFium cannot write, and the text box is a Stamp, where `/Q` means nothing to other
+viewers. `update_annotation` rebuilds a text box with `patch.align`, then the previous alignment, then left (so a
+colour edit keeps a centred box centred) and a line / arrow with `patch.heads` (any head → `/Subj
+SeePDF:Arrow`, none → `SeePDF:Line`); the heads are mirrored in `SeePDFHeads` ("0 1"). `printed` sets or clears
+the `/F` Print bit; a rebuild (text box, markup rects) keeps the old Print / Locked flags.
+
+**lopdf kinds (A2).** A line / arrow is now a real **`/Line`** (`/L`, `/LE [/None|/OpenArrow …]`), and
+`/Polygon` (`/Vertices`, `/IC`, `/BE << /S /C /I 1 >>` for 구름), `/PolyLine` and a text box with a leader
+(`FreeText /IT /FreeTextCallout /CL /RD /LE /OpenArrow`) exist — written with lopdf through
+`registry::mutate_bytes` (`engine/annot/lopdf_annots.rs`): one undo step, PDFium reopens the result before it
+replaces the document. PDFium cannot create these subtypes or write their geometry and never generates their
+appearance, so each carries **its own `/AP`**: a Form XObject with `/BBox` = `/Rect`, an `ExtGState` for the
+opacity, the border as `/BS << /W /S /D >>` (dash `[4 3]`), and — with `measure` — a Helvetica (WinAnsi) label
+("76.2 mm", "354.6 pt", "645.2 mm²"; `/IT /LineDimension` / `/PolygonDimension` / `/PolyLineDimension`).
+PDFium reads `/L` and `/Vertices` back itself; what it cannot read is mirrored like the colours: `SeePDFHeads`,
+`SeePDFDash`, `SeePDFCloud`, `SeePDFMeasure`, `SeePDFCL` and `SeePDFBox` (a callout's text box, reported as its
+`rect`). A callout is the text box built by PDFium (its Hangul glyphs need the bundled font), then converted by
+lopdf in a **coalesced** second step (`History::refresh_last` + `MutateOpts::coalesced`, one undo entry however
+long the first step took); the leader is appended to its appearance and `/BBox` grows to the new `/Rect`.
+`update_annotation` on a SeePDF lopdf annotation redraws it **in place** (same object number, so a reply's
+`/IRT` and a popup's `/Parent` still resolve; `/NM`, `/T`, `/CreationDate` kept) from the previous state + the
+patch; a callout is rebuilt and converted again (one step); another application's line / polygon (moveOnly) is
+moved with its appearance kept and `/Rect`, `/L`, `/Vertices`, `/CL` mapped. An **encrypted** document cannot
+take a lopdf rewrite: a line / arrow falls back to SeePDF's Ink line there, a polygon / polyline / callout and an
+edit of a lopdf annotation are `unsupported`.
+
+**Dashed border (A6).** `patch.dashed` (or a width change on a dashed annotation) on a square / circle / ink:
+the PDFium part first, then a coalesced lopdf step writes `/BS << /W w /S /D /D [4 3] >>` (or `/S /S`), mirrors
+`SeePDFDash` and drops the `/AP`, which PDFium regenerates dashed on the next render.
+
+**Stamps (T1, T2).** A picked image is letterboxed into the stamp rect when their aspects differ (the UI sizes
+the rect to the image, so this is a safety net). `{ text, color, shape }` is a text stamp: `{{date}}`
+(local `yyyy.MM.dd`) and `{{author}}` (설정 ▸ 작성자) expand at placement, the label is drawn by the built-in
+stamp generator (bundled Hangul subset, coverage-checked → `fontCoverage`) inside a square / rounded / no border,
+`/Subj SeePDF:TextStamp` (= `stampKind`), `/Contents` = the expanded text. `check` / `cross` / `dot` are quick
+marks drawn as one vector path (no font), `/Subj` = the id.
+
+**`image_preview`** (T1): decodes a PNG / JPEG on `spawn_blocking` (never the engine thread) and returns its own
+pixel size and a PNG thumbnail (longest side ≤ `maxPx`, default 512, clamped 16…1024) as raw bytes; the webview
+turns the PNG into a `blob:` URL (`img-src blob:` is already allowed). No asset protocol, no fs scope.
+Errors: `io`, `invalidArgument` (not an image). **`copy_library_image`** (T2 / T3): copies a picked PNG / JPEG
+(≤ 20 MB) to `$APPDATA/SeePDF/stamps/` (내 도장) or `…/signatures/` (저장된 서명) as `img-<fnv64>.<ext>` —
+content-addressed, never pruned (unlike the `sig-*.png` typed-signature cache) — and returns the copy's path and
+size. **`remove_library_image`** deletes such a copy when its entry is removed; anything that is not an `img-*`
+file directly inside that directory is left alone (`false`). `Settings.stamps` and the new `SavedSignature` kind
+are read leniently like `signatures` (a malformed entry is dropped on its own; `stamps` capped at 30).
+
+**Objects (A6).** `restack_objects` moves `objectIds` to the end (`toFront`) or the start of the page's paint
+order with `FPDFPage_RemoveObject` + `FPDFPage_InsertObjectAtIndex` (nothing is copied), keeping their relative
+order; one undo step `undo.objectArrange`; `stale` / `notFound` as for the other object commands.
+`replace_image` (Stage 2) is now reached from 편집 ▸ 이미지 바꾸기 (E1).
+
+**Page stamps (T4).** `behind: true` moves what the stamp adds to the **start** of each page's content (index 0 —
+painted first, under the text; the text stays extractable). `{ kind: 'background', color }` fills each page's crop
+box with a solid rectangle at index 0 (anchor, margin and rotation do not apply; opacity does), marked like every
+stamp (`SeePDF:Stamp`, role), so `remove_stamps` takes it away.
+
+**Page resize (A8).** After `resize_pages`' PDFium transform, a coalesced lopdf pass maps `/L`, `/Vertices`, `/CL`
+(and SeePDF's `SeePDFCL` / `SeePDFBox`) through the same matrix as `/Rect` on the pages that have Line, Polygon,
+PolyLine or FreeText annotations — still one undo step. Popups were already mapped. The paragraph flow
+(`edit_paragraph`) moves a moved annotation's `/Popup` with it; its `/L` / `/Vertices` / `/CL` are not rewritten
+yet (the appearance moves).
+
+**Annotation summary (A7).** Rows are in **thread order**: each top-level annotation followed by its replies
+(depth-first, each level oldest first). CSV gains two columns at the end, `ID` (the `/NM`) and `답글 대상` /
+`Reply to` (the parent's id for a reply, empty otherwise); TXT indents a reply under its parent (`↳`, four
+spaces per level), Markdown nests it as a sub-item.
+
 ## 8. Events and progress
 
 ```ts
@@ -1362,6 +1489,8 @@ ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors:
 | `set_outline`, `create_link`, `update_link`, `delete_link`, `set_page_labels`, `get_page_labels` | P2, `engine/structure/` + `commands/structure.rs` | P2 outline / links / labels |
 | `reply_annotation` | P2, `engine/annot/reply.rs` (lopdf via `registry::mutate_bytes`) | P2 threads |
 | `list_pdf_files` | P2, `commands/save.rs` | P2 multi-file search |
+| `image_preview`, `copy_library_image`, `remove_library_image` | v0.3 pkg4, `commands/images.rs` + `app/signatures.rs` | v0.3 T1 / T2 / T3 |
+| `restack_objects` | v0.3 pkg4, `engine/objects/mod.rs` | v0.3 A6 |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

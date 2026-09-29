@@ -195,3 +195,92 @@ export function mapRect(r: Rect, from: Rect, to: Rect): Rect {
     t: to.b + (r.t - from.b) * sy,
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// v0.3 pkg4-annotations-stamps-objects
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A3 부분 지우개: what is left of a flat `[x0,y0,x1,y1,…]` polyline after a circle of radius `r`
+ * at (cx, cy) erased what it covers — every piece outside the circle, split exactly where the
+ * segments cross it. Pieces shorter than two points are dropped; `[]` = nothing left.
+ */
+export function splitPathByCircle(path: number[], cx: number, cy: number, r: number): number[][] {
+  const n = Math.floor(path.length / 2);
+  const inside = (x: number, y: number) => (x - cx) ** 2 + (y - cy) ** 2 < r * r;
+  if (n === 0) return [];
+  if (n === 1) return inside(path[0], path[1]) ? [] : [path.slice(0, 2)];
+  const out: number[][] = [];
+  let cur: number[] = [];
+  const push = (x: number, y: number) => {
+    const k = cur.length;
+    if (k >= 2 && Math.abs(cur[k - 2] - x) < 1e-6 && Math.abs(cur[k - 1] - y) < 1e-6) return;
+    cur.push(x, y);
+  };
+  const close = () => {
+    if (cur.length >= 4) out.push(cur);
+    cur = [];
+  };
+  for (let i = 0; i + 1 < n; i++) {
+    const x0 = path[2 * i];
+    const y0 = path[2 * i + 1];
+    const dx = path[2 * i + 2] - x0;
+    const dy = path[2 * i + 3] - y0;
+    const fx = x0 - cx;
+    const fy = y0 - cy;
+    const a = dx * dx + dy * dy;
+    const b = 2 * (fx * dx + fy * dy);
+    const c = fx * fx + fy * fy - r * r;
+    const cuts: number[] = [];
+    const disc = b * b - 4 * a * c;
+    if (a > 1e-12 && disc > 0) {
+      const s = Math.sqrt(disc);
+      for (const t of [(-b - s) / (2 * a), (-b + s) / (2 * a)]) if (t > 0 && t < 1) cuts.push(t);
+    }
+    const ts = [0, ...cuts, 1];
+    for (let k = 0; k + 1 < ts.length; k++) {
+      const ta = ts[k];
+      const tb = ts[k + 1];
+      const mid = (ta + tb) / 2;
+      if (inside(x0 + dx * mid, y0 + dy * mid)) {
+        close();
+        continue;
+      }
+      push(x0 + dx * ta, y0 + dy * ta);
+      push(x0 + dx * tb, y0 + dy * tb);
+    }
+  }
+  close();
+  return out;
+}
+
+/** A2: a polygon's vertices as a closed ring (hit-testing, drawing). */
+export function polygonPath(vertices: number[], closed: boolean): number[] {
+  return closed && vertices.length >= 4 ? [...vertices, vertices[0], vertices[1]] : vertices;
+}
+
+/** A2 measure: length of a polyline in points. */
+export function pathLength(path: number[]): number {
+  let sum = 0;
+  for (let i = 2; i + 1 < path.length; i += 2) sum += Math.hypot(path[i] - path[i - 2], path[i + 1] - path[i - 1]);
+  return sum;
+}
+
+/** A2 measure: area of a polygon in square points (shoelace, absolute). */
+export function polygonArea(vertices: number[]): number {
+  const n = Math.floor(vertices.length / 2);
+  if (n < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    sum += vertices[2 * i] * vertices[2 * j + 1] - vertices[2 * j] * vertices[2 * i + 1];
+  }
+  return Math.abs(sum / 2);
+}
+
+/** A2: the label the engine draws on a measuring annotation (`lopdf_annots::measure_text`). */
+export function measureLabel(value: number, unit: "mm" | "pt", square: boolean): string {
+  const mm = 25.4 / 72;
+  const v = unit === "mm" ? value * (square ? mm * mm : mm) : value;
+  return `${v.toFixed(1)} ${unit}${square ? "²" : ""}`;
+}

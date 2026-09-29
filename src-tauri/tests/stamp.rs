@@ -42,6 +42,7 @@ fn text_spec(role: StampRole, text: &str, anchor: StampAnchor) -> PageStampSpec 
         opacity: 1.0,
         pages: PageSelection::All(AllPages::All),
         bates: Default::default(),
+        behind: false,
     }
 }
 
@@ -311,6 +312,7 @@ fn stamp_image_subset_shared_xobject_and_undo() {
         opacity: 0.5,
         pages: PageSelection::List(vec![2, 0]),
         bates: Default::default(),
+        behind: false,
     };
     let result = add(&doc.doc_id, spec.clone()).expect("image stamp");
     assert_eq!(result.pages_stamped, 2);

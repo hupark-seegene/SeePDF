@@ -67,6 +67,74 @@ pub fn write_png(dir: &Path, bytes: &[u8]) -> Result<PathBuf, EngineError> {
     Ok(path)
 }
 
+/// Biggest picked image the library copies (v0.3 T2 / T3).
+pub const MAX_LIBRARY_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// v0.3 T2 / T3: copies a picked PNG / JPEG into `dir` (created if missing) for 내 도장 or
+/// 저장된 서명 and returns `(path, width, height)`. Named `img-<hash>.<ext>` — content-addressed
+/// like [`write_png`], so saving the same image twice keeps one file — and **never pruned**
+/// (the saved entry in `Settings` points at it; [`remove_library_image`] deletes it).
+pub fn copy_library_image(dir: &Path, src: &Path) -> Result<(PathBuf, u32, u32), EngineError> {
+    let meta = std::fs::metadata(src)
+        .map_err(|e| EngineError::io(format!("read {}: {e}", src.display())))?;
+    if meta.len() > MAX_LIBRARY_IMAGE_BYTES {
+        return Err(EngineError::invalid(format!(
+            "image is {} bytes (limit {MAX_LIBRARY_IMAGE_BYTES})",
+            meta.len()
+        )));
+    }
+    let bytes =
+        std::fs::read(src).map_err(|e| EngineError::io(format!("read {}: {e}", src.display())))?;
+    let format = image::guess_format(&bytes)
+        .map_err(|e| EngineError::invalid(format!("not a PNG or JPEG image: {e}")))?;
+    let ext = match format {
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::Jpeg => "jpg",
+        other => {
+            return Err(EngineError::invalid(format!(
+                "{other:?} images are not supported (PNG or JPEG)"
+            )))
+        }
+    };
+    let (w, h) = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format)
+        .into_dimensions()
+        .map_err(|e| EngineError::invalid(format!("image does not decode: {e}")))?;
+    if w == 0 || h == 0 {
+        return Err(EngineError::invalid("image has no pixels"));
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(|e| EngineError::io(format!("create {}: {e}", dir.display())))?;
+    let path = dir.join(format!("img-{:016x}.{ext}", fnv1a64(&bytes)));
+    if !path.is_file() {
+        let tmp = dir.join(format!("img.{}.tmp", uuid::Uuid::new_v4().simple()));
+        std::fs::write(&tmp, &bytes)
+            .map_err(|e| EngineError::io(format!("write {}: {e}", tmp.display())))?;
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            EngineError::io(format!("rename {}: {e}", path.display()))
+        })?;
+    }
+    Ok((path, w, h))
+}
+
+/// Deletes a library image written by [`copy_library_image`] — only an `img-*` file directly
+/// inside `dir`, so a settings entry can never make SeePDF delete anything else.
+pub fn remove_library_image(dir: &Path, path: &Path) -> Result<bool, EngineError> {
+    let inside = path.parent().map(|p| p == dir).unwrap_or(false)
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("img-"));
+    if !inside {
+        return Ok(false);
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(EngineError::io(format!("remove {}: {e}", path.display()))),
+    }
+}
+
 /// Deletes all but the `keep` most recently modified `sig-*.png` files, never `current`.
 fn prune(dir: &Path, keep: usize, current: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -153,6 +221,30 @@ mod tests {
             0,
             "nothing written"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn library_images_are_copied_once_and_never_pruned() {
+        let dir = temp_dir("library");
+        let src = dir.join("picked.png");
+        std::fs::write(&src, png(400, 100, 3)).unwrap();
+        let lib = dir.join("stamps");
+        let (a, w, h) = copy_library_image(&lib, &src).expect("copy");
+        assert_eq!((w, h), (400, 100));
+        let (b, _, _) = copy_library_image(&lib, &src).expect("copy again");
+        assert_eq!(a, b, "content-addressed");
+        // Signature pruning never touches library images.
+        for i in 0..(KEEP_FILES + 2) {
+            write_png(&lib, &png(4, 4, i as u8)).expect("write");
+        }
+        assert!(a.is_file());
+        // Only an img-* file inside the directory can be removed.
+        assert!(!remove_library_image(&lib, &src).unwrap());
+        assert!(remove_library_image(&lib, &a).unwrap());
+        assert!(!a.exists());
+        std::fs::write(dir.join("x.gif"), b"GIF89a....").unwrap();
+        assert!(copy_library_image(&lib, &dir.join("x.gif")).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

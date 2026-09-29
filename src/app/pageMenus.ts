@@ -28,6 +28,8 @@ import { annotAt } from "../tools/hit";
 import { GRAB_PX } from "../tools/select";
 import { annotsOnPage, deleteAnnotations, openThread } from "../annot/actions";
 import type { Annot, PageIndex, PageOp } from "../ipc/types";
+// v0.3 pkg4-annotations-stamps-objects (E1): 이미지 바꾸기 on an image object in 편집 mode
+import { useEditStore } from "../edit/editStore";
 
 /** The page a context-menu event happened on, or `null` when it was not over a page. */
 export function pageFromEvent(target: EventTarget | null): { page: PageIndex; source: "canvas" | "thumbnail" } | null {
@@ -113,6 +115,19 @@ export function openPageContextMenu(
           onSelect: () => void deleteAnnotations(page, [annot.id]),
         },
         { id: "sepAnnot", separator: true },
+      ]
+    : [];
+
+  // v0.3 E1: 편집 mode, an image object under the pointer → 이미지 바꾸기…
+  const image = source === "canvas" && app.mode === "edit" ? imageObjectUnder(page, x, y, target) : null;
+  const imageItems: MenuEntry[] = image !== null
+    ? [
+        {
+          id: "replaceImage",
+          labelKey: "edit.replaceImage",
+          onSelect: () => void import("../edit/actions").then((m) => m.replaceSelectedImage({ page, objectId: image })),
+        },
+        { id: "sepImage", separator: true },
       ]
     : [];
 
@@ -225,6 +240,34 @@ export function openPageContextMenu(
     x,
     y,
     labelKey: source === "thumbnail" ? "sidebar.tab.thumbnails" : "a11y.canvas",
-    items: source === "thumbnail" ? [...shared, ...editing] : [...annotItems, ...textItems, ...shared, ...canvasOnly],
+    items: source === "thumbnail" ? [...shared, ...editing] : [...imageItems, ...annotItems, ...textItems, ...shared, ...canvasOnly],
   });
+}
+
+/** v0.3 E1: the topmost editable image object of 편집 mode under a canvas right-click, or `null`. */
+function imageObjectUnder(page: PageIndex, x: number, y: number, target: EventTarget | null | undefined): number | null {
+  const info = useDocStore.getState().info;
+  const geom = info?.pages[page];
+  const shell = (target as HTMLElement | null)?.closest?.<HTMLElement>(".page-shell");
+  const objects = useEditStore.getState().pages[page]?.objects;
+  if (!info || !geom || !shell || !objects?.length) return null;
+  const pane = (shell.closest<HTMLElement>("[data-pane]")?.dataset.pane ?? "main") as PaneId;
+  const view = paneView(useViewStore.getState(), pane);
+  const box = shell.getBoundingClientRect();
+  const ctx = makePageLayerContext({
+    docId: info.docId,
+    docGeneration: info.docGeneration,
+    page: geom,
+    rotation: view.rotation,
+    zoomPercent: view.zoomPercent,
+    width: box.width,
+    height: box.height,
+  });
+  const [px, py] = ctx.toPage(x - box.left, y - box.top);
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+    if (o.type !== "image" || o.editable === "readOnly") continue;
+    if (px >= o.rect.l && px <= o.rect.r && py >= o.rect.b && py <= o.rect.t) return o.objectId;
+  }
+  return null;
 }

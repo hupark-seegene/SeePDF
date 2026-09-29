@@ -35,8 +35,9 @@
 //! ink are mapped first (a markup's appearance is cleared and regenerated from the new quads),
 //! then `FPDFPage_TransformAnnots` maps every `/Rect` without touching appearance `BBox`es, so
 //! an existing appearance scales with its rect. `/Popup` rects are mapped by hand (PDFium's
-//! annotation list skips them). Keys PDFium cannot write (`/L`, `/Vertices`, `/CL`) keep their
-//! old values; the appearance, which is what every viewer draws, follows.
+//! annotation list skips them). Keys PDFium cannot write (`/L`, `/Vertices`, `/CL`) are mapped
+//! by a lopdf pass right after (v0.3 A8, `lopdf_annots::transform_geometry`), coalesced into
+//! the same undo step; an encrypted document keeps their old values (the appearance follows).
 
 use crate::engine::raw;
 use crate::engine::raw::consts;
@@ -195,12 +196,14 @@ pub fn resize_pages(
 
     let opts = MutateOpts::new("undo.pageResize", ChangeReason::Pages).pages(list.clone());
     let targets = list.clone();
-    registry::mutate(st, doc_id, opts, move |doc| {
+    let geometry = registry::mutate(st, doc_id, opts, move |doc| {
         for &p in &targets {
             doc.invalidate_page_handle(p);
         }
         let bindings = doc.bindings();
         let mut touched: Vec<PageIndex> = Vec::new();
+        // v0.3 A8: pages whose annotations carry geometry PDFium cannot write.
+        let mut geometry: Vec<(PageIndex, [f32; 6])> = Vec::new();
         for &p in &targets {
             let mut page = open_page(doc.pdf(), p)?;
             let rotation = rotation_of(&page);
@@ -227,6 +230,9 @@ pub fn resize_pages(
                     // one — touching them is a use-after-free. Reopen the page instead.
                     drop(page);
                     page = open_page(doc.pdf(), p)?;
+                }
+                if has_lopdf_geometry(bindings, &page) {
+                    geometry.push((p, plan.matrix));
                 }
                 if transform_annotations(bindings, &page, plan.matrix)? {
                     touched.push(p);
@@ -265,10 +271,42 @@ pub fn resize_pages(
         // Markup appearances were regenerated from the new quads; the pre-save render pass
         // writes whatever PDFium still owes.
         doc.touched.extend(touched);
-        Ok(())
+        Ok(geometry)
     })?;
+    // v0.3 A8: `/L`, `/Vertices` and `/CL` follow the same matrix as `/Rect` — a lopdf pass
+    // coalesced into the same undo step. An encrypted document cannot take a lopdf rewrite;
+    // there the appearance still moves (as before) and the keys keep their old values.
+    let rewritable = {
+        let doc = st.doc(doc_id)?;
+        !(doc.encrypted || doc.password.is_some())
+    };
+    if !geometry.is_empty() && rewritable {
+        let opts = MutateOpts::new("undo.pageResize", ChangeReason::Pages)
+            .pages(list.clone())
+            .coalesced();
+        st.doc_mut(doc_id)?.history.refresh_last();
+        registry::mutate_bytes(st, doc_id, opts, |bytes, _| {
+            crate::engine::annot::lopdf_annots::transform_geometry(bytes, &geometry)
+        })?;
+    }
     refine_geometry(st, doc_id, &list)?;
     Ok(st.doc(doc_id)?.info())
+}
+
+/// v0.3 A8: does `page` hold a Line, Polygon, PolyLine or FreeText annotation (the subtypes
+/// with `/L`, `/Vertices` or `/CL`)?
+fn has_lopdf_geometry(bindings: &'static dyn PdfiumLibraryBindings, page: &PdfPage<'_>) -> bool {
+    (0..raw::annot::count(bindings, page)).any(|i| {
+        raw::annot::slot(bindings, page, i).is_some_and(|a| {
+            matches!(
+                a.subtype(),
+                consts::FPDF_ANNOT_LINE
+                    | consts::FPDF_ANNOT_POLYGON
+                    | consts::FPDF_ANNOT_POLYLINE
+                    | consts::FPDF_ANNOT_FREETEXT
+            )
+        })
+    })
 }
 
 /// Maps the annotations of `page` through `m` (module docs). Returns whether a markup

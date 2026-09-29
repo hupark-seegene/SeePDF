@@ -21,6 +21,8 @@ import { annotsOnPage } from "./actions";
 import { selectionRectsForPage } from "./selectionQuads";
 import { stampImage } from "../tools/stamp";
 import { dragHidePage, endDrag } from "./dragHide";
+// v0.3 pkg4 (A4): pen / touch
+import { notePointer, touchPans } from "../tools/toolOptions";
 
 export interface ToolSurfaceProps {
   ctx: PageLayerContext;
@@ -55,20 +57,30 @@ export function ToolSurface({ ctx, tool }: ToolSurfaceProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   const pointAt = useCallback(
-    (clientX: number, clientY: number) => {
+    (clientX: number, clientY: number, pointer?: { pointerType?: string; pressure?: number }) => {
       const el = ref.current;
       if (!el) return null;
       const rect = el.getBoundingClientRect();
       const [x, y] = ctx.toPage(clientX - rect.left, clientY - rect.top);
-      return { page: ctx.index, pt: [x, y] as [number, number] };
+      return { page: ctx.index, pt: [x, y] as [number, number], pointerType: pointer?.pointerType, pressure: pointer?.pressure };
     },
     [ctx],
   );
 
+  // v0.3 A4: with 펜으로만 그리기 a finger pans the page under an ink tool instead of drawing
+  const touchPan = useRef<{ id: number; x: number; y: number } | null>(null);
+
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0) return;
-      const at = pointAt(e.clientX, e.clientY);
+      notePointer(e.pointerType);
+      if (tool === "pen" && touchPans(e.pointerType)) {
+        touchPan.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        e.currentTarget.setPointerCapture(e.pointerId);
+        e.stopPropagation();
+        return;
+      }
+      const at = pointAt(e.clientX, e.clientY, e);
       if (!at) return;
       e.stopPropagation();
       e.preventDefault();
@@ -77,15 +89,35 @@ export function ToolSurface({ ctx, tool }: ToolSurfaceProps) {
       e.currentTarget.setPointerCapture(e.pointerId);
       toolController.pointerDown(at, toolContext(ctx, e));
     },
-    [ctx, pointAt],
+    [ctx, pointAt, tool],
   );
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      const at = pointAt(e.clientX, e.clientY);
+      const pan = touchPan.current;
+      if (pan && pan.id === e.pointerId) {
+        const scroller = e.currentTarget.closest(".canvas.viewer") as HTMLElement | null;
+        if (scroller) {
+          scroller.scrollLeft -= e.clientX - pan.x;
+          scroller.scrollTop -= e.clientY - pan.y;
+        }
+        touchPan.current = { id: pan.id, x: e.clientX, y: e.clientY };
+        e.stopPropagation();
+        return;
+      }
+      const at = pointAt(e.clientX, e.clientY, e);
       if (!at) return;
       if (toolController.active()) e.stopPropagation();
-      toolController.pointerMove(at, toolContext(ctx, e));
+      // v0.3 A4: every sample of a fast pen stroke, not just the last one of the frame
+      const coalesced = tool === "pen" && toolController.active() ? e.nativeEvent.getCoalescedEvents?.() : undefined;
+      if (coalesced && coalesced.length > 1) {
+        for (const sample of coalesced) {
+          const p = pointAt(sample.clientX, sample.clientY, sample);
+          if (p) toolController.pointerMove(p, toolContext(ctx, e));
+        }
+      } else {
+        toolController.pointerMove(at, toolContext(ctx, e));
+      }
       if (tool === "select" && !toolController.active()) {
         const hit = annotAt(annotsOnPage(ctx.index), at.pt[0], at.pt[1], GRAB_PX / ctx.scale);
         useAnnotStore.getState().hover(hit?.id ?? null);
@@ -96,7 +128,12 @@ export function ToolSurface({ ctx, tool }: ToolSurfaceProps) {
 
   const onPointerUp = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      const at = pointAt(e.clientX, e.clientY);
+      if (touchPan.current?.id === e.pointerId) {
+        touchPan.current = null;
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+        return;
+      }
+      const at = pointAt(e.clientX, e.clientY, e);
       if (!at) return;
       e.stopPropagation();
       if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
@@ -106,6 +143,7 @@ export function ToolSurface({ ctx, tool }: ToolSurfaceProps) {
   );
 
   const onPointerCancel = useCallback(() => {
+    touchPan.current = null;
     toolController.cancel();
     // A cancelled drag never gets its `onUp`: restore what it hid and commit where it got to.
     void endDrag();

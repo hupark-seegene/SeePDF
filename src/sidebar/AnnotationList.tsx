@@ -74,6 +74,10 @@ export function annotLabel(a: Annot, t: (key: string) => string): string {
     case "stamp": return t("tool.stamp");
     case "signature": return t("tool.signature");
     case "link": return t("tool.link");
+    // v0.3 pkg4
+    case "polygon": return t("annot.kind.polygon");
+    case "polyline": return t("annot.kind.polyline");
+    case "callout": return t("annot.kind.callout");
     default: return a.subtype;
   }
 }

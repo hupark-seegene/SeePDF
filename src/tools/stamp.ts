@@ -9,7 +9,7 @@
 import type { AnnotSpec, PageIndex, Point, Rect, Rgb } from "../ipc/types";
 import type { StampImage, ToolModule, ToolPreview, ToolResult } from "./ToolController";
 import { rectFrom, rectIsEmpty } from "./geometry";
-import { builtinStamp } from "./stampCatalog";
+import { builtinStamp, isQuickMark, QUICK_MARK_COLOR, textStampSize } from "./stampCatalog";
 
 export interface StampState {
   page: PageIndex | null;
@@ -33,10 +33,15 @@ export const STAMP_SIZE: Record<"stamp" | "signature", { w: number; h: number }>
 export function placementSize(id: "stamp" | "signature", image?: StampImage | null): { w: number; h: number } {
   const builtin = image && "builtin" in image ? builtinStamp(image.builtin) : null;
   if (builtin) return builtin.size;
+  // v0.3 T2: ✓ ✗ ● are small squares; a text stamp is as wide as what it says
+  if (image && "builtin" in image && isQuickMark(image.builtin)) return { w: 24, h: 24 };
+  if (image && "text" in image) return textStampSize(image.text);
   const aspect = image && "path" in image ? pickedAspect[id] : undefined;
   if (aspect && Number.isFinite(aspect) && aspect > 0) {
+    // v0.3 T1: the default width, unless that makes it taller than 160 pt — never distorted
     const w = STAMP_SIZE[id].w;
-    return { w, h: Math.min(160, Math.max(18, w / aspect)) };
+    const h = w / aspect;
+    return h > 160 ? { w: 160 * aspect, h: 160 } : { w, h };
   }
   return STAMP_SIZE[id];
 }
@@ -50,6 +55,8 @@ export function placementRect(id: "stamp" | "signature", at: Point, image: Stamp
 let picked: Partial<Record<"stamp" | "signature", StampImage | null>> = {};
 /** width ÷ height of the picked image, when the picker knows it (a typed signature does). */
 let pickedAspect: Partial<Record<"stamp" | "signature", number>> = {};
+/** v0.3 T1: a `blob:` URL of the picked image (`image_preview`), for the placement ghost. */
+let pickedPreview: Partial<Record<"stamp" | "signature", string | undefined>> = {};
 let picker: ((id: "stamp" | "signature") => void) | null = null;
 
 /**
@@ -107,10 +114,18 @@ export function setStampPicker(fn: ((id: "stamp" | "signature") => void) | null)
   picker = fn;
 }
 
-export function setStampImage(id: "stamp" | "signature", image: StampImage | null, aspect?: number): void {
+export function setStampImage(id: "stamp" | "signature", image: StampImage | null, aspect?: number, previewUrl?: string | null): void {
+  const old = pickedPreview[id];
+  if (old && old !== previewUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(old);
   picked = { ...picked, [id]: image };
   pickedAspect = { ...pickedAspect, [id]: aspect };
+  pickedPreview = { ...pickedPreview, [id]: previewUrl ?? undefined };
   if (id === "signature" && image) drawn = null;
+}
+
+/** v0.3 T1: width ÷ height of what the tool will place, when known. */
+export function stampAspect(id: "stamp" | "signature"): number | undefined {
+  return pickedAspect[id];
 }
 
 /** Open the picker for `id` again (the properties panel's 도장 변경… / 서명 변경…). */
@@ -125,15 +140,24 @@ export function stampImage(id: "stamp" | "signature"): StampImage | null {
 export function resetStampImages(): void {
   picked = {};
   pickedAspect = {};
+  pickedPreview = {};
   drawn = null;
 }
 
-/** The ghost that follows the cursor: a built-in stamp shows its label in its colour. */
-function stampPreview(page: PageIndex, rect: Rect, image: StampImage | null): ToolPreview {
+/**
+ * The ghost that follows the cursor: a built-in stamp shows its label in its colour, a text
+ * stamp its text (tokens as typed), a quick mark the mark, a picked image the image itself at
+ * 50 % (v0.3 T1).
+ */
+function stampPreview(page: PageIndex, rect: Rect, image: StampImage | null, id: "stamp" | "signature"): ToolPreview {
   const builtin = image && "builtin" in image ? builtinStamp(image.builtin) : null;
-  return builtin
-    ? { page, kind: "stamp", rect, label: builtin.label, color: builtin.color }
-    : { page, kind: "stamp", rect };
+  if (builtin) return { page, kind: "stamp", rect, label: builtin.label, color: builtin.color };
+  if (image && "builtin" in image && isQuickMark(image.builtin)) {
+    return { page, kind: "stamp", rect, label: image.builtin, color: QUICK_MARK_COLOR, shape: "none" };
+  }
+  if (image && "text" in image) return { page, kind: "stamp", rect, label: image.text, color: image.color, shape: image.shape ?? "rect" };
+  const imageUrl = image && "path" in image ? pickedPreview[id] : undefined;
+  return imageUrl ? { page, kind: "stamp", rect, imageUrl } : { page, kind: "stamp", rect };
 }
 
 export function makeStampTool(id: "stamp" | "signature"): ToolModule<StampState> {
@@ -159,7 +183,7 @@ export function makeStampTool(id: "stamp" | "signature"): ToolModule<StampState>
       const rect = state.from ? rectFrom(state.from, p.pt) : base;
       return {
         state: { ...state, at: p.pt },
-        preview: stampPreview(p.page, rectIsEmpty(rect, 4) ? base : rect, id === "signature" && drawn ? null : image),
+        preview: stampPreview(p.page, rectIsEmpty(rect, 4) ? base : rect, id === "signature" && drawn ? null : image, id),
       };
     },
 
@@ -186,7 +210,7 @@ export function makeStampTool(id: "stamp" | "signature"): ToolModule<StampState>
         return { state: { ...EMPTY }, preview: null };
       }
       const dragged = state.from ? rectFrom(state.from, p.pt) : placementRect(id, p.pt, image);
-      const rect = rectIsEmpty(dragged, 4) ? placementRect(id, p.pt, image) : dragged;
+      const rect = rectIsEmpty(dragged, 4) ? placementRect(id, p.pt, image) : fitAspect(dragged, pickedAspect[id]);
       // A typed / picked-image 서명 is written with `/Subj "SeePDF:Signature"` (Stage 8) so it
       // lists as 서명, not 도장.
       const spec: AnnotSpec = id === "signature" ? { kind: "stamp", rect, image, signature: true } : { kind: "stamp", rect, image };
@@ -198,4 +222,16 @@ export function makeStampTool(id: "stamp" | "signature"): ToolModule<StampState>
       return { state };
     },
   };
+}
+
+/**
+ * v0.3 T1: a dragged rectangle shrunk to the picked image's aspect (width ÷ height), anchored at
+ * its top-left — so a drag never stretches a picked image. No aspect known: as dragged.
+ */
+export function fitAspect(rect: Rect, aspect: number | undefined): Rect {
+  if (!aspect || !Number.isFinite(aspect) || aspect <= 0) return rect;
+  const w = rect.r - rect.l;
+  const h = rect.t - rect.b;
+  if (w <= 0 || h <= 0) return rect;
+  return w / h > aspect ? { ...rect, r: rect.l + h * aspect } : { ...rect, b: rect.t - w / aspect };
 }

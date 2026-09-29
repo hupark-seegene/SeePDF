@@ -11,6 +11,8 @@ pub mod compare;
 pub mod documents;
 pub mod export;
 pub mod forms;
+// v0.3 pkg4-annotations-stamps-objects
+pub mod images;
 pub mod objects;
 pub mod ocr;
 pub mod pages;

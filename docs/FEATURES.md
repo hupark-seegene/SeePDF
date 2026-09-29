@@ -310,6 +310,30 @@ i18n ko / en 966 · critical path 108.1 kB gz of 120 (120.9 right after the merg
 manager, panes, layer slots) and the sidebar's 축소판 / 목차 / 검색 panels are lazy chunks, fetched when the window
 is idle after start-up; their CSS stays in the entry stylesheet, in its old place in the cascade.
 
+### v0.3 status
+
+✅ verified by tests (Rust against real PDFium, vitest against the mock) · ⚠️ partial, with the gap named.
+Contract `IPC_CONTRACT.md` §7.11, UI `UI_SPEC.md` §14a.
+
+<!-- v0.3 pkg4-annotations-stamps-objects -->
+| item | status | evidence |
+|---|---|---|
+| A9 주석 작성자 on new annotations | ✅ | `create_annotation` reads 설정 ▸ 작성자 on the command side and writes `/T` (trimmed, blank = none) on every kind incl. stamps / signatures; first run prefills it once from the OS user (`USERNAME` / `USER` / `whoami`, store flag `authorPrefilled`); mock and ghost no longer invent an author. `cargo test --test annot pkg4::author_is_written_on_every_new_annotation`, `pkg4.flow.test.tsx` (A9) |
+| A1 text-box alignment / heads on the selection | ✅ | `SeePDFQ` alignment mirror (PDFium cannot write the integer `/Q`; the text box is a Stamp), `Annot.align` / `heads`, `AnnotPatch.align` / `heads`; a colour edit keeps a centred box centred; heads rebuild the line (Subj line ↔ arrow); duplicate / paste keep both; the Inspector shows and edits the selected annotation's values. `pkg4::textbox_alignment_survives_edits`, `pkg4::heads_patch_turns_a_line_into_an_arrow`, `pkg4.flow.test.tsx` (가운데 → `{align:'center'}`, style untouched; 시작 화살표) |
+| E1 이미지 바꾸기 | ✅ | `api.replaceImage` + mock; 편집 panel button (exactly one image), canvas-menu entry over an image object; matrix / size kept, one undo step. `edit/pkg4.flow.test.tsx` (objectId sent, undo restores, menu entry) |
+| T1 image stamps keep their aspect | ✅ | `image_preview` (off the engine thread) → `blob:` URL, no asset protocol; the stamp tool sizes and drags at the image's aspect, the ghost draws the image at 50 %, the 워터마크 preview shows it and says 이미지를 선택하세요 until one is picked; the engine letterboxes as a safety net. `pkg4::stamp_image_is_letterboxed_and_previewed` (400 × 100 → 128 × 32 preview, untouched top band), `pkg4.flow.test.tsx` (4:1 rect), `stamp.flow.test.tsx` |
+| A10 인쇄 toggle | ✅ | `AnnotPatch.printed` sets / clears `/F` Print, kept through rebuilds; Inspector 인쇄 checkbox. `pkg4::printed_flag_round_trips`, `pkg4.flow.test.tsx`. ⚠️ whether 인쇄 skips it depends on the print path (X7) — `print_prepare` flattens with NormalDisplay today |
+| A2 real /Line, /Polygon, /PolyLine, cloud, callout, measure | ✅ ⚠️ | lopdf writes (`lopdf_annots.rs`, `mutate_bytes`, one undo step, own `/AP`, dash, cloud bumps, Helvetica measure label), in-place redraw on edit (same object: replies stay attached), callout = PDFium text box + coalesced lopdf conversion; tools 다각형 (click / double-click / ↵ / ⌫, 다각형 · 꺾은선 · 구름) and 설명선, 측정 mm / pt for line / arrow / polygon. `pkg4::lopdf_kinds_round_trip` (subtypes, /L /LE /Vertices /BE /IT /CL /RD, pixels, reopen, one undo), `pkg4::lopdf_kinds_edit_in_place`, `tools/pkg4.test.ts`, `pkg4.flow.test.tsx`. ⚠️ encrypted documents: line / arrow fall back to the Ink line, polygon / callout are refused; foreign lines / polygons stay moveOnly |
+| T2 내 도장, dynamic stamps, quick marks | ✅ | `Settings.stamps` (lenient, ≤ 30), image stamps copied by `copy_library_image` (never pruned), text stamps with `{{date}}` / `{{author}}` expanded by the engine, border 사각 / 둥근 / 없음; picker sections 빠른 표시 (✓ ✗ ● 오늘 날짜) and 내 도장 (add / delete); ⌄ flyout beside 도장. `pkg4::text_stamp_expands_tokens_and_quick_marks_draw` (flattened AP text = `yyyy.MM.dd 홍길동`), `app::signatures` lib test, `pkg4.flow.test.tsx` (image stamp persists and is listed after reload) |
+| A6 비율 고정, 점선, 맨 앞 / 맨 뒤 | ✅ | 편집 panel 비율 고정 (on for images), `restack_objects` (`FPDFPage_RemoveObject` + `InsertObjectAtIndex`, `undo.objectArrange`), 선 스타일 실선 / 점선 (`/BS /D` via lopdf, PDFium regenerates the AP dashed). `objects::pkg4::restack_sends_to_back_and_brings_to_front`, `pkg4::dashed_square_reads_back_bs_d`, `edit/pkg4.flow.test.tsx` |
+| A3 partial ink erasing | ✅ ⚠️ | 지우개 부분 mode: strokes cut at the circle (`splitPathByCircle`), applied on release, empty → deleted. `tools/pkg4.test.ts`. ⚠️ one undo step per touched annotation, not per scrub, when a scrub crosses several annotations |
+| A5 quick popover | ✅ | swatches, 불투명도, 굵기, 메모, 삭제 above a single selected markup / shape / line / ink; hidden while dragging or editing. `pkg4.flow.test.tsx` |
+| A8 geometry follows page resize | ✅ ⚠️ | `resize_pages` maps `/L`, `/Vertices`, `/CL` (+ mirrors) with a coalesced lopdf pass; the paragraph flow now moves popups with their parent. `pkg4::resize_maps_a_foreign_line` (/L mapped like /Rect, one undo). ⚠️ the paragraph flow does not rewrite `/L` / `/Vertices` / `/CL` yet (needs a pass in `edit_paragraph`, pkg1-owned); encrypted documents keep the old keys |
+| A4 pen / touch / pressure | ✅ ⚠️ | touch pans under 펜 with 펜으로만 그리기 (auto-on at the first pen), pressure → baked widths (even pressure = one annotation, varying = joined pieces), coalesced pointer samples. `tools/pkg4.test.ts`. ⚠️ not tried on real pen hardware; a pressure-varying stroke is several annotations |
+| A7 reply threads in the summary | ✅ | thread order (replies under their parent, oldest first), CSV `ID` + `답글 대상`, TXT `↳` indent, Markdown nested items. `annot_summary::summary_nests_reply_threads`, `summary` lib tests |
+| T3 image signatures saved | ✅ | `SavedSignature { kind: 'image' }` (lenient), 이미지 저장… in the 이미지 tab, thumbnails via `image_preview`, placed at their aspect, × removes the copy. `signatureLibrary.test.ts` |
+| T4 뒤에 배치, 배경색 | ✅ | `StampSpec.behind` (stamp moved to index 0), `{ kind: 'background', color }` (crop-box fill at index 0, removable); dialog checkbox and 배경색 source. `objects::pkg4::stamp_behind_goes_under_the_text` (index 0, text extractable, text pixels over the yellow), `stamp.flow.test.tsx` |
+
 ---
 
 ## Explicit non-goals for v1

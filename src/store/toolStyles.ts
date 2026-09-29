@@ -41,6 +41,9 @@ const BUILT_IN: Record<string, Partial<ToolStyle>> = {
   line: { color: RED, opacity: 1, width: 2, heads: [false, false] },
   arrow: { color: RED, opacity: 1, width: 2, heads: [false, true] },
   textbox: { color: INK, opacity: 1, fontSize: 12, fillColor: null, align: "left" },
+  // v0.3 pkg4-annotations-stamps-objects
+  polygon: { color: RED, opacity: 1, width: 2, fillColor: null },
+  callout: { color: INK, opacity: 1, fontSize: 12, fillColor: null, align: "left" },
 };
 
 export const STYLED_TOOLS: readonly string[] = Object.keys(BUILT_IN);

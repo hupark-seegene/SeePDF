@@ -5,6 +5,8 @@
 import {
   Circle, Eraser, Highlighter, ImagePlus, Minus, MessageSquarePlus, MousePointer2, MoveUpRight, PenLine,
   Signature, Square, SquareDashed, SquarePen, Stamp, Strikethrough, Type, Underline, Waves, Eye, Trash2, Link2,
+  // v0.3 pkg4-annotations-stamps-objects
+  Pentagon, MessageSquareQuote,
 } from "lucide-react";
 import type { Mode, ToolId } from "../store/appStore";
 import type { IconProps } from "./IconButton";
@@ -18,6 +20,8 @@ export interface ToolDef {
   keyId?: string;
   /** a toggle (양식 필드 강조) or a one-shot action rather than an armed tool */
   kind?: "tool" | "toggle" | "action";
+  /** v0.3 T2: a ⌄ beside the button opens quick choices (도장: ✓ ✗ ● 오늘 날짜) */
+  flyout?: "stamp";
 }
 
 const SELECT: ToolDef = { id: "select", labelKey: "tool.select", icon: MousePointer2, keyId: "tool.select" };
@@ -37,8 +41,11 @@ export const TOOL_STRIP: Record<Mode, ToolDef[]> = {
     { id: "ellipse", labelKey: "tool.ellipse", icon: Circle, keyId: "tool.ellipse" },
     { id: "line", labelKey: "tool.line", icon: Minus, keyId: "tool.line" },
     { id: "arrow", labelKey: "tool.arrow", icon: MoveUpRight, keyId: "tool.arrow" },
+    // v0.3 pkg4 (A2): 다각형 (다각형 / 꺾은선 / 구름, 측정) and 설명선
+    { id: "polygon", labelKey: "tool.polygon", icon: Pentagon },
     { id: "textbox", labelKey: "tool.textbox", icon: Type, keyId: "tool.textbox" },
-    { id: "stamp", labelKey: "tool.stamp", icon: Stamp, keyId: "tool.stamp" },
+    { id: "callout", labelKey: "tool.callout", icon: MessageSquareQuote },
+    { id: "stamp", labelKey: "tool.stamp", icon: Stamp, keyId: "tool.stamp", flyout: "stamp" },
     { id: "signature", labelKey: "tool.signature", icon: Signature, keyId: "tool.signature" },
   ],
   edit: [

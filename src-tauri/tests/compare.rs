@@ -33,6 +33,7 @@ fn header(text: &str, pages: Vec<u16>) -> PageStampSpec {
         opacity: 1.0,
         pages: PageSelection::List(pages),
         bates: Default::default(),
+        behind: false,
     }
 }
 

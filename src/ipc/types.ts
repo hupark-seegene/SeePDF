@@ -130,8 +130,9 @@ export type SearchEvent =
 export type AnnotKind =
   | 'highlight' | 'underline' | 'strikeout' | 'squiggly'
   | 'ink' | 'square' | 'circle' | 'note' | 'textbox' | 'stamp' | 'signature'
-  | 'line' | 'arrow'                          // stored as Ink + /Subj (PDFium cannot create /Line)
-  | 'link' | 'widget' | 'other';
+  | 'line' | 'arrow'                          // v0.3: a real /Line (lopdf); Ink + /Subj in an encrypted document
+  | 'link' | 'widget' | 'other'
+  | 'polygon' | 'polyline' | 'callout';       // v0.3 pkg4: /Polygon, /PolyLine, FreeText /FreeTextCallout (lopdf)
 
 export interface Annot {
   id: AnnotId; page: PageIndex; kind: AnnotKind; subtype: string;   // raw PDF subtype, e.g. "Ink"
@@ -155,7 +156,19 @@ export interface Annot {
   replies?: Annot[];
   hidden: boolean; printed: boolean; locked: boolean;
   editable: 'full' | 'moveOnly' | 'readOnly';   // moveOnly = third-party AP we would regenerate
+  // v0.3 pkg4-annotations-stamps-objects
+  align?: 'left' | 'center' | 'right';  // textbox / callout
+  heads?: [start: boolean, end: boolean];   // line / arrow
+  vertices?: number[];                  // polygon / polyline: [x0,y0,x1,y1,…]
+  cloudy?: boolean;                     // polygon: /BE /S /C
+  callout?: number[];                   // callout leader (/CL): 4 or 6 numbers, the tip first; `rect` is the text box
+  dashed?: boolean;                     // /BS /S /D
+  measure?: MeasureUnit;                // line / polygon / polyline labelled with its length / area
 }
+/** v0.3 pkg4: the unit a measuring line / polygon labels itself in. */
+export type MeasureUnit = 'mm' | 'pt';
+/** v0.3 pkg4: a text stamp's border. */
+export type StampShape = 'rect' | 'round' | 'none';
 /** P2 go-to-page target: the page plus the optional /XYZ left, top (PDF user space) and zoom factor. */
 export interface LinkDest { page: PageIndex; x?: number; y?: number; zoom?: number }
 /** `create_link` / `update_link` target: a page in this document, or a web address. */
@@ -171,21 +184,37 @@ export type AnnotSpec =
   | {
       kind: 'line' | 'arrow'; p1: Point; p2: Point; color: Rgb; width: number; opacity: number;
       heads?: [start: boolean, end: boolean];
+      measure?: MeasureUnit;                 // v0.3: label the length
     }
   | {
       kind: 'textbox'; rect: Rect; text: string; fontSize: number; color: Rgb;
       align: 'left' | 'center' | 'right'; fillColor: Rgb | null;
     }
   | {
-      kind: 'stamp'; rect: Rect; image: { path: string } | { builtin: string }; rotate?: number;
+      kind: 'stamp'; rect: Rect;
+      /** v0.3: `{ text, color, shape }` = a text stamp; `{{date}}` / `{{author}}` expand at placement */
+      image: { path: string } | { builtin: string } | { text: string; color: Rgb; shape?: StampShape };
+      rotate?: number;
       /** Stage 8: written with `/Subj "SeePDF:Signature"` and read back as `kind: 'signature'` (서명, not 도장) */
       signature?: boolean;
+    }
+  // v0.3 pkg4: lopdf-written kinds
+  | {
+      kind: 'polygon' | 'polyline'; vertices: number[]; color: Rgb; fillColor: Rgb | null; width: number;
+      opacity: number; cloudy?: boolean; dashed?: boolean; measure?: MeasureUnit;
+    }
+  | {
+      kind: 'callout'; rect: Rect; text: string; fontSize: number; color: Rgb;
+      align: 'left' | 'center' | 'right'; fillColor: Rgb | null; callout: number[];
     };
 
 export interface AnnotPatch {
   rect?: Rect; rects?: Rect[]; paths?: number[][]; p1?: Point; p2?: Point;
   color?: Rgb; fillColor?: Rgb | null; opacity?: number; borderWidth?: number;
   contents?: string; author?: string; text?: string; fontSize?: number; locked?: boolean;
+  // v0.3 pkg4-annotations-stamps-objects
+  align?: 'left' | 'center' | 'right'; heads?: [start: boolean, end: boolean]; printed?: boolean;
+  dashed?: boolean; vertices?: number[]; callout?: number[];
 }
 
 export type AnnotScanEvent =
@@ -336,7 +365,8 @@ export type StampAnchor = 'tl' | 'tc' | 'tr' | 'ml' | 'mc' | 'mr' | 'bl' | 'bc' 
 export type StampRole = 'watermark' | 'header' | 'footer';
 export type StampSource =
   | { kind: 'text'; text: string; fontSizePt: number; color: Rgb }
-  | { kind: 'image'; path: string; widthPt: number };          // height follows the image aspect
+  | { kind: 'image'; path: string; widthPt: number }           // height follows the image aspect
+  | { kind: 'background'; color: Rgb };                        // v0.3 T4: fills the crop box, always behind
 export interface StampSpec {
   role: StampRole;            // only affects the undo label + docs; geometry comes from anchor/margins
   source: StampSource;
@@ -353,6 +383,8 @@ export interface StampSpec {
   batesDigits?: number;       // 1..12
   batesPrefix?: string;       // <= 64 characters
   batesSuffix?: string;       // <= 64 characters
+  /** v0.3 T4 (뒤에 배치): under the page content instead of on top; default false */
+  behind?: boolean;
 }
 export interface StampResult { info: DocInfo; pagesStamped: number }
 /** Stage 8 `remove_stamps`: `removed == 0` is not an error. */
@@ -508,12 +540,26 @@ export interface Settings {
   night: 'off' | 'dark' | 'sepia';
   /** 시작할 때 업데이트 확인 (v0.2.0); `true` in settings written before it */
   checkUpdates: boolean;
+  /** 내 도장 (v0.3 T2), at most 30, newest last; `[]` in settings written before it */
+  stamps: CustomStamp[];
 }
+
+/** v0.3 T2: one 내 도장 entry. An image was copied under `$APPDATA/SeePDF/stamps/`. */
+export type CustomStamp =
+  | { kind: 'image'; id: string; path: string; aspect: number; createdAt: string }
+  | { kind: 'text'; id: string; text: string; color: Rgb; shape: StampShape; createdAt: string };
+
+/** v0.3 T1 `image_preview`: the picked image's own size and a small PNG for a `blob:` URL. */
+export interface ImagePreview { width: number; height: number; png: Uint8Array }
+/** v0.3 T2 / T3 `copy_library_image`: the library copy and its pixel size. */
+export interface LibraryImage { path: string; width: number; height: number }
 
 /** One entry of the 서명 보관함. Drawn strokes are unit space (0…1 of the drawn box, y-down). */
 export type SavedSignature =
   | { kind: 'drawn'; id: string; paths: number[][]; aspect: number; createdAt: string }
-  | { kind: 'typed'; id: string; text: string; style: string; createdAt: string };
+  | { kind: 'typed'; id: string; text: string; style: string; createdAt: string }
+  /** v0.3 T3: a picked image (scan, 도장) copied under `$APPDATA/SeePDF/signatures/` */
+  | { kind: 'image'; id: string; path: string; aspect: number; createdAt: string };
 
 // ---------------------------------------------------------------------------
 // Convenience aliases used by the shell (not part of the wire format)

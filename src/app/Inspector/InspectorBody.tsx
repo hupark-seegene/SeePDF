@@ -6,7 +6,7 @@
  * with a selection it edits the selection. `patch.ts` owns that mapping and is unit-tested; this
  * file is the markup around it.
  */
-import { useMemo } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import type { Annot, AnnotKind } from "../../ipc/types";
 import { formatRelativeDay } from "../../i18n";
 import { useT } from "../../i18n/useT";
@@ -19,7 +19,8 @@ import { makeApply } from "./apply";
 import { EditPanel } from "./EditPanel";
 import { LinkPanel } from "../../edit/LinkPanel";
 import { Swatches } from "../Swatches";
-import type { PropertyId } from "./patch";
+import { appliesTo, type PropertyId } from "./patch";
+import { setToolOptions, subscribeToolOptions, toolOptions } from "../../tools/toolOptions";
 
 const WIDTHS = [1, 2, 4, 8, 12];
 const FONT_SIZES = [8, 10, 12, 14, 18, 24, 36];
@@ -147,9 +148,15 @@ export function InspectorBody() {
   const opacity = one?.opacity ?? style.opacity;
   const width = one?.borderWidth ?? style.width;
   const fill = one ? one.fillColor : style.fillColor;
-  const isShape = kind === "square" || kind === "circle";
+  const isShape = kind === "square" || kind === "circle" || kind === "polygon";
   const isLineLike = kind === "line" || kind === "arrow";
-  const isText = kind === "textbox" || kind === "stamp";
+  const isText = kind === "textbox" || kind === "stamp" || kind === "callout";
+  // v0.3 A1: the selected annotation's own heads / alignment, not the tool style's
+  const heads: [boolean, boolean] = (isLineLike && one?.heads) || style.heads;
+  const align = ((one?.kind === "textbox" || one?.kind === "callout") && one.align) || style.align;
+  // v0.3 A6: 선 스타일 on a selected stroked shape (it is not a tool default)
+  const dashable = selection.length > 0 && selection.some((a) => appliesTo("dashed", a.kind));
+  const dashed = selection.length > 0 && selection.filter((a) => appliesTo("dashed", a.kind)).every((a) => a.dashed);
   // 굵기 has no meaning for a markup run or a sticky note — UI_SPEC §7 lists it only for
   // 펜 / 도형 / 선, and `AnnotPatch.borderWidth` on a Highlight is silently ignored by the engine.
   const isMarkup = MARKUP_KINDS.includes(kind as AnnotKind) || kind === "note";
@@ -190,14 +197,28 @@ export function InspectorBody() {
         {isLineLike && (
           <div className="inspector-row">
             <label className="text-sm">
-              <input type="checkbox" checked={style.heads[0]} onChange={(e) => apply("heads", [e.currentTarget.checked, style.heads[1]])} />
+              <input type="checkbox" checked={heads[0]} onChange={(e) => apply("heads", [e.currentTarget.checked, heads[1]])} />
               {t("prop.arrowStart")}
             </label>
             <label className="text-sm">
-              <input type="checkbox" checked={style.heads[1]} onChange={(e) => apply("heads", [style.heads[0], e.currentTarget.checked])} />
+              <input type="checkbox" checked={heads[1]} onChange={(e) => apply("heads", [heads[0], e.currentTarget.checked])} />
               {t("prop.arrowEnd")}
             </label>
           </div>
+        )}
+
+        {dashable && (
+          <>
+            <h3 className="field-label text-xs">{t("prop.lineStyle")}</h3>
+            <div className="chip-row">
+              <button type="button" className="chip" data-active={!dashed || undefined} onClick={() => apply("dashed", false)}>
+                {t("prop.lineStyle.solid")}
+              </button>
+              <button type="button" className="chip" data-active={dashed || undefined} onClick={() => apply("dashed", true)}>
+                {t("prop.lineStyle.dashed")}
+              </button>
+            </div>
+          </>
         )}
 
         {isText && (
@@ -207,7 +228,7 @@ export function InspectorBody() {
             <h3 className="field-label text-xs">{t("prop.align")}</h3>
             <div className="chip-row">
               {(["left", "center", "right"] as const).map((a) => (
-                <button key={a} type="button" className="chip" data-active={style.align === a || undefined} onClick={() => apply("align", a)}>
+                <button key={a} type="button" className="chip" data-active={align === a || undefined} onClick={() => apply("align", a)}>
                   {t(`prop.align.${a}`)}
                 </button>
               ))}
@@ -217,6 +238,21 @@ export function InspectorBody() {
 
         {tool === "eraser" && (
           <Slider id="eraserSize" label={t("prop.eraserSize")} value={style.eraserSize} min={4} max={48} onChange={(id, v) => apply(id, v)} />
+        )}
+        {tool === "eraser" && selection.length === 0 && <EraserModeToggle />}
+        {tool === "pen" && selection.length === 0 && <PenOnlyToggle />}
+        {(tool === "line" || tool === "arrow" || tool === "polygon") && selection.length === 0 && <ShapeOptions polygon={tool === "polygon"} />}
+
+        {selection.length > 0 && (
+          // v0.3 A10: 인쇄 — off keeps the markup on screen but out of print (/F Print)
+          <label className="text-sm inspector-row">
+            <input
+              type="checkbox"
+              checked={selection.every((a) => a.printed)}
+              onChange={(e) => apply("printed", e.currentTarget.checked)}
+            />
+            {t("prop.printed")}
+          </label>
         )}
       </section>
 
@@ -282,6 +318,71 @@ export function InspectorBody() {
   );
 }
 
+/** v0.3: the tool options (`tools/toolOptions.ts`), re-rendered when one changes. */
+function useToolOptions() {
+  return useSyncExternalStore(subscribeToolOptions, toolOptions, toolOptions);
+}
+
+/** v0.3 A3: 지우개 — 전체 / 부분. */
+function EraserModeToggle() {
+  const t = useT();
+  const { eraserMode } = useToolOptions();
+  return (
+    <>
+      <h3 className="field-label text-xs">{t("prop.eraserMode")}</h3>
+      <div className="chip-row">
+        {(["whole", "partial"] as const).map((m) => (
+          <button key={m} type="button" className="chip" data-active={eraserMode === m || undefined} onClick={() => setToolOptions({ eraserMode: m })}>
+            {t(`prop.eraserMode.${m}`)}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** v0.3 A4: 펜으로만 그리기 — touch pans, a pen or a mouse draws. */
+function PenOnlyToggle() {
+  const t = useT();
+  const { penOnly } = useToolOptions();
+  return (
+    <label className="text-sm inspector-row">
+      <input type="checkbox" checked={penOnly} onChange={(e) => setToolOptions({ penOnly: e.currentTarget.checked })} />
+      {t("prop.penOnly")}
+    </label>
+  );
+}
+
+/** v0.3 A2: 다각형 모양 and 측정 (line / arrow / polygon tools). */
+function ShapeOptions({ polygon }: { polygon: boolean }) {
+  const t = useT();
+  const { polygonShape, measure } = useToolOptions();
+  return (
+    <>
+      {polygon && (
+        <>
+          <h3 className="field-label text-xs">{t("prop.polygonShape")}</h3>
+          <div className="chip-row">
+            {(["polygon", "polyline", "cloud"] as const).map((m) => (
+              <button key={m} type="button" className="chip" data-active={polygonShape === m || undefined} onClick={() => setToolOptions({ polygonShape: m })}>
+                {t(`prop.polygonShape.${m}`)}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      <h3 className="field-label text-xs">{t("prop.measure")}</h3>
+      <div className="chip-row">
+        {(["off", "mm", "pt"] as const).map((m) => (
+          <button key={m} type="button" className="chip" data-active={measure === m || undefined} onClick={() => setToolOptions({ measure: m })}>
+            {t(`prop.measure.${m}`)}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function kindOfTool(tool: string): Annot["kind"] | undefined {
   switch (tool) {
     case "highlight":
@@ -299,6 +400,9 @@ function kindOfTool(tool: string): Annot["kind"] | undefined {
       return "square";
     case "ellipse":
       return "circle";
+    case "polygon":
+    case "callout":
+      return tool as Annot["kind"];
     case "pen":
       return "ink";
     default:

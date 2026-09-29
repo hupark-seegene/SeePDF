@@ -114,6 +114,8 @@ pub fn run() {
             // 1. locate libpdfium and start the engine thread (binding happens there).
             let (library, dir) = app::pdfium_path::resolve(&handle)?;
             tracing::info!(lib = %library.display(), "resolved bundled libpdfium");
+            // v0.3 pkg4-annotations-stamps-objects (A9): 작성자 from the OS user, once.
+            app::store::prefill_author(&handle);
             let settings = app::store::get_settings(&handle);
             let engine = engine::spawn(
                 library,
@@ -186,6 +188,11 @@ pub fn run() {
             commands::annots::set_annotations_hidden,
             // --- annotation threads (P2) ---
             commands::annots::reply_annotation,
+            // v0.3 pkg4-annotations-stamps-objects
+            commands::images::image_preview,
+            commands::images::copy_library_image,
+            commands::images::remove_library_image,
+            commands::objects::restack_objects,
             // --- forms (Stage 1a) ---
             commands::forms::list_form_fields,
             commands::forms::set_form_field_value,

@@ -66,6 +66,8 @@ let ending: Promise<void> = Promise.resolve();
 
 const PAINTED: ReadonlySet<Annot["kind"]> = new Set([
   "highlight", "underline", "strikeout", "squiggly", "note", "square", "circle", "line", "arrow", "textbox",
+  // v0.3 pkg4
+  "polygon", "polyline", "callout",
 ]);
 
 /** Can `AnnotShape` draw `a` well enough that the bitmap copy may go? */

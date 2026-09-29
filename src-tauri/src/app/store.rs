@@ -35,6 +35,11 @@ pub fn signatures_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     Some(app.path().app_data_dir().ok()?.join("signatures"))
 }
 
+/// v0.3 T2: `$APPDATA/SeePDF/stamps/`, where 내 도장 images are copied.
+pub fn stamps_dir<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    Some(app.path().app_data_dir().ok()?.join("stamps"))
+}
+
 /// `$TEMP/seepdf-history/`, where undo snapshots spill.
 pub fn history_spill_dir<R: Runtime>(app: Option<&AppHandle<R>>) -> PathBuf {
     let base = app
@@ -55,6 +60,49 @@ pub fn get_settings<R: Runtime>(app: &AppHandle<R>) -> Settings {
         .get(SETTINGS_KEY)
         .and_then(|v| serde_json::from_value::<Settings>(v).ok())
         .unwrap_or_default()
+}
+
+/// v0.3 A9: the store key that records the one-time 작성자 prefill, so a name the user
+/// cleared on purpose is never filled in again.
+const AUTHOR_PREFILLED_KEY: &str = "authorPrefilled";
+
+/// v0.3 A9: on the first run (or the first run of a version with this), an empty
+/// 설정 ▸ 주석 작성자 is filled with the OS user name, so new annotations carry an author from
+/// the start. Runs once per settings file.
+pub fn prefill_author<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(store) = app.store(SETTINGS_FILE) else {
+        return;
+    };
+    if store.get(AUTHOR_PREFILLED_KEY).is_some() {
+        return;
+    }
+    if get_settings(app).author.trim().is_empty() {
+        if let Some(name) = os_user_name() {
+            let _ = set_settings(app, serde_json::json!({ "author": name }));
+        }
+    }
+    store.set(AUTHOR_PREFILLED_KEY, serde_json::Value::Bool(true));
+    let _ = store.save();
+}
+
+/// The OS account name: `USERNAME` (Windows) / `USER` (macOS, Linux), then `whoami`.
+/// A `DOMAIN\user` answer keeps the user part.
+pub fn os_user_name() -> Option<String> {
+    let from_env = ["USERNAME", "USER"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .map(|v| v.trim().to_string())
+        .find(|v| !v.is_empty());
+    let name = from_env.or_else(|| {
+        std::process::Command::new("whoami")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|v| !v.is_empty())
+    })?;
+    let name = name.rsplit('\\').next().unwrap_or(&name).trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Merges `patch` (a partial `Settings` object) into the stored settings.

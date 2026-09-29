@@ -552,3 +552,33 @@ p.compress-warn {
   margin: 0;
   text-align: end;
 }
+
+/* ---------------------------------------------------------------- v0.3 pkg4-annotations-stamps-objects */
+
+/* T4 배경색: under the content in the file; multiplied over the thumbnail here so the text shows */
+.stamp-background {
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+/* T2 내 도장 */
+.stamp-quick .stamp-pick { font-size: 18px; border-style: dashed; }
+.stamp-mine { margin-block-start: var(--space-3); }
+.stamp-mine-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.stamp-mine-item { position: relative; }
+.stamp-mine-item .stamp-pick { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stamp-add { display: flex; flex-direction: column; gap: var(--space-2); margin-block-start: var(--space-3); }
+.stamp-add-actions { display: flex; gap: var(--space-2); }
+
+/* T3 이미지 서명 */
+.sign-image-actions { display: flex; gap: var(--space-2); }
+.sign-saved-img { max-width: 100%; max-height: 40px; object-fit: contain; }

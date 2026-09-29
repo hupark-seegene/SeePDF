@@ -408,6 +408,11 @@ pub enum AnnotKind {
     /// Stored as Ink + `/Subj "SeePDF:Arrow"`.
     Arrow,
     Link,
+    // v0.3 pkg4-annotations-stamps-objects: real `/Polygon`, `/PolyLine` and `FreeText`
+    // callout annotations, written with lopdf (`engine::annot::lopdf_annots`).
+    Polygon,
+    Polyline,
+    Callout,
     Widget,
     Other,
 }
@@ -469,6 +474,36 @@ pub struct Annot {
     pub printed: bool,
     pub locked: bool,
     pub editable: Editability,
+    // v0.3 pkg4-annotations-stamps-objects ------------------------------------------
+    /// Text box / callout alignment (the `SeePDFQ` mirror, or a foreign FreeText's `/Q`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub align: Option<TextAlign>,
+    /// Line / arrow heads `[start, end]`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub heads: Option<[bool; 2]>,
+    /// Polygon / polyline: `[x0,y0,x1,y1,…]` (`/Vertices`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vertices: Option<Vec<f32>>,
+    /// Polygon: cloudy border (`/BE << /S /C >>`).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub cloudy: bool,
+    /// Callout: the leader line (`/CL`), 4 or 6 numbers, the first point at the arrow tip.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub callout: Option<Vec<f32>>,
+    /// Dashed border (`/BS << /S /D >>`).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub dashed: bool,
+    /// Line / polygon / polyline drawn with a length or area label.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub measure: Option<MeasureUnit>,
+}
+
+/// v0.3 pkg4: the unit a measuring line / polygon labels itself in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MeasureUnit {
+    Mm,
+    Pt,
 }
 
 /// A go-to-page destination: the page plus the optional `/XYZ` left / top / zoom (PDF user
@@ -565,6 +600,44 @@ pub struct LineSpec {
     /// `[start, end]` arrow heads.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub heads: Option<[bool; 2]>,
+    /// v0.3 pkg4: label the line with its length.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub measure: Option<MeasureUnit>,
+}
+
+/// v0.3 pkg4: `/Polygon` and `/PolyLine` (lopdf, own appearance stream).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolySpec {
+    /// `[x0,y0,x1,y1,…]`, at least 2 points for a polyline, 3 for a polygon.
+    pub vertices: Vec<f32>,
+    pub color: Rgb,
+    #[serde(default)]
+    pub fill_color: Option<Rgb>,
+    pub width: f32,
+    pub opacity: f32,
+    /// Polygon only: a cloudy border (`/BE << /S /C /I 1 >>`).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub cloudy: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub dashed: bool,
+    /// Label the polyline's length / the polygon's area.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub measure: Option<MeasureUnit>,
+}
+
+/// v0.3 pkg4: a text box with a leader line (`FreeText /IT /FreeTextCallout /CL`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalloutSpec {
+    pub rect: Rect,
+    pub text: String,
+    pub font_size: f32,
+    pub color: Rgb,
+    pub align: TextAlign,
+    pub fill_color: Option<Rgb>,
+    /// `/CL`: 4 numbers (tip → box) or 6 (tip → knee → box), PDF user space.
+    pub callout: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -589,8 +662,30 @@ pub struct TextBoxSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", untagged)]
 pub enum StampImage {
-    Path { path: String },
-    Builtin { builtin: String },
+    Path {
+        path: String,
+    },
+    Builtin {
+        builtin: String,
+    },
+    /// v0.3 pkg4: a custom text stamp (내 도장) or a quick date mark. `{{date}}` (yyyy.MM.dd,
+    /// local) and `{{author}}` (설정 ▸ 작성자) are expanded at placement.
+    Text {
+        text: String,
+        color: Rgb,
+        #[serde(default)]
+        shape: StampShape,
+    },
+}
+
+/// v0.3 pkg4: the border of a text stamp. `None` draws the label alone (오늘 날짜).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StampShape {
+    #[default]
+    Rect,
+    Round,
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -622,6 +717,10 @@ pub enum AnnotSpec {
     Arrow(LineSpec),
     Textbox(TextBoxSpec),
     Stamp(StampSpec),
+    // v0.3 pkg4-annotations-stamps-objects
+    Polygon(PolySpec),
+    Polyline(PolySpec),
+    Callout(CalloutSpec),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -656,6 +755,25 @@ pub struct AnnotPatch {
     pub font_size: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub locked: Option<bool>,
+    // v0.3 pkg4-annotations-stamps-objects ------------------------------------------
+    /// Text box / callout alignment.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub align: Option<TextAlign>,
+    /// Line / arrow heads `[start, end]`; any head makes it an arrow.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub heads: Option<[bool; 2]>,
+    /// The `/F` Print bit (인쇄).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub printed: Option<bool>,
+    /// Square / circle / line / polygon: dashed (`/BS /D`) or solid border.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub dashed: Option<bool>,
+    /// Polygon / polyline geometry.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vertices: Option<Vec<f32>>,
+    /// Callout leader line.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub callout: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1506,6 +1624,9 @@ pub enum PageStampSource {
     },
     /// Height follows the image's aspect ratio.
     Image { path: String, width_pt: f32 },
+    /// v0.3 T4: a solid background colour filling the page's crop box, always behind the
+    /// page content (anchor, margin and rotation do not apply).
+    Background { color: Rgb },
 }
 
 /// `PageIndex[] | 'all'`.
@@ -1536,6 +1657,10 @@ pub struct PageStampSpec {
     /// `batesStart` / `batesDigits` / `batesPrefix` / `batesSuffix`, each optional.
     #[serde(flatten)]
     pub bates: BatesOptions,
+    /// v0.3 T4 (뒤에 배치): insert the stamp at the start of the page content (painted first,
+    /// under the text) instead of on top. Absent = `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub behind: bool,
 }
 
 /// `{{bates}}` = `batesPrefix` + (`batesStart` + n, zero-padded to `batesDigits`) +
@@ -1955,6 +2080,55 @@ pub struct Settings {
     /// 시작할 때 업데이트 확인 (v0.2.0). `true` for settings files written before it.
     #[serde(default = "default_true")]
     pub check_updates: bool,
+    /// v0.3 pkg4: 내 도장 — custom image / text stamps, at most [`MAX_CUSTOM_STAMPS`], newest
+    /// last. Lenient like `signatures`: a malformed entry is dropped on its own.
+    #[serde(default, deserialize_with = "lenient_stamps")]
+    pub stamps: Vec<CustomStamp>,
+}
+
+/// v0.3 pkg4: the 내 도장 cap.
+pub const MAX_CUSTOM_STAMPS: usize = 30;
+
+/// v0.3 pkg4: one 내 도장 entry. An image stamp's file was copied under
+/// `$APPDATA/SeePDF/stamps/` (`write_stamp_image`); a text stamp is drawn by the built-in stamp
+/// generator, `{{date}}` / `{{author}}` expanded at placement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CustomStamp {
+    #[serde(rename_all = "camelCase")]
+    Image {
+        id: String,
+        path: String,
+        /// width ÷ height of the image.
+        aspect: f32,
+        #[serde(default)]
+        created_at: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Text {
+        id: String,
+        text: String,
+        color: Rgb,
+        #[serde(default)]
+        shape: StampShape,
+        #[serde(default)]
+        created_at: String,
+    },
+}
+
+fn lenient_stamps<'de, D>(deserializer: D) -> Result<Vec<CustomStamp>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let items = match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Array(items) => items,
+        _ => Vec::new(),
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<CustomStamp>(v).ok())
+        .take(MAX_CUSTOM_STAMPS)
+        .collect())
 }
 
 fn default_true() -> bool {
@@ -2008,6 +2182,16 @@ pub enum SavedSignature {
         #[serde(default)]
         created_at: String,
     },
+    /// v0.3 pkg4: a picked image (scanned signature, 도장), copied under
+    /// `$APPDATA/SeePDF/signatures/` by `write_signature_image` (`keep: true`, never pruned).
+    #[serde(rename_all = "camelCase")]
+    Image {
+        id: String,
+        path: String,
+        aspect: f32,
+        #[serde(default)]
+        created_at: String,
+    },
 }
 
 /// `signatures` is user data inside a file that also holds every other setting: a malformed
@@ -2052,6 +2236,7 @@ impl Default for Settings {
             signatures: Vec::new(),
             night: NightMode::Off,
             check_updates: true,
+            stamps: Vec::new(),
         }
     }
 }
