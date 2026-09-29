@@ -1864,7 +1864,8 @@ mod pkg4 {
     #[test]
     fn heads_patch_turns_a_line_into_an_arrow() {
         let doc = open("tracemonkey.pdf");
-        // The legacy Ink line (what an encrypted document still gets).
+        // The legacy Ink line (what a signed file that still saves incrementally gets, or an
+        // encrypted one whose encryption cannot be rewritten).
         let ink = create(
             &doc.doc_id,
             0,

@@ -11,7 +11,7 @@ import DialogHost from "../dialogs/DialogHost";
 import { openDialog, useDialogStore } from "../dialogs/dialogState";
 import { useJobStore } from "../store/jobStore";
 import { useToastStore } from "../app/toastStore";
-import { cancelBatch, outputCandidate, resetBatch, useBatch } from "./flow";
+import { addFiles, cancelBatch, outputCandidate, resetBatch, setOptions, startBatch, useBatch } from "./flow";
 
 vi.mock("../ipc/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../ipc/api")>();
@@ -195,5 +195,20 @@ describe("batch.flow", () => {
     fireEvent.click(start);
     await screen.findByTestId("batch-summary", {}, { timeout: 6000 });
     expect(images.mock.calls[0][0]).toMatchObject({ outDir: "/out", baseName: "보고서", format: "png", pages: [] });
+  });
+
+  // v0.3 integration (X1 × Windows paths): `C:` alone is the drive's current directory, not its root.
+  it.each([
+    ["C:\\scan.pdf", "C:\\", "C:\\scan-001.png"],
+    ["D:\\x.pdf", "D:\\", "D:\\x-001.png"],
+    ["/x.pdf", "/", "/x-001.png"],
+  ])("이미지로 내보내기 beside %s writes into the drive root, not the current directory", async (file, dir, first) => {
+    const images = vi.spyOn(mock, "exportImages");
+    const probe = vi.spyOn(mock, "pathExists");
+    addFiles([file]);
+    setOptions({ action: "images" });
+    await startBatch();
+    expect(probe.mock.calls[0][0]).toEqual({ path: first });
+    expect(images.mock.calls[0][0]).toMatchObject({ outDir: dir, baseName: first.slice(dir.length, -"-001.png".length) });
   });
 });

@@ -135,31 +135,64 @@ export async function readClipboardImage(data?: DataTransfer | null): Promise<Ui
     }
     return null;
   }
+  return (await readWebClipboard()).bytes ?? null;
+}
+
+/** `navigator.clipboard.read()`: the image, or `refused` when the webview would not let us read. */
+async function readWebClipboard(): Promise<{ bytes?: Uint8Array; refused?: boolean }> {
   const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
-  if (!clipboard?.read) return null;
+  if (!clipboard?.read) return { refused: true };
   try {
     for (const item of await clipboard.read()) {
       const type = item.types.find((t) => t === "image/png" || t === "image/jpeg");
-      if (type) return new Uint8Array(await (await item.getType(type)).arrayBuffer());
+      if (type) return { bytes: new Uint8Array(await (await item.getType(type)).arrayBuffer()) };
     }
-  } catch {
-    /* permission refused or no image */
+    return {};
+  } catch (e) {
+    // WebKit outside a user gesture (a native menu item): NotAllowedError — not "no image"
+    return (e as { name?: string } | null)?.name === "NotAllowedError" ? { refused: true } : {};
   }
-  return null;
 }
 
-/** 파일 ▸ 클립보드에서 새로 만들기: a one-page document at the image's own size. */
+/**
+ * 파일 ▸ 클립보드에서 새로 만들기: a one-page document at the image's own size.
+ *
+ * v0.3 integration: the engine reads the clipboard (`clipboard_image_to_temp`: NSPasteboard / the
+ * Windows clipboard, no user gesture needed) — the native menu item reaches the webview as an
+ * event, and WebKit refuses `navigator.clipboard.read` there. The webview read is only the fallback
+ * when that command is unavailable; when it is refused the toast says the clipboard could not be
+ * read, not that it is empty.
+ */
 export async function newFromClipboardFlow(): Promise<DocInfo | null> {
-  const bytes = await readClipboardImage();
-  if (!bytes) {
-    toast("imagesToPdf.noClipboardImage", undefined, { tone: "info" });
-    return null;
-  }
-  let path: string;
+  let path: string | null = null;
+  let native = true;
   try {
-    path = await api.writeTempImage(bytes);
+    path = await api.clipboardImageToTemp();
   } catch (e) {
-    toast("imagesToPdf.unsupported", undefined, { tone: "danger", detail: message(e) });
+    const code = (e as { code?: string } | null)?.code;
+    if (code === "unsupported") {
+      toast("imagesToPdf.unsupported", undefined, { tone: "danger", detail: message(e) });
+      return null;
+    }
+    native = false;
+  }
+  if (!path && !native) {
+    const read = await readWebClipboard();
+    if (read.refused) {
+      toast("imagesToPdf.clipboardUnreadable", undefined, { tone: "danger" });
+      return null;
+    }
+    if (read.bytes) {
+      try {
+        path = await api.writeTempImage(read.bytes);
+      } catch (e) {
+        toast("imagesToPdf.unsupported", undefined, { tone: "danger", detail: message(e) });
+        return null;
+      }
+    }
+  }
+  if (!path) {
+    toast("imagesToPdf.noClipboardImage", undefined, { tone: "info" });
     return null;
   }
   return createFromImagesFlow([path], { pageSize: "original", margin: 0, fit: "contain" });

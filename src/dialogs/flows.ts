@@ -437,6 +437,13 @@ export async function runPrint(
     return;
   }
   if (method === "document") return printDocumentDom(info, pages, options);
+  // v0.3 integration (X8): where SeePDF itself is the default PDF app (Windows), "the PDF app" would
+  // hand the flattened copy straight back to SeePDF — opened as a document, not printed — so print
+  // through the webview instead.
+  if (useAppStore.getState().os === "windows" && (await api.pdfHandlerIsSelf().catch(() => false))) {
+    toast("print.handlerIsSelf", undefined, { tone: "info", timeoutMs: 2400 });
+    return printDocumentDom(info, pages, options);
+  }
   toast("print.preparing", undefined, { timeoutMs: 1800 });
   try {
     const { prepareHandlerFile } = await import("../print/printFlow");

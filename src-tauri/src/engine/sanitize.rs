@@ -96,8 +96,12 @@ pub fn sanitize_bytes(
     if options.attachments {
         counts.attachments += remove_name_tree(&mut doc, root, names_id, b"EmbeddedFiles");
         if let Ok(catalog) = doc.get_dictionary_mut(root) {
-            if catalog.remove(b"AF").is_some() {
-                counts.attachments += 1;
+            if let Some(af) = catalog.remove(b"AF") {
+                // Same rule for an empty `/AF` array.
+                counts.attachments += match af {
+                    Object::Array(a) => a.len() as u32,
+                    _ => 1,
+                };
             }
         }
     }
@@ -338,7 +342,10 @@ fn remove_name_tree(
     let Some(entry) = names.and_then(|n| n.get(tree).ok().cloned()) else {
         return 0;
     };
-    let count = count_name_tree(doc, &entry, 0).max(1);
+    // The real number of entries: the empty `/EmbeddedFiles` tree PDFium leaves behind after
+    // `FPDFDoc_DeleteAttachment` removed the last file is removed with the rest, but counts 0 —
+    // on its own it names no attachment in the summary and makes no undo step.
+    let count = count_name_tree(doc, &entry, 0);
     let target = match names_id {
         Some(id) => doc.get_dictionary_mut(id).ok(),
         None => doc

@@ -14,6 +14,12 @@
 //! `FPDF_ImportNPagesToOne` ignores a source page's `/Rotate`; the grid is chosen from the
 //! first page's *display* size, so a rotated page is fitted as if unrotated. Mixed page sizes
 //! are each fitted into the same cell size.
+//!
+//! v0.3 integration (X2 × pkg3 S5): the sheets are built in a new, unencrypted document, so the
+//! n-up of an encrypted source is re-encrypted with the source's own security handler
+//! (`security::Crypt`, as S2's rewrites are): the same open password, the same permission bits.
+//! Without it, 모아찍기 of a copy- or modify-forbidden file would hand out a file with every
+//! permission — to 내보내기 and to the PDF app 인쇄 opens.
 
 use crate::engine::export::{print_bytes, PrintAnnots};
 use crate::engine::raw;
@@ -239,7 +245,35 @@ pub fn make_nup_bytes(
         ));
     }
     let bytes = raw::save::save_as_copy(bindings, &sheets, raw::save::SaveFlags::NoIncremental)?;
-    Ok((bytes, count))
+    drop(sheets);
+    drop(ordered);
+    Ok((keep_source_security(st, doc_id, bytes)?, count))
+}
+
+/// `bytes` (a new, unencrypted document built from `doc_id`'s pages) encrypted as `doc_id` is:
+/// the same `/Encrypt` values, `/ID` and file key, so its open password and permission bits
+/// carry over. An unencrypted source hands `bytes` back unchanged. When the source's
+/// encryption cannot be rewritten (`security::decrypt_for_rewrite`'s `unsupported`), an open
+/// that grants every permission may still take the pages out unencrypted — as 병합 may — and
+/// a restricted one fails.
+fn keep_source_security(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    bytes: Vec<u8>,
+) -> Result<Vec<u8>, EngineError> {
+    if !st.doc(doc_id)?.encrypted {
+        return Ok(bytes);
+    }
+    let encrypted = crate::engine::save::serialize(st, doc_id)?;
+    let doc = st.doc(doc_id)?;
+    match crate::engine::security::decrypt_for_rewrite(doc, &encrypted) {
+        Ok((_, crypt)) => crypt.encrypt(&bytes),
+        Err(e) => {
+            crate::engine::security::ensure_unrestricted_permissions(&doc.permissions, &doc.name())
+                .map_err(|_| e)?;
+            Ok(bytes)
+        }
+    }
 }
 
 #[cfg(test)]

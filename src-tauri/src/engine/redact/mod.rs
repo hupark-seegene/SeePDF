@@ -864,8 +864,7 @@ pub fn apply_batch(
     // back as `Tc` / `Tw` (`spacing`), so they extract as before — same undo step, best effort:
     // the pinned version is already correct on the page.
     let respaced = if outcome.repaired > 0 {
-        let bytes = crate::engine::save::serialize(st, doc_id)?;
-        respace(st, doc_id, &bytes, &pages).unwrap_or_else(|e| {
+        respace(st, doc_id, &pages).unwrap_or_else(|e| {
             tracing::warn!(doc_id, error = %e, "text spacing not restored after a redaction");
             None
         })
@@ -883,6 +882,17 @@ pub fn apply_batch(
         let bytes = crate::engine::save::serialize(st, doc_id)?;
         registry::replace(st, doc_id, std::sync::Arc::from(bytes.into_boxed_slice()))?;
     }
+    // v0.3 integration (pkg1 × pkg3 S1): a redaction must never leave an earlier revision
+    // behind. A signed file that PDFium alone has changed saves incrementally, appending to —
+    // and so keeping — the signed bytes, the redacted text included. The next save of a
+    // redacted signed file is a full rewrite instead (`DocInfo.incrementalSave` = false, so the
+    // "저장하면 서명이 무효화됩니다" prompt shows). Undo goes back to the pristine snapshot.
+    {
+        let doc = st.doc_mut(doc_id)?;
+        if !doc.signatures.is_empty() {
+            doc.pristine = false;
+        }
+    }
     Ok(RedactBatchResult {
         removed_objects: outcome.changed,
         verified: true,
@@ -892,15 +902,18 @@ pub fn apply_batch(
     })
 }
 
-/// [`spacing::restore_spacing`] on `bytes` (the serialised document), accepted only when the
-/// reopened file draws every character of `pages` exactly where the open document does.
+/// [`spacing::restore_spacing`] on the serialised document (decrypted and re-encrypted with its
+/// own key when it is encrypted — `security::lopdf_pass`), accepted only when the reopened
+/// file draws every character of `pages` exactly where the open document does.
 fn respace(
     st: &mut EngineState<'_>,
     doc_id: &str,
-    bytes: &[u8],
     pages: &[PageIndex],
 ) -> Result<Option<Vec<u8>>, EngineError> {
-    let Some(out) = spacing::restore_spacing(bytes, pages)? else {
+    let Some(out) = crate::engine::security::lopdf_pass(st, doc_id, |bytes| {
+        spacing::restore_spacing(bytes, pages)
+    })?
+    else {
         return Ok(None);
     };
     let pdfium = st.pdfium;
@@ -1016,8 +1029,17 @@ fn join_streams(
     doc_id: &str,
     pages: &[PageIndex],
 ) -> Result<Option<std::sync::Arc<[u8]>>, EngineError> {
-    let bytes = crate::engine::save::serialize(st, doc_id)?;
-    let Some(out) = contents::join_split_streams(&bytes, pages)? else {
+    // An encrypted document is joined decrypted and re-encrypted with its own key (v0.3
+    // integration, R1/R2 × S2).
+    // Where the encryption cannot be rewritten the join is skipped and the attempt's own
+    // `verifyFailed` stands.
+    let joined = crate::engine::security::lopdf_pass(st, doc_id, |bytes| {
+        contents::join_split_streams(bytes, pages)
+    });
+    let Some(out) = (match joined {
+        Err(e) if crate::engine::security::cannot_rewrite(&e) => None,
+        other => other?,
+    }) else {
         return Ok(None);
     };
     let (count, password) = {

@@ -43,11 +43,13 @@ function once(fn: UnlistenFn | null): { call(): void } {
   };
 }
 
-function subscribe<T>(name: string, handler: (payload: T) => void): Unsubscribe {
+function subscribe<T>(name: string, handler: (payload: T) => void, own = false): Unsubscribe {
   if (useMock()) return appBus.on(name, (p) => handler(p as T));
   let stop = once(null);
   let cancelled = false;
-  void listen<T>(name, (e: TauriEvent<T>) => handler(e.payload))
+  const on = (e: TauriEvent<T>) => handler(e.payload);
+  // `own`: only events sent to this webview (`emit_to(label, …)`), not every window's
+  void (own ? getCurrentWebview().listen<T>(name, on) : listen<T>(name, on))
     .then((fn) => {
       stop = once(fn);
       if (cancelled) stop.call();
@@ -59,9 +61,14 @@ function subscribe<T>(name: string, handler: (payload: T) => void): Unsubscribe 
   };
 }
 
-/** A file the OS handed us (Finder double-click, `open -a`, Dock drop, argv). */
+/**
+ * A file was queued for **this window** (Finder / Explorer, argv, a drop, 새 창에서 열기): take it
+ * with `takePendingOpens`, which hands each request to exactly one window, exactly once. The engine
+ * sends it to one window only (v0.3 integration: a broadcast made every window replace its
+ * document), and this listens to this webview's events only.
+ */
 export function onOpenFile(handler: (e: OpenFileEvent) => void): Unsubscribe {
-  return subscribe("open-file", handler);
+  return subscribe("open-file", handler, true);
 }
 
 /** A document mutated: re-list what changed, invalidate tiles of `changedPages`. */

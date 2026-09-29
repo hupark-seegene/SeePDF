@@ -1,11 +1,14 @@
 //! App plumbing: where libpdfium lives, how files arrive, windows, the native menu and the
 //! settings / recents store (`WORKPLAN.md` row 0.8).
 
+// v0.3 integration (D1): the clipboard image, read natively
+pub mod clipboard;
 // v0.3 pkg5: rolling log, panic hook, startup-failure box, 문제 보고 (H10)
 pub mod diagnostics;
 pub mod files;
 #[cfg(target_os = "macos")]
 pub mod menu;
+pub mod pdf_handler;
 pub mod pdfium_path;
 pub mod signatures;
 pub mod store;

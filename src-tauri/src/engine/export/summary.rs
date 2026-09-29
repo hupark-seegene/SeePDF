@@ -7,6 +7,8 @@
 //! * **Quoted text** of a text markup (형광펜 / 밑줄 / 취소선 / 물결) comes from the page's
 //!   text layer — the same cached `TextLayer` selection and search use: every character whose
 //!   box centre falls inside one of the markup's quads, in reading order, whitespace folded.
+//!   It is page text, so a document whose permissions forbid copying text (v0.3 S5) exports its
+//!   comments and replies without it: the quote column stays empty.
 //! * **Labels** (column headers, kind names) come from the frontend's own `src/i18n/*.json`
 //!   through [`crate::app::undo_labels::text`], in the locale the caller names.
 //! * **Dates** are PDF dates (`D:YYYYMMDDHHmmSS+hh'mm'`) shown in local time as
@@ -87,6 +89,8 @@ pub fn collect(
     locale: Locale,
 ) -> Result<Vec<SummaryRow>, EngineError> {
     let pages = check_pages(st, doc_id, pages.unwrap_or(&[]))?;
+    // v0.3 integration (A7 × S5): the quote is the page's own text.
+    let may_quote = st.doc(doc_id)?.permissions.extract_text;
     let mut rows = Vec::new();
     for page in pages {
         let doc = st.doc_mut(doc_id)?;
@@ -98,7 +102,7 @@ pub fn collect(
             continue;
         }
         let label = doc.geom(page)?.label.clone();
-        let needs_text = annots.iter().any(|a| is_text_markup(a.kind));
+        let needs_text = may_quote && annots.iter().any(|a| is_text_markup(a.kind));
         let text = if needs_text {
             Some(layer::layer(doc, page)?)
         } else {

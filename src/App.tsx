@@ -102,6 +102,22 @@ async function stopMultiSearch(): Promise<void> {
   await cancelSearch();
 }
 
+/**
+ * Opens what the engine queued for this window (the OS, a drop, 새 창에서 열기 — `take_pending_opens`
+ * hands out this window's requests only, and each once). Serialised, so a mount drain and an
+ * `open-file` event arriving together do not both ask the multiple-files question.
+ */
+let draining: Promise<void> = Promise.resolve();
+function openPendingFiles(): Promise<void> {
+  draining = draining.then(async () => {
+    const pending = await api.takePendingOpens().catch(() => []);
+    if (!pending.length) return;
+    const { openPaths } = await import("./dialogs/flows");
+    await openPaths(pending.map((p) => p.path));
+  });
+  return draining;
+}
+
 /** Cheap synchronous test so the default menu is only suppressed over a page (the import is async). */
 function pageLike(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -149,17 +165,15 @@ export default function App() {
       // 업데이트 확인 on launch (v0.2.0): silent, main window only, never in the way of recovery
       void import("./update/launch").then((m) => m.checkOnLaunch(useAppStore.getState().settings));
       await offerRecovery();
-      const pending = await api.takePendingOpens().catch(() => []);
-      if (pending.length) {
-        const { openPaths } = await import("./dialogs/flows");
-        await openPaths(pending.map((p) => p.path));
-      }
+      await openPendingFiles();
     });
   }, [bootstrap]);
 
   // 2. app-wide broadcasts
   useEffect(() => onDocChanged(applyDocChanged), [applyDocChanged]);
-  useEffect(() => onOpenFile((e) => void import("./dialogs/flows").then((m) => m.openPaths([e.path]))), []);
+  // the event only says "something was queued for this window": the queue is the one source, so a
+  // request is opened once whether the event or the mount drain gets there first
+  useEffect(() => onOpenFile(() => void openPendingFiles()), []);
   useEffect(() => onRecentsChanged(() => void refreshRecents()), [refreshRecents]);
   // v0.3: in 페이지 mode a drop lands at the caret under the pointer (P2); anywhere else images go
   // to 이미지로 PDF 만들기 and PDFs open (D1)

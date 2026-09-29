@@ -124,15 +124,68 @@ mod tests {
             "undo.pageLabels",
             // v0.3 pkg1 (R4)
             "undo.ungroup",
+            // v0.3 pkg2 / pkg3 / pkg4
+            "undo.attachmentAdd",
+            "undo.attachmentDelete",
+            "undo.formFieldCreate",
+            "undo.formFieldDelete",
+            "undo.formFieldEdit",
+            "undo.formFlatten",
+            "undo.formImport",
+            "undo.sanitize",
+            "undo.pageImport",
+            "undo.objectArrange",
         ];
-        for key in keys {
+        // …and every literal label the sources pass to `MutateOpts::new`, so a new one cannot
+        // be missed by this list (labels passed through a variable — page ops, stamps, form
+        // edits, links — are in the list above).
+        let scanned =
+            mutate_labels_in(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+        assert!(
+            scanned.contains("undo.redact") && scanned.contains("undo.sanitize"),
+            "the source scan works: {scanned:?}"
+        );
+        for key in keys.iter().map(|k| k.to_string()).chain(scanned) {
             for locale in [Locale::Ko, Locale::En] {
                 assert!(
-                    step_name(key, locale).is_some(),
+                    step_name(&key, locale).is_some(),
                     "{key} missing in {locale:?}"
                 );
             }
         }
+    }
+
+    /// Every string literal passed as the first argument of `MutateOpts::new(` under `dir`.
+    fn mutate_labels_in(dir: &std::path::Path) -> std::collections::BTreeSet<String> {
+        const CALL: &str = "MutateOpts::new(";
+        let mut out = std::collections::BTreeSet::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d).expect("read src").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("read source");
+                let mut rest = text.as_str();
+                while let Some(at) = rest.find(CALL) {
+                    rest = &rest[at + CALL.len()..];
+                    let arg = rest.trim_start();
+                    if let Some(literal) = arg.strip_prefix('"') {
+                        if let Some(end) = literal.find('"') {
+                            if literal[..end].starts_with("undo.") {
+                                out.insert(literal[..end].to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     #[test]

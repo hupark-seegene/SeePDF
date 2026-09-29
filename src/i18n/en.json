@@ -1309,5 +1309,9 @@
   "export.flow.lossy": "Some formatting is lost: only paragraphs, headings and pictures are carried over — no tables, columns, fonts or exact positions.",
   "export.nup.paper": "Paper",
   "export.nup.paperAuto": "Size of the first page",
-  "export.nup.hint": "Writes a PDF with several pages on each sheet. Annotations are merged into the pages."
+  "export.nup.hint": "Writes a PDF with several pages on each sheet. Annotations are merged into the pages.",
+  "imagesToPdf.clipboardUnreadable": "The clipboard could not be read. Copy the image again and retry",
+  "print.handlerIsSelf": "SeePDF is your default PDF app, so it prints through SeePDF's print dialog",
+  "redact.applyWarningSigned": "The marked content is removed from the document. You can undo this only until you save. Saving invalidates this document's digital signatures: the whole file is rewritten, so the removed content does not stay behind in the signed earlier version.",
+  "redact.groups.bodySigned": "Some marked content is inside a group (Form XObject), so the group is ungrouped before the content is removed. The marked content is removed from the document; you can undo this only until you save. Saving invalidates this document's digital signatures: the whole file is rewritten, so the removed content does not stay behind in the signed earlier version."
 }

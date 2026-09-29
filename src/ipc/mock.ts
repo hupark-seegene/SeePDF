@@ -651,7 +651,7 @@ const PAGE_OP_LABEL: Record<PageOp["kind"], string> = {
 
 export const mock = {
   // 4. documents -------------------------------------------------------------
-  async openDocument(a: { path: string; password?: string; displayName?: string }): Promise<DocInfo> {
+  async openDocument(a: { path: string; password?: string; displayName?: string; passwordFrom?: DocId }): Promise<DocInfo> {
     if (/encrypted/i.test(a.path) && !a.password) throw err("passwordRequired", "document is encrypted");
     // a path that names itself damaged fails to open, so a batch can exercise its 실패 row
     if (/damaged/i.test(a.path)) throw err("pdfium", "the file is damaged or not a PDF");
@@ -2139,6 +2139,15 @@ export const mock = {
     onProgress({ type: "done", jobId, elapsedMs: 5 });
     return delay(structuredClone(d.info), 20);
   },
+  /** v0.3 integration: the native clipboard read (`mockSetClipboardImage` sets what it finds). */
+  async clipboardImageToTemp(): Promise<string | null> {
+    if (!mockClipboardImage) return null;
+    return mock.writeTempImage({ bytes: Array.from(mockClipboardImage) });
+  },
+  /** v0.3 integration (X8): `mockSetPdfHandlerIsSelf` sets the answer. */
+  async pdfHandlerIsSelf(): Promise<boolean> {
+    return mockPdfHandlerIsSelf;
+  },
   async writeTempImage(a: { bytes: number[] }): Promise<string> {
     const png = a.bytes[0] === 0x89 && a.bytes[1] === 0x50;
     const jpeg = a.bytes[0] === 0xff && a.bytes[1] === 0xd8;
@@ -2272,6 +2281,10 @@ export const mock = {
 /** v0.3: file names `create_from_images` accepts in the mock (the engine sniffs magic bytes). */
 const IMAGE_PATH = /\.(png|jpe?g)$/i;
 let nextTempImage = 1;
+/** v0.3 integration: what the native clipboard read finds (PNG / JPEG bytes), `null` = no image. */
+let mockClipboardImage: Uint8Array | null = null;
+/** v0.3 integration (X8): SeePDF is the default PDF app. */
+let mockPdfHandlerIsSelf = false;
 /** v0.3: what `export_form_data` "wrote", so `import_form_data` can read it back. */
 const mockFiles = new Map<string, Map<string, string>>();
 
@@ -3112,6 +3125,8 @@ export function resetMock(): void {
   changedOnDisk.clear();
   otherWindows.clear();
   nextTempImage = 1;
+  mockClipboardImage = null;
+  mockPdfHandlerIsSelf = false;
   mockFiles.clear();
   recents = structuredClone(recentsFixture) as unknown as RecentEntry[];
   settings = seedSettings();
@@ -3122,6 +3137,16 @@ export function mockSetPageText(docId: DocId, page: PageIndex, lines: { text: st
   textOverrides.set(`${docId}:${page}`, lines);
   for (const key of [...textCache.keys()]) if (key.startsWith(`${docId}:`) && key.endsWith(`:${page}`)) textCache.delete(key);
   docs.get(docId)?.objects.delete(page);
+}
+
+/** v0.3 integration test helper: the image the native clipboard read finds (`null`: none). */
+export function mockSetClipboardImage(bytes: Uint8Array | null): void {
+  mockClipboardImage = bytes;
+}
+
+/** v0.3 integration test helper (X8): whether SeePDF is the system's default PDF app. */
+export function mockSetPdfHandlerIsSelf(value: boolean): void {
+  mockPdfHandlerIsSelf = value;
 }
 
 /** Test helper: queue an OS-level open so `take_pending_opens` returns something. */

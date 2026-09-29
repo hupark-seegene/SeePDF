@@ -523,6 +523,7 @@ pub fn decrypt_for_rewrite(
             ErrorCode::Unsupported,
             format!("this document's encryption cannot be rewritten: {why}"),
         )
+        .with_detail(ENCRYPTION_DETAIL)
     };
     let options = lopdf::LoadOptions {
         password: doc.password.clone(),
@@ -561,6 +562,54 @@ pub fn decrypt_for_rewrite(
     }
     let id = decoded.trailer.get(b"ID").ok().cloned();
     Ok((plain, Crypt { state, id }))
+}
+
+/// The `detail` of [`decrypt_for_rewrite`]'s `unsupported`: this document's encryption cannot
+/// be rewritten (see [`cannot_rewrite`]).
+pub const ENCRYPTION_DETAIL: &str = "encryption";
+
+/// v0.3 integration: `e` says only that the document's encryption cannot be rewritten
+/// ([`decrypt_for_rewrite`]) — an optional lopdf pass with a PDFium form falls back to it.
+pub fn cannot_rewrite(e: &EngineError) -> bool {
+    e.code == ErrorCode::Unsupported && e.detail.as_deref() == Some(ENCRYPTION_DETAIL)
+}
+
+/// v0.3 integration: can a lopdf rewrite of `doc_id` be written back — always for an
+/// unencrypted document; for an encrypted one when [`decrypt_for_rewrite`] can derive its key
+/// (a serialisation and a parse: only for the rare edit that must know before it starts).
+pub fn can_rewrite(st: &mut EngineState<'_>, doc_id: &str) -> Result<bool, EngineError> {
+    if !st.doc(doc_id)?.encrypted {
+        return Ok(true);
+    }
+    let current = save::serialize(st, doc_id)?;
+    match decrypt_for_rewrite(st.doc(doc_id)?, &current) {
+        Ok(_) => Ok(true),
+        Err(e) if cannot_rewrite(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// v0.3 integration (S2 × the in-place lopdf passes — R5 reading order, R1/R2 stream join and
+/// `Tc` / `Tw` restore): runs `f`, a lopdf pass over an **unencrypted** file that returns
+/// `None` when it has nothing to do, on the document's current serialisation. An encrypted
+/// document is decrypted first ([`decrypt_for_rewrite`]) and `f`'s output re-encrypted with the
+/// document's own security handler — what `registry::mutate_bytes` does for a rewrite with an
+/// undo step of its own. The caller verifies and `registry::replace`s the result.
+pub fn lopdf_pass(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    f: impl FnOnce(&[u8]) -> Result<Option<Vec<u8>>, EngineError>,
+) -> Result<Option<Vec<u8>>, EngineError> {
+    let current = save::serialize(st, doc_id)?;
+    let doc = st.doc(doc_id)?;
+    if !doc.encrypted {
+        return f(&current);
+    }
+    let (plain, crypt) = decrypt_for_rewrite(doc, &current)?;
+    match f(&plain)? {
+        Some(out) => Ok(Some(crypt.encrypt(&out)?)),
+        None => Ok(None),
+    }
 }
 
 /// The document as lopdf sees it, decrypted — for the read-only lopdf paths

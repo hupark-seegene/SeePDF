@@ -69,7 +69,9 @@ const PER_SHEET: NupOptions["perSheet"][] = [2, 4, 6, 9];
 /**
  * v0.3 integration (pkg8 × pkg3 S5): the permission a format needs, as the engine checks it —
  * text and the formats that carry text / images out need "copy", 모아찍기 is built from the print
- * bytes. Page images and the flattened PDF are not gated (like `export_images`).
+ * bytes (and keeps the source's encryption and permission bits). Page images and the flattened PDF
+ * are not gated (like `export_images`). The annotation summary is not gated either: without
+ * "copy" the engine exports the comments and replies but leaves the quoted-text column empty.
  */
 export function exportNeeds(format: ExportFormat): PermKey | null {
   if (format === "nup") return "print";

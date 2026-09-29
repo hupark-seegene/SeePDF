@@ -201,7 +201,11 @@ function channel<T>(onEvent: (e: T) => void): Channel<T> | ((e: T) => void) {
  * `displayName` (Stage 8): what `DocInfo.name` reports instead of the file name — a recovered
  * copy (`<uuid>.pdf`) opens under the original document's name.
  */
-export function openDocument(a: { path: string; password?: string; displayName?: string }): Promise<DocInfo> {
+/**
+ * `passwordFrom`: open with the password of that open document (v0.3: the n-up print temp file
+ * is encrypted as its source is; the webview never holds the source's password).
+ */
+export function openDocument(a: { path: string; password?: string; displayName?: string; passwordFrom?: DocId }): Promise<DocInfo> {
   return call("open_document", a, (mock) => mock.openDocument(a));
 }
 
@@ -1062,6 +1066,20 @@ export async function writeTempImage(bytes: Uint8Array): Promise<string> {
   } catch (e) {
     throw toSeePdfError(e);
   }
+}
+
+/**
+ * v0.3 integration (D1): the system clipboard's image read by the engine side (NSPasteboard / the
+ * Windows clipboard) and written as a temp PNG — works from a native menu item, where WebKit refuses
+ * `navigator.clipboard.read` for lack of a user gesture. `null`: the clipboard holds no image.
+ */
+export function clipboardImageToTemp(): Promise<string | null> {
+  return call("clipboard_image_to_temp", {}, (mock) => mock.clipboardImageToTemp());
+}
+
+/** v0.3 integration (X8): SeePDF is the system's default PDF app (Windows; false elsewhere). */
+export function pdfHandlerIsSelf(): Promise<boolean> {
+  return call("pdf_handler_is_self", {}, (mock) => mock.pdfHandlerIsSelf());
 }
 
 /** Pages of another open document (a drag between windows), inserted at `at`; one undo step on the target. */

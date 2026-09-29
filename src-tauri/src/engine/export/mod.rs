@@ -906,12 +906,140 @@ pub fn export_text_with(
         if i > 0 {
             out.push('\u{0C}');
         }
-        let layer = layer::layer(st.doc_mut(doc_id)?, page)?;
-        out.push_str(&layout_text(&layer));
+        // v0.3 integration (X3 × O2): rows of the text as it reads, also on a turned page.
+        let upright = upright_layer(st.doc_mut(doc_id)?, page)?;
+        out.push_str(&layout_text(&upright.layer));
     }
     let chars = out.chars().count() as u64;
     crate::engine::pages::write_atomic(Path::new(out_path), out.as_bytes())?;
     Ok(ExportTextResult { chars })
+}
+
+/// A page's text layer seen in the frame where its text reads upright — what the text exports
+/// that regroup characters by position (레이아웃 유지 [`layout_text`], the text flow of
+/// `textflow`) work in.
+///
+/// The text layer groups words and lines in user space, which is right for upright text. An
+/// OCR layer that O2 (auto-rotate) wrote on a sideways scan is drawn turned in user space under
+/// the page's `/Rotate`, so there every character would be a line of its own. The page's
+/// dominant text direction (`FPDFText_GetCharAngle`, rounded to a quarter turn, by character
+/// count) decides: 0° hands the cached layer back unchanged; otherwise every character's boxes
+/// and baseline are rotated back by that angle and words and lines regrouped there.
+pub struct UprightLayer {
+    pub layer: std::sync::Arc<layer::TextLayer>,
+    /// Quarter turns (counter-clockwise) the page's text is rotated by in user space.
+    pub quarter: u8,
+}
+
+impl UprightLayer {
+    /// A user-space point in the upright frame.
+    pub fn point(&self, (x, y): (f32, f32)) -> (f32, f32) {
+        let (sin, cos) = match self.quarter % 4 {
+            0 => return (x, y),
+            1 => (1.0, 0.0),
+            2 => (0.0, -1.0),
+            _ => (-1.0, 0.0),
+        };
+        (x * cos + y * sin, -x * sin + y * cos)
+    }
+
+    /// A user-space rect as the box around it in the upright frame.
+    pub fn rect(&self, r: Rect) -> Rect {
+        if self.quarter.is_multiple_of(4) {
+            return r;
+        }
+        let corners = [(r.l, r.b), (r.r, r.b), (r.r, r.t), (r.l, r.t)].map(|p| self.point(p));
+        let xs = corners.map(|p| p.0);
+        let ys = corners.map(|p| p.1);
+        Rect::new(
+            xs.iter().copied().fold(f32::MAX, f32::min),
+            ys.iter().copied().fold(f32::MAX, f32::min),
+            xs.iter().copied().fold(f32::MIN, f32::max),
+            ys.iter().copied().fold(f32::MIN, f32::max),
+        )
+    }
+}
+
+/// [`UprightLayer`] of `page`.
+pub fn upright_layer(
+    doc: &mut crate::engine::registry::OpenDoc<'_>,
+    page: PageIndex,
+) -> Result<UprightLayer, EngineError> {
+    let tl = layer::layer(doc, page)?;
+    // (quarter turns, origin) of every character, in the layer's order.
+    let geometry: Vec<(u8, Option<(f32, f32)>)> = {
+        let pdf_page = doc.page(page)?;
+        let text = pdf_page.text().ctx("load text page")?;
+        let chars = text.chars();
+        if chars.len() != tl.chars.len() {
+            return Ok(UprightLayer {
+                layer: tl,
+                quarter: 0,
+            });
+        }
+        chars
+            .iter()
+            .map(|c| {
+                // `FPDFText_GetCharAngle` is atan2(c, a) of the character matrix, i.e. the
+                // turn measured clockwise; `quarter` counts counter-clockwise.
+                let quarter = c
+                    .angle_degrees()
+                    .map(|a| (-((a / 90.0).round() as i32)).rem_euclid(4) as u8)
+                    .unwrap_or(0);
+                let origin = c.origin().ok().map(|(x, y)| (x.value, y.value));
+                (quarter, origin)
+            })
+            .collect()
+    };
+    let mut votes = [0usize; 4];
+    for (c, (quarter, _)) in tl.chars.iter().zip(&geometry) {
+        let visible = char::from_u32(c.codepoint).is_some_and(|ch| !ch.is_whitespace());
+        if visible && !c.is_generated() {
+            votes[*quarter as usize] += 1;
+        }
+    }
+    let quarter = (0..4u8)
+        .max_by_key(|&q| (votes[q as usize], std::cmp::Reverse(q)))
+        .unwrap_or(0);
+    if quarter == 0 || votes[quarter as usize] == 0 {
+        return Ok(UprightLayer {
+            layer: tl,
+            quarter: 0,
+        });
+    }
+    let frame = UprightLayer {
+        layer: tl.clone(),
+        quarter,
+    };
+    let chars: Vec<layer::CharEntry> = tl
+        .chars
+        .iter()
+        .zip(&geometry)
+        .map(|(c, (_, origin))| {
+            let mut c = *c;
+            c.loose = frame.rect(c.loose);
+            c.tight = frame.rect(c.tight);
+            c.baseline_y = match origin {
+                Some(o) => frame.point(*o).1,
+                None => c.loose.b,
+            };
+            c
+        })
+        .collect();
+    let (words, lines) = layer::group(&chars);
+    Ok(UprightLayer {
+        layer: std::sync::Arc::new(layer::TextLayer {
+            page: tl.page,
+            chars,
+            words,
+            lines,
+            text: tl.text.clone(),
+            matrix: tl.matrix,
+            crop: tl.crop,
+            has_object_ids: tl.has_object_ids,
+        }),
+        quarter,
+    })
 }
 
 /// Monospace columns a character takes: 2 for East Asian wide / full-width characters.

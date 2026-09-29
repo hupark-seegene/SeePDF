@@ -218,10 +218,23 @@ export async function applyMarks(): Promise<boolean> {
     // v0.3 (R4): content inside a group (Form XObject) can only go after the group is ungrouped —
     // one confirm says both, and the engine ungroups in the same undo step.
     const ungroup = previews.some((p) => (p?.groups?.length ?? 0) > 0);
+    // v0.3 integration (R2/R3 × S1): on a signed document the redaction forces a full rewrite at the
+    // next save (an incremental save would keep the removed text in the signed revision) — say so.
+    const signed = (useDocStore.getState().info?.signatures?.length ?? 0) > 0;
     const ok = await askConfirm(
       ungroup
-        ? { titleKey: "redact.groups.title", bodyKey: "redact.groups.body", confirmKey: "redact.groups.confirm", danger: true }
-        : { titleKey: "redact.confirmTitle", bodyKey: "redact.applyWarning", confirmKey: "redact.apply", danger: true },
+        ? {
+            titleKey: "redact.groups.title",
+            bodyKey: signed ? "redact.groups.bodySigned" : "redact.groups.body",
+            confirmKey: "redact.groups.confirm",
+            danger: true,
+          }
+        : {
+            titleKey: "redact.confirmTitle",
+            bodyKey: signed ? "redact.applyWarningSigned" : "redact.applyWarning",
+            confirmKey: "redact.apply",
+            danger: true,
+          },
     );
     if (!ok) return false;
 

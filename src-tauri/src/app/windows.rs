@@ -120,21 +120,48 @@ fn configure(
     builder
 }
 
-/// `open_in_new_window` (`IPC_CONTRACT.md` §4). Returns the new window's label.
+/// `open_in_new_window` (`IPC_CONTRACT.md` §4). Returns the new window's label. The path is
+/// queued for the new window only (v0.3 integration: it used to be broadcast, and the window
+/// that asked replaced its own document with it).
 pub fn open_in_new_window(app: &AppHandle, path: Option<String>) -> Result<String, EngineError> {
+    match path {
+        Some(path) => open_window_with(app, PathBuf::from(path), OpenSource::Dialog),
+        None => new_window(app),
+    }
+}
+
+/// A new window that opens `path` once it has mounted.
+pub fn open_window_with(
+    app: &AppHandle,
+    path: PathBuf,
+    source: OpenSource,
+) -> Result<String, EngineError> {
     let label = app.state::<WindowDocs>().next_label();
+    // Queued before the window exists, so its first `take_pending_opens` finds it.
+    files::push_open(app, &label, path, source);
+    if let Err(e) = build_window(app, &label) {
+        app.state::<files::PendingOpens>().forget(&label);
+        return Err(e);
+    }
+    Ok(label)
+}
+
+fn new_window(app: &AppHandle) -> Result<String, EngineError> {
+    let label = app.state::<WindowDocs>().next_label();
+    build_window(app, &label)?;
+    Ok(label)
+}
+
+fn build_window(app: &AppHandle, label: &str) -> Result<(), EngineError> {
     let window = configure(WebviewWindowBuilder::new(
         app,
-        label.clone(),
+        label.to_string(),
         WebviewUrl::default(),
     ))
     .build()
     .map_err(|e| EngineError::io(format!("create window {label}: {e}")))?;
     attach_handlers(app, &window);
-    if let Some(path) = path {
-        files::push_open(app, PathBuf::from(path), OpenSource::Dialog);
-    }
-    Ok(label)
+    Ok(())
 }
 
 /// Rust-side drag-drop and close bookkeeping. The webview gets the same drop event through
@@ -144,10 +171,11 @@ pub fn attach_handlers(app: &AppHandle, window: &tauri::WebviewWindow) {
     let label = window.label().to_string();
     window.on_window_event(move |event| match event {
         WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
-            files::handle_drop(&handle, paths);
+            files::handle_drop(&handle, &label, paths);
         }
         WindowEvent::Destroyed => {
             handle.state::<WindowDocs>().bind(&label, None);
+            handle.state::<files::PendingOpens>().forget(&label);
         }
         // Stage 8: the native 편집 menu names the focused window's undo step.
         #[cfg(target_os = "macos")]

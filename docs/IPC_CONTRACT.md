@@ -172,11 +172,12 @@ export interface OpenRequest { path: string; source: 'argv' | 'macos-opened' | '
 // Stage 8: `displayName` — what `DocInfo.name` reports instead of the file name (a recovered copy
 // `<uuid>.pdf` opens under the original name; also the `{{filename}}` stamp token). Blank = file name.
 // A document with more than 65,535 pages (PageIndex is u16 in the engine) is `unsupported`.
-open_document(a: { path: string; password?: string; displayName?: string }): Promise<DocInfo>
+open_document(a: { path: string; password?: string; displayName?: string; passwordFrom?: DocId }): Promise<DocInfo>
+// passwordFrom (v0.3): use that open document's password (the n-up print temp file)
 close_document(a: { docId: DocId }): Promise<void>
 get_document(a: { docId: DocId }): Promise<DocInfo>
 get_outline(a: { docId: DocId }): Promise<OutlineNode[]>
-take_pending_opens(): Promise<OpenRequest[]>
+take_pending_opens(): Promise<OpenRequest[]>   // the calling window's queue only, each request once (v0.3 integration)
 open_in_new_window(a: { path?: string }): Promise<string>              // returns the window label
 window_bind_document(a: { label: string; docId: DocId | null }): Promise<void>
 ```
@@ -196,7 +197,7 @@ pub async fn open_document(engine: State<'_, EngineHandle>, path: String, passwo
 | `close_document` | `registry::close` (pages → form → doc) | S0 | F-01 |
 | `get_document` | registry read | S0 | F-01 |
 | `get_outline` | depth-first `FPDFBookmark_GetFirstChild` / `GetNextSibling` walk (P2: raw, so it can read `/Count`'s sign → `open` and a URI action → `url`; cycle- and depth-guarded) | S0, P2 | F-05 |
-| `take_pending_opens` | `PendingOpens` queue drain | S0 | F-01 |
+| `take_pending_opens` | `PendingOpens` queue drain — v0.3 integration: requests are queued per window label and `open-file` is sent to that window only (`app/files.rs`: an OS hand-off goes to a window that shows nothing, else a new window; a file already shown focuses its window), so no window replaces its document with another window's request | S0 | F-01 |
 | `open_in_new_window`, `window_bind_document` | `app/windows.rs` | S0 | F-01 |
 
 `open_document` errors: `passwordRequired` (no password given), `passwordWrong` (one was), `notFound`,
@@ -526,6 +527,7 @@ Owner (b). Feature F-16.
 split_document(a: { docId; mode: { everyN } | { ranges } | { byOutline: { level: number } }; outDir }, onProgress)
 import_pages_from_doc(a: { srcDocId: DocId; pages: PageIndex[]; dstDocId: DocId; at: PageIndex }): Promise<DocInfo>  // undo.pageImport
 write_temp_image(body: Uint8Array /* raw request body: PNG or JPEG bytes */): Promise<string>   // a temp file path
+clipboard_image_to_temp(): Promise<string | null>   // v0.3 integration: the clipboard image read natively → temp PNG; null = none
 ```
 
 * **Merge and insert-from-file carry the source's structure** (P1). `FPDF_ImportPages*` copies page
@@ -578,7 +580,10 @@ its margins — `contain` scales it to fill that box, `actual` keeps its size un
 `started` (total = images + 1), one `progress` per image read, one for the build, `done`; `cancel_job` between
 images → `cancelled`. `write_temp_image` writes clipboard bytes (the raw request body) to
 `$TMPDIR/seepdf-clipboard/<uuid>.png|jpg` for 클립보드에서 새로 만들기 and for pasting an image in 편집 (then
-`add_image_object`).
+`add_image_object`). `clipboard_image_to_temp` (v0.3 integration) reads the clipboard on the Rust side — `NSPasteboard`
+(PNG, else TIFF → PNG) on macOS, the registered `PNG` format else `CF_DIB` → PNG on Windows — because WebKit refuses
+`navigator.clipboard.read` outside a user gesture and the native 파일 ▸ 클립보드에서 새로 만들기 item has none; the webview
+read stays the fallback. `null` when the clipboard holds no image, `unsupported` for a DIB it cannot decode.
 
 ### 7.3a Page boxes and page size — 자르기 / 페이지 크기 변경 (P2)
 
@@ -1322,7 +1327,12 @@ Owner (b). Features F-24, F-25, F-26.
 print_prepare(a: { docId: DocId; pages?: PageIndex[]; annots?: PrintAnnots }): Promise<{ tempPath: string }>
 export_text(a: { docId: DocId; pages: PageIndex[]; outPath: string; preserveLayout?: boolean }): Promise<{ chars: number }>
 export type PrintAnnots = 'all' | 'none' | 'stamps';
+pdf_handler_is_self(): Promise<boolean>   // v0.3 integration (X8): SeePDF is the default .pdf app (Windows; false elsewhere)
 ```
+
+* 인쇄 ▸ PDF 앱으로 인쇄 on Windows first asks `pdf_handler_is_self` (`AssocQueryStringW(ASSOCSTR_EXECUTABLE, ".pdf")`
+  against the running executable): when SeePDF is that app the flattened copy would come straight back to it, so the
+  webview print path is used instead.
 
 * `print_prepare` (X7) flattens with **`FLAT_PRINT`**: what reaches paper is what the annotations' `/F` flags say
   prints (NoView + Print is baked in, an annotation without Print is dropped). `annots`: `all` (default) · `none` —
@@ -1351,7 +1361,9 @@ order (8 pages → 8,1,2,7,6,3,4,5), always 2 per side on a landscape sheet — 
 `FPDF_ImportNPagesToOne`. The grid (cols × rows = perSheet, portrait or landscape sheet) is the one that prints the
 first page largest (A4 portrait pages: 2-up 2 × 1 landscape, 4-up 2 × 2 portrait, 6-up 3 × 2 landscape, 9-up 3 × 3).
 `paper: 'auto'` = the first page's size. Written to `outPath` (내보내기) or, without one, to a print temp file (the
-print path opens it with `open_document` and closes it after printing; deleted as above). Errors:
+print path opens it with `open_document { passwordFrom: docId }` and closes it after printing; deleted as above).
+An encrypted source's n-up is re-encrypted with the source's own security handler (v0.3 integration, X2 × S5: same
+open password, same permission bits — a copy-forbidden file's n-up is copy-forbidden too). Errors:
 `invalidArgument` (perSheet not 1/2/4/6/9, page out of range), `permissionDenied` detail `print` (v0.3 integration:
 the sheets are built from `print_prepare`'s bytes, which check the document's print permission — for 내보내기 ▸
 모아찍기 PDF too). ⚠️ `FPDF_ImportNPagesToOne` ignores `/Rotate`.
@@ -1835,7 +1847,7 @@ spaces per level), Markdown nests it as a sub-item.
 
 ```ts
 // src/ipc/events.ts — app-wide broadcasts (tauri emit/listen)
-'open-file'        { path: string; source: OpenRequest['source'] }
+'open-file'        { path: string; source: OpenRequest['source'] }   // to ONE window (emit_to): "take_pending_opens now"
 'doc-changed'      { docId: DocId; docGeneration: DocGeneration; changedPages: PageIndex[] | 'all';
                      structure: boolean; dirty: boolean; reason: 'edit'|'undo'|'redo'|'pages'|'ocr'|'redact';
                      canUndo: boolean; canRedo: boolean }   // Stage 2: no get_document per edit

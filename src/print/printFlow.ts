@@ -54,7 +54,8 @@ export async function startDomPrint(
   } as const;
   if (wantsNup(o)) {
     const made = await nupFile(info, pages, o);
-    const sheets = await api.openDocument({ path: made.path });
+    // The n-up file is encrypted as the source is (same open password and permissions).
+    const sheets = await api.openDocument({ path: made.path, passwordFrom: info.docId });
     const all = sheets.pages.map((p) => p.index);
     usePrintStore.getState().start({
       ...base,

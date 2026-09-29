@@ -38,7 +38,7 @@
 use crate::engine::objects;
 use crate::engine::registry::OpenDoc;
 use crate::engine::text::layer;
-use crate::ipc::types::PageIndex;
+use crate::ipc::types::{PageIndex, Rect};
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{PdfPageObjectCommon, PdfPageObjectsCommon};
 use serde::{Deserialize, Serialize};
@@ -208,8 +208,11 @@ pub fn collect_page(
     page: PageIndex,
     flow: &mut FlowDoc,
 ) -> Result<(), EngineError> {
-    let tl = layer::layer(doc, page)?;
-    let paras = paragraphs_of(lines_of(&tl));
+    // v0.3 integration (X6 × O2): lines as the text reads — an OCR layer written turned under
+    // a sideways page's `/Rotate` is regrouped upright (`export::upright_layer`); images are
+    // placed in the same frame.
+    let upright = super::upright_layer(doc, page)?;
+    let paras = paragraphs_of(lines_of(&upright.layer));
 
     // Images with their on-page box (the object's bounds), in object order.
     let extracted = objects::extract_images(doc, page)?;
@@ -224,12 +227,18 @@ pub fn collect_page(
             let Ok(bounds) = object.bounds() else {
                 continue;
             };
-            let (w, h) = (bounds.width().value, bounds.height().value);
+            let upright_box = upright.rect(Rect::new(
+                bounds.left().value,
+                bounds.bottom().value,
+                bounds.right().value,
+                bounds.top().value,
+            ));
+            let (w, h) = (upright_box.r - upright_box.l, upright_box.t - upright_box.b);
             if w < 2.0 || h < 2.0 {
                 continue;
             }
             images.push((
-                bounds.top().value,
+                upright_box.t,
                 Block::Image {
                     png: image.png,
                     width_pt: w,

@@ -19,11 +19,19 @@ pub async fn open_document(
     path: String,
     password: Option<String>,
     display_name: Option<String>,
+    // v0.3 integration (X2 × S5): open with the password of this open document — the print
+    // path's n-up temp file is encrypted as its source is, and the webview never holds the
+    // source's password.
+    password_from: Option<String>,
 ) -> Result<DocInfo, EngineError> {
     let bytes = super::read_file(&path).await?;
     let path_buf = PathBuf::from(&path);
     engine
         .call(Lane::Edit, "open_document", move |st| {
+            let password = match (password, password_from) {
+                (None, Some(from)) => st.doc(&from)?.password.clone(),
+                (password, _) => password,
+            };
             registry::open_named(st, Some(path_buf), bytes, password, display_name)
         })
         .await
@@ -65,9 +73,13 @@ pub async fn get_outline(
         .await
 }
 
+/// The open requests queued for the calling window (and only those), removed from the queue.
 #[tauri::command]
-pub fn take_pending_opens(pending: State<'_, PendingOpens>) -> Vec<OpenRequest> {
-    pending.take()
+pub fn take_pending_opens(
+    window: tauri::WebviewWindow,
+    pending: State<'_, PendingOpens>,
+) -> Vec<OpenRequest> {
+    pending.take(window.label())
 }
 
 #[tauri::command]
@@ -260,6 +272,26 @@ pub async fn write_temp_image(request: tauri::ipc::Request<'_>) -> Result<String
         .await
         .map_err(|e| EngineError::io(format!("write image: {e}")))?
         .map(|p| p.display().to_string())
+}
+
+/// v0.3 integration (D1): `clipboard_image_to_temp` — the system clipboard's image read
+/// natively (no user gesture needed, unlike the webview's `navigator.clipboard.read`, which
+/// WebKit refuses when the request comes from a native menu item) and written as a temp PNG.
+/// `None` when the clipboard holds no image. Synchronous, so it runs on the main thread, where
+/// AppKit wants the pasteboard read.
+#[tauri::command]
+pub fn clipboard_image_to_temp() -> Result<Option<String>, EngineError> {
+    match crate::app::clipboard::read_image_png()? {
+        Some(png) => write_temp_image_bytes(&png).map(|p| Some(p.display().to_string())),
+        None => Ok(None),
+    }
+}
+
+/// v0.3 integration (X8): `pdf_handler_is_self` — SeePDF is the default `.pdf` application
+/// (Windows), so 인쇄 must not hand its copy to "the PDF app".
+#[tauri::command]
+pub fn pdf_handler_is_self() -> bool {
+    crate::app::pdf_handler::pdf_handler_is_self()
 }
 
 /// [`write_temp_image`]'s file half: `$TMPDIR/seepdf-clipboard/<uuid>.png|jpg`.

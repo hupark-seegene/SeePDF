@@ -182,7 +182,8 @@ fn respace_ops(ops: &mut Vec<Operation>, widths: &HashMap<Vec<u8>, usize>) -> bo
 }
 
 /// Writes `Tc` / `Tw` back into the `TJ`s of `pages` (module docs). `None` when nothing
-/// changed or the file is encrypted.
+/// changed (or on an encrypted input: an encrypted document comes through
+/// `security::lopdf_pass`, decrypted).
 pub fn restore_spacing(bytes: &[u8], pages: &[PageIndex]) -> Result<Option<Vec<u8>>, EngineError> {
     let mut doc = Document::load_mem(bytes).map_err(|e| lopdf_error("parse", e))?;
     if doc.is_encrypted() {

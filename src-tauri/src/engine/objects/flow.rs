@@ -973,8 +973,10 @@ pub const ORDER_PARA: &str = "SeePDFOrderPara";
 /// each object as `q … Q` after resetting the CTM at the top of every regenerated stream —
 /// so nothing moves on the page.
 ///
-/// `None` when there is nothing to do: an encrypted file (lopdf would need the key to write
-/// it back), no placeholder, or no marked paragraph block.
+/// `None` when there is nothing to do: no placeholder, or no marked paragraph block — or an
+/// encrypted input, which callers never pass: an encrypted document goes through
+/// `security::lopdf_pass`, which hands this its decrypted serialisation and re-encrypts the
+/// result.
 pub fn restore_reading_order(
     bytes: &[u8],
     page_index: u16,

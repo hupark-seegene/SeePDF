@@ -24,6 +24,7 @@ use crate::engine::annot::lopdf_annots::{self, DictEdits, Drawn, Shape};
 use crate::engine::annot::{self, create, read, ScratchPage};
 use crate::engine::raw::{self, annot::ColorKind, consts};
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
+use crate::engine::security;
 use crate::engine::types::EngineState;
 use crate::ipc::types::{
     Annot, AnnotId, AnnotKind, AnnotOp, AnnotPatch, AnnotSpec, CalloutSpec, ChangeReason, InkSpec,
@@ -48,22 +49,28 @@ pub fn update_in(
             .page(page)
             .keeps_text()
     };
-    let (previous, rewritable) = {
-        let doc = st.doc_mut(doc_id)?;
-        let previous = find(doc, page, id)?;
-        (previous, !(doc.encrypted || doc.password.is_some()))
-    };
+    let previous = find(st.doc_mut(doc_id)?, page, id)?;
     let lopdf_kind = is_lopdf_kind(&previous);
     let needs_lopdf = lopdf_kind
         || previous.kind == AnnotKind::Callout
         || patch.dashed.is_some_and(|d| d != previous.dashed)
         // a new width, or new heads (a SeePDF Ink line is rebuilt by PDFium), re-applies the dash
         || (previous.dashed && (patch.border_width.is_some() || patch.heads.is_some()));
+    // v0.3 integration (A8 × S2): an encrypted document takes the lopdf rewrites through
+    // `mutate_bytes`, which re-encrypts them with the file's own key. Only when its encryption
+    // cannot be rewritten does a Line / Polygon edit go through PDFium alone (v0.2's
+    // `update_annotation`: contents, colour and moves still apply), while a callout or a
+    // dashed border, which have no PDFium form, are refused before anything changes.
+    let rewritable = !needs_lopdf || security::can_rewrite(st, doc_id)?;
+    if lopdf_kind && !rewritable {
+        return registry::mutate(st, doc_id, opts(), |doc| update(doc, page, id, patch));
+    }
     if needs_lopdf && !rewritable {
         return Err(EngineError::new(
             ErrorCode::Unsupported,
-            "this change cannot be written into an encrypted document",
-        ));
+            "this change cannot be written into this document's encryption",
+        )
+        .with_detail(security::ENCRYPTION_DETAIL));
     }
     if lopdf_kind {
         let edits = DictEdits {

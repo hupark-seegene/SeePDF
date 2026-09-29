@@ -1379,14 +1379,15 @@ pub fn edit(
     let flow = edit.flow.unwrap_or_default();
     let pdfium = st.pdfium;
     // v0.3 (R5): the new text keeps the old paragraph's place in the reading order — a
-    // `lopdf` pass after the write, which cannot write an encrypted file back. v0.3
-    // integration (R5 × S1): nor is it run on a signed file that can still be saved
-    // incrementally (`pristine`): the rewrite would force a full save, which invalidates
-    // the signatures; there the edit keeps them and the paragraph reads last instead.
-    let keep_order = !edit.dry_run && {
-        let doc = st.doc(doc_id)?;
-        !doc.encrypted && !doc.pristine
-    };
+    // `lopdf` pass after the write (on an encrypted file, over its decrypted serialisation,
+    // re-encrypted with its own key: `security::lopdf_pass`). v0.3 integration (R5 × S1): it
+    // is not run on a signed file that can still be saved incrementally (`pristine`): the
+    // rewrite would force a full save, which invalidates the signatures; there the edit keeps
+    // them and the paragraph reads last instead. Nor where an encryption cannot be rewritten
+    // (checked first, so no order anchor is left behind for a pass that cannot run).
+    let keep_order = !edit.dry_run
+        && !st.doc(doc_id)?.pristine
+        && crate::engine::security::can_rewrite(st, doc_id)?;
     let job = Job {
         page_index,
         ids: &ids,
@@ -1418,7 +1419,8 @@ pub fn edit(
     }
     // v0.3 A8 (pkg4): a moved Line / Polygon / callout keeps its geometry keys in step with
     // its `/Rect` — a lopdf pass coalesced into the same undo step (as a page resize does).
-    // An encrypted document cannot take a lopdf rewrite; there only the appearance moves.
+    // An encrypted document is rewritten through S2's re-encryption; where its encryption
+    // cannot be rewritten the pass fails and only the appearance moves.
     // v0.3 integration (A8 × S1): nor a signed file that still saves incrementally — the
     // rewrite would force a full save and invalidate its signatures (as R5's reorder above).
     // It runs after R5's reorder, which leaves the annotations (and their slots) as they are.
@@ -1474,8 +1476,10 @@ fn restore_order(
     doc_id: &str,
     page_index: PageIndex,
 ) -> Result<bool, EngineError> {
-    let bytes = crate::engine::save::serialize(st, doc_id)?;
-    let Some(out) = flow::restore_reading_order(&bytes, page_index)? else {
+    let Some(out) = crate::engine::security::lopdf_pass(st, doc_id, |bytes| {
+        flow::restore_reading_order(bytes, page_index)
+    })?
+    else {
         return Ok(false);
     };
     let (pages, password) = {

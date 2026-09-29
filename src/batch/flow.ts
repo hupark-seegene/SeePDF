@@ -91,7 +91,10 @@ const live: { controller: AbortController | null; run: Promise<void> | null; eng
 
 function splitPath(path: string): { dir: string; sep: string; stem: string; ext: string } {
   const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  const dir = cut >= 0 ? path.slice(0, cut) : "";
+  // A file at a root keeps the root's separator (as `flows.dirName`): `C:\scan.pdf` is in `C:\` —
+  // `C:` alone is the drive's *current directory* on Windows — and `/x.pdf` is in `/`.
+  const parent = cut >= 0 ? path.slice(0, cut) : "";
+  const dir = cut >= 0 && (parent === "" || /^[A-Za-z]:$/.test(parent)) ? path.slice(0, cut + 1) : parent;
   const sep = cut >= 0 ? path[cut] : "/";
   const name = cut >= 0 ? path.slice(cut + 1) : path;
   const m = /\.pdf$/i.exec(name);

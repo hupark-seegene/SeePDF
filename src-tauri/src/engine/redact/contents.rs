@@ -97,9 +97,9 @@ fn referenced(doc: &Document) -> HashSet<ObjectId> {
 }
 
 /// Joins the `/Contents` streams of every page of `pages` whose streams break mid-object
-/// ([`breaks_mid_object`]) into one stream. `None` when there is nothing to do — no such page,
-/// or an encrypted file (`lopdf` would need the key to write it back; the apply's page-wide
-/// post-condition still refuses a redaction that would lose text there).
+/// ([`breaks_mid_object`]) into one stream. `None` when there is nothing to do — no such page
+/// (or an encrypted input, which the redaction never passes: an encrypted document goes
+/// through `security::lopdf_pass`, decrypted, and the result is re-encrypted with its key).
 pub fn join_split_streams(
     bytes: &[u8],
     pages: &[PageIndex],

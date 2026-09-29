@@ -87,7 +87,7 @@ fn start(app: &mut tauri::App, settings: &Settings) -> Result<(), StartupFailure
 
     // 5. files passed on the command line (Windows double-click, `cargo run -- x.pdf`).
     for path in app::files::pdf_paths_from_argv() {
-        app::files::push_open(&handle, path, ipc::types::OpenSource::Argv);
+        app::files::open_from_os(&handle, path, ipc::types::OpenSource::Argv);
     }
     Ok(())
 }
@@ -421,6 +421,8 @@ pub fn run() {
             // --- v0.3 pkg2-pages-structure-forms ---
             commands::documents::create_from_images,
             commands::documents::write_temp_image,
+            commands::documents::clipboard_image_to_temp,
+            commands::documents::pdf_handler_is_self,
             commands::pages::import_pages_from_doc,
             commands::forms::create_form_field,
             commands::forms::update_form_field,

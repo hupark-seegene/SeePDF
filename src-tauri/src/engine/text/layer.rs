@@ -319,7 +319,7 @@ fn build_layer(
 /// Words break on whitespace / generated chars, on a baseline jump > 0.5 em, on a horizontal
 /// gap > 0.25 em, or when x goes backwards. Lines join consecutive words whose baselines are
 /// within 0.5 em.
-fn group(chars: &[CharEntry]) -> (Vec<Word>, Vec<Line>) {
+pub(crate) fn group(chars: &[CharEntry]) -> (Vec<Word>, Vec<Line>) {
     let mut words: Vec<Word> = Vec::new();
     let mut current: Option<Word> = None;
 

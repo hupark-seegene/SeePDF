@@ -24,6 +24,7 @@ use crate::engine::annot::{
 use crate::engine::fonts;
 use crate::engine::raw::{self, annot::AnnotRef, annot::ColorKind, consts};
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
+use crate::engine::security;
 use crate::engine::types::EngineState;
 use crate::ipc::error::PdfiumResultExt;
 use crate::ipc::types::{
@@ -172,9 +173,11 @@ pub fn create_with(
 /// as a text box (PDFium) turned into a `FreeText` callout by lopdf in a **coalesced** second
 /// step, so it is still one undo entry.
 ///
-/// An encrypted document cannot take a lopdf rewrite (it would have to be re-encrypted): a
-/// line / arrow falls back to SeePDF's Ink line there, a polygon / polyline / callout is
-/// `unsupported`.
+/// An encrypted document takes the lopdf rewrites too: `registry::mutate_bytes` decrypts it and
+/// re-encrypts the result with its own key (S2). Only where its encryption cannot be rewritten
+/// (`security::cannot_rewrite`) does a line / arrow fall back to SeePDF's Ink line and a dashed
+/// square / circle stay solid; a polygon / polyline is `unsupported` there and a callout stays
+/// a plain text box.
 pub fn create_in(
     st: &mut EngineState<'_>,
     doc_id: &str,
@@ -189,26 +192,22 @@ pub fn create_in(
             .keeps_text()
     };
     let author = author.map(str::trim).filter(|a| !a.is_empty());
-    // `rewritable`: lopdf can write the file at all (not encrypted). `quiet`: it may also do so
-    // where PDFium has a fallback — v0.3 integration (A2/A6 × S1): on a signed file that still
-    // saves incrementally a line / arrow is drawn as the Ink line and a dashed square / circle
-    // solid, so the signatures survive the save. A polygon or callout has no PDFium form and
-    // is still written by lopdf there (the signed-document confirm and the save warning say
-    // the signatures go).
-    let (rewritable, quiet) = {
+    // `quiet`: lopdf may rewrite the file where PDFium has a fallback — v0.3 integration
+    // (A2/A6 × S1): on a signed file that still saves incrementally a line / arrow is drawn as
+    // the Ink line and a dashed square / circle solid, so the signatures survive the save. A
+    // polygon or callout has no PDFium form and is still written by lopdf there (the
+    // signed-document confirm and the save warning say the signatures go).
+    let quiet = {
         let doc = st.doc(doc_id)?;
         if page >= doc.page_count() {
             return Err(EngineError::not_found(format!("page {page}")).with_page(page));
         }
-        (
-            !(doc.encrypted || doc.password.is_some()),
-            doc.quiet_rewrite_ok(),
-        )
+        doc.quiet_rewrite_ok()
     };
     let lopdf_shape = lopdf_drawn(spec);
     let has_fallback = matches!(spec, AnnotSpec::Line(_) | AnnotSpec::Arrow(_));
     match (spec, lopdf_shape) {
-        (_, Some(drawn)) if rewritable && (quiet || !has_fallback) => {
+        (_, Some(drawn)) if quiet || !has_fallback => {
             let id = id.unwrap_or_else(annot::new_id);
             let ident = lopdf_annots::Identity {
                 id: id.clone(),
@@ -216,22 +215,22 @@ pub fn create_in(
                 contents: None,
                 date: annot::pdf_date_now(),
             };
-            registry::mutate_bytes(st, doc_id, opts(), |bytes, _| {
+            let written = registry::mutate_bytes(st, doc_id, opts(), |bytes, _| {
                 lopdf_annots::write_new(bytes, page, &drawn, &ident)
-            })?;
-            Ok(id)
-        }
-        (AnnotSpec::Polygon(_) | AnnotSpec::Polyline(_), _) => Err(EngineError::new(
-            ErrorCode::Unsupported,
-            "a polygon cannot be written into an encrypted document",
-        )),
-        (AnnotSpec::Callout(c), _) => {
-            if !rewritable {
-                return Err(EngineError::new(
-                    ErrorCode::Unsupported,
-                    "a callout cannot be written into an encrypted document",
-                ));
+            });
+            match written {
+                Ok(_) => Ok(id),
+                // An encryption lopdf cannot rewrite: a line / arrow is the Ink line there
+                // (`mutate_bytes` rolled its attempt back).
+                Err(e) if has_fallback && security::cannot_rewrite(&e) => {
+                    registry::mutate(st, doc_id, opts(), |doc| {
+                        create_with(doc, page, spec, Some(id), author)
+                    })
+                }
+                Err(e) => Err(e),
             }
+        }
+        (AnnotSpec::Callout(c), _) => {
             let id = registry::mutate(st, doc_id, opts(), |doc| {
                 create_with(doc, page, spec, id, author)
             })?;
@@ -255,14 +254,22 @@ pub fn create_in(
             })?;
             let (width, made) = (s.width, id.clone());
             st.doc_mut(doc_id)?.history.refresh_last();
-            registry::mutate_bytes(st, doc_id, opts().coalesced(), |bytes, _| {
+            let dashed = registry::mutate_bytes(st, doc_id, opts().coalesced(), |bytes, _| {
                 lopdf_annots::set_border_style(bytes, page, &made, width, true)
-            })?;
+            });
+            match dashed {
+                Ok(_) => {}
+                // An encryption lopdf cannot rewrite: the shape stays solid.
+                Err(e) if security::cannot_rewrite(&e) => {
+                    tracing::warn!(error = %e, "dashed border not written; the shape stays solid");
+                }
+                Err(e) => return Err(e),
+            }
             st.doc_mut(doc_id)?.touched.insert(page);
             Ok(id)
         }
-        // An encrypted document cannot take the lopdf `/BS`: the shape (and an Ink line) is
-        // drawn solid there — and so on a signed file that still saves incrementally.
+        // A signed file that still saves incrementally does not take the lopdf `/BS`: the
+        // shape (and an Ink line) is drawn solid there.
         _ => registry::mutate(st, doc_id, opts(), |doc| {
             create_with(doc, page, spec, id, author)
         }),

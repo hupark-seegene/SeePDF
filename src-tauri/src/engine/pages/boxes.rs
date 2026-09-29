@@ -274,8 +274,9 @@ pub fn resize_pages(
         Ok(geometry)
     })?;
     // v0.3 A8: `/L`, `/Vertices` and `/CL` follow the same matrix as `/Rect` — a lopdf pass
-    // coalesced into the same undo step. An encrypted document cannot take a lopdf rewrite;
-    // there the appearance still moves (as before) and the keys keep their old values.
+    // coalesced into the same undo step (on an encrypted document re-encrypted with its own
+    // key, S2). Where the encryption cannot be rewritten the appearance still moves (as before)
+    // and the keys keep their old values.
     // v0.3 integration (A8 × S1): the same on a signed file that still saves incrementally —
     // the rewrite would force a full save and invalidate its signatures.
     let rewritable = st.doc(doc_id)?.quiet_rewrite_ok();
@@ -284,9 +285,16 @@ pub fn resize_pages(
             .pages(list.clone())
             .coalesced();
         st.doc_mut(doc_id)?.history.refresh_last();
-        registry::mutate_bytes(st, doc_id, opts, |bytes, _| {
+        let moved = registry::mutate_bytes(st, doc_id, opts, |bytes, _| {
             crate::engine::annot::lopdf_annots::transform_geometry(bytes, &geometry)
-        })?;
+        });
+        match moved {
+            Ok(_) => {}
+            Err(e) if crate::engine::security::cannot_rewrite(&e) => {
+                tracing::warn!(doc_id, error = %e, "annotation geometry keys not moved");
+            }
+            Err(e) => return Err(e),
+        }
     }
     refine_geometry(st, doc_id, &list)?;
     Ok(st.doc(doc_id)?.info())
