@@ -245,24 +245,32 @@ impl TileCache {
             }
             inner.bytes += size;
             inner.order.push_back(key);
-            Self::evict_to(&mut inner, capacity);
+            Self::evict_to(&mut inner, capacity, true);
         }
         self.evaluate_pressure();
     }
 
     /// 설정 › 캐시 크기 (v0.3, U3): the new budget applies at once — the least recently used
     /// entries go until the cache fits. No pdfium; callable from any thread.
+    ///
+    /// A budget change is a settings action, not memory pressure: the evictions it causes are
+    /// not recorded as churn, and the churn window restarts — churn is a fraction of the
+    /// budget, so evictions measured against the old budget would be misread against the new
+    /// one (e.g. 500 B churned on 1000 B reads as 1.67 after shrinking to 300 B). Real pressure
+    /// shows up again within a few inserts, and the RSS signal is untouched.
     pub fn set_budget(&self, bytes: usize) {
         self.capacity.store(bytes, Ordering::Relaxed);
         {
             let mut inner = self.inner.lock();
-            Self::evict_to(&mut inner, bytes);
+            Self::evict_to(&mut inner, bytes, false);
+            inner.evictions.clear();
         }
         self.evaluate_pressure();
     }
 
-    /// Evicts from the LRU end until `inner.bytes <= capacity`, recording the churn.
-    fn evict_to(inner: &mut Inner, capacity: usize) {
+    /// Evicts from the LRU end until `inner.bytes <= capacity`; `record` logs each eviction
+    /// as churn (the engine-pressure signal) — true for working-set evictions on insert only.
+    fn evict_to(inner: &mut Inner, capacity: usize, record: bool) {
         let now = Instant::now();
         while inner.bytes > capacity {
             let Some(victim) = inner.order.pop_front() else {
@@ -270,7 +278,9 @@ impl TileCache {
             };
             if let Some(old) = inner.map.remove(&victim) {
                 inner.bytes = inner.bytes.saturating_sub(old.bytes());
-                inner.evictions.push_back((now, old.bytes()));
+                if record {
+                    inner.evictions.push_back((now, old.bytes()));
+                }
             }
         }
     }
@@ -512,6 +522,46 @@ mod tests {
             *seen.lock(),
             vec![PressureLevel::High, PressureLevel::Normal]
         );
+    }
+
+    #[test]
+    fn shrinking_the_budget_is_not_memory_pressure() {
+        // verification round 1 (H5): 설정 › 캐시 크기 256 → 64 raised engine-pressure 'high'
+        let cache = TileCache::new(256_000);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        {
+            let seen = seen.clone();
+            cache.set_pressure_listener(move |l| seen.lock().push(l));
+        }
+        for page in 0..256 {
+            cache.insert(key(page, 1), image(1000));
+        }
+        assert_eq!(cache.pressure(), PressureLevel::Normal);
+        cache.set_budget(64_000);
+        assert_eq!(cache.bytes(), 64_000);
+        assert_eq!(cache.churn(), 0.0);
+        assert_eq!(cache.pressure(), PressureLevel::Normal);
+        assert!(
+            seen.lock().is_empty(),
+            "no engine-pressure event for a settings change"
+        );
+
+        // churn measured against the old budget is not re-read against the smaller one:
+        // 500 B churned on a 1000 B budget (0.5) would be 1.67 of a 300 B budget
+        let cache = TileCache::new(1000);
+        for page in 0..15 {
+            cache.insert(key(page, 1), image(100));
+        }
+        assert!((cache.churn() - 0.5).abs() < 1e-9);
+        assert_eq!(cache.pressure(), PressureLevel::Normal);
+        cache.set_budget(300);
+        assert_eq!(cache.pressure(), PressureLevel::Normal);
+        // real churn afterwards still counts against the new budget
+        for page in 20..23 {
+            cache.insert(key(page, 1), image(100));
+        }
+        assert!((cache.churn() - 1.0).abs() < 1e-9);
+        assert_eq!(cache.pressure(), PressureLevel::High);
     }
 
     #[test]

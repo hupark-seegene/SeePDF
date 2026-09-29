@@ -1186,7 +1186,8 @@ export type JobEvent =
 **`engine-pressure`** (emitted since v0.3, H5) comes from the tile cache (`engine/render/cache.rs`), never from
 the engine thread: `high` when either load exceeds 85 % of its budget, `normal` again only below 70 % (hysteresis).
 The two loads: the tile cache's **churn** — bytes evicted in the last 10 s against the cache budget (an LRU sits at
-~100 % of its budget in steady state, so fullness is no signal; a working set that no longer fits is) — and the
+~100 % of its budget in steady state, so fullness is no signal; a working set that no longer fits is; evictions
+caused by lowering 설정 › 캐시 크기 are not churn, and a budget change restarts the window) — and the
 process RSS against 1 GiB (the 400 MB idle budget of ARCHITECTURE §13 plus the 256 MiB undo RAM budget), sampled
 every 3 s by a monitor thread, which is also what brings the level back while nothing renders. The viewer halves
 its in-flight and mounted-tile budgets while `high` (`TileManager.setPressure`).
