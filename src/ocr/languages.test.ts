@@ -6,8 +6,8 @@ import {
   effectiveLanguages, initialLanguages, langsFor, parseLangs, toggleLanguage,
 } from "./languages";
 import {
-  autoFellBack, choosableLanguages, engineChoices, languagesFor, nativeEngineOf, pickEngine, resolveEngine,
-  visionLanguages,
+  autoFellBack, choosableLanguages, engineChoices, engineHintKey, languagesFor, nativeEngineOf, pickEngine,
+  readableLanguages, resolveEngine, runLanguages, toggleLanguageFor, visionLanguages, windowsLanguages,
 } from "./engine";
 import type { OcrCapabilities } from "../ipc/types";
 
@@ -94,5 +94,55 @@ describe("자동 follows the selected languages (O3, verification round 1)", () 
     expect(autoFellBack("auto", caps, "tesseract")).toBe(true);
     expect(autoFellBack("auto", caps, "windows")).toBe(false);
     expect(autoFellBack("tesseract", caps, "tesseract")).toBe(false);
+  });
+});
+
+// --- pkg7-ocr, verification round 2 (O3): Windows OCR reads one language per run --------------------
+describe("Windows OCR reads one language (plus English) per run (O3, verification round 2)", () => {
+  const caps = (tesseract: string[], windows: string[]): OcrCapabilities => ({
+    engines: ["tesseract", "windows"], languages: ["kor", "eng"],
+    engineLanguages: { tesseract, vision: [], windows },
+  });
+  const KO_EN_JA = ["kor", "eng", "jpn"];
+
+  it("one recogniser: the first non-English language it has, plus English when wanted", () => {
+    expect(windowsLanguages(KO_EN_JA, ["kor", "jpn"])).toEqual(["kor"]);
+    expect(windowsLanguages(KO_EN_JA, ["kor", "eng", "jpn"])).toEqual(["kor", "eng"]);
+    expect(windowsLanguages(KO_EN_JA, ["eng", "jpn"])).toEqual(["eng", "jpn"]);
+    expect(windowsLanguages(KO_EN_JA, ["jpn", "eng"])).toEqual(["eng", "jpn"]);
+    // The ja recogniser reads English even without the en-US pack.
+    expect(windowsLanguages(["jpn"], ["eng", "jpn"])).toEqual(["eng", "jpn"]);
+    expect(windowsLanguages(["eng"], ["kor", "eng"])).toEqual(["eng"]);
+    expect(windowsLanguages(["kor"], ["eng"])).toEqual([]);
+    // Vision and Tesseract read the whole selection in one pass.
+    const c = { ...caps(KO_EN_JA, KO_EN_JA), engines: ["tesseract", "vision"] as OcrCapabilities["engines"] };
+    c.engineLanguages = { tesseract: KO_EN_JA, vision: KO_EN_JA, windows: [] };
+    expect(readableLanguages(c, "vision", ["kor", "jpn"])).toEqual(["kor", "jpn"]);
+  });
+
+  it("자동 takes Windows OCR only when one recogniser covers the selection", () => {
+    // The verifier's case: kor + jpn with the ko, en and ja packs used to pick Windows (jpn dropped).
+    expect(pickEngine("auto", caps(KO_EN_JA, KO_EN_JA), ["kor", "jpn"])).toBe("tesseract");
+    expect(pickEngine("auto", caps(KO_EN_JA, KO_EN_JA), ["eng", "jpn"])).toBe("windows");
+    expect(pickEngine("auto", caps(KO_EN_JA, KO_EN_JA), ["kor", "eng"])).toBe("windows");
+    expect(pickEngine("auto", caps(KO_EN_JA, KO_EN_JA), ["jpn"])).toBe("windows");
+    // Tesseract lacks jpn: neither reads both, both read Korean, a tie → Windows (faster), with the hint.
+    expect(pickEngine("auto", caps(["kor", "eng"], KO_EN_JA), ["kor", "jpn"])).toBe("windows");
+    expect(runLanguages(caps(["kor", "eng"], KO_EN_JA), "windows", ["kor", "jpn"])).toEqual(["kor"]);
+    expect(engineHintKey("auto", caps(["kor", "eng"], KO_EN_JA), "windows", ["kor", "jpn"]))
+      .toBe("ocr.engine.windowsOneLanguage");
+    expect(engineHintKey("auto", caps(KO_EN_JA, KO_EN_JA), "windows", ["eng", "jpn"])).toBe("ocr.engine.autoHintWindows");
+    expect(engineHintKey("auto", caps(KO_EN_JA, KO_EN_JA), "tesseract", ["kor", "jpn"]))
+      .toBe("ocr.engine.autoFallbackWindows");
+    expect(engineHintKey("tesseract", caps(KO_EN_JA, KO_EN_JA), "tesseract", ["kor", "jpn"])).toBeUndefined();
+  });
+
+  it("an explicit Windows OCR choice swaps the non-English chip instead of ignoring the click", () => {
+    expect(toggleLanguageFor("vision", "windows", ["kor", "eng"], "jpn")).toEqual(["eng", "jpn"]);
+    expect(toggleLanguageFor("vision", "windows", ["kor"], "jpn")).toEqual(["jpn"]);
+    expect(toggleLanguageFor("vision", "windows", ["kor"], "eng")).toEqual(["kor", "eng"]);
+    // Under 자동 the chips add up (the engine follows them), and other engines are unchanged.
+    expect(toggleLanguageFor("auto", "windows", ["kor", "eng"], "jpn")).toEqual(["kor", "eng", "jpn"]);
+    expect(toggleLanguageFor("vision", "vision", ["kor", "eng"], "jpn")).toEqual(["kor", "eng", "jpn"]);
   });
 });

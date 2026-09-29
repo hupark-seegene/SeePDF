@@ -65,6 +65,16 @@ integer fraction and the boxes scaled back. Checked here only by `cargo clippy -
 (llvm-rc stand-in) and the cross-platform mapping tests; the real call runs on the Windows CI runner
 (`tests/ocr.rs ocr_windows_reads_an_english_fixture`, skipped when the en-US recogniser is missing).
 
+One recogniser per call (verification round 2): `OcrEngine::TryCreateFromLanguage` takes one language, and the
+ko / ja / zh recognisers also read Latin text. So Windows OCR counts as reading one non-English language plus
+English (`engine.ts` `windowsLanguages`): 자동 takes it only when that covers the selection (한국어 + English,
+English + 日本語, one language), otherwise the round-1 scoring decides with that reduced coverage — 한국어 +
+日本語 goes to Tesseract when jpn traineddata is staged; when neither engine reads both, Windows reads Korean,
+日本語 is shown unpressed and `ocr.engine.windowsOneLanguage` says why. With Windows OCR chosen explicitly a
+newly pressed non-English chip replaces the other one. `winocr::pick_language` prefers the non-English
+requested language (`eng+jpn` → `ja`). Running one pass per selected CJK language and merging was not done:
+overlapping reads of the same ink would need de-duplication.
+
 ## Scanned-document banner (O6)
 
 Sampling is `ocr_page_status` of the first 10 pages when the window is idle after open (`requestIdleCallback`,

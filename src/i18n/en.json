@@ -976,5 +976,6 @@
   "ocr.needsOcr.run": "Run OCR…",
   "ocr.needsOcr.searchHint": "This document has no searchable text. Run OCR to make it searchable.",
   "ocr.engine.autoFallback": "Apple Vision can't read all the selected languages here, so Tesseract will be used",
-  "ocr.engine.autoFallbackWindows": "Windows OCR on this PC can't read all the selected languages, so Tesseract will be used"
+  "ocr.engine.autoFallbackWindows": "Windows OCR on this PC can't read all the selected languages, so Tesseract will be used",
+  "ocr.engine.windowsOneLanguage": "Windows OCR reads one language at a time (plus English), so some of the selected languages are left out"
 }

@@ -174,7 +174,13 @@ pub fn app_code(tag: &str) -> Option<&'static str> {
 }
 
 /// The recogniser tag to use for `requested` (app codes, tesseract strings like `kor+eng`, or
-/// BCP 47 tags as the frontend sends Vision): the first requested language `available` has.
+/// BCP 47 tags as the frontend sends Vision).
+///
+/// `Windows.Media.Ocr` runs one recogniser per call, and the ko / ja / zh recognisers also read
+/// Latin text, so the first requested *non-English* language `available` has wins; English only
+/// when nothing else requested is installed (pkg7-ocr verification round 2: `eng+jpn` used to get
+/// the en-US recogniser and drop the Japanese). The frontend (`engine.ts` `windowsLanguages`) sends
+/// at most one non-English language, so this order matches what the sheet shows.
 pub fn pick_language(requested: &[String], available: &[String]) -> Option<String> {
     let wanted: Vec<&'static str> = requested
         .iter()
@@ -190,12 +196,22 @@ pub fn pick_language(requested: &[String], available: &[String]) -> Option<Strin
     } else {
         wanted
     };
-    wanted.iter().find_map(|code| {
+    let installed = |code: &&str| {
         available
             .iter()
-            .find(|tag| app_code(tag) == Some(code))
+            .find(|tag| app_code(tag) == Some(*code))
             .cloned()
-    })
+    };
+    wanted
+        .iter()
+        .filter(|code| **code != "eng")
+        .find_map(installed)
+        .or_else(|| {
+            wanted
+                .iter()
+                .filter(|code| **code == "eng")
+                .find_map(installed)
+        })
 }
 
 /// The app codes a list of recogniser tags covers, in the app's order, without duplicates.
@@ -474,6 +490,18 @@ mod tests {
             "Korean missing: the next requested language"
         );
         assert_eq!(pick_language(&["jpn".to_string()], &english_only), None);
+        // pkg7-ocr verification round 2: one recogniser per call, and the CJK ones read Latin too,
+        // so the non-English language wins over English wherever it is in the request.
+        assert_eq!(pick(&["en-US", "ja-JP"]).as_deref(), Some("ja"));
+        assert_eq!(pick(&["eng+jpn"]).as_deref(), Some("ja"));
+        assert_eq!(pick(&["eng", "chi_sim"]).as_deref(), Some("zh-Hans-CN"));
+        assert_eq!(pick(&["ko-KR", "en-US", "ja-JP"]).as_deref(), Some("ko"));
+        assert_eq!(pick(&["en-US"]).as_deref(), Some("en-US"));
+        assert_eq!(
+            pick_language(&["eng+jpn".to_string()], &english_only).as_deref(),
+            Some("en-US"),
+            "no ja pack: English is still read"
+        );
     }
 
     #[test]

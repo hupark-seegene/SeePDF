@@ -30,12 +30,10 @@ import {
 } from "./ocrJob";
 import { DEFAULT_LAYOUT, defaultWorkerCount, type OcrLayout } from "./tesseractPool";
 import {
-  autoFellBack, autoHintKey, choosableLanguages, engineChoices, languagesFor, loadOcrCapabilities,
-  nativeEngineOf, pickEngine, useOcrCapabilities, type OcrEngineChoice,
+  choosableLanguages, engineChoices, engineHintKey, loadOcrCapabilities, nativeEngineOf, pickEngine,
+  runLanguages, toggleLanguageFor, useOcrCapabilities, type OcrEngineChoice,
 } from "./engine";
-import {
-  OCR_LANGUAGES, effectiveLanguages, isOcrLanguage, langsFor, toggleLanguage, type OcrLanguage,
-} from "./languages";
+import { OCR_LANGUAGES, isOcrLanguage, langsFor, type OcrLanguage } from "./languages";
 import "./OcrDialog.css";
 
 type RangeMode = "all" | "current" | "custom";
@@ -100,8 +98,9 @@ function OcrDialogBody(
   // O1: the chips on offer (under 자동, what either engine reads); a selected language the engine that
   // will run cannot read is dropped.
   const offered = choosableLanguages(engineChoice, caps, engine);
-  const langs = effectiveLanguages(selectedLangs, languagesFor(caps, engine));
-  const fellBack = autoFellBack(engineChoice, caps, engine);
+  // Round 2: Windows OCR reads one language per run, so its chips are what that run reads.
+  const langs = runLanguages(caps, engine, selectedLangs);
+  const engineHint = engineHintKey(engineChoice, caps, engine, selectedLangs);
 
   const [phase, setPhase] = useState<Phase>("setup");
   const [jobId, setJobId] = useState<number | null>(null);
@@ -147,7 +146,7 @@ function OcrDialogBody(
       docGeneration,
       pages,
       pageGeom,
-      langs: langsFor(effectiveLanguages(selectedLangs, languagesFor(loaded, runEngine))),
+      langs: langsFor(runLanguages(loaded, runEngine, selectedLangs)),
       layout,
       dpi,
       skipPagesWithText: skipText,
@@ -251,7 +250,7 @@ function OcrDialogBody(
                     className="chip"
                     data-active={langs.includes(l.code) || undefined}
                     aria-pressed={langs.includes(l.code)}
-                    onClick={() => setSelectedLangs(toggleLanguage(langs, l.code))}
+                    onClick={() => setSelectedLangs(toggleLanguageFor(engineChoice, engine, langs, l.code))}
                   >
                     {t(l.labelKey)}
                   </button>
@@ -279,7 +278,7 @@ function OcrDialogBody(
                       {engineChoices(native).map((c) => <option key={c.id} value={c.id}>{t(c.labelKey)}</option>)}
                     </select>
                   </label>
-                  {engineChoice === "auto" && <p className="ocr-hint">{t(autoHintKey(native, fellBack))}</p>}
+                  {engineHint && <p className="ocr-hint">{t(engineHint)}</p>}
                 </>
               )}
               <label className="ocr-check">

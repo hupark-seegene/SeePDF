@@ -28,10 +28,10 @@ import { toast } from "../../app/toastStore";
 import { resolveDpi, runOcrJob, type OcrDpi } from "../ocrJob";
 import { DEFAULT_LAYOUT, TesseractPool, defaultWorkerCount } from "../tesseractPool";
 import {
-  languagesFor, loadOcrCapabilities, pickEngine, type OcrEngineChoice, type OcrRunEngine,
+  loadOcrCapabilities, pickEngine, runLanguages, type OcrEngineChoice, type OcrRunEngine,
 } from "../engine";
 import {
-  BASELINE_LANGUAGES, effectiveLanguages, isOcrLanguage, langsFor as joinLangs, type OcrLanguage,
+  BASELINE_LANGUAGES, isOcrLanguage, langsFor as joinLangs, type OcrLanguage,
 } from "../languages";
 import {
   addPaths, isRunnable, patchItem, pathKey, pickOutputPath, removeItem, requeue, summarize,
@@ -220,7 +220,8 @@ async function runQueue(queue: number[]): Promise<void> {
     // O3 (verification round 1): 자동 takes the native engine only when it reads the selection.
     const engine = pickEngine(options.engine, caps, options.langs);
     // O1: only the chips this engine reads (a 日本語 chosen for Vision is dropped for Tesseract).
-    const langs = joinLangs(effectiveLanguages(options.langs, languagesFor(caps, engine)));
+    // Round 2: Windows OCR reads one language per run (`runLanguages`).
+    const langs = joinLangs(runLanguages(caps, engine, options.langs));
     // One pool for the whole batch: the workers load their language data once, not once per file.
     if (engine === "tesseract") pool = new TesseractPool({ langs, layout: DEFAULT_LAYOUT, dpi, workers });
     for (const id of queue) {

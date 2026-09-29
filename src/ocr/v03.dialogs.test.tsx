@@ -261,3 +261,78 @@ describe("O3 (verification round 1) — 자동 does not trade Korean for the nat
     expect(screen.getByText(t("ocr.engine.autoFallbackWindows"))).toBeInTheDocument();
   });
 });
+
+// --- pkg7-ocr, verification round 2 (O3): Windows OCR reads one language per run ------------------------
+describe("O3 (verification round 2) — Windows OCR reads one language (plus English) per run", () => {
+  const windowsKoEnJa = (tesseract: string[]): OcrCapabilities => ({
+    engines: ["tesseract", "windows"], languages: ["kor", "eng"],
+    engineLanguages: { tesseract, vision: [], windows: ["kor", "eng", "jpn"] },
+  });
+
+  it("한국어 + 日本語 under 자동 runs Tesseract when it has jpn, and says why", async () => {
+    capabilities(windowsKoEnJa(["kor", "eng", "jpn"]));
+    settings({ ocrLanguages: ["kor", "jpn"] });
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    await screen.findByLabelText(t("ocr.engine"));
+    expect(chip("ocr.language.ko")).toHaveAttribute("aria-pressed", "true");
+    expect(chip("ocr.language.ja")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(t("ocr.engine.autoFallbackWindows"))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0]).toMatchObject({ engine: "tesseract", langs: "kor+eng+jpn" });
+  });
+
+  it("when neither engine reads both, Windows OCR runs Korean only: 日本語 is not shown pressed and a hint says so", async () => {
+    capabilities(windowsKoEnJa(["kor", "eng"]));
+    settings({ ocrLanguages: ["kor", "jpn"] });
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    await screen.findByLabelText(t("ocr.engine"));
+    expect(chip("ocr.language.ko")).toHaveAttribute("aria-pressed", "true");
+    expect(chip("ocr.language.ja")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(t("ocr.engine.windowsOneLanguage"))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0]).toMatchObject({ engine: "windows", langs: "kor+eng" });
+  });
+
+  it("English + 日本語 is one recogniser (ja reads Latin): Windows OCR, both chips on", async () => {
+    capabilities(windowsKoEnJa(["kor", "eng"]));
+    settings({ ocrLanguages: ["eng", "jpn"] });
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    await screen.findByLabelText(t("ocr.engine"));
+    expect(chip("ocr.language.en")).toHaveAttribute("aria-pressed", "true");
+    expect(chip("ocr.language.ja")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(t("ocr.engine.autoHintWindows"))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0]).toMatchObject({ engine: "windows", langs: "eng+jpn" });
+  });
+
+  it("an explicit Windows OCR choice: pressing 日本語 replaces 한국어 instead of doing nothing", async () => {
+    capabilities(windowsKoEnJa(["kor", "eng"]));
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    fireEvent.change(await screen.findByLabelText(t("ocr.engine")), { target: { value: "vision" } });
+    fireEvent.click(chip("ocr.language.ja")!);
+    expect(chip("ocr.language.ja")).toHaveAttribute("aria-pressed", "true");
+    expect(chip("ocr.language.ko")).toHaveAttribute("aria-pressed", "false");
+    expect(chip("ocr.language.en")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText(t("ocr.engine.windowsOneLanguage"))).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0]).toMatchObject({ engine: "windows", langs: "eng+jpn" });
+  });
+
+  it("여러 파일 OCR shows the same one-language hint", async () => {
+    capabilities(windowsKoEnJa(["kor", "eng"]));
+    settings({ ocrLanguages: ["kor", "jpn"] });
+    render(<DialogHost />);
+    act(() => openDialog("batchOcr"));
+    await screen.findByLabelText(t("ocr.engine"));
+    expect(chip("ocr.language.ja")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(t("ocr.engine.windowsOneLanguage"))).toBeInTheDocument();
+  });
+});

@@ -21,7 +21,9 @@ import { useEffect, useState } from "react";
 import * as api from "../ipc/api";
 import { useMock } from "../ipc/env";
 import type { OcrCapabilities, OcrEngine } from "../ipc/types";
-import { BASELINE_LANGUAGES, OCR_LANGUAGES, isOcrLanguage, type OcrLanguage } from "./languages";
+import {
+  BASELINE_LANGUAGES, OCR_LANGUAGES, effectiveLanguages, isOcrLanguage, toggleLanguage, type OcrLanguage,
+} from "./languages";
 import { ocrAssetUrl } from "./assets";
 
 /** What the user picks in the sheet. `vision` = the machine's native engine (Vision or Windows OCR). */
@@ -107,6 +109,9 @@ export function nativeEngineOf(caps: OcrCapabilities): NativeEngine | null {
  * The rule: the native engine when it reads every selected language; otherwise whichever engine reads
  * Korean when Korean is selected, then whichever reads more of the selection, the native one on a tie.
  * An explicit engine choice is always honoured.
+ *
+ * Round 2: "reads" is [`readableLanguages`] — Windows OCR reads one language per run (plus English), so
+ * 한국어 + 日本語 is not a selection it covers even with both packs installed.
  */
 export function pickEngine(
   choice: OcrEngineChoice, caps: OcrCapabilities | null, selected: readonly string[],
@@ -115,11 +120,8 @@ export function pickEngine(
   if (choice !== "auto" || !native) return resolveEngine(choice, native);
   const wanted = selected.filter(isOcrLanguage);
   const score = (engine: OcrRunEngine): [number, number] => {
-    const reads = languagesFor(caps, engine);
-    return [
-      wanted.includes("kor") && reads.includes("kor") ? 1 : 0,
-      wanted.filter((c) => reads.includes(c)).length,
-    ];
+    const reads = readableLanguages(caps, engine, wanted);
+    return [reads.includes("kor") ? 1 : 0, reads.length];
   };
   const [nativeKor, nativeCount] = score(native);
   if (nativeCount === wanted.length) return native;
@@ -145,6 +147,70 @@ export function choosableLanguages(
   if (choice !== "auto" || !native) return languagesFor(caps, engine);
   const union = new Set<string>([...languagesFor(caps, "tesseract"), ...languagesFor(caps, native)]);
   return OCR_LANGUAGES.map((l) => l.code).filter((c) => union.has(c));
+}
+
+// --- pkg7-ocr, verification round 2 (O3): Windows OCR reads one language per run -------------------
+
+/**
+ * `Windows.Media.Ocr` runs one recogniser per call (`winocr::pick_language`), and the ko / ja / zh
+ * recognisers also read Latin text. So of `wanted` it reads the first non-English language it has a
+ * pack for, plus English when English is wanted; English alone when no other wanted pack is installed.
+ */
+export function windowsLanguages(reads: readonly string[], wanted: readonly string[]): OcrLanguage[] {
+  const ordered = OCR_LANGUAGES.map((l) => l.code).filter((c) => wanted.includes(c));
+  const primary = ordered.find((c) => c !== "eng" && reads.includes(c));
+  if (primary) return ordered.filter((c) => c === primary || c === "eng");
+  return ordered.includes("eng") && reads.includes("eng") ? ["eng"] : [];
+}
+
+/** What a run on `engine` actually reads of `selected` (in chip order for Windows OCR). */
+export function readableLanguages(
+  caps: OcrCapabilities | null, engine: OcrRunEngine, selected: readonly string[],
+): OcrLanguage[] {
+  const reads = languagesFor(caps, engine);
+  const wanted = selected.filter(isOcrLanguage);
+  return engine === "windows" ? windowsLanguages(reads, wanted) : wanted.filter((c) => reads.includes(c));
+}
+
+/**
+ * The selection a run sends, and the chips shown pressed: [`readableLanguages`], or — when none of the
+ * selection is readable — Korean + English as far as the engine reads them (`effectiveLanguages`).
+ */
+export function runLanguages(
+  caps: OcrCapabilities | null, engine: OcrRunEngine, selected: readonly string[],
+): OcrLanguage[] {
+  const readable = readableLanguages(caps, engine, selected);
+  if (readable.length) return readable;
+  const baseline = readableLanguages(caps, engine, BASELINE_LANGUAGES);
+  return baseline.length ? baseline : effectiveLanguages(selected, languagesFor(caps, engine));
+}
+
+/**
+ * The hint under the engine select: Windows OCR leaving part of the selection out (it reads one language
+ * per run) whatever the choice, else 자동's hint ([`autoHintKey`]), else none.
+ */
+export function engineHintKey(
+  choice: OcrEngineChoice, caps: OcrCapabilities | null, engine: OcrRunEngine, selected: readonly string[],
+): string | undefined {
+  const native = caps ? nativeEngineOf(caps) : null;
+  if (engine === "windows") {
+    const reads = runLanguages(caps, engine, selected);
+    if (selected.some((c) => isOcrLanguage(c) && !reads.includes(c))) return "ocr.engine.windowsOneLanguage";
+  }
+  return choice === "auto" ? autoHintKey(native, autoFellBack(choice, caps, engine)) : undefined;
+}
+
+/**
+ * A chip click for `engine`: [`toggleLanguage`], except that when Windows OCR was chosen explicitly a
+ * newly pressed non-English language replaces the other one (only one runs) instead of being ignored.
+ */
+export function toggleLanguageFor(
+  choice: OcrEngineChoice, engine: OcrRunEngine, selected: readonly OcrLanguage[], code: OcrLanguage,
+): OcrLanguage[] {
+  if (choice !== "auto" && engine === "windows" && code !== "eng" && !selected.includes(code)) {
+    return toggleLanguage(selected.filter((c) => c === "eng"), code);
+  }
+  return toggleLanguage(selected, code);
 }
 
 // ---------------------------------------------------------------------------------------------------

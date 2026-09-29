@@ -17,11 +17,11 @@ import { useAppStore } from "../../store/appStore";
 import { Dialog, Row } from "../../dialogs/Dialog";
 import type { OcrDpi } from "../ocrJob";
 import {
-  autoFellBack, autoHintKey, choosableLanguages, engineChoices, languagesFor, nativeEngineOf, pickEngine,
-  useOcrCapabilities,
+  choosableLanguages, engineChoices, engineHintKey, nativeEngineOf, pickEngine, runLanguages,
+  toggleLanguageFor, useOcrCapabilities,
   type OcrEngineChoice,
 } from "../engine";
-import { OCR_LANGUAGES, effectiveLanguages, toggleLanguage } from "../languages";
+import { OCR_LANGUAGES } from "../languages";
 import {
   addFiles, cancelBatch, clearFiles, firstOutput, removeFile, resetBatch, revealOutputs, seedFromSettings,
   setOptions, startBatch, useBatchOcr,
@@ -44,7 +44,8 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
   // O3 (verification round 1): 자동 picks the engine from the selected languages, as the OCR sheet does.
   const engine = pickEngine(options.engine, caps, options.langs);
   const offered = choosableLanguages(options.engine, caps, engine);
-  const langs = effectiveLanguages(options.langs, languagesFor(caps, engine));
+  // Round 2: Windows OCR reads one language per run, so its chips are what that run reads.
+  const langs = runLanguages(caps, engine, options.langs);
   const canStart = !running && runnable > 0 && langs.length > 0;
 
   // U1: an empty, idle list starts from 설정 each time the dialog opens.
@@ -143,7 +144,7 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
               data-active={langs.includes(l.code) || undefined}
               aria-pressed={langs.includes(l.code)}
               disabled={running}
-              onClick={() => setOptions({ langs: toggleLanguage(langs, l.code) })}
+              onClick={() => setOptions({ langs: toggleLanguageFor(options.engine, engine, langs, l.code) })}
             >
               {t(l.labelKey)}
             </button>
@@ -152,8 +153,7 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
       </Row>
 
       {native && (
-        <Row labelKey="ocr.engine" hintKey={options.engine === "auto"
-          ? autoHintKey(native, autoFellBack(options.engine, caps, engine)) : undefined}>
+        <Row labelKey="ocr.engine" hintKey={engineHintKey(options.engine, caps, engine, options.langs)}>
           <select
             className="field"
             value={options.engine}
