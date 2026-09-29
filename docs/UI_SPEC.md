@@ -951,7 +951,7 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 | `redact.previewLoading` | 확인하는 중… | Checking… |
 | `redact.previewFailed` | 미리 보기를 불러오지 못했습니다 | Could not load the preview |
 | `redact.collateral` | 표시한 영역 밖의 텍스트도 함께 제거됩니다 | Text outside the marks will also be removed |
-| `redact.collateralHint` | 이 텍스트는 글꼴 때문에 나눌 수 없어(Type3 글꼴, 글자 정보 없는 글꼴 등), 표시한 영역에 걸친 텍스트 개체가 통째로 제거됩니다. | This text cannot be split because of its font (a Type3 font, or one without character information), so any text object a mark touches is removed whole. |
+| `redact.collateralHint` | 이 텍스트는 나눠서 다시 쓸 수 없어(Type3 글꼴, 글자 정보가 없거나 다시 쓸 수 없는 글자, 대체 텍스트(ActualText)가 붙은 텍스트 등), 표시한 영역에 걸친 텍스트 개체가 통째로 제거됩니다. | This text cannot be split and rewritten (a Type3 font, characters the font has no information for or cannot write back, or text with replacement text), so any text object a mark touches is removed whole. |
 | `redact.formFields` | 양식 필드가 있는 영역은 적용할 수 없습니다: {{names}} | Areas with form fields cannot be redacted: {{names}} |
 | `redact.clearAll` | 표시 모두 지우기 | Clear all marks |
 | `redact.removeMark` | 표시 지우기 | Remove mark |

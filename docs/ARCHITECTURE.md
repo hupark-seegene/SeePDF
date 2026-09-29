@@ -390,7 +390,9 @@ Word-level re-creation of surviving glyphs and the raster fallback for XObject t
 
 v0.3 (pkg1) supersedes parts of the above — details in `IPC_CONTRACT.md` §7.5: a partly marked text
 object is **split** (rewritten to its unmarked runs with `set_text` + `FPDFText_SetPositions`, copies moved
-out of a second page parse for further runs; whole-run removal only for Type3 / no-`/ToUnicode` runs), a
+out of a second page parse for further runs, tried on a throw-away parse in the preview first so the
+preview's `collateral` is exact; whole-run removal only for Type3 / no-`/ToUnicode` / `/ActualText` runs and
+runs that fail that trial; text-bearing marked-content parameters such as `/Alt` are dropped with them), a
 partly covered image has the pixels under the marks blacked out in its own bitmap and written back into
 the same object (JPEG stays JPEG), and content inside a Form XObject is reached by ungrouping the form first
 (`engine/objects/ungroup.rs`) when the caller asks for it. The code lives in `engine/redact/` (`mod.rs`,

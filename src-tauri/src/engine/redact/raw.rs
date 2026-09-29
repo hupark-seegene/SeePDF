@@ -9,10 +9,10 @@ use crate::ipc::types::Rect;
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
     PdfDocument, PdfPage, PdfiumLibraryBindings, FPDF_IMAGEOBJ_METADATA, FPDF_PAGEOBJECT,
-    FPDF_TEXTPAGE, FS_MATRIX,
+    FPDF_PAGEOBJECTMARK, FPDF_TEXTPAGE, FS_MATRIX,
 };
 use std::collections::HashMap;
-use std::os::raw::c_int;
+use std::os::raw::{c_int, c_ulong};
 
 /// `FPDF_PAGEOBJ_*` (public/fpdf_edit.h).
 pub const OBJ_TEXT: c_int = 1;
@@ -420,6 +420,97 @@ pub fn insert_at(
         ));
     }
     Ok(())
+}
+
+/// `FPDF_OBJECT_STRING`.
+const OBJECT_STRING: c_int = 3;
+
+/// The content marks of a page object (`FPDFPageObj_CountMarks` / `FPDFPageObj_GetMark`).
+/// PDFium shares one mark item between every object of a parse inside the same `BDC`, so a
+/// change to a mark reaches all of them.
+pub fn marks(
+    bindings: &dyn PdfiumLibraryBindings,
+    handle: FPDF_PAGEOBJECT,
+) -> Vec<FPDF_PAGEOBJECTMARK> {
+    // SAFETY: `handle` is a live page object.
+    let n = unsafe { bindings.FPDFPageObj_CountMarks(handle) };
+    (0..n.max(0))
+        .filter_map(|i| {
+            // SAFETY: `i` is in range; the mark lives with the object.
+            let m = unsafe { bindings.FPDFPageObj_GetMark(handle, i as c_ulong) };
+            (!m.is_null()).then_some(m)
+        })
+        .collect()
+}
+
+/// The string-valued parameters of a content mark (`/Alt`, `/ActualText`, `/E`, `/Lang`, …)
+/// as `(key, value)`. Works for inline property lists and named ones (`/Properties`).
+pub fn mark_strings(
+    bindings: &dyn PdfiumLibraryBindings,
+    mark: FPDF_PAGEOBJECTMARK,
+) -> Vec<(String, String)> {
+    // SAFETY: `mark` is live (from `marks`).
+    let n = unsafe { bindings.FPDFPageObjMark_CountParams(mark) };
+    let mut out = Vec::new();
+    for i in 0..n.max(0) {
+        let Some(key) = utf16_out(|buf, len, out_len| {
+            // SAFETY: `buf` is null (length query) or `len` bytes; `mark` is live.
+            unsafe {
+                bindings.FPDFPageObjMark_GetParamKey(
+                    mark,
+                    i as c_ulong,
+                    buf as *mut _,
+                    len,
+                    out_len,
+                )
+            }
+        }) else {
+            continue;
+        };
+        // SAFETY: `mark` is live.
+        if unsafe { bindings.FPDFPageObjMark_GetParamValueType(mark, &key) } != OBJECT_STRING {
+            continue;
+        }
+        let value = utf16_out(|buf, len, out_len| {
+            // SAFETY: as above.
+            unsafe {
+                bindings.FPDFPageObjMark_GetParamStringValue(
+                    mark,
+                    &key,
+                    buf as *mut _,
+                    len,
+                    out_len,
+                )
+            }
+        });
+        out.push((key, value.unwrap_or_default()));
+    }
+    out
+}
+
+/// `FPDFPageObjMark_RemoveParam` — marks the object dirty so the regenerated content writes
+/// the property list without `key`.
+pub fn remove_mark_param(
+    bindings: &dyn PdfiumLibraryBindings,
+    handle: FPDF_PAGEOBJECT,
+    mark: FPDF_PAGEOBJECTMARK,
+    key: &str,
+) -> bool {
+    // SAFETY: `mark` belongs to `handle`, which is live.
+    bindings.is_true(unsafe { bindings.FPDFPageObjMark_RemoveParam(handle, mark, key) })
+}
+
+/// The two-call PDFium pattern for a UTF-16LE out-string: ask for the length, then fill.
+fn utf16_out(call: impl Fn(*mut u8, c_ulong, *mut c_ulong) -> i32) -> Option<String> {
+    let mut len: c_ulong = 0;
+    if call(std::ptr::null_mut(), 0, &mut len) == 0 || len < 2 {
+        return None;
+    }
+    let mut buf = vec![0u8; len as usize];
+    if call(buf.as_mut_ptr(), len, &mut len) == 0 {
+        return None;
+    }
+    crate::engine::raw::doc::decode_utf16le(&buf)
 }
 
 /// The children of a form object, in drawing order (`FPDFFormObj_CountObjects` /

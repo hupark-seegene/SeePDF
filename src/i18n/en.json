@@ -351,7 +351,7 @@
   "redact.previewLoading": "Checking…",
   "redact.previewFailed": "Could not load the preview",
   "redact.collateral": "Text outside the marks will also be removed",
-  "redact.collateralHint": "This text cannot be split because of its font (a Type3 font, or one without character information), so any text object a mark touches is removed whole.",
+  "redact.collateralHint": "This text cannot be split and rewritten (a Type3 font, characters the font has no information for or cannot write back, or text with replacement text), so any text object a mark touches is removed whole.",
   "redact.formFields": "Areas with form fields cannot be redacted: {{names}}",
   "redact.clearAll": "Clear all marks",
   "redact.removeMark": "Remove mark",

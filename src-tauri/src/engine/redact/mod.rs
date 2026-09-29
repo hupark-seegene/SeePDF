@@ -10,9 +10,11 @@
 //!   created, so there is no "mark now, apply later" object. The marks live in the UI.
 //! * **Text** (v0.3, R2 — [`split`]): a text object the marks cover only partly is *split*: the
 //!   marked characters go and the rest is re-emitted at the same positions ("Gal" no longer
-//!   takes "Andreas" with it). Type3 fonts, fonts without a usable `/ToUnicode`, vertical runs
-//!   and runs whose re-emission fails its check fall back to whole-run removal, which
-//!   [`preview`] reports as `collateral` *before* the destructive step.
+//!   takes "Andreas" with it). Type3 fonts, fonts without a usable `/ToUnicode`, `/ActualText`
+//!   runs, vertical runs and runs whose re-emission fails its check fall back to whole-run
+//!   removal, which [`preview`] reports as `collateral` *before* the destructive step — it runs
+//!   the same re-emission on a throw-away parse to know. Text-bearing marked-content params
+//!   (`/Alt`, `/E`, …) that would carry the redacted words along are dropped.
 //! * **Images** (v0.3, R1 — [`image`]): an image entirely inside a mark is removed; a partly
 //!   covered one has the pixels under the marks set to black in its own bitmap (scans), unless
 //!   it cannot be re-encoded faithfully (transparency, palette, stencil), in which case it is
@@ -49,7 +51,7 @@ use crate::ipc::types::{
 };
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
-    PdfColor, PdfPageContentRegenerationStrategy, PdfPageIndex, PdfPageObjectCommon,
+    PdfColor, PdfPage, PdfPageContentRegenerationStrategy, PdfPageIndex, PdfPageObjectCommon,
     PdfPageObjectType, PdfPageObjectsCommon, PdfPoints, PdfRect, FPDF_PAGEOBJECT,
 };
 use raw::{HandleKey, RawChar};
@@ -205,11 +207,13 @@ pub fn apply(
 /// 3. a marked run whose characters belong to no removable page object — text inside a group
 ///    that was not ungrouped, for instance — → `verifyFailed`, because covering it with a box
 ///    would be a fake redaction;
-/// 4. only then are images blanked, text objects split, objects removed, the boxes drawn and
-///    the content stream regenerated;
+/// 4. only then are images blanked, text objects split, the string params of their content
+///    marks (and of any mark holding a marked string) dropped, objects removed, the boxes
+///    drawn and the content stream regenerated;
 /// 5. the page is re-parsed: every split run must still be there (else `splitFailed`, and the
-///    caller retries with those objects removed whole), and the page text is counted again —
-///    a marked string that survived is `verifyFailed`.
+///    caller retries with those objects removed whole), no content mark may still hold a
+///    marked string, and the page text is counted again — a marked string that survived is
+///    `verifyFailed`.
 fn apply_page(
     doc: &mut OpenDoc<'_>,
     page_index: PageIndex,
@@ -289,6 +293,7 @@ fn apply_page(
     let mut outcome = PageOutcome::default();
     let bindings = doc.bindings();
     let mut split_done: Vec<(u32, Vec<split::Run>)> = Vec::new();
+    let mut split_kept: Vec<FPDF_PAGEOBJECT> = Vec::new();
     {
         let mut scratch = ScratchPage::open(doc, page_index)?;
         let page = &scratch.page;
@@ -320,78 +325,44 @@ fn apply_page(
                 }
             }
         }
-        // 4c. splits, highest index first: the copies go right after their original, which
-        // only shifts objects already handled.
-        let mut splits: Vec<PendingSplit> = Vec::new();
-        for v in analysis.victims.iter().rev() {
-            let Action::Split(runs) = &v.action else {
-                continue;
-            };
-            let index = v.index as usize;
-            let original = raw::object_at(bindings, page, index)?;
-            let mut copies = Vec::new();
-            let mut ok = true;
-            for k in 1..runs.len() {
-                // A throw-away second parse per copy: moving an object out of it takes the
-                // clip path, colours and marks along (see `raw::transplant_at`).
-                let mut source = doc
-                    .pdf()
-                    .pages()
-                    .get(page_index as PdfPageIndex)
-                    .ctx(&format!("load page {page_index}"))?;
-                source
-                    .set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
-                match raw::transplant_at(bindings, &source, index, page, index + k) {
-                    Ok(h) => copies.push(h),
-                    Err(_) => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok {
-                for (k, run) in runs.iter().enumerate() {
-                    if split::rewrite(bindings, page, index + k, run).is_err() {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok {
-                splits.push(PendingSplit {
-                    index: v.index,
-                    original,
-                    copies,
-                    runs: runs.clone(),
-                    whole: v.collateral_if_whole(),
-                });
+        // 4c–4d. splits, each read back in place, or its object goes whole after all (the
+        // preview ran the same trial, so this is a second safety net, not the plan).
+        let whole_of: HashMap<u32, String> = analysis
+            .victims
+            .iter()
+            .map(|v| (v.index, v.collateral_if_whole()))
+            .collect();
+        for a in split_victims(doc, page_index, page, &analysis.victims)? {
+            let handles = std::iter::once(a.original).chain(a.copies.iter().copied());
+            if a.ok {
+                outcome.changed += 1;
+                split_kept.extend(handles);
+                split_done.push((a.index, a.runs));
             } else {
-                remove.push(original);
-                remove.extend(copies);
-                outcome.collateral.push(v.collateral_if_whole());
+                remove.extend(handles);
+                outcome
+                    .collateral
+                    .push(whole_of.get(&a.index).cloned().unwrap_or_default());
             }
         }
-        // 4d. every run reads back in place, or its object goes whole after all.
-        if !splits.is_empty() {
-            let chars = split::page_chars(bindings, page)?;
-            for p in splits {
-                let handles: Vec<HandleKey> = std::iter::once(p.original)
-                    .chain(p.copies.iter().copied())
-                    .map(raw::key)
-                    .collect();
-                let back = p
-                    .runs
-                    .iter()
-                    .zip(&handles)
-                    .all(|(run, &h)| split::reads_back(&chars, h, run));
-                if back {
-                    outcome.changed += 1;
-                    split_done.push((p.index, p.runs));
-                } else {
-                    remove.push(p.original);
-                    remove.extend(p.copies);
-                    outcome.collateral.push(p.whole);
-                }
+        // 4d'. tagged content: a split run's `/Alt` / `/E` property list still spells out the
+        // whole run, the redacted word included, and would be written around every piece.
+        // PDFium shares a mark item between the objects of one `BDC`, so scrubbing the split
+        // and removed text objects' marks cleans their siblings too; any other string
+        // parameter on the page that holds a marked string goes as well.
+        {
+            let removed_text: Vec<FPDF_PAGEOBJECT> = remove
+                .iter()
+                .copied()
+                .filter(|&h| raw::object_type(bindings, h) == raw::OBJ_TEXT)
+                .collect();
+            for &h in split_kept.iter().chain(&removed_text) {
+                scrub_marks(bindings, h, |_| true);
+            }
+            let needles = mark_needles(&marked);
+            for i in 0..raw::object_count(bindings, page) {
+                let h = raw::object_at(bindings, page, i)?;
+                scrub_marks(bindings, h, |value| holds_any(value, &needles));
             }
         }
         // 4e. removal by handle.
@@ -431,6 +402,29 @@ fn apply_page(
             return Err(split_failed(page_index, &failed));
         }
     }
+    // …and no property list on the regenerated page still spells a marked string.
+    {
+        let page = doc.page(page_index)?;
+        let needles = mark_needles(&marked);
+        for i in 0..raw::object_count(bindings, page) {
+            let h = raw::object_at(bindings, page, i)?;
+            for m in raw::marks(bindings, h) {
+                if let Some((key, _)) = raw::mark_strings(bindings, m)
+                    .into_iter()
+                    .find(|(_, value)| holds_any(value, &needles))
+                {
+                    return Err(EngineError::new(
+                        ErrorCode::VerifyFailed,
+                        format!(
+                            "redacted text is still in a /{key} entry of the page's tagged \
+                             content; the page was restored"
+                        ),
+                    )
+                    .with_page(page_index));
+                }
+            }
+        }
+    }
     let text_after = text::layer::page_text(doc, page_index)?.text.clone();
     if let Some(survivor) = first_survivor(&marked, &text_before, &text_after) {
         return Err(EngineError::new(
@@ -442,14 +436,118 @@ fn apply_page(
     Ok(outcome)
 }
 
-/// A text object rewritten to its first run, with a copy per further run, not yet read back.
-struct PendingSplit {
+/// A text object rewritten to its first run, with a copy per further run.
+struct Attempt {
     index: u32,
     original: FPDF_PAGEOBJECT,
     copies: Vec<FPDF_PAGEOBJECT>,
     runs: Vec<split::Run>,
-    /// What goes if it has to be removed whole after all.
-    whole: String,
+    /// Every run was rewritten and read back in place.
+    ok: bool,
+}
+
+/// Splits every [`Action::Split`] victim on `page` (a parse of `page_index`, `Manual`
+/// regeneration) and reads each run back from a fresh text page of it. Highest index first:
+/// the copies go right after their original, which only shifts objects already handled.
+///
+/// [`apply_page`] runs it on the page it regenerates; [`analyze`] on a throw-away parse, so
+/// the preview reports a run that will not hold as collateral before anything is removed.
+fn split_victims(
+    doc: &OpenDoc<'_>,
+    page_index: PageIndex,
+    page: &PdfPage<'_>,
+    victims: &[Victim],
+) -> Result<Vec<Attempt>, EngineError> {
+    let bindings = doc.bindings();
+    let mut attempts = Vec::new();
+    for v in victims.iter().rev() {
+        let Action::Split(runs) = &v.action else {
+            continue;
+        };
+        let index = v.index as usize;
+        let original = raw::object_at(bindings, page, index)?;
+        let mut copies = Vec::new();
+        let mut ok = true;
+        for k in 1..runs.len() {
+            // A throw-away second parse per copy: moving an object out of it takes the clip
+            // path, colours and marks along (see `raw::transplant_at`).
+            let mut source = doc
+                .pdf()
+                .pages()
+                .get(page_index as PdfPageIndex)
+                .ctx(&format!("load page {page_index}"))?;
+            source.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+            match raw::transplant_at(bindings, &source, index, page, index + k) {
+                Ok(h) => copies.push(h),
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        ok = ok
+            && runs
+                .iter()
+                .enumerate()
+                .all(|(k, run)| split::rewrite(bindings, page, index + k, run).is_ok());
+        attempts.push(Attempt {
+            index: v.index,
+            original,
+            copies,
+            runs: runs.clone(),
+            ok,
+        });
+    }
+    if attempts.iter().any(|a| a.ok) {
+        let chars = split::page_chars(bindings, page)?;
+        for a in attempts.iter_mut().filter(|a| a.ok) {
+            let handles = std::iter::once(a.original).chain(a.copies.iter().copied());
+            a.ok = a
+                .runs
+                .iter()
+                .zip(handles)
+                .all(|(run, h)| split::reads_back(&chars, raw::key(h), run));
+        }
+    }
+    Ok(attempts)
+}
+
+/// Removes every string parameter of `handle`'s content marks whose value `drop` selects.
+fn scrub_marks(
+    bindings: &dyn pdfium_render::prelude::PdfiumLibraryBindings,
+    handle: FPDF_PAGEOBJECT,
+    drop: impl Fn(&str) -> bool,
+) {
+    for m in raw::marks(bindings, handle) {
+        for (key, value) in raw::mark_strings(bindings, m) {
+            if drop(&value) {
+                raw::remove_mark_param(bindings, handle, m, &key);
+            }
+        }
+    }
+}
+
+/// The marked strings as they are compared against property lists: lower case, without
+/// whitespace (an `/Alt` text rarely spaces a phrase the way the glyphs are placed).
+fn mark_needles(marked: &[String]) -> Vec<String> {
+    marked
+        .iter()
+        .map(|m| squash(m))
+        .filter(|m| !m.is_empty())
+        .collect()
+}
+
+fn squash(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Does `value` hold one of `needles` (see [`mark_needles`])?
+fn holds_any(value: &str, needles: &[String]) -> bool {
+    let value = squash(value);
+    needles.iter().any(|n| value.contains(n.as_str()))
 }
 
 impl Victim {
@@ -867,6 +965,27 @@ fn analyze(
             fully_inside,
             action,
         });
+    }
+    // Text to split: the apply's own rewrite and read-back, on a throw-away parse that is
+    // dropped unregenerated, so a run that will not hold is named as collateral here — in the
+    // preview, before the confirm — rather than after the destructive step.
+    if victims.iter().any(|v| matches!(v.action, Action::Split(_))) {
+        let mut trial = doc
+            .pdf()
+            .pages()
+            .get(page_index as PdfPageIndex)
+            .ctx(&format!("load page {page_index}"))?;
+        trial.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+        let failed: HashSet<u32> = split_victims(doc, page_index, &trial, &victims)?
+            .into_iter()
+            .filter(|a| !a.ok)
+            .map(|a| a.index)
+            .collect();
+        drop(trial);
+        for v in victims.iter_mut().filter(|v| failed.contains(&v.index)) {
+            v.collateral = v.collateral_if_whole();
+            v.action = Action::Remove;
+        }
     }
     // Partly covered images: can they be blanked faithfully? The probe swaps the object's
     // matrix for a moment, so it runs on a second parse that is dropped unregenerated.

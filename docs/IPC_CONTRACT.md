@@ -850,12 +850,22 @@ Owner (a) for redaction, (b) for the metadata and security file rewrites. Featur
   first run (`set_text` through the font's own `/ToUnicode`, origin moved to the run's first glyph, every
   glyph pinned with `FPDFText_SetPositions`, which PDFium then writes as a `TJ` — kerning and `Tc` / `Tw`
   spacing survive the save) and keeps its place in the stream; each further run is a copy moved out of a
-  second parse of the page (clip path, colours, marks kept), inserted right after it. Every run must read
-  back from a fresh text page with the same characters at the same tight boxes (± 0.5 pt) before the
-  content is regenerated, and again from a re-parse after it; a run that fails afterwards makes the whole
-  batch roll back and retry once with that object removed whole (its text then in `collateral`).
-  `split: false` (whole-run removal, `collateral` named first) for Type3 fonts (no font program — PDFium's
-  writer drops Type3 text), fonts without a usable `/ToUnicode`, and runs not on one baseline.
+  second parse of the page (clip path, colours, marks kept), inserted right after it. Runs are trimmed of
+  leading / trailing whitespace; a ligature PDFium reports as several characters at one origin and box
+  ("fi") is written back as its presentation form (U+FB01), and a line-end hyphen (reported as U+0002) as
+  `-`. Every run must read back from a fresh text page with the same visible (non-whitespace) characters at
+  the same tight boxes (± 0.5 pt) before the content is regenerated, and again from a re-parse after it; a
+  run that fails afterwards makes the whole batch roll back and retry once with that object removed whole
+  (its text then in `collateral`). **The preview runs the same rewrite and read-back on a throw-away parse**
+  (dropped unregenerated), so `split: true` is reported only when it holds and a fallback is in the
+  preview's `collateral` before the confirm. `split: false` (whole-run removal, `collateral` named first)
+  for Type3 fonts (no font program — PDFium's writer drops Type3 text), fonts without a usable
+  `/ToUnicode`, text carrying `/ActualText` (extraction reads the replacement, not the glyphs), runs not on
+  one baseline, and runs that fail the trial (a glyph the font cannot re-encode from its Unicode value).
+  **Tagged content:** every string parameter (`/Alt`, `/E`, `/ActualText`, …) of the marks on a split or
+  removed text object is dropped (PDFium shares a mark item between the objects of one `BDC`, so siblings
+  are cleaned too; `/MCID` stays), as is any mark string on the page that contains a marked string
+  (whitespace- and case-insensitive); after regeneration a mark string still holding one is `verifyFailed`.
 * **Images (R1)** — entirely inside a mark: removed. Partly covered: every image pixel whose footprint on
   the page (the unit-square pixel mapped through the image matrix — rotated / flipped images included)
   overlaps a mark is set to black in the object's own bitmap, written back into the same object (matrix,

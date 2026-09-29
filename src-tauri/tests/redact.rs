@@ -1425,3 +1425,288 @@ fn redact_blank_of_a_shared_image_touches_only_its_page() {
     assert!(!undone.can_undo);
     assert_eq!(corner(&doc.doc_id, 0), original);
 }
+
+// --- R2 fixes (pkg1 verification round 1) --------------------------------------------------
+
+/// Every stream of a saved file, decompressed where lopdf can.
+fn all_streams(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let doc = lopdf::Document::load_mem(bytes).expect("lopdf load");
+    doc.objects
+        .values()
+        .filter_map(|o| o.as_stream().ok())
+        .map(|s| {
+            s.decompressed_content()
+                .unwrap_or_else(|_| s.content.clone())
+        })
+        .collect()
+}
+
+fn holds(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Is `needle` anywhere in the saved file — any stream (decompressed) or the raw bytes?
+fn in_file(bytes: &[u8], needle: &str) -> bool {
+    holds(bytes, needle.as_bytes())
+        || all_streams(bytes)
+            .iter()
+            .any(|s| holds(s, needle.as_bytes()))
+}
+
+/// Non-embedded Helvetica, as office tools write it; `indirect` puts the font dict in its own
+/// object.
+fn helvetica_doc(content: &str, indirect: bool) -> TestDoc {
+    use lopdf::{dictionary, Object};
+    let bytes = lopdf_doc(content, dictionary! {}, |doc| {
+        let font = dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        };
+        let font: Object = if indirect {
+            doc.add_object(font).into()
+        } else {
+            font.into()
+        };
+        dictionary! { "Font" => dictionary! { "F1" => font } }
+    });
+    reopen(bytes)
+}
+
+/// R2: a mid-line word in an ordinary spaced line (the run after the mark starts with a
+/// space). The preview promises a split with no collateral, and the apply keeps that promise:
+/// both sides survive, extractable, at their boxes, in the saved file.
+#[test]
+fn redact_mid_line_word_in_a_spaced_helvetica_line() {
+    for indirect in [false, true] {
+        let doc = helvetica_doc(
+            "BT /F1 14 Tf 40 200 Td (Andreas Gal wrote this) Tj ET",
+            indirect,
+        );
+        let keep: Vec<(char, Rect)> = char_boxes(&doc.doc_id, 0, "Andreas Gal wrote this")
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !(8..11).contains(i))
+            .map(|(_, b)| b)
+            .collect();
+        // The glyphs' tight box: a mark that does not reach the spaces either side, so the
+        // run after it starts with a space (`word_rect`'s 1 pt margin would take them along).
+        let mark = char_boxes(&doc.doc_id, 0, "Gal")
+            .iter()
+            .map(|(_, r)| *r)
+            .reduce(|a, b| a.union(&b))
+            .unwrap();
+        let mark = Rect::new(mark.l, mark.b - 0.5, mark.r, mark.t + 0.5);
+        let plan = preview(&doc.doc_id, 0, vec![mark]);
+        assert!(plan.text_objects[0].split, "{:?}", plan.text_objects);
+        assert!(plan.collateral.is_empty(), "{:?}", plan.collateral);
+
+        let result = apply_batch(&doc.doc_id, vec![(0, vec![mark])]).expect("apply");
+        assert!(result.collateral.is_empty(), "{:?}", result.collateral);
+        assert_eq!(page_text(&doc.doc_id, 0), "Andreas wrote this");
+
+        let saved = reopen(save_bytes(&doc.doc_id));
+        let text = page_text(&saved.doc_id, 0);
+        assert!(!text.contains("Gal"), "{text:?}");
+        assert!(
+            text.contains("Andreas") && text.contains("wrote this"),
+            "{text:?}"
+        );
+        assert_still_there(&saved.doc_id, 0, &keep);
+    }
+}
+
+/// R2 on real TeX text: "JavaScript" in the middle of tracemonkey p.1's "Dynamic languages
+/// such as JavaScript are more difficult to com-" — a line with an "fi" ligature and a
+/// line-end hyphen (PDFium reads it as U+0002). One batch with three more words, as the
+/// verifier ran it: the preview names no collateral and the apply loses none.
+#[test]
+fn redact_tracemonkey_javascript_keeps_its_line() {
+    let doc = open("tracemonkey.pdf");
+    let before = page_text(&doc.doc_id, 0);
+    let line = char_boxes(&doc.doc_id, 0, "Dynamic");
+    let difficult = char_boxes(&doc.doc_id, 0, "difficult");
+    let com = char_boxes(&doc.doc_id, 0, "difficult to com");
+    let rects: Vec<Rect> = ["Gal", "Mozilla", "JavaScript", "compiler"]
+        .iter()
+        .map(|w| word_rect(&doc.doc_id, 0, w))
+        .collect();
+    // The ligature's pixels, before (the mark is well to the left of it).
+    let fi = difficult[3..5]
+        .iter()
+        .map(|(_, r)| *r)
+        .reduce(|a, b| a.union(&b))
+        .unwrap();
+    let fi = Rect::new(fi.l - 1.0, fi.b - 1.0, fi.r + 1.0, fi.t + 1.0);
+    let fi_before = render(&doc.doc_id, 0, fi);
+
+    let plan = preview(&doc.doc_id, 0, rects.clone());
+    assert!(plan.collateral.is_empty(), "{:?}", plan.collateral);
+    let js_line = plan
+        .text_objects
+        .iter()
+        .find(|o| o.text.contains("JavaScript"))
+        .expect("the JavaScript line is listed");
+    assert!(js_line.split, "{js_line:?}");
+
+    let result = apply_batch(&doc.doc_id, vec![(0, rects)]).expect("apply");
+    assert!(result.collateral.is_empty(), "{:?}", result.collateral);
+    assert_eq!(
+        render(&doc.doc_id, 0, fi),
+        fi_before,
+        "the ligature is drawn as before"
+    );
+
+    let saved = reopen(save_bytes(&doc.doc_id));
+    let text = page_text(&saved.doc_id, 0);
+    assert!(
+        text.matches("JavaScript").count() < before.matches("JavaScript").count(),
+        "one \"JavaScript\" is gone"
+    );
+    assert_still_there(&saved.doc_id, 0, &line);
+    assert_still_there(&saved.doc_id, 0, &difficult);
+    // "com" and its line-end hyphen too.
+    assert_still_there(&saved.doc_id, 0, &com[com.len() - 3..]);
+    assert!(text.contains("difficult"), "{text:?}");
+}
+
+/// R2: a split run's tagged-content property list (`/Alt`) spelled out the whole run; it
+/// must not be re-emitted around the pieces with the redacted word in it. `/MCID` stays, so
+/// the structure tree still points at the pieces. Inline and named (`/Properties`) lists.
+#[test]
+fn redact_split_drops_the_redacted_word_from_alt_text() {
+    use lopdf::{dictionary, Object};
+    for named in [false, true] {
+        let content = if named {
+            "/Span /MC0 BDC BT /F1 14 Tf 40 200 Td (Andreas Gal wrote this) Tj ET EMC"
+        } else {
+            "/Span <</MCID 0 /Alt (Andreas Gal wrote this)>> BDC \
+             BT /F1 14 Tf 40 200 Td (Andreas Gal wrote this) Tj ET EMC"
+        };
+        let bytes = lopdf_doc(content, dictionary! {}, |_| {
+            let mut res = dictionary! {
+                "Font" => dictionary! { "F1" => dictionary! {
+                    "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+                    "Encoding" => "WinAnsiEncoding",
+                } },
+            };
+            if named {
+                res.set(
+                    "Properties",
+                    dictionary! { "MC0" => dictionary! {
+                        "MCID" => 0,
+                        "Alt" => Object::string_literal("Andreas Gal wrote this"),
+                    } },
+                );
+            }
+            res
+        });
+        let doc = reopen(bytes);
+        let mark = word_rect(&doc.doc_id, 0, "wrote");
+        let plan = preview(&doc.doc_id, 0, vec![mark]);
+        assert!(
+            plan.text_objects[0].split && plan.collateral.is_empty(),
+            "{plan:?}"
+        );
+        let result = apply_batch(&doc.doc_id, vec![(0, vec![mark])]).expect("apply");
+        assert!(result.verified && result.collateral.is_empty());
+
+        let bytes = save_bytes(&doc.doc_id);
+        assert!(
+            !in_file(&bytes, "wrote"),
+            "named={named}: the word is still in the file"
+        );
+        assert!(
+            all_streams(&bytes).iter().any(|s| holds(s, b"MCID")) || holds(&bytes, b"MCID"),
+            "named={named}: the marked-content id is kept"
+        );
+        let saved = reopen(bytes);
+        assert_eq!(
+            page_text(&saved.doc_id, 0),
+            "Andreas Gal this",
+            "named={named}"
+        );
+    }
+}
+
+/// R2: text whose extraction comes from `/ActualText` is not split (the text page reports
+/// the replacement, not the glyphs): the preview names the collateral before the confirm,
+/// and neither the glyphs nor the replacement text survive in the file.
+#[test]
+fn redact_actualtext_run_is_removed_whole_and_named_first() {
+    let doc = helvetica_doc(
+        "/Span <</ActualText (Andreas Gal wrote this)>> BDC \
+         BT /F1 14 Tf 40 200 Td (Andreas Gal wrote this) Tj ET EMC \
+         BT /F1 14 Tf 40 100 Td (Other line) Tj ET",
+        false,
+    );
+    let mark = word_rect(&doc.doc_id, 0, "wrote");
+    let plan = preview(&doc.doc_id, 0, vec![mark]);
+    let run = plan
+        .text_objects
+        .iter()
+        .find(|o| o.text.contains("Andreas"))
+        .expect("listed");
+    assert!(!run.split, "{run:?}");
+    assert!(!plan.collateral.is_empty(), "the preview names what goes");
+    apply_batch(&doc.doc_id, vec![(0, vec![mark])]).expect("apply");
+    let bytes = save_bytes(&doc.doc_id);
+    assert!(!in_file(&bytes, "wrote"));
+    let saved = reopen(bytes);
+    assert_eq!(page_text(&saved.doc_id, 0), "Other line");
+}
+
+/// R2: whatever the static checks say, the preview runs the apply's own rewrite and read-back
+/// on a throw-away parse. A run that will not hold is named as collateral **in the preview**,
+/// before the confirm, and the apply does exactly that. Here the font's `/ToUnicode` maps one
+/// glyph to "fj" — a ligature with no presentation form, so no single code point writes it
+/// back.
+#[test]
+fn redact_preview_names_a_split_that_would_not_hold() {
+    use lopdf::{dictionary, Stream};
+    let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def \
+                /CMapName /Adobe-Identity-UCS def /CMapType 2 def \
+                1 begincodespacerange <00> <FF> endcodespacerange \
+                1 beginbfchar <7E> <0066006A> endbfchar \
+                endcmap CMapName currentdict /defineresource pop end end";
+    let bytes = lopdf_doc(
+        "BT /F1 14 Tf 40 200 Td (Andreas Gal wrote ~) Tj ET \
+         BT /F1 14 Tf 40 100 Td (Other line) Tj ET",
+        dictionary! {},
+        |doc| {
+            let to_unicode = doc.add_object(Stream::new(dictionary! {}, cmap.as_bytes().to_vec()));
+            dictionary! { "Font" => dictionary! { "F1" => dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+                "Encoding" => "WinAnsiEncoding", "ToUnicode" => to_unicode,
+            } } }
+        },
+    );
+    let doc = reopen(bytes);
+    assert!(page_text(&doc.doc_id, 0).contains("wrote fj"));
+    let mark = word_rect(&doc.doc_id, 0, "Gal");
+    let plan = preview(&doc.doc_id, 0, vec![mark]);
+    let run = plan
+        .text_objects
+        .iter()
+        .find(|o| o.text.contains("Andreas"))
+        .expect("listed");
+    assert!(!run.split, "{run:?}");
+    assert_eq!(plan.collateral.len(), 1, "{:?}", plan.collateral);
+    assert!(
+        plan.collateral[0].contains("Andreas") && plan.collateral[0].contains("wrote"),
+        "{:?}",
+        plan.collateral
+    );
+    // The trial left nothing behind, in memory or in what a save would write.
+    let untouched = reopen(save_bytes(&doc.doc_id));
+    assert_eq!(
+        page_text(&untouched.doc_id, 0),
+        page_text(&doc.doc_id, 0),
+        "the preview changed nothing"
+    );
+    assert!(page_text(&untouched.doc_id, 0).contains("Andreas Gal wrote fj"));
+
+    apply_batch(&doc.doc_id, vec![(0, vec![mark])]).expect("apply");
+    let saved = reopen(save_bytes(&doc.doc_id));
+    assert_eq!(page_text(&saved.doc_id, 0), "Other line");
+}
