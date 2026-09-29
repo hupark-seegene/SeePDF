@@ -17,7 +17,8 @@ import { useAppStore } from "../../store/appStore";
 import { Dialog, Row } from "../../dialogs/Dialog";
 import type { OcrDpi } from "../ocrJob";
 import {
-  autoHintKey, engineChoices, languagesFor, nativeEngineOf, resolveEngine, useOcrCapabilities,
+  autoFellBack, autoHintKey, choosableLanguages, engineChoices, languagesFor, nativeEngineOf, pickEngine,
+  useOcrCapabilities,
   type OcrEngineChoice,
 } from "../engine";
 import { OCR_LANGUAGES, effectiveLanguages, toggleLanguage } from "../languages";
@@ -40,8 +41,10 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
   const output = firstOutput(items);
   const caps = useOcrCapabilities();
   const native = caps ? nativeEngineOf(caps) : null;
-  const available = languagesFor(caps, resolveEngine(options.engine, native));
-  const langs = effectiveLanguages(options.langs, available);
+  // O3 (verification round 1): 자동 picks the engine from the selected languages, as the OCR sheet does.
+  const engine = pickEngine(options.engine, caps, options.langs);
+  const offered = choosableLanguages(options.engine, caps, engine);
+  const langs = effectiveLanguages(options.langs, languagesFor(caps, engine));
   const canStart = !running && runnable > 0 && langs.length > 0;
 
   // U1: an empty, idle list starts from 설정 each time the dialog opens.
@@ -132,7 +135,7 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
 
       <Row labelKey="ocr.language">
         <div className="chip-row">
-          {OCR_LANGUAGES.filter((l) => available.includes(l.code)).map((l) => (
+          {OCR_LANGUAGES.filter((l) => offered.includes(l.code)).map((l) => (
             <button
               key={l.code}
               type="button"
@@ -149,7 +152,8 @@ export default function BatchOcrDialog({ onClose }: { onClose(): void }) {
       </Row>
 
       {native && (
-        <Row labelKey="ocr.engine" hintKey={options.engine === "auto" ? autoHintKey(native) : undefined}>
+        <Row labelKey="ocr.engine" hintKey={options.engine === "auto"
+          ? autoHintKey(native, autoFellBack(options.engine, caps, engine)) : undefined}>
           <select
             className="field"
             value={options.engine}

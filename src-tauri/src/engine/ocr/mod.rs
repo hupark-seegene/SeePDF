@@ -37,9 +37,10 @@
 //! pins it on `fixtures/rotation.pdf`, which the spike never measured.
 //!
 //! **Fonts.** Latin-1-only words go through `helvetica()` and embed nothing; everything else
-//! uses the glyphless CID font of [`crate::engine::fonts::glyphless`] (v0.3 O5): ~0.6 KB of font
-//! plus a `/ToUnicode` of the batch's characters, loaded once per `ocr_apply`, instead of the
-//! 487 KB Hangul subset — and any script (日本語, 中文) instead of KS X 1001 only.
+//! uses the glyphless CID font of [`crate::engine::fonts::glyphless`] (v0.3 O5): ~0.9 KB of font
+//! plus an identity `/ToUnicode` of the BMP, loaded once per document and reused by every later
+//! `ocr_apply`, instead of the 487 KB Hangul subset — and any script (日本語, 中文) instead of
+//! KS X 1001 only.
 //!
 //! **Rotation fix-up** (v0.3 O2). A page sent with `setRotation` gets that `/Rotate` first, in
 //! the same `mutate`; its OCR boxes are in the display pixels of the *new* rotation.
@@ -50,7 +51,7 @@ pub mod winocr;
 
 use crate::engine::annot::ScratchPage;
 use crate::engine::fonts;
-use crate::engine::fonts::glyphless::{CodeMap, GlyphlessFont};
+use crate::engine::fonts::glyphless::GlyphlessFont;
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
 use crate::engine::render::cache::{Night, RenderKind, TileKey};
 use crate::engine::render::tiles::{self, RenderRequest};
@@ -495,21 +496,19 @@ pub fn apply_rotated_cancellable(
         opts = opts.structural();
     }
     registry::mutate(st, doc_id, opts, |doc| {
-        // One glyphless font for the whole **call** (O5): its `/ToUnicode` must name every
-        // character before the first word is written, so the batch's non-Latin words are
-        // collected first. Latin-1 words stay in base-14 Helvetica and embed nothing.
-        let non_latin: Vec<&str> = pages
+        // The document's glyphless font (O5), loaded by the first call that needs it and
+        // reused by every later one — the OCR sheet applies one page per call, so a per-call
+        // font would be embedded once per page. Latin-1 words stay in base-14 Helvetica and
+        // embed nothing.
+        let needs_glyphless = pages
             .iter()
             .flat_map(|p| p.lines.iter())
             .flat_map(|l| l.words.iter())
-            .map(|w| w.text.trim())
-            .filter(|t| !fonts::is_latin1(t))
-            .collect();
-        let glyphless = if non_latin.is_empty() {
-            None
+            .any(|w| !fonts::is_latin1(w.text.trim()));
+        let glyphless = if needs_glyphless {
+            Some(doc.glyphless_font()?)
         } else {
-            let map = CodeMap::new(non_latin.iter().copied())?;
-            Some(GlyphlessFont::load(doc.bindings(), doc.pdf(), map)?)
+            None
         };
         let helvetica = doc.pdf_mut().fonts_mut().helvetica();
         for (done, (page, rotate)) in pages.iter().zip(set_rotation).enumerate() {
@@ -525,7 +524,7 @@ pub fn apply_rotated_cancellable(
                 *rotate,
                 replace_existing,
                 helvetica,
-                glyphless.as_ref(),
+                glyphless.as_deref(),
             )?;
             progress(done + 1, page.page);
         }
@@ -669,7 +668,7 @@ fn render_rotation(degrees: Rotation) -> PdfPageRenderRotation {
 enum WordFont<'f> {
     /// Latin-1: base-14 Helvetica, nothing embedded.
     Helvetica(PdfFontToken),
-    /// Everything else: the batch's glyphless CID font (O5).
+    /// Everything else: the document's glyphless CID font (O5).
     Glyphless(&'f GlyphlessFont),
 }
 

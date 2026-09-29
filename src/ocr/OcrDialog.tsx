@@ -30,8 +30,8 @@ import {
 } from "./ocrJob";
 import { DEFAULT_LAYOUT, defaultWorkerCount, type OcrLayout } from "./tesseractPool";
 import {
-  autoHintKey, engineChoices, languagesFor, loadOcrCapabilities, nativeEngineOf, resolveEngine,
-  useOcrCapabilities, type OcrEngineChoice,
+  autoFellBack, autoHintKey, choosableLanguages, engineChoices, languagesFor, loadOcrCapabilities,
+  nativeEngineOf, pickEngine, useOcrCapabilities, type OcrEngineChoice,
 } from "./engine";
 import {
   OCR_LANGUAGES, effectiveLanguages, isOcrLanguage, langsFor, toggleLanguage, type OcrLanguage,
@@ -95,10 +95,13 @@ function OcrDialogBody(
   const [engineChoice, setEngineChoice] = useState<OcrEngineChoice>("auto");
   const caps = useOcrCapabilities();
   const native = caps ? nativeEngineOf(caps) : null;
-  const engine = resolveEngine(engineChoice, native);
-  // O1: the chips the engine that will run reads; a selected language it cannot read is dropped.
-  const available = languagesFor(caps, engine);
-  const langs = effectiveLanguages(selectedLangs, available);
+  // O3 (verification round 1): 자동 picks the engine from the selected languages.
+  const engine = pickEngine(engineChoice, caps, selectedLangs);
+  // O1: the chips on offer (under 자동, what either engine reads); a selected language the engine that
+  // will run cannot read is dropped.
+  const offered = choosableLanguages(engineChoice, caps, engine);
+  const langs = effectiveLanguages(selectedLangs, languagesFor(caps, engine));
+  const fellBack = autoFellBack(engineChoice, caps, engine);
 
   const [phase, setPhase] = useState<Phase>("setup");
   const [jobId, setJobId] = useState<number | null>(null);
@@ -138,7 +141,7 @@ function OcrDialogBody(
     startedAt.current = Date.now();
     // The capability answer may still be in flight on a very fast click: ask the cached promise.
     const loaded = await loadOcrCapabilities();
-    const runEngine = resolveEngine(engineChoice, nativeEngineOf(loaded));
+    const runEngine = pickEngine(engineChoice, loaded, selectedLangs);
     const r = await runOcrJob({
       docId,
       docGeneration,
@@ -241,7 +244,7 @@ function OcrDialogBody(
             <section className="ocr-section">
               <h3 className="ocr-label">{t("ocr.language")}</h3>
               <div className="ocr-chips">
-                {OCR_LANGUAGES.filter((l) => available.includes(l.code)).map((l) => (
+                {OCR_LANGUAGES.filter((l) => offered.includes(l.code)).map((l) => (
                   <button
                     key={l.code}
                     type="button"
@@ -276,7 +279,7 @@ function OcrDialogBody(
                       {engineChoices(native).map((c) => <option key={c.id} value={c.id}>{t(c.labelKey)}</option>)}
                     </select>
                   </label>
-                  {engineChoice === "auto" && <p className="ocr-hint">{t(autoHintKey(native))}</p>}
+                  {engineChoice === "auto" && <p className="ocr-hint">{t(autoHintKey(native, fellBack))}</p>}
                 </>
               )}
               <label className="ocr-check">

@@ -1085,10 +1085,11 @@ ocr_detect_orientation(a: { docId: DocId; page: PageIndex; languages: string[] }
   `/ocr` image four ways with tesseract (the same pick, on mean word confidence).
 * `setRotation` (O2) on the wrapped form sets that page's `/Rotate` **inside the same `mutate`** as its layer (one
   undo step, `structure: true` when a page actually turns); `ocr.rotation` must equal it, else `invalidArgument`.
-* The layer (O5) writes every non-Latin-1 word in a **glyphless CID font** loaded per `ocr_apply` with
-  `FPDFText_LoadCidType2Font` (~0.9 KB TrueType of three box glyphs, `/ToUnicode` of the call's characters,
-  `/CIDToGIDMap` → ½ em / 1 em): the file grows by ~2.6 KB where the Hangul subset cost ~260 KB, and any script
-  (日本語, 中文) is written — the subset covered KS X 1001 only. Latin-1 words stay base-14 Helvetica.
+* The layer (O5) writes every non-Latin-1 word in a **glyphless CID font** loaded once per document with
+  `FPDFText_LoadCidType2Font` (~0.9 KB TrueType of three box glyphs, CID = BMP code point, identity `/ToUnicode`,
+  `/CIDToGIDMap` → ½ em / 1 em) and reused by every later `ocr_apply`: the file grows by ~4 KB for the font
+  where the Hangul subset cost ~260 KB, and any script (日本語, 中文) is written — the subset covered KS X 1001
+  only. Latin-1 words stay base-14 Helvetica.
 
 ### 7.10 Document structure — outline, links, page labels (P2)
 

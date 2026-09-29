@@ -309,6 +309,22 @@ describe("batchOcr.engine", () => {
     expect((apply.mock.calls[0][0].pages as OcrPage[]).map((p) => p.page)).toEqual([0, 1, 2]);
   });
 
+  it("자동 on Windows with only the en-US recogniser: Korean + English go to Tesseract, not Windows OCR", async () => {
+    resetOcrCapabilities();
+    vi.spyOn(mock, "ocrCapabilities").mockResolvedValue({
+      engines: ["tesseract", "windows"], languages: ["kor", "eng"],
+      engineLanguages: { tesseract: ["kor", "eng"], vision: [], windows: ["eng"] },
+    });
+    const native = vi.spyOn(mock, "ocrRecognizeNative");
+    const start = await openBatchDialog([PLAIN]);
+    expect(useBatchOcr.getState().options.langs).toEqual(["kor", "eng"]);
+    fireEvent.click(start);
+    await screen.findByTestId("bocr-summary", {}, { timeout: 6000 });
+    expect(native).not.toHaveBeenCalled();
+    expect(pools).toHaveLength(1);
+    expect(pools[0].options.langs).toBe("kor+eng");
+  });
+
   it("no 인식 엔진 row without Vision", async () => {
     await openBatchDialog([PLAIN]);
     await act(async () => { await loadOcrCapabilities(); });

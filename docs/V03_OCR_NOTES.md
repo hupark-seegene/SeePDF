@@ -37,14 +37,24 @@ A failed detection is "leave the page as it is", never a failed page.
 * The font is built in code (`build_font`, ~0.9 KB, 452 B flate-compressed in the PDF): `.notdef` + a 1 em box +
   a ½ em box. Box glyphs rather than empty ones: never painted (render mode 3), but they give every character a
   real bbox for selection and search highlights.
-* `FPDFText_LoadCidType2Font` needs the `/ToUnicode` up front, so the font is loaded **once per `ocr_apply`**
-  with exactly that call's characters (CID 1…n; CID 0 stays unused because PDFium's reverse lookup answers 0 for
-  "not found"). PDFium's `ReverseLookup` is a linear scan, which is why the map is not a fixed 30 000-character
-  repertoire. PDFium builds `/W` from the `/CIDToGIDMap` and the glyph advances.
-* Measured (`tests/ocr.rs`): one Korean page's layer grows the saved file by **2 651 B** vs **262 880 B** with
-  the Hangul subset (1.0 %). The OCR sheet applies one page per call, so a 100-page scan pays ~100 small fonts
-  (~2–3 KB each) — still an order of magnitude below the subset.
-* Characters outside the BMP become U+FFFD (`FPDFText_SetText` would split them into surrogates on Windows).
+* **One font per document** (verification round 1): CID = the BMP code point, an identity `/ToUnicode` (one
+  `bfrange` per high byte, surrogates skipped) and a 65 536-entry `/CIDToGIDMap`, loaded with
+  `FPDFText_LoadCidType2Font` the first time a document needs it and cached on `OpenDoc` (dropped by
+  `registry::replace` — undo, redo, save — before the old document closes). The first version loaded a font per
+  `ocr_apply` with only that call's characters; the OCR sheet applies **one page per call**, so a 30-page scan
+  embedded 30 fonts (~27 % of the subset's growth) and a 120-page one ~93 %.
+* Text is written with `FPDFText_SetCharcodes` (the CIDs directly). `FPDFText_SetText` would find each code by
+  `CPDF_ToUnicodeMap::ReverseLookup`, a linear scan — over a BMP-wide map, milliseconds per character.
+* `/W` gotcha: PDFium writes `/W` from the map as `c_first c_last w` for runs of equal widths, but a CID whose
+  width differs from its successor's opens a `c [w1 w2 …]` list that swallows every following CID. With CID 0 as
+  a 1 em `.notdef` in front of ½ em Latin, `/W` was a flat list of 65 536 numbers (323 KB). The half-width
+  classes are therefore ranges of ≥ 2 CIDs and CID 0 is half-width too: `/W` is ten ranges (167 B).
+* Measured (`tests/ocr.rs`): one Korean page grows the saved file by **4 173 B** vs **262 880 B** with the
+  Hangul subset (1.6 %; the identity `/ToUnicode` is 1.7 KB compressed); **32 pages applied one call each**
+  grow it by **25 074 B** vs **283 668 B** (8.8 %) — one embedded font, the rest is the pages' own text
+  (`ocr_glyphless_font_is_embedded_once_across_per_page_calls`). Beyond that the growth is the layer's content
+  streams, which cost the same with either font.
+* Characters outside the BMP (and U+0000) become U+FFFD.
 
 ## Windows OCR (O3)
 

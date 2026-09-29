@@ -7,42 +7,45 @@
 //! Japanese or Chinese character outside KS X 1001 had no glyph and was silently dropped.
 //!
 //! This is what Tesseract's own PDF renderer does instead: a **tiny TrueType font with no real
-//! glyphs** (built here, ~0.6 KB), loaded with `FPDFText_LoadCidType2Font`
+//! glyphs** (built here, ~0.9 KB), loaded with `FPDFText_LoadCidType2Font`
 //! as a `Type0` / `Identity-H` font whose `/ToUnicode` and `/CIDToGIDMap` we write ourselves:
 //!
 //! ```text
-//! the characters of one `ocr_apply` batch, sorted     → CID 1, 2, 3, …   (CID 0 is never used:
-//!                                                        PDFium's reverse lookup answers 0 for
-//!                                                        "not found")
-//! /ToUnicode   <0001> <0020> · <0002> <AC80> · …       → one bfchar per used character
-//! /CIDToGIDMap CID → GID 1 (1 em) or GID 2 (½ em)      → PDFium derives /W from it, so a Latin
-//!                                                        letter inside a Korean word is ½ em
+//! CID = the character's BMP code point                  (U+0000 and non-BMP → U+FFFD, so CID 0
+//!                                                        is never written)
+//! /ToUnicode   <0001> <00FF> <0001> · … · <AC00> <ACFF> <AC00> · …
+//!                                                      → the identity, one bfrange per high byte
+//! /CIDToGIDMap CID → GID 1 (1 em) or GID 2 (½ em)      → PDFium derives /W from it (ten
+//!                                                        ranges), so a Latin letter inside a
+//!                                                        Korean word is ½ em
 //! ```
 //!
-//! `FPDFText_SetText` finds each character's code through that `/ToUnicode` (`CPDF_Font::
-//! CharCodeFromUnicode` → `ReverseLookup`), and every extractor — PDFium's, Preview's, Acrobat's
-//! — reads it back through the same map. The glyphs themselves are plain rectangles filling the
-//! advance box: never painted in mode 3, but a valid bbox gives every character a real box for
-//! selection and search highlights (an outline-less glyph has an empty one).
+//! Text objects get their CIDs directly (`FPDFText_SetCharcodes`), and every extractor —
+//! PDFium's, Preview's, Acrobat's — reads the characters back through the identity map. The
+//! glyphs themselves are plain rectangles filling the advance box: never painted in mode 3, but
+//! a valid bbox gives every character a real box for selection and search highlights (an
+//! outline-less glyph has an empty one).
 //!
-//! **One font per call.** The `/ToUnicode` is fixed when the font is loaded, so the batch's
-//! characters must be known first; `ocr_apply` collects them before it writes a word. PDFium's
-//! reverse lookup is a linear scan of the map, which is why the map holds only the characters
-//! actually used (a few hundred for a dense Korean page) rather than a fixed repertoire.
-//! Characters outside the Basic Multilingual Plane become U+FFFD: `FPDFText_SetText` splits them
-//! into surrogates on Windows (16-bit `wchar_t`) and the map could not be found either way.
+//! **One font per document.** Because the map is the same for every text, the font is loaded
+//! the first time a document needs it and kept on `OpenDoc` (`registry::OpenDoc::glyphless_font`)
+//! until the document is replaced (undo, redo, save), like the Hangul token. The OCR sheet
+//! applies one page per `ocr_apply`, so a per-call font — the first version of O5, whose
+//! `/ToUnicode` named only the call's characters — was embedded once per page and a long scan
+//! grew about as much as with the Hangul subset. `FPDFText_SetText` is not used: it finds each
+//! code by `CPDF_ToUnicodeMap::ReverseLookup`, a linear scan that over a BMP-wide map would
+//! cost milliseconds per character.
 //!
 //! **`unsafe`.** pdfium-render 0.9.4 has no wrapper for `FPDFText_LoadCidType2Font`, and a
 //! `PdfFontToken` cannot be made from a raw `FPDF_FONT` outside the crate, so the text objects of
 //! this font are created through the raw bindings too. The rules of `engine::raw` apply: handles
-//! come from live Rust values on the engine thread, are never stored beyond the call that uses
-//! them, and every `unsafe` block is a single FFI call.
+//! come from live Rust values on the engine thread and every `unsafe` block is a single FFI
+//! call. The one stored handle is the font's own reference, which `OpenDoc` releases before the
+//! document it belongs to.
 
 use crate::ipc::{EngineError, ErrorCode};
 use pdfium_render::prelude::{
-    PdfDocument, PdfPage, PdfiumLibraryBindings, FPDF_FONT, FPDF_PAGEOBJECT, FPDF_WIDESTRING,
+    PdfDocument, PdfPage, PdfiumLibraryBindings, FPDF_FONT, FPDF_PAGEOBJECT,
 };
-use std::collections::BTreeMap;
 use std::os::raw::c_float;
 use std::sync::OnceLock;
 
@@ -332,112 +335,94 @@ fn build_font() -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------------------
-// The character map of one batch
+// The character map: CID = BMP code point, for every document
 // ---------------------------------------------------------------------------------------
 
 /// Half-width characters get the ½ em glyph: everything before the Hangul Jamo block (Latin,
-/// Greek, Cyrillic, general punctuation is further up but narrow too) and the halfwidth forms.
-fn is_half_width(c: char) -> bool {
-    let cp = c as u32;
-    cp < 0x1100
-        || (0x2000..=0x206F).contains(&cp) // general punctuation
-        || (0x20A0..=0x20CF).contains(&cp) // currency symbols
-        || (0xFF61..=0xFFDC).contains(&cp) // halfwidth katakana / Hangul
-        || (0xFFE8..=0xFFEE).contains(&cp)
+/// Greek, Cyrillic, …), general punctuation, currency symbols and the halfwidth forms.
+///
+/// These are **ranges on purpose**: PDFium writes `/W` from the `/CIDToGIDMap`, as
+/// `c_first c_last w` for a run of equal widths — but a CID whose width differs from the next
+/// one's starts a `c [w1 w2 …]` list that swallows every following CID, so a single odd entry
+/// (CID 0 as a 1 em `.notdef`, say) turns `/W` into a flat list of 65 536 numbers (~320 KB).
+/// Every run below is at least two CIDs long, and CID 0 is half-width like its neighbours.
+fn is_half_width(c: u16) -> bool {
+    matches!(c,
+        0x0000..=0x10FF // Latin, Greek, Cyrillic, …
+        | 0x2000..=0x206F // general punctuation
+        | 0x20A0..=0x20CF // currency symbols
+        | 0xFF61..=0xFFDC // halfwidth katakana / Hangul
+        | 0xFFE8..=0xFFEE)
 }
 
-/// What the text layer writes instead of a character PDFium cannot round-trip.
+/// What the text layer writes instead of a character a 2-byte CID cannot hold.
 fn representable(c: char) -> char {
-    if (c as u32) > 0xFFFF || c == '\0' {
+    if (c as u32) > 0xFFFF || c == '\0' || (0xD800..=0xDFFF).contains(&(c as u32)) {
         '\u{FFFD}'
     } else {
         c
     }
 }
 
-/// The CIDs of one batch: each distinct character used, in code-point order, from CID 1.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CodeMap {
-    codes: BTreeMap<char, u16>,
+/// The CID of `c`: its own BMP code point. U+0000 and everything outside the BMP become
+/// U+FFFD, so CID 0 (`.notdef`) is never written.
+pub fn cid(c: char) -> u16 {
+    representable(c) as u32 as u16
 }
 
-impl CodeMap {
-    /// Every character of `texts`, plus the space (the word-space separator and PDFium's own
-    /// word-break threshold both look it up).
-    pub fn new<'a>(texts: impl IntoIterator<Item = &'a str>) -> Result<Self, EngineError> {
-        let mut chars: std::collections::BTreeSet<char> = std::collections::BTreeSet::new();
-        chars.insert(' ');
-        for text in texts {
-            chars.extend(text.chars().map(representable));
-        }
-        if chars.len() >= u16::MAX as usize {
-            return Err(EngineError::invalid(format!(
-                "the OCR batch uses {} distinct characters; a CID font holds 65 534",
-                chars.len()
-            )));
-        }
-        let codes = chars
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| (c, (i + 1) as u16))
-            .collect();
-        Ok(Self { codes })
-    }
+/// `text` as the CIDs of the glyphless font, one per character.
+pub fn cids(text: &str) -> Vec<u32> {
+    text.chars().map(|c| cid(c) as u32).collect()
+}
 
-    pub fn len(&self) -> usize {
-        self.codes.len()
-    }
+/// The high bytes whose 256 CIDs the `/ToUnicode` maps: all of the BMP but the surrogates.
+fn mapped_rows() -> impl Iterator<Item = u16> {
+    (0x00u16..=0xFF).filter(|hi| !(0xD8..=0xDF).contains(hi))
+}
 
-    pub fn is_empty(&self) -> bool {
-        self.codes.is_empty()
-    }
-
-    /// The CID of `c`, if the batch uses it.
-    pub fn cid(&self, c: char) -> Option<u16> {
-        self.codes.get(&representable(c)).copied()
-    }
-
-    /// `text` as the font can write it (non-BMP characters → U+FFFD).
-    pub fn encodable(text: &str) -> String {
-        text.chars().map(representable).collect()
-    }
-
-    /// The `/ToUnicode` CMap: one `bfchar` per used CID, in blocks of at most 100.
-    pub fn to_unicode_cmap(&self) -> String {
+/// The `/ToUnicode` CMap: the identity on the BMP, as one `bfrange` per high byte (the PDF
+/// spec wants a range's destination to vary in its last byte only), in blocks of at most 100.
+/// The same text for every document, so the font never has to be reloaded for new characters.
+pub fn to_unicode_cmap() -> &'static str {
+    static CMAP: OnceLock<String> = OnceLock::new();
+    CMAP.get_or_init(|| {
         let mut s = String::from(
             "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
              /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
              /CMapName /SeePDF-Glyphless-UCS def\n/CMapType 2 def\n\
              1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
         );
-        let entries: Vec<(&char, &u16)> = self.codes.iter().collect();
-        for block in entries.chunks(100) {
-            s.push_str(&format!("{} beginbfchar\n", block.len()));
-            for (c, cid) in block {
-                s.push_str(&format!("<{:04X}> <{:04X}>\n", cid, **c as u32));
+        let rows: Vec<u16> = mapped_rows().collect();
+        for block in rows.chunks(100) {
+            s.push_str(&format!("{} beginbfrange\n", block.len()));
+            for hi in block {
+                // CID 0 is `.notdef`: the first range starts at 1.
+                let lo = if *hi == 0 { 1 } else { 0 };
+                let first = (hi << 8) | lo;
+                let last = (hi << 8) | 0xFF;
+                s.push_str(&format!("<{first:04X}> <{last:04X}> <{first:04X}>\n"));
             }
-            s.push_str("endbfchar\n");
+            s.push_str("endbfrange\n");
         }
         s.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
         s
-    }
+    })
+}
 
-    /// The `/CIDToGIDMap` stream: two big-endian bytes per CID from 0 to the last one used.
-    /// PDFium builds `/W` from it and the font's advances.
-    pub fn cid_to_gid_map(&self) -> Vec<u8> {
-        let last = self.codes.values().copied().max().unwrap_or(0) as usize;
-        let mut map = vec![0u8; (last + 1) * 2];
-        for (c, cid) in &self.codes {
-            let gid = if is_half_width(*c) {
-                GID_HALF
-            } else {
-                GID_FULL
-            };
-            let at = *cid as usize * 2;
-            map[at..at + 2].copy_from_slice(&gid.to_be_bytes());
+/// The `/CIDToGIDMap` stream: two big-endian bytes for each of the 65 536 CIDs — GID 2 (½ em)
+/// for half-width code points, GID 1 (1 em) for the rest. 128 KB in memory, ~100 bytes once
+/// PDFium flate-compresses it on save; `/W` comes out as ten `c_first c_last w` ranges (see
+/// [`is_half_width`] for why it must).
+pub fn cid_to_gid_map() -> &'static [u8] {
+    static MAP: OnceLock<Vec<u8>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut map = Vec::with_capacity(0x10000 * 2);
+        for c in 0..=0xFFFFu16 {
+            let gid = if is_half_width(c) { GID_HALF } else { GID_FULL };
+            map.extend_from_slice(&gid.to_be_bytes());
         }
         map
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------------------
@@ -448,31 +433,31 @@ fn pdfium_error(what: &str) -> EngineError {
     EngineError::new(ErrorCode::Pdfium, format!("{what} failed"))
 }
 
-/// The font loaded into one document for one batch. Dropping it releases our reference
-/// (`FPDFFont_Close`); the text objects created from it keep the font alive in the document.
+/// The glyphless font loaded into one document. Loaded **once per document** and kept on
+/// [`crate::engine::registry::OpenDoc`] (like the Hangul token), so a scan applied one page per
+/// `ocr_apply` call embeds one font, not one per page. Dropping it releases our reference
+/// (`FPDFFont_Close`) — which must happen before the document closes, so `OpenDoc` declares
+/// it before the document and `registry::replace` drops it before swapping documents.
 pub struct GlyphlessFont {
     handle: FPDF_FONT,
     bindings: &'static dyn PdfiumLibraryBindings,
-    map: CodeMap,
 }
 
 impl GlyphlessFont {
-    /// `FPDFText_LoadCidType2Font` with this batch's `/ToUnicode` and `/CIDToGIDMap`.
+    /// `FPDFText_LoadCidType2Font` with the identity `/ToUnicode` and the `/CIDToGIDMap`.
     pub fn load(
         bindings: &'static dyn PdfiumLibraryBindings,
         doc: &PdfDocument<'_>,
-        map: CodeMap,
     ) -> Result<Self, EngineError> {
         let font = font_bytes();
-        let cmap = map.to_unicode_cmap();
-        let cid_to_gid = map.cid_to_gid_map();
+        let cid_to_gid = cid_to_gid_map();
         // SAFETY: the document is live on the engine thread; PDFium copies all three buffers.
         let handle = unsafe {
             bindings.FPDFText_LoadCidType2Font(
                 doc.raw_handle(),
                 font.as_ptr(),
                 font.len() as u32,
-                &cmap,
+                to_unicode_cmap(),
                 cid_to_gid.as_ptr(),
                 cid_to_gid.len() as u32,
             )
@@ -480,18 +465,13 @@ impl GlyphlessFont {
         if handle.is_null() {
             return Err(pdfium_error("FPDFText_LoadCidType2Font"));
         }
-        Ok(Self {
-            handle,
-            bindings,
-            map,
-        })
-    }
-
-    pub fn map(&self) -> &CodeMap {
-        &self.map
+        Ok(Self { handle, bindings })
     }
 
     /// A new, unplaced invisible (`3 Tr`) text object of `text` at `size` points.
+    ///
+    /// The font handle is only borrowed for this call (`engine::raw` rules): the object holds
+    /// its own reference to the font.
     pub fn text_object(
         &self,
         doc: &PdfDocument<'_>,
@@ -520,7 +500,8 @@ impl GlyphlessFont {
 
 impl Drop for GlyphlessFont {
     fn drop(&mut self) {
-        // SAFETY: our own reference from `FPDFText_LoadCidType2Font`; objects hold their own.
+        // SAFETY: our own reference from `FPDFText_LoadCidType2Font`; objects hold their own,
+        // and the owner drops this before the document (see the type's docs).
         unsafe { self.bindings.FPDFFont_Close(self.handle) };
     }
 }
@@ -533,21 +514,19 @@ pub struct InvisibleText {
 }
 
 impl InvisibleText {
-    /// `FPDFText_SetText` (UTF-16LE, NUL-terminated).
+    /// `FPDFText_SetCharcodes` with the CIDs of `text` — the code points themselves, so no
+    /// `/ToUnicode` reverse lookup (a linear scan in PDFium, and the map is the whole BMP).
     pub fn set_text(&self, text: &str) -> Result<(), EngineError> {
-        let wide: Vec<u16> = CodeMap::encodable(text)
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        // SAFETY: `wide` is NUL-terminated and outlives the call; PDFium copies it.
+        let codes = cids(text);
+        // SAFETY: `codes` outlives the call and its length is passed; PDFium copies it.
         let ok = unsafe {
             self.bindings
-                .FPDFText_SetText(self.handle, wide.as_ptr() as FPDF_WIDESTRING)
+                .FPDFText_SetCharcodes(self.handle, codes.as_ptr(), codes.len())
         };
         if self.bindings.is_true(ok) {
             Ok(())
         } else {
-            Err(pdfium_error("FPDFText_SetText"))
+            Err(pdfium_error("FPDFText_SetCharcodes"))
         }
     }
 
@@ -638,49 +617,77 @@ mod tests {
     }
 
     #[test]
-    fn codes_start_at_one_and_include_the_space() {
-        let map = CodeMap::new(["검색 가능한", "日本語"]).unwrap();
-        assert_eq!(map.cid(' '), Some(1), "the space sorts first");
-        assert!(map.cid('검').unwrap() > 1);
-        assert_eq!(map.len(), 1 + 5 + 3);
-        assert!(map.cid('x').is_none());
-        let cmap = map.to_unicode_cmap();
-        assert!(cmap.contains("<0001> <0020>"));
-        assert!(cmap.contains(&format!("<{:04X}> <AC80>", map.cid('검').unwrap())));
-        assert!(cmap.contains("9 beginbfchar"));
+    fn cids_are_bmp_code_points_and_never_zero() {
+        assert_eq!(cid(' '), 0x20);
+        assert_eq!(cid('검'), 0xAC80);
+        assert_eq!(cid('日'), 0x65E5);
+        assert_eq!(cid('\0'), 0xFFFD, "CID 0 is .notdef");
+        assert_eq!(cid('😀'), 0xFFFD);
+        assert_eq!(cids("a😀한"), vec![0x61, 0xFFFD, 0xD55C]);
+    }
+
+    #[test]
+    fn to_unicode_is_the_identity_in_ranges_of_one_high_byte() {
+        let cmap = to_unicode_cmap();
+        assert!(
+            cmap.contains("<0001> <00FF> <0001>"),
+            "CID 0 stays unmapped"
+        );
+        assert!(cmap.contains("<AC00> <ACFF> <AC00>"));
+        assert!(cmap.contains("<FF00> <FFFF> <FF00>"));
+        assert!(!cmap.contains("<D800>"), "no surrogates");
+        // 248 rows (256 minus the 8 surrogate rows), at most 100 per block.
+        assert_eq!(cmap.matches("beginbfrange").count(), 3);
+        assert!(cmap.contains("100 beginbfrange") && cmap.contains("48 beginbfrange"));
+        for line in cmap.lines().filter(|l| l.starts_with('<') && l.len() == 20) {
+            let hex: Vec<&str> = line.split(' ').collect();
+            assert_eq!(
+                &hex[0][1..3],
+                &hex[1][1..3],
+                "one high byte per range: {line}"
+            );
+            assert_eq!(hex[0], hex[2], "identity: {line}");
+        }
     }
 
     #[test]
     fn cid_to_gid_gives_latin_half_and_hangul_full_width() {
-        let map = CodeMap::new(["A한"]).unwrap();
-        let bytes = map.cid_to_gid_map();
-        assert_eq!(bytes.len(), (map.len() + 1) * 2);
+        let bytes = cid_to_gid_map();
+        assert_eq!(
+            bytes.len(),
+            0x10000 * 2,
+            "every CID has a glyph (and a box)"
+        );
         let gid = |c: char| {
-            let at = map.cid(c).unwrap() as usize * 2;
+            let at = cid(c) as usize * 2;
             u16::from_be_bytes([bytes[at], bytes[at + 1]])
         };
         assert_eq!(gid(' '), GID_HALF);
         assert_eq!(gid('A'), GID_HALF);
+        assert_eq!(gid('“'), GID_HALF);
         assert_eq!(gid('한'), GID_FULL);
-        assert_eq!(&bytes[..2], &[0, 0], "CID 0 stays .notdef");
+        assert_eq!(gid('日'), GID_FULL);
+        assert_eq!(gid('ｶ'), GID_HALF);
     }
 
+    /// PDFium's `/W` stays a handful of ranges only if no width run is a single CID long.
     #[test]
-    fn large_batches_split_into_blocks_of_100() {
-        let text: String = (0xAC00u32..0xAC00 + 250)
-            .map(|c| char::from_u32(c).unwrap())
+    fn width_runs_are_never_a_single_cid() {
+        let bytes = cid_to_gid_map();
+        let gids: Vec<u16> = bytes
+            .chunks(2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
             .collect();
-        let map = CodeMap::new([text.as_str()]).unwrap();
-        let cmap = map.to_unicode_cmap();
-        assert_eq!(cmap.matches("beginbfchar").count(), 3);
-        assert!(cmap.contains("51 beginbfchar"));
-    }
-
-    #[test]
-    fn non_bmp_becomes_replacement() {
-        let map = CodeMap::new(["a😀"]).unwrap();
-        assert!(map.cid('\u{FFFD}').is_some());
-        assert_eq!(map.cid('😀'), map.cid('\u{FFFD}'));
-        assert_eq!(CodeMap::encodable("a😀"), "a\u{FFFD}");
+        let mut runs = Vec::new();
+        let mut start = 0usize;
+        for i in 1..=gids.len() {
+            if i == gids.len() || gids[i] != gids[start] {
+                runs.push(i - start);
+                start = i;
+            }
+        }
+        assert_eq!(runs.len(), 10, "{runs:?}");
+        assert!(runs.iter().all(|&len| len >= 2), "{runs:?}");
+        assert_eq!(gids[0], gids[1], "CID 0 does not break the first run");
     }
 }

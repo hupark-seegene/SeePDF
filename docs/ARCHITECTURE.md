@@ -402,10 +402,10 @@ break from a gap wider than about a quarter glyph, which Vision's padded boxes (
 and a run of nothing but a space has a zero-width rect that `CPDF_TextPage` skips. Words with confidence
 < 30 are skipped; `Manual` + one `regenerate_content()` per page (2 ms for 730 words vs 81 ms
 automatic). Latin-1-only words use `helvetica()` (no embedding); everything else uses the **glyphless CID
-font** (v0.3 O5, `engine/fonts/glyphless.rs`): a ~0.9 KB TrueType of three box glyphs, loaded once per
-`ocr_apply` with `FPDFText_LoadCidType2Font`, a `/ToUnicode` naming exactly the call's characters (CID 1…n;
-PDFium's `CharCodeFromUnicode` finds them by reverse lookup) and a `/CIDToGIDMap` from which PDFium derives
-`/W` (½ em Latin, 1 em CJK). Its text objects are created through the raw bindings (no `PdfFontToken` can be
+font** (v0.3 O5, `engine/fonts/glyphless.rs`): a ~0.9 KB TrueType of three box glyphs, loaded **once per
+document** (cached on `OpenDoc`, dropped by `replace`) with `FPDFText_LoadCidType2Font`, CID = BMP code point,
+an identity `/ToUnicode` and a full `/CIDToGIDMap` from which PDFium derives `/W` (½ em Latin, 1 em CJK, ten
+ranges); text is set with `FPDFText_SetCharcodes`, no reverse lookup. Its text objects are created through the raw bindings (no `PdfFontToken` can be
 made from a raw `FPDF_FONT`). Before v0.3 this was the 487 KB Hangul subset, once per document (~260 KB in the
 saved file) — and it could not write kana or hanja outside KS X 1001. A page sent with `setRotation` (O2,
 페이지 회전 자동 감지) gets its new `/Rotate` on the same scratch page first, so `pixels_to_points` inverts the

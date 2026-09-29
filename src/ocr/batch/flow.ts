@@ -28,7 +28,7 @@ import { toast } from "../../app/toastStore";
 import { resolveDpi, runOcrJob, type OcrDpi } from "../ocrJob";
 import { DEFAULT_LAYOUT, TesseractPool, defaultWorkerCount } from "../tesseractPool";
 import {
-  languagesFor, loadOcrCapabilities, nativeEngineOf, resolveEngine, type OcrEngineChoice, type OcrRunEngine,
+  languagesFor, loadOcrCapabilities, pickEngine, type OcrEngineChoice, type OcrRunEngine,
 } from "../engine";
 import {
   BASELINE_LANGUAGES, effectiveLanguages, isOcrLanguage, langsFor as joinLangs, type OcrLanguage,
@@ -217,7 +217,8 @@ async function runQueue(queue: number[]): Promise<void> {
   try {
     // After the phase switch above, which must stay synchronous (a second 시작 checks it).
     const caps = await loadOcrCapabilities();
-    const engine = resolveEngine(options.engine, nativeEngineOf(caps));
+    // O3 (verification round 1): 자동 takes the native engine only when it reads the selection.
+    const engine = pickEngine(options.engine, caps, options.langs);
     // O1: only the chips this engine reads (a 日本語 chosen for Vision is dropped for Tesseract).
     const langs = joinLangs(effectiveLanguages(options.langs, languagesFor(caps, engine)));
     // One pool for the whole batch: the workers load their language data once, not once per file.

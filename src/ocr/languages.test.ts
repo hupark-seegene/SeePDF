@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 import {
   effectiveLanguages, initialLanguages, langsFor, parseLangs, toggleLanguage,
 } from "./languages";
-import { engineChoices, languagesFor, nativeEngineOf, resolveEngine, visionLanguages } from "./engine";
+import {
+  autoFellBack, choosableLanguages, engineChoices, languagesFor, nativeEngineOf, pickEngine, resolveEngine,
+  visionLanguages,
+} from "./engine";
 import type { OcrCapabilities } from "../ipc/types";
 
 const CAPS: OcrCapabilities = {
@@ -59,5 +62,37 @@ describe("ocr.languages", () => {
     expect(resolveEngine("auto", "windows")).toBe("windows");
     expect(resolveEngine("vision", null)).toBe("tesseract");
     expect(engineChoices("windows")[1].labelKey).toBe("ocr.engine.windows");
+  });
+});
+
+describe("자동 follows the selected languages (O3, verification round 1)", () => {
+  const windows = (langs: string[]): OcrCapabilities => ({
+    engines: ["tesseract", "windows"], languages: ["kor", "eng"],
+    engineLanguages: { tesseract: ["kor", "eng"], vision: [], windows: langs },
+  });
+
+  it("takes the native engine only when it reads every selected language", () => {
+    expect(pickEngine("auto", windows(["kor", "eng"]), ["kor", "eng"])).toBe("windows");
+    expect(pickEngine("auto", windows(["eng"]), ["kor", "eng"])).toBe("tesseract");
+    expect(pickEngine("auto", windows(["eng"]), ["eng"])).toBe("windows");
+    // Korean decides first: a jpn pack does not outweigh a missing kor one.
+    expect(pickEngine("auto", windows(["eng", "jpn"]), ["kor", "eng", "jpn"])).toBe("tesseract");
+    // Neither reads everything and both read Korean: the one that reads more.
+    expect(pickEngine("auto", windows(["kor", "eng", "jpn"]), ["kor", "eng", "jpn", "chi_sim"])).toBe("windows");
+    expect(pickEngine("auto", null, ["kor"])).toBe("tesseract");
+  });
+
+  it("an explicit choice is honoured", () => {
+    expect(pickEngine("vision", windows(["eng"]), ["kor", "eng"])).toBe("windows");
+    expect(pickEngine("tesseract", windows(["kor", "eng"]), ["eng"])).toBe("tesseract");
+  });
+
+  it("under 자동 the chips are what either engine reads; the hint says when it fell back", () => {
+    const caps = windows(["eng", "jpn"]);
+    expect(choosableLanguages("auto", caps, "tesseract")).toEqual(["kor", "eng", "jpn"]);
+    expect(choosableLanguages("vision", caps, "windows")).toEqual(["eng", "jpn"]);
+    expect(autoFellBack("auto", caps, "tesseract")).toBe(true);
+    expect(autoFellBack("auto", caps, "windows")).toBe(false);
+    expect(autoFellBack("tesseract", caps, "tesseract")).toBe(false);
   });
 });

@@ -248,8 +248,12 @@ will run reads it (Apple Vision: all four; Windows OCR: the installed packs; Tes
 selected chip cannot be turned off. 옵션 gains **페이지 회전 자동 감지** (off by default): each page is first read at
 100 DPI four ways (Vision: by reading direction) and a sideways or upside-down page is turned upright in the same
 undo step as its text; the result bar adds "n쪽의 방향을 바로잡았습니다". On Windows the native engine is **Windows
-OCR** (자동 / Windows OCR / Tesseract, hint "이 PC에서는 Windows OCR로 더 빠르게 인식합니다"). 여러 파일 OCR gets the same
-chips, 페이지 회전 자동 감지 and 설정 defaults (re-read whenever it opens on an empty list).
+OCR** (자동 / Windows OCR / Tesseract, hint "이 PC에서는 Windows OCR로 더 빠르게 인식합니다"). 자동 takes the native
+engine only when it reads the selected languages — otherwise the engine that reads 한국어 (when selected), then the one
+that reads more — and then says so ("선택한 언어를 이 PC의 Windows OCR이 모두 읽지 못해 Tesseract로 인식합니다"); under
+자동 the chips are what either engine reads, so no chip disappears when the pick changes (pkg7-ocr, verification round
+1: a PC with only the en-US recogniser sent 한국어 + English to Windows OCR and dropped Korean). 여러 파일 OCR gets the
+same chips, 자동 rule, 페이지 회전 자동 감지 and 설정 defaults (re-read whenever it opens on an empty list).
 
 **여러 파일 OCR** (P1-7, 640 px, 도구 ▸ 여러 파일 OCR… or ⋯; no shortcut): 파일 추가… (multi-select) / 목록 비우기,
 a list 파일 · 상태 (대기 / 여는 중… / 진행 중 n/m 페이지 / 저장 중… / 완료 · `<name>-ocr.pdf` / 건너뜀 · 이유 /
@@ -904,6 +908,8 @@ both locales; `_other` keys exist only because English pluralises (Korean repeat
 |---|---|---|
 | `ocr.engine.windows` | Windows OCR | Windows OCR |
 | `ocr.engine.autoHintWindows` | 이 PC에서는 Windows OCR로 더 빠르게 인식합니다 | On this PC, Windows OCR recognizes text faster |
+| `ocr.engine.autoFallback` | 선택한 언어를 Apple Vision이 모두 읽지 못해 Tesseract로 인식합니다 | Apple Vision can't read all the selected languages here, so Tesseract will be used |
+| `ocr.engine.autoFallbackWindows` | 선택한 언어를 이 PC의 Windows OCR이 모두 읽지 못해 Tesseract로 인식합니다 | Windows OCR on this PC can't read all the selected languages, so Tesseract will be used |
 | `ocr.rotatedCount` / `_other` | {{count}}쪽의 방향을 바로잡았습니다 | Turned {{count}} page(s) upright |
 | `ocr.needsOcr.banner` | 이 문서에는 검색 가능한 텍스트가 없습니다 | This document has no searchable text |
 | `ocr.needsOcr.hint` | 스캔한 문서로 보입니다. 텍스트 인식(OCR)을 실행하면 검색하고 선택할 수 있습니다. | It looks like a scan. Run text recognition (OCR) to search and select its text. |

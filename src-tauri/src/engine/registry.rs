@@ -52,6 +52,11 @@ fn refine_count(page_count: u16) -> u16 {
 pub struct OpenDoc<'p> {
     // ---- field order == drop order: pages MUST drop before the document ----
     pages: PageLru<'p>,
+    /// The glyphless OCR font once `ocr_apply` has loaded it into **this document** (v0.3 O5,
+    /// pkg7-ocr): one embed per document however many calls a scan takes. It holds a PDFium
+    /// font reference, so it must drop before `doc` — hence its place here — and [`replace`]
+    /// drops it before swapping documents, like `hangul_font`.
+    glyphless_font: Option<std::rc::Rc<crate::engine::fonts::glyphless::GlyphlessFont>>,
     doc: PdfDocument<'p>,
     // ----------------------------------------------------------------------
     pub doc_id: DocId,
@@ -175,6 +180,23 @@ impl<'p> OpenDoc<'p> {
         if self.hangul_font.is_none() {
             self.hangul_font = crate::engine::fonts::embedded_token(page);
         }
+    }
+
+    /// The document's glyphless OCR font, loaded on first use (v0.3 O5, pkg7-ocr). The
+    /// `/ToUnicode` covers the whole BMP, so every later `ocr_apply` reuses it. Only for use
+    /// inside [`mutate`]: the first call writes the font into the document.
+    pub fn glyphless_font(
+        &mut self,
+    ) -> Result<std::rc::Rc<crate::engine::fonts::glyphless::GlyphlessFont>, EngineError> {
+        if let Some(font) = &self.glyphless_font {
+            return Ok(font.clone());
+        }
+        let font = std::rc::Rc::new(crate::engine::fonts::glyphless::GlyphlessFont::load(
+            self.bindings,
+            &self.doc,
+        )?);
+        self.glyphless_font = Some(font.clone());
+        Ok(font)
     }
 
     pub fn page_lru_len(&self) -> usize {
@@ -387,6 +409,7 @@ pub fn open_named<'p>(
     let spill_dir = st.spill_dir.join(&doc_id);
     let mut open_doc = OpenDoc {
         pages: PageLru::new(bindings, form),
+        glyphless_font: None,
         doc,
         doc_id: doc_id.clone(),
         form,
@@ -796,6 +819,9 @@ pub fn replace<'p>(
     let has_outline = loaded.bookmarks().root().is_some();
     let pages_meta = read_pages_meta(doc.bindings, &loaded)?;
 
+    // The glyphless font's `FPDF_FONT` belongs to the old document and must be released
+    // while that document is still open (v0.3 O5).
+    doc.glyphless_font = None;
     let old = std::mem::replace(&mut doc.doc, loaded);
     drop(old);
 

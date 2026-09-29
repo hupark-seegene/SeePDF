@@ -226,11 +226,11 @@ fn hangul_subset_layer(doc_id: &str, ocr_page: OcrPage) {
             st,
             &doc_id,
             registry::MutateOpts::new("undo.ocrApply", seepdf_lib::ipc::types::ChangeReason::Ocr)
-                .page(0),
+                .page(ocr_page.page),
             |doc| {
                 let hangul = doc.hangul_token()?;
                 let helvetica = doc.pdf_mut().fonts_mut().helvetica();
-                let mut scratch = seepdf_lib::engine::annot::ScratchPage::open(doc, 0)?;
+                let mut scratch = seepdf_lib::engine::annot::ScratchPage::open(doc, ocr_page.page)?;
                 let document = doc.pdf();
                 let config = PdfRenderConfig::new()
                     .set_target_size(ocr_page.width_px as i32, ocr_page.height_px as i32);
@@ -354,6 +354,115 @@ fn ocr_glyphless_layer_is_small_and_extracts_like_the_hangul_font() {
         .filter(|c| c.loose.width() > 0.5 && c.loose.height() > 0.5)
         .count();
     assert!(hangul_boxes >= 10, "Hangul characters have boxes");
+}
+
+/// How many fonts with an embedded TrueType program a saved file carries.
+fn embedded_truetype_count(bytes: &[u8]) -> usize {
+    bytes
+        .windows(b"/FontFile2".len())
+        .filter(|w| w == b"/FontFile2")
+        .count()
+}
+
+/// Verification round 1 (O5): the OCR sheet applies **one page per `ocr_apply` call**, and the
+/// first glyphless font was loaded per call — a 30-page scan embedded 30 fonts and grew about a
+/// quarter as much as the Hangul subset, a 120-page one about as much. The font is now loaded
+/// once per document, so the calls after the first add only their page's text.
+#[test]
+fn ocr_glyphless_font_is_embedded_once_across_per_page_calls() {
+    const PAGES: u16 = 32;
+    let scan = scan_of("gen/korean-300dpi.pdf", 150, 0);
+    let geom = with_doc(&scan.doc_id, |d| Ok(d.geom(0)?.clone())).expect("geometry");
+    let scan_id = scan.doc_id.clone();
+    with_state(move |st| {
+        seepdf_lib::engine::pages::apply_ops(
+            st,
+            &scan_id,
+            vec![
+                PageOp::InsertBlank {
+                    at: 1,
+                    size: BlankPageSize::Explicit(PageSizePt {
+                        width_pt: geom.width_pt,
+                        height_pt: geom.height_pt,
+                    }),
+                };
+                PAGES as usize - 1
+            ],
+        )
+    })
+    .expect("pages of the scan's size");
+    let base = save_bytes(&scan.doc_id);
+    let old = reopen(base.clone());
+    let new = reopen(base.clone());
+    let image = gray(&new.doc_id, 0, DPI);
+    let page_ocr = |p: u16| {
+        let mut page = korean_ocr(0, image.width, image.height);
+        page.page = p;
+        // A different word on every page, as a real scan has.
+        page.lines[2].words[2].text = format!("{}쪽", p + 1);
+        page
+    };
+
+    for p in 0..PAGES {
+        apply(&new.doc_id, vec![page_ocr(p)], vec![None]);
+        hangul_subset_layer(&old.doc_id, page_ocr(p));
+    }
+    let new_bytes = save_bytes(&new.doc_id);
+    let old_bytes = save_bytes(&old.doc_id);
+    let grew_new = new_bytes.len() as i64 - base.len() as i64;
+    let grew_old = old_bytes.len() as i64 - base.len() as i64;
+    eprintln!(
+        "{PAGES} pages, one ocr_apply each: glyphless {grew_new} B, Hangul subset {grew_old} B \
+         ({:.1} %)",
+        grew_new as f64 * 100.0 / grew_old as f64
+    );
+    assert_eq!(
+        embedded_truetype_count(&new_bytes),
+        embedded_truetype_count(&base) + 1,
+        "one glyphless font for the whole document"
+    );
+    assert!(
+        grew_new * 10 <= grew_old,
+        "{PAGES} per-page calls cost at most a tenth of the subset: {grew_new} B vs {grew_old} B"
+    );
+
+    let saved = reopen(new_bytes);
+    let started = std::time::Instant::now();
+    for p in [0, PAGES / 2, PAGES - 1] {
+        let text = page_text(&saved.doc_id, p);
+        assert!(text.contains("검색 가능한 한글 문서"), "page {p}: {text:?}");
+        assert!(
+            text.contains(&format!("日本語の 中文 {}쪽", p + 1)),
+            "page {p}: {text:?}"
+        );
+    }
+    eprintln!("text of 3 pages after reopen: {:?}", started.elapsed());
+    assert_eq!(search_hits(&saved.doc_id, PAGES - 1, "정확도"), 1);
+}
+
+/// The cached font belongs to one PDFium document: undo (which reloads the document) must drop
+/// it, and the next call must load a fresh one into the reloaded document.
+#[test]
+fn ocr_glyphless_font_survives_undo_between_calls() {
+    let scan = scan_of("gen/korean-300dpi.pdf", 150, 0);
+    let image = gray(&scan.doc_id, 0, DPI);
+    let ocr_page = korean_ocr(0, image.width, image.height);
+    apply(&scan.doc_id, vec![ocr_page.clone()], vec![None]);
+    assert!(page_text(&scan.doc_id, 0).contains("검색"));
+    let doc_id = scan.doc_id.clone();
+    with_state(move |st| registry::undo(st, &doc_id, false)).expect("undo");
+    assert!(page_text(&scan.doc_id, 0).trim().is_empty(), "undone");
+    apply(&scan.doc_id, vec![ocr_page], vec![None]);
+    let bytes = save_bytes(&scan.doc_id);
+    assert_eq!(
+        embedded_truetype_count(&bytes),
+        1,
+        "only the live font is saved"
+    );
+    let saved = reopen(bytes);
+    let text = page_text(&saved.doc_id, 0);
+    assert!(text.contains("검색 가능한 한글 문서"), "{text:?}");
+    assert!(text.contains("日本語の 中文 2026년"), "{text:?}");
 }
 
 // ---------------------------------------------------------------------------------------

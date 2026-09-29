@@ -1,7 +1,8 @@
 /**
  * 인식 엔진 (P1-11, v0.3 O3): which recogniser an OCR run uses.
  *
- *   자동             the native engine when the backend lists one (`ocr_capabilities`), Tesseract otherwise
+ *   자동             the native engine when the backend lists one (`ocr_capabilities`) and it reads the
+ *                    selected languages, Tesseract otherwise (`pickEngine`)
  *   Apple Vision     `ocr_recognize_native` on macOS 13+ — rendered and recognised in the backend
  *   Windows OCR      the same command on Windows (`Windows.Media.Ocr`, v0.3 O3)
  *   Tesseract        the bundled tesseract.js worker pool (every platform, fully offline)
@@ -20,7 +21,7 @@ import { useEffect, useState } from "react";
 import * as api from "../ipc/api";
 import { useMock } from "../ipc/env";
 import type { OcrCapabilities, OcrEngine } from "../ipc/types";
-import { BASELINE_LANGUAGES, isOcrLanguage, type OcrLanguage } from "./languages";
+import { BASELINE_LANGUAGES, OCR_LANGUAGES, isOcrLanguage, type OcrLanguage } from "./languages";
 import { ocrAssetUrl } from "./assets";
 
 /** What the user picks in the sheet. `vision` = the machine's native engine (Vision or Windows OCR). */
@@ -46,8 +47,12 @@ export function engineChoices(native: NativeEngine | null): { id: OcrEngineChoic
 /** Kept for callers of the P1-11 surface: the choices on a Mac with Vision. */
 export const ENGINE_CHOICES = engineChoices("vision");
 
-/** 자동's hint under the select, per native engine. */
-export function autoHintKey(native: NativeEngine | null): string {
+/**
+ * 자동's hint under the select, per native engine — or, when 자동 fell back to Tesseract because the
+ * native engine cannot read the selected languages (`pickEngine`), that.
+ */
+export function autoHintKey(native: NativeEngine | null, fellBack = false): string {
+  if (fellBack) return native === "windows" ? "ocr.engine.autoFallbackWindows" : "ocr.engine.autoFallback";
   return native === "windows" ? "ocr.engine.autoHintWindows" : "ocr.engine.autoHint";
 }
 
@@ -90,6 +95,59 @@ export function nativeEngineOf(caps: OcrCapabilities): NativeEngine | null {
   if (caps.engines.includes("windows")) return "windows";
   return null;
 }
+
+// --- pkg7-ocr, verification round 1 (O3): 자동 looks at the selected languages ---------------------
+
+/**
+ * The engine a run uses: [`resolveEngine`], except that 자동 takes the native engine only when it reads
+ * the selected languages. A Windows PC with only the en-US recogniser lists Windows OCR, and 자동 used
+ * to send a 한국어 + English selection (the default, and 설정's) to it — Korean dropped without a word,
+ * where v0.2 ran Tesseract `kor+eng`.
+ *
+ * The rule: the native engine when it reads every selected language; otherwise whichever engine reads
+ * Korean when Korean is selected, then whichever reads more of the selection, the native one on a tie.
+ * An explicit engine choice is always honoured.
+ */
+export function pickEngine(
+  choice: OcrEngineChoice, caps: OcrCapabilities | null, selected: readonly string[],
+): OcrRunEngine {
+  const native = caps ? nativeEngineOf(caps) : null;
+  if (choice !== "auto" || !native) return resolveEngine(choice, native);
+  const wanted = selected.filter(isOcrLanguage);
+  const score = (engine: OcrRunEngine): [number, number] => {
+    const reads = languagesFor(caps, engine);
+    return [
+      wanted.includes("kor") && reads.includes("kor") ? 1 : 0,
+      wanted.filter((c) => reads.includes(c)).length,
+    ];
+  };
+  const [nativeKor, nativeCount] = score(native);
+  if (nativeCount === wanted.length) return native;
+  const [tessKor, tessCount] = score("tesseract");
+  if (tessKor !== nativeKor) return tessKor > nativeKor ? "tesseract" : native;
+  return tessCount > nativeCount ? "tesseract" : native;
+}
+
+/** Whether 자동 settled on Tesseract on a machine that has a native engine (for the hint). */
+export function autoFellBack(choice: OcrEngineChoice, caps: OcrCapabilities | null, engine: OcrRunEngine): boolean {
+  return choice === "auto" && !!caps && nativeEngineOf(caps) !== null && engine === "tesseract";
+}
+
+/**
+ * The language chips to offer. Under 자동 every language either engine reads here — the engine follows
+ * the chips (`pickEngine`), so a chip must not vanish because the *current* pick cannot read it (turning
+ * 한국어 off would otherwise hide it for good). An explicit engine offers its own languages.
+ */
+export function choosableLanguages(
+  choice: OcrEngineChoice, caps: OcrCapabilities | null, engine: OcrRunEngine,
+): OcrLanguage[] {
+  const native = caps ? nativeEngineOf(caps) : null;
+  if (choice !== "auto" || !native) return languagesFor(caps, engine);
+  const union = new Set<string>([...languagesFor(caps, "tesseract"), ...languagesFor(caps, native)]);
+  return OCR_LANGUAGES.map((l) => l.code).filter((c) => union.has(c));
+}
+
+// ---------------------------------------------------------------------------------------------------
 
 /** The languages `engine` reads here, in chip order. */
 export function languagesFor(caps: OcrCapabilities | null, engine: OcrRunEngine): OcrLanguage[] {

@@ -205,3 +205,59 @@ describe("O2 / O3 — options and engines", () => {
     expect(runOcrJob.mock.calls[0][0].engine).toBe("windows");
   });
 });
+
+describe("O3 (verification round 1) — 자동 does not trade Korean for the native engine", () => {
+  const WINDOWS_EN_ONLY: OcrCapabilities = {
+    engines: ["tesseract", "windows"], languages: ["kor", "eng"],
+    engineLanguages: { tesseract: ["kor", "eng"], vision: [], windows: ["eng"] },
+  };
+
+  it("Windows with only the en-US recogniser: 설정's 한국어 + English runs Tesseract kor+eng", async () => {
+    capabilities(WINDOWS_EN_ONLY);
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    await screen.findByLabelText(t("ocr.engine"));
+    expect(chip("ocr.language.ko")).toHaveAttribute("aria-pressed", "true");
+    expect(chip("ocr.language.en")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(t("ocr.engine.autoFallbackWindows"))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0]).toMatchObject({ engine: "tesseract", langs: "kor+eng" });
+  });
+
+  it("English alone goes to Windows OCR, and the 한국어 chip stays on offer", async () => {
+    capabilities(WINDOWS_EN_ONLY);
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    await screen.findByLabelText(t("ocr.engine"));
+    fireEvent.click(chip("ocr.language.ko")!);
+    expect(chip("ocr.language.ko")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(t("ocr.engine.autoHintWindows"))).toBeInTheDocument();
+    fireEvent.click(chip("ocr.language.ko")!);
+    expect(chip("ocr.language.ko")).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(chip("ocr.language.ko")!);
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0]).toMatchObject({ engine: "windows", langs: "eng" });
+  });
+
+  it("an explicit Windows OCR choice is honoured (and offers only what it reads)", async () => {
+    capabilities(WINDOWS_EN_ONLY);
+    render(<OcrDialog />);
+    act(() => openOcrDialog(CONTEXT));
+    fireEvent.change(await screen.findByLabelText(t("ocr.engine")), { target: { value: "vision" } });
+    expect(chip("ocr.language.ko")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: t("ocr.start") }));
+    await waitFor(() => expect(runOcrJob).toHaveBeenCalled());
+    expect(runOcrJob.mock.calls[0][0]).toMatchObject({ engine: "windows", langs: "eng" });
+  });
+
+  it("여러 파일 OCR keeps the 한국어 chip and says 자동 will use Tesseract", async () => {
+    capabilities(WINDOWS_EN_ONLY);
+    render(<DialogHost />);
+    act(() => openDialog("batchOcr"));
+    await screen.findByLabelText(t("ocr.engine"));
+    expect(chip("ocr.language.ko")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(t("ocr.engine.autoFallbackWindows"))).toBeInTheDocument();
+  });
+});
