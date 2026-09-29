@@ -21,7 +21,7 @@ import type {
   ObjectId, ObjectsResult, ParagraphAlign, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, Rgb,
   CompareOptions, CompareReport, ComparePage, DiffOp, RecoveryEntry,
   DuplicateObjectsResult, RedactBatchMark, RedactBatchResult, AnnotationSummaryResult, ResizeMode,
-  ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus, LinkTarget, PageLabelRange,
+  ResizeTarget, SetPageBoxesArgs, SummaryFormat, TtsStatus, LinkTarget, PageLabelRange, ReadingOrder, WebLink,
   AppInfo, ProblemReport,
 } from "./types";
 import { labelsFor, normalizeRanges } from "../dialogs/pageLabels";
@@ -91,7 +91,15 @@ const pendingOpens: { path: string; source: "argv" | "macos-opened" | "drop" | "
  * P2 읽어 주기: one fake voice for the whole app. It "speaks" for a while proportional to the text
  * (so the bar can be seen in `vite dev`) unless stopped; tests call `ttsStop` or read `mockTts`.
  */
-export const mockTts = { speaking: false, text: "", rate: 1, lang: undefined as string | undefined, timer: 0 as ReturnType<typeof setTimeout> | 0 };
+export const mockTts = {
+  speaking: false, text: "", rate: 1, lang: undefined as string | undefined, timer: 0 as ReturnType<typeof setTimeout> | 0,
+  /** v0.3 (V4): the queued sentences and the one being read (`null` outside sentence mode) */
+  sentences: null as string[] | null, index: null as number | null,
+};
+/** v0.3 (U3): what `clear_render_cache` last freed, and how often it ran (tests read it). */
+export const mockRenderCache = { bytes: 12 * 1024 * 1024, clears: 0 };
+/** v0.3 (V1): PNGs `save_snapshot_png` wrote, by path. */
+export const mockSnapshots = new Map<string, number>();
 /** The media box of a mock page (P2 자르기): its crop box when first touched. */
 type MockGeom = PageGeom & { media?: Rect };
 
@@ -123,7 +131,7 @@ function lenientNight(value: unknown): Settings["night"] {
 const SETTINGS_ENUMS: Partial<Record<keyof Settings, readonly unknown[]>> = {
   locale: ["ko", "en"],
   theme: ["system", "light", "dark"],
-  defaultLayout: ["single", "continuous", "two"],
+  defaultLayout: ["single", "continuous", "two", "twoCover"],
   renderQuality: ["balanced", "high"],
   ocrDpi: ["auto", 200, 300, 400],
 };
@@ -1516,22 +1524,91 @@ export const mock = {
   },
 
   // 11a. read aloud (P2) --------------------------------------------------------
-  async ttsSpeak(a: { text: string; lang?: string; rate?: number }): Promise<TtsStatus> {
-    if (!a.text.trim()) throw err("invalidArgument", "there is no text to read");
-    if (mockTts.timer) clearTimeout(mockTts.timer);
+  async ttsSpeak(a: { text?: string; lang?: string; rate?: number; sentences?: string[]; startIndex?: number }): Promise<TtsStatus> {
     const rate = Math.min(2, Math.max(0.5, a.rate ?? 1));
-    Object.assign(mockTts, { speaking: true, text: a.text, rate, lang: a.lang });
+    if (a.sentences) {
+      // v0.3 (V4): one "utterance" per sentence, each start announced as `tts-progress`
+      const sentences = a.sentences;
+      const start = a.startIndex ?? 0;
+      if (!sentences.some((s) => s.trim())) throw err("invalidArgument", "there is no text to read");
+      if (start >= sentences.length) throw err("invalidArgument", `startIndex ${start} is past the last sentence`);
+      if (mockTts.timer) clearTimeout(mockTts.timer);
+      Object.assign(mockTts, { speaking: true, text: sentences.join(" "), rate, lang: a.lang, sentences, index: start });
+      const speak = (i: number) => {
+        mockTts.index = i;
+        appBus.emit("tts-progress", { sentenceIndex: i });
+        mockTts.timer = setTimeout(() => {
+          if (i + 1 < sentences.length) speak(i + 1);
+          else {
+            Object.assign(mockTts, { speaking: false, timer: 0, index: null });
+            appBus.emit("tts-progress", { sentenceIndex: null });
+          }
+        }, Math.min(4000, 300 + (sentences[i].length * 40) / rate));
+      };
+      queueMicrotask(() => {
+        if (mockTts.sentences === sentences && mockTts.index === start && mockTts.speaking) speak(start);
+      });
+      return mockTtsStatus();
+    }
+    const text = a.text ?? "";
+    if (!text.trim()) throw err("invalidArgument", "there is no text to read");
+    if (mockTts.timer) clearTimeout(mockTts.timer);
+    Object.assign(mockTts, { speaking: true, text, rate, lang: a.lang, sentences: null, index: null });
     mockTts.timer = setTimeout(() => {
       mockTts.speaking = false;
       mockTts.timer = 0;
-    }, Math.min(8000, 400 + (a.text.length * 40) / rate));
+    }, Math.min(8000, 400 + (text.length * 40) / rate));
     return mockTtsStatus();
   },
   async ttsStop(): Promise<TtsStatus> {
     if (mockTts.timer) clearTimeout(mockTts.timer);
+    const queued = mockTts.sentences !== null && mockTts.speaking;
     mockTts.timer = 0;
     mockTts.speaking = false;
+    mockTts.index = null;
+    if (queued) appBus.emit("tts-progress", { sentenceIndex: null });
     return mockTtsStatus();
+  },
+
+  // v0.3 pkg6 ----------------------------------------------------------------
+  /** V5: addresses in the mock page text, found like PDFium's detector (http(s)://, www., e-mail). */
+  async getWebLinks(a: { docId: DocId; page: PageIndex }): Promise<WebLink[]> {
+    const d = doc(a.docId);
+    if (!d.info.pages[a.page]) throw err("notFound", `page ${a.page}`);
+    const tp = textPage(d, a.page);
+    const chars = tp.chars.map((c) => String.fromCodePoint(c.code)).join("");
+    const out: WebLink[] = [];
+    for (const m of chars.matchAll(/(https?:\/\/|www\.)[^\s]+|[\w.+-]+@[\w-]+\.[\w.]+/g)) {
+      const start = m.index ?? 0;
+      const raw = m[0].replace(/[.,;:)]+$/, "");
+      const url = raw.includes("@") && !raw.includes("://") ? `mailto:${raw}` : raw.startsWith("www.") ? `http://${raw}` : raw;
+      const boxes = tp.chars.slice(start, start + raw.length).map((c) => c.box);
+      if (!boxes.length) continue;
+      const rect = boxes.reduce((u, b) => ({ l: Math.min(u.l, b.l), b: Math.min(u.b, b.b), r: Math.max(u.r, b.r), t: Math.max(u.t, b.t) }));
+      out.push({ url, rects: [rect], charStart: start, charCount: raw.length });
+    }
+    return out;
+  },
+  /** V6: the mock pages carry no structure tree — one run in content order. */
+  async getReadingOrder(a: { docId: DocId; page: PageIndex }): Promise<ReadingOrder> {
+    const d = doc(a.docId);
+    if (!d.info.pages[a.page]) throw err("notFound", `page ${a.page}`);
+    const n = textPage(d, a.page).chars.length;
+    return { tagged: false, runs: n ? [[0, n]] : [] };
+  },
+  async getDefaultSettings(): Promise<Settings> {
+    return { ...seedSettings(), author: "", signatures: [], toolDefaults: {}, night: "off" };
+  },
+  async clearRenderCache(): Promise<number> {
+    const freed = mockRenderCache.bytes;
+    mockRenderCache.bytes = 0;
+    mockRenderCache.clears += 1;
+    return freed;
+  },
+  async saveSnapshotPng(a: { path: string; bytes: number[] }): Promise<void> {
+    if (a.bytes.length < 8 || a.bytes[0] !== 0x89 || a.bytes[1] !== 0x50) throw err("invalidArgument", "not a PNG image");
+    if (!/\.png$/i.test(a.path)) throw err("invalidArgument", "a snapshot is saved as .png");
+    mockSnapshots.set(a.path, a.bytes.length);
   },
   async ttsStatus(): Promise<TtsStatus> {
     return mockTtsStatus();
@@ -1619,7 +1696,10 @@ export const mock = {
 
 function mockTtsStatus(): TtsStatus {
   const hangul = /[\uac00-\ud7a3]/.test(mockTts.text);
-  return { supported: true, speaking: mockTts.speaking, engine: "say", voice: hangul || mockTts.lang?.startsWith("ko") ? "Yuna" : null };
+  return {
+    supported: true, speaking: mockTts.speaking, engine: "say", voice: hangul || mockTts.lang?.startsWith("ko") ? "Yuna" : null,
+    sentenceIndex: mockTts.speaking ? mockTts.index : null,
+  };
 }
 
 /** `PageIndex[] | 'all'` → sorted, deduplicated, validated indices. */
@@ -2359,7 +2439,9 @@ export function resetMock(): void {
   stampsOf.clear();
   writtenFiles.clear();
   if (mockTts.timer) clearTimeout(mockTts.timer);
-  Object.assign(mockTts, { speaking: false, text: "", rate: 1, lang: undefined, timer: 0 });
+  Object.assign(mockTts, { speaking: false, text: "", rate: 1, lang: undefined, timer: 0, sentences: null, index: null });
+  Object.assign(mockRenderCache, { bytes: 12 * 1024 * 1024, clears: 0 });
+  mockSnapshots.clear();
   nextRecovery = 1;
   for (const job of jobs.values()) job.cancel();
   jobs.clear();

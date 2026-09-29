@@ -17,7 +17,7 @@ import type {
   ObjectsResult, OcrApplyPage, OcrEngine, ParagraphEdit, ParagraphEditResult, ParagraphProbe, Point, OcrPage, OpenRequest, OutlineNode, PageIndex, PageOp, Permissions, RecentEntry, RecoveryEntry, Rect,
   RedactPreview, RemoveStampsResult, ResizeMode, ResizeTarget, Rgb, SaveResult, SearchEvent,
   SetPageBoxesArgs, Settings, StampResult, StampRole, StampSpec, SummaryFormat, TextEditProbe, TtsStatus,
-  ViewportHint, LinkTarget, PageLabelRange,
+  ViewportHint, LinkTarget, PageLabelRange, ReadingOrder, WebLink,
   AppInfo, ProblemReport,
 } from "./types";
 
@@ -671,7 +671,11 @@ export function ocrRecognizeNative(
  * speaking. `lang` picks the voice (default: Korean when the text has Hangul); `rate` 0.5 … 2.
  * `unsupported` where there is no system voice.
  */
-export function ttsSpeak(a: { text: string; lang?: string; rate?: number }): Promise<TtsStatus> {
+export function ttsSpeak(a: {
+  text?: string; lang?: string; rate?: number;
+  /** v0.3 (V4): read one sentence per utterance from `startIndex`, announcing each (`tts-progress`) */
+  sentences?: string[]; startIndex?: number;
+}): Promise<TtsStatus> {
   return call("tts_speak", a, (mock) => mock.ttsSpeak(a));
 }
 
@@ -710,6 +714,35 @@ export function writeRecentThumbnail(a: { docId: DocId }): Promise<{ thumbId: st
 
 export function revealInFileManager(a: { path: string }): Promise<void> {
   return call("reveal_in_file_manager", a, (mock) => mock.revealInFileManager(a));
+}
+
+// --- v0.3 pkg6: web links, reading order, settings reset / cache, snapshot -----------------
+
+/** V5: the URLs PDFium detects in the page text (`FPDFLink_LoadWebLinks`). */
+export function getWebLinks(a: { docId: DocId; page: PageIndex }): Promise<WebLink[]> {
+  return call("get_web_links", a, (mock) => mock.getWebLinks(a));
+}
+
+/** V6: the page's text-layer runs in reading order (the structure tree's, when tagged). */
+export function getReadingOrder(a: { docId: DocId; page: PageIndex }): Promise<ReadingOrder> {
+  return call("get_reading_order", a, (mock) => mock.getReadingOrder(a));
+}
+
+/** U3 기본값으로 되돌리기: the built-in settings (the engine's `Settings::default()`). */
+export function getDefaultSettings(): Promise<Settings> {
+  return call("get_default_settings", {}, (mock) => mock.getDefaultSettings());
+}
+
+/** U3 캐시 비우기: drops every cached tile and page image; resolves with the bytes freed. */
+export function clearRenderCache(): Promise<number> {
+  return call("clear_render_cache", {}, (mock) => mock.clearRenderCache());
+}
+
+/** V1 스냅샷 › PNG로 저장…: the clipboard refused the image, so it goes to a picked `.png` file. */
+export function saveSnapshotPng(a: { path: string; bytes: Uint8Array }): Promise<void> {
+  // A JSON array: `Vec<u8>` on the Rust side (a typed array would serialise as an object).
+  const args = { path: a.path, bytes: Array.from(a.bytes) };
+  return call("save_snapshot_png", args, (mock) => mock.saveSnapshotPng(args));
 }
 
 export function getSettings(): Promise<Settings> {

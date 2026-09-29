@@ -59,6 +59,6 @@ status. Contract: `IPC_CONTRACT.md` §2 (`engineCrashed`, `open_document` `detai
 
 * H3's Thumbnails `aria-current` (pkg2), StampDialog `stamp.error.noImage` (T1) and SecurityDialog
   `dialog.security.empty` (pkg3).
-* V7's 스냅샷 segment (V1, pkg6): one more row in `READ_TOOLS` in `StatusBar.tsx`.
+* V7's 스냅샷 segment (V1, pkg6): one more row in `READ_TOOLS` in `StatusBar.tsx` — done in the v0.3 integration merge.
 * H2's "through H8's already-open check": the hand-off calls `app::files::push_open`, so whatever H8 adds
   there applies.

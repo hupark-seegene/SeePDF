@@ -75,6 +75,8 @@ export const KEYMAP: KeyBinding[] = [
   { id: "view.layout.single", labelKey: "view.layout.single", mac: ["Ctrl+1"], win: ["Ctrl+Shift+1"], when: "doc", group: "view" },
   { id: "view.layout.continuous", labelKey: "view.layout.continuous", mac: ["Ctrl+2"], win: ["Ctrl+Shift+2"], when: "doc", group: "view" },
   { id: "view.layout.twoPage", labelKey: "view.layout.twoPage", mac: ["Ctrl+3"], win: ["Ctrl+Shift+3"], when: "doc", group: "view" },
+  // v0.3 pkg6 (V5): 두 쪽 (표지 따로)
+  { id: "view.layout.twoCover", labelKey: "view.layout.twoCover", mac: ["Ctrl+4"], win: ["Ctrl+Shift+4"], when: "doc", group: "view" },
   { id: "view.rotateLeft", labelKey: "view.rotateLeft", mac: ["Cmd+L"], win: ["Ctrl+L"], when: "doc", group: "view" },
   { id: "view.rotateRight", labelKey: "view.rotateRight", mac: ["Cmd+R"], win: ["Ctrl+R"], when: "doc", group: "view" },
   { id: "view.night", labelKey: "view.night.label", mac: ["Ctrl+Cmd+N"], win: ["Ctrl+Shift+N"], when: "doc", group: "view" },
@@ -82,6 +84,8 @@ export const KEYMAP: KeyBinding[] = [
   { id: "view.fullScreen", labelKey: "menu.view.fullScreen", mac: ["Ctrl+Cmd+F"], win: ["F11"], when: "always", group: "view" },
   // P2 분할 보기: toggles; Esc (tool.none with nothing else to cancel) also closes it
   { id: "view.split", labelKey: "menu.view.split", mac: ["Alt+Cmd+S"], win: ["Ctrl+Alt+S"], when: "doc", group: "view" },
+  // v0.3 pkg6 (H9): 캐럿 탐색 — arrows move a text caret, ⇧+arrows select, N adds a note
+  { id: "view.caret", labelKey: "view.caret", mac: ["F7"], win: ["F7"], when: "doc", group: "view" },
 
   // Navigation ---------------------------------------------------------------
   { id: "go.nextPage", labelKey: "menu.go.nextPage", mac: ["ArrowDown", "PageDown", "Space"], win: ["ArrowDown", "PageDown", "Space"], when: "canvas", group: "go", sharesChordWith: "tool.hand" },
@@ -116,6 +120,8 @@ export const KEYMAP: KeyBinding[] = [
   { id: "tool.stamp", labelKey: "tool.stamp", mac: ["S"], win: ["S"], when: "canvas", group: "tool" },
   { id: "tool.signature", labelKey: "tool.signature", mac: ["G"], win: ["G"], when: "canvas", group: "tool" },
   { id: "tool.redact", labelKey: "tool.redact", mac: ["Shift+R"], win: ["Shift+R"], when: "canvas", group: "tool" },
+  // v0.3 pkg6 (V1): 스냅샷 — marquee a region, copied as an image
+  { id: "tool.snapshot", labelKey: "tool.snapshot", mac: ["Alt+Cmd+C"], win: ["Ctrl+Alt+C"], when: "canvas", group: "tool" },
   { id: "tool.none", labelKey: "menu.edit.deselect", mac: ["Escape"], win: ["Escape"], when: "canvas", group: "tool" },
 
   // 페이지 mode ---------------------------------------------------------------

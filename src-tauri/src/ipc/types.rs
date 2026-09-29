@@ -1346,6 +1346,9 @@ pub struct TtsStatus {
     pub engine: Option<TtsEngine>,
     /// The voice of the current (or last) utterance, when one was picked explicitly.
     pub voice: Option<String>,
+    /// v0.3 (V4): the sentence being read when `tts_speak` was given `sentences`.
+    #[serde(default)]
+    pub sentence_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1850,6 +1853,8 @@ pub enum Layout {
     Single,
     Continuous,
     Two,
+    /// v0.3 (pkg6, V5): 두 쪽 with the cover alone — page 1, then 2|3, 4|5, …
+    TwoCover,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2085,10 +2090,54 @@ pub struct ProblemReport {
     pub path: String,
 }
 
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg6-viewer-accessibility-settings: web links, reading order, read-aloud progress
+// ---------------------------------------------------------------------------------------
+
+/// `get_web_links` (V5): a URL PDFium found in the page **text** (`FPDFLink_LoadWebLinks`) —
+/// not a Link annotation. `rects` are one per line the address spans (PDF user space);
+/// `charStart` / `charCount` index the page's text layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebLink {
+    pub url: String,
+    pub rects: Vec<Rect>,
+    pub char_start: u32,
+    pub char_count: u32,
+}
+
+/// `get_reading_order` (V6): the page's text-layer char ranges `[start, end)` in reading order.
+/// `tagged` = the page has a structure tree with marked content, and `runs` follow its MCID
+/// sequence; otherwise one run covering the page in content order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingOrder {
+    pub tagged: bool,
+    pub runs: Vec<[u32; 2]>,
+}
+
+/// `tts-progress` (V4): the sentence the voice has started (`null` = the queue finished).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TtsProgressPayload {
+    pub sentence_index: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// v0.3 V5: `twoCover` is a layout the settings file and the recents accept.
+    #[test]
+    fn two_cover_layout_round_trips() {
+        let layout: Layout = serde_json::from_value(json!("twoCover")).unwrap();
+        assert_eq!(layout, Layout::TwoCover);
+        assert_eq!(
+            serde_json::to_value(Layout::TwoCover).unwrap(),
+            json!("twoCover")
+        );
+    }
 
     /// P2: `set_page_boxes` tells "leave the crop alone" (absent) from "reset it" (`null`),
     /// and `crop` takes a rect or `{ margins }`.

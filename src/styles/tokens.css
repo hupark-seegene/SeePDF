@@ -183,3 +183,37 @@
     --dur-slow: 0ms;
   }
 }
+
+/* v0.3 pkg6 (H9): Windows High Contrast / forced colours. The theme's colours are replaced by the
+   system palette, and box-shadows (the focus ring, every elevation) are dropped — so the focus ring
+   becomes an outline, and "pressed / selected" is carried by the system highlight instead of an
+   accent tint that the forced palette would erase. Page bitmaps are the document's own pixels and
+   are left alone (`forced-color-adjust` only touches CSS colours). */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
+
+  .icon-btn[data-active],
+  .segment[data-active],
+  .chip[data-active],
+  [role="tab"][aria-selected="true"],
+  [aria-pressed="true"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+    border-color: Highlight;
+  }
+
+  .icon-btn:disabled,
+  .segment:disabled,
+  button:disabled {
+    color: GrayText;
+  }
+
+  ::selection {
+    background: Highlight;
+    color: HighlightText;
+  }
+}

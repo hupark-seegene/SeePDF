@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AudioLines, ChevronLeft, ChevronRight, Columns2, Hand, Link2, Lock, Moon, MousePointer2, RotateCcw, RotateCw, Rows2, ShieldCheck, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AudioLines, Camera, ChevronLeft, ChevronRight, Columns2, Hand, Link2, Lock, Moon, MousePointer2, RotateCcw, RotateCw, Rows2, ShieldCheck, X, ZoomIn, ZoomOut } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { Tooltip } from "./Tooltip";
 import { resyncPanes } from "../viewer/panes";
@@ -22,15 +22,18 @@ const LAYOUTS: { id: ViewLayout; labelKey: string; keyId: string }[] = [
   { id: "single", labelKey: "view.layout.single", keyId: "view.layout.single" },
   { id: "continuous", labelKey: "view.layout.continuous", keyId: "view.layout.continuous" },
   { id: "two", labelKey: "view.layout.twoPage", keyId: "view.layout.twoPage" },
+  // v0.3 pkg6 (V5): 두 쪽 with the cover alone
+  { id: "twoCover", labelKey: "view.layout.twoCoverShort", keyId: "view.layout.twoCover" },
 ];
 
 /**
  * v0.3 pkg5 (V7): the 읽기 tools a mouse can latch — 선택 and 손 (drag pans a zoomed page; Esc returns
- * to 선택). V1 (pkg6) adds 스냅샷 as one more row here.
+ * to 선택) — plus V1's (pkg6) 스냅샷, which is one-shot: the marquee's release hands back to 선택.
  */
 const READ_TOOLS: { id: ToolId; labelKey: string; keyId: string; icon: ComponentType<IconProps> }[] = [
   { id: "select", labelKey: "tool.select", keyId: "tool.select", icon: MousePointer2 },
   { id: "hand", labelKey: "tool.hand", keyId: "view.handTool", icon: Hand },
+  { id: "snapshot", labelKey: "tool.snapshot", keyId: "tool.snapshot", icon: Camera },
 ];
 
 /** v0.3 pkg5 (H3): 진행률 N퍼센트 for a determinate bar, nothing for an indeterminate one. */

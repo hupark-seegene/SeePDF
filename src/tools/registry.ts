@@ -12,6 +12,7 @@ import { textBoxTool } from "./textbox";
 import { makeStampTool } from "./stamp";
 import { eraserTool } from "./eraser";
 import { selectTool } from "./select";
+import { snapshotTool } from "./snapshot";
 
 let registered = false;
 
@@ -33,6 +34,8 @@ export function registerTools(): void {
   toolController.register(textBoxTool);
   toolController.register(makeStampTool("stamp"));
   toolController.register(makeStampTool("signature"));
+  // v0.3 (V1): the marquee is the viewer's; the controller knows its cursor and Esc
+  toolController.register(snapshotTool);
 }
 
 /** Test seam: lets a suite re-register after `toolController` was driven by another test. */

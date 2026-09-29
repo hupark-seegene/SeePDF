@@ -13,11 +13,15 @@
  * controller — are mounted in the **focused** pane only; the other one is a read-only view until
  * a click focuses it. The main pane is always the first child of the same element, so opening or
  * closing the split never remounts it (its scroll position and tile inventory survive).
+ *
+ * v0.3 (V3): the panes are divided by a draggable, keyboard-operable splitter (`role="separator"`,
+ * 20–80 %, remembered per orientation in `viewStore.splitRatio`).
  */
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type CSSProperties, type RefObject } from "react";
 import type { DocGeneration, PageIndex } from "../ipc/types";
 import { useDocStore } from "../store/docStore";
-import { useViewStore, type PaneId } from "../store/viewStore";
+import { SPLIT_MAX, SPLIT_MIN, useViewStore, type PaneId, type SplitOrientation } from "../store/viewStore";
+import { useT } from "../i18n/useT";
 import { Scroller } from "./Scroller";
 import { TileManager } from "./TileManager";
 import type { PageLayerRenderer } from "./PageShell";
@@ -45,6 +49,8 @@ export function Viewer({ layers, fieldHighlight, renderFormWidgets, onPageRender
   const info = useDocStore((s) => s.info);
   const split = useViewStore((s) => s.split);
   const focusedPane = useViewStore((s) => s.focusedPane);
+  const ratio = useViewStore((s) => (s.split ? s.splitRatio[s.split.orientation] : 0.5));
+  const panesRef = useRef<HTMLDivElement>(null);
   const tilesRef = useRef<TileManager | null>(null);
   if (!tilesRef.current) tilesRef.current = new TileManager();
   // Perf probe: `__seepdfOpenAt` → `__seepdfFirstPaint` (PageShell) is the "open → first page
@@ -62,7 +68,7 @@ export function Viewer({ layers, fieldHighlight, renderFormWidgets, onPageRender
 
   if (!info) return null;
 
-  const pane = (id: PaneId) => {
+  const pane = (id: PaneId, paneStyle?: CSSProperties) => {
     const active = !split || focusedPane === id;
     return (
       <Scroller
@@ -70,6 +76,7 @@ export function Viewer({ layers, fieldHighlight, renderFormWidgets, onPageRender
         paneId={id}
         focused={active}
         split={!!split}
+        paneStyle={paneStyle}
         tiles={tilesRef.current ?? undefined}
         info={info}
         layers={active ? layers : undefined}
@@ -81,10 +88,85 @@ export function Viewer({ layers, fieldHighlight, renderFormWidgets, onPageRender
   };
 
   return (
-    <div className="viewer-panes" data-split={split?.orientation}>
-      {pane("main")}
-      {split && pane("second")}
+    <div className="viewer-panes" ref={panesRef} data-split={split?.orientation}>
+      {pane("main", split ? { flexGrow: ratio, flexShrink: 1, flexBasis: 0 } : undefined)}
+      {split && <SplitDivider orientation={split.orientation} ratio={ratio} container={panesRef} />}
+      {split && pane("second", { flexGrow: 1 - ratio, flexShrink: 1, flexBasis: 0 })}
     </div>
+  );
+}
+
+/** The share of `container` a pointer at (x, y) leaves to the first pane. */
+export function ratioAt(orientation: SplitOrientation, box: DOMRect, x: number, y: number): number {
+  const size = orientation === "side" ? box.width : box.height;
+  if (!(size > 0)) return 0.5;
+  return orientation === "side" ? (x - box.left) / size : (y - box.top) / size;
+}
+
+/** Arrow keys move the divider by this much; Home / End go to the limits. */
+const KEY_STEP = 0.05;
+
+function SplitDivider({
+  orientation,
+  ratio,
+  container,
+}: {
+  orientation: SplitOrientation;
+  ratio: number;
+  container: RefObject<HTMLDivElement | null>;
+}) {
+  const t = useT();
+  const dragging = useRef(false);
+  const set = useCallback((r: number) => useViewStore.getState().setSplitRatio(r, orientation), [orientation]);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragging.current = true;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const box = container.current?.getBoundingClientRect();
+    if (!dragging.current || !box) return;
+    set(ratioAt(orientation, box, e.clientX, e.clientY));
+  };
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragging.current = false;
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+  };
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const back = orientation === "side" ? "ArrowLeft" : "ArrowUp";
+    const on = orientation === "side" ? "ArrowRight" : "ArrowDown";
+    let next: number | null = null;
+    if (e.key === back) next = ratio - KEY_STEP;
+    else if (e.key === on) next = ratio + KEY_STEP;
+    else if (e.key === "Home") next = SPLIT_MIN;
+    else if (e.key === "End") next = SPLIT_MAX;
+    if (next === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    set(next);
+  };
+
+  return (
+    <div
+      className="split-divider"
+      role="separator"
+      tabIndex={0}
+      data-orientation={orientation}
+      aria-orientation={orientation === "side" ? "vertical" : "horizontal"}
+      aria-label={t("view.split.divider")}
+      aria-valuemin={Math.round(SPLIT_MIN * 100)}
+      aria-valuemax={Math.round(SPLIT_MAX * 100)}
+      aria-valuenow={Math.round(ratio * 100)}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onKeyDown={onKeyDown}
+      onDoubleClick={() => set(0.5)}
+    />
   );
 }
 

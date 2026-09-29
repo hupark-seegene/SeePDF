@@ -22,6 +22,7 @@ import { stepPage } from "../viewer/stepPage";
 import { editLeaveGuard, runAnnotCommand } from "../tools/commands";
 import { toggleFullScreen, toggleReadingMode } from "./readingMode";
 import { isEditingTarget } from "../keys/useKeymap";
+import { toast } from "./toastStore";
 import type { PageOp } from "../ipc/types";
 
 export type CommandId = string;
@@ -309,6 +310,18 @@ export function runCommand(id: CommandId, opts?: { momentary?: boolean }): void 
         return;
       case "view.layout.twoPage":
         view.setLayout("two");
+        return;
+      // v0.3 pkg6 (V5 두 쪽 표지 따로, H9 캐럿 탐색)
+      case "view.layout.twoCover":
+        view.setLayout("twoCover");
+        return;
+      case "view.caret":
+        if (info) {
+          void import("../viewer/text/caretKeys").then((m) => {
+            const on = m.toggleCaret();
+            toast(on ? "caret.on" : "caret.off", undefined, { timeoutMs: on ? 6000 : 2500 });
+          });
+        }
         return;
       case "view.rotateLeft":
         if (app.mode === "pages" && target.length) return runPages([{ kind: "rotate", pages: target, delta: 270 }]);

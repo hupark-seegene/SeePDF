@@ -117,6 +117,22 @@ export function tileGrid(widthPx: number, heightPx: number, tile = TILE_PX): { c
   return { cols: Math.max(1, Math.ceil(widthPx / tile)), rows: Math.max(1, Math.ceil(heightPx / tile)) };
 }
 
+/** 렌더링 품질 고품질 renders at this multiple of the display density (v0.3, U3)… */
+export const HIGH_QUALITY_FACTOR = 1.5;
+/** …but never denser than this (a 2× Retina screen renders at 3×, not 4.5× on a 3× one). */
+export const HIGH_QUALITY_MAX_DPR = 3;
+
+/**
+ * The density the page bitmaps and tiles are rendered at (`Settings.renderQuality`, v0.3 U3).
+ * 균형 is the display's own density — the page box stays exactly the bitmap's size; 고품질
+ * oversamples by 1.5 (capped), and the viewer CSS-scales the sharper bitmap down into the same box.
+ * The page box, the text layer and every overlay keep using the real density.
+ */
+export function renderDpr(dpr: number, quality: "balanced" | "high" | undefined): number {
+  if (quality !== "high") return dpr;
+  return Math.max(dpr, Math.min(dpr * HIGH_QUALITY_FACTOR, HIGH_QUALITY_MAX_DPR));
+}
+
 /** `sk` for a zoom percentage at the current display density (§9). */
 export function scaleKey(zoomPercent: number, dpr = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1): number {
   return Math.round(zoomPercent * dpr);

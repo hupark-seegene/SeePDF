@@ -1,9 +1,9 @@
 //! Text layer, page text, search and job cancellation — `IPC_CONTRACT.md` §6. Owner: Stage 0.
 
-use crate::engine::text::{layer, search, serialize};
+use crate::engine::text::{layer, search, serialize, structtree, weblinks};
 use crate::engine::types::CmdStatus;
 use crate::engine::{EngineHandle, Lane, Submit};
-use crate::ipc::types::{JobId, PageIndex, SearchEvent};
+use crate::ipc::types::{JobId, PageIndex, ReadingOrder, SearchEvent, WebLink};
 use crate::ipc::EngineError;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -40,6 +40,38 @@ pub async fn get_page_text(
         .call(Lane::Interactive, "get_page_text", move |st| {
             let doc = st.doc_mut(&doc_id)?;
             Ok(layer::page_text(doc, page)?.text.clone())
+        })
+        .await
+}
+
+/// v0.3 (V5): the URLs PDFium detects in the page text (`FPDFLink_LoadWebLinks`), for the
+/// 읽기-mode link layer. Read-only; nothing is written to the document.
+#[tauri::command]
+pub async fn get_web_links(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+) -> Result<Vec<WebLink>, EngineError> {
+    engine
+        .call(Lane::Interactive, "get_web_links", move |st| {
+            let doc = st.doc_mut(&doc_id)?;
+            weblinks::web_links(doc, page)
+        })
+        .await
+}
+
+/// v0.3 (V6): the page's text-layer runs in reading order — the structure tree's MCID order
+/// on a tagged page, content order otherwise. Read aloud and the screen-reader region use it.
+#[tauri::command]
+pub async fn get_reading_order(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+) -> Result<ReadingOrder, EngineError> {
+    engine
+        .call(Lane::Interactive, "get_reading_order", move |st| {
+            let doc = st.doc_mut(&doc_id)?;
+            structtree::reading_order(doc, page)
         })
         .await
 }

@@ -10,7 +10,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useMock } from "./env";
 import { appBus } from "./bus";
 import type {
-  DocChangedEvent, DocSavedEvent, EnginePressureEvent, OpenFileEvent, RecentsChangedEvent,
+  DocChangedEvent, DocSavedEvent, EnginePressureEvent, OpenFileEvent, RecentsChangedEvent, TtsProgressEvent,
   EngineCrashedEvent, ThemeChangedEvent,
 } from "./types";
 
@@ -101,6 +101,11 @@ export function emitThemeChanged(e: ThemeChangedEvent): void {
     return;
   }
   void emit("theme-changed", e).catch(() => undefined);
+}
+
+/** v0.3 (V4): read aloud started a sentence (`sentenceIndex`), or finished its queue (`null`). */
+export function onTtsProgress(handler: (e: TtsProgressEvent) => void): Unsubscribe {
+  return subscribe("tts-progress", handler);
 }
 
 /** Native macOS menu item -> the focused window. `id` matches a keymap id (`src/keys/keymap.ts`). */

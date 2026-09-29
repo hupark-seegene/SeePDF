@@ -122,6 +122,115 @@ fn tts_speak_stop_and_status_with_a_fake_speaker() {
     assert!(!last.load(Ordering::SeqCst));
 }
 
+/// v0.3 (V4): sentences are queued on the Rust side, one utterance each; every start is
+/// reported (`tts-progress`), the queue survives the gap between two sentences, a new speak
+/// from `startIndex` (a 속도 change) continues there, and stop ends the queue.
+#[test]
+fn tts_sentence_queue_reports_progress_and_restarts_mid_text() {
+    use std::time::{Duration, Instant};
+
+    let speaker = FakeSpeaker::default();
+    let tts = Arc::new(Tts::with_speaker(Box::new(speaker.clone())));
+    let progress: Arc<Mutex<Vec<Option<u32>>>> = Arc::default();
+    {
+        let progress = progress.clone();
+        tts.set_progress_listener(move |i| progress.lock().unwrap().push(i));
+    }
+    let wait_for = |n: usize| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while speaker.flags.lock().unwrap().len() < n {
+            assert!(Instant::now() < deadline, "sentence {n} never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let finish = |i: usize| speaker.flags.lock().unwrap()[i].store(false, Ordering::SeqCst);
+
+    let sentences = vec![
+        "첫 번째 문장입니다.".to_string(),
+        "두 번째 문장입니다!".to_string(),
+        "Third one?".to_string(),
+    ];
+    let status = tts
+        .speak_sentences(sentences.clone(), 0, None, Some(1.0))
+        .expect("speak sentences");
+    assert!(status.speaking);
+    assert_eq!(status.sentence_index, Some(0));
+    assert_eq!(speaker.requests.lock().unwrap()[0].text, sentences[0]);
+    // the language comes from the whole text: every sentence keeps the Korean voice
+    assert_eq!(
+        speaker.requests.lock().unwrap()[0].lang.as_deref(),
+        Some("ko")
+    );
+
+    finish(0);
+    wait_for(2);
+    assert_eq!(speaker.requests.lock().unwrap()[1].text, sentences[1]);
+    let status = tts.status();
+    assert!(status.speaking);
+    assert_eq!(status.sentence_index, Some(1));
+
+    // 속도 change: the text restarts at the current sentence, at the new rate
+    tts.speak_sentences(sentences.clone(), 1, None, Some(1.5))
+        .expect("restart");
+    {
+        let flags = speaker.flags.lock().unwrap();
+        assert!(
+            !flags[1].load(Ordering::SeqCst),
+            "the old sentence was stopped"
+        );
+        let requests = speaker.requests.lock().unwrap();
+        assert_eq!(requests[2].text, sentences[1]);
+        assert_eq!(requests[2].rate, 1.5);
+    }
+    finish(2);
+    wait_for(4);
+    assert_eq!(speaker.requests.lock().unwrap()[3].text, sentences[2]);
+    assert_eq!(
+        speaker.requests.lock().unwrap()[3].lang.as_deref(),
+        Some("ko")
+    );
+
+    // the last sentence ends: the queue is done and says so
+    finish(3);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while tts.status().speaking {
+        assert!(Instant::now() < deadline, "the queue did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while progress.lock().unwrap().last() != Some(&None) {
+        assert!(Instant::now() < deadline, "no end-of-queue progress");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        *progress.lock().unwrap(),
+        vec![Some(0), Some(1), Some(1), Some(2), None]
+    );
+    // nothing else was started by a stale driver
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(speaker.requests.lock().unwrap().len(), 4);
+
+    // stop ends a running queue and reports it
+    tts.speak_sentences(sentences.clone(), 2, None, None)
+        .unwrap();
+    assert!(!tts.stop().speaking);
+    assert_eq!(progress.lock().unwrap().last(), Some(&None));
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(
+        speaker.requests.lock().unwrap().len(),
+        5,
+        "no sentence after stop"
+    );
+
+    // refused: nothing to read, or a start past the end
+    let empty = tts
+        .speak_sentences(vec![" ".into()], 0, None, None)
+        .unwrap_err();
+    assert_eq!(empty.code, ErrorCode::InvalidArgument);
+    let past = tts.speak_sentences(sentences, 3, None, None).unwrap_err();
+    assert_eq!(past.code, ErrorCode::InvalidArgument);
+}
+
 #[test]
 fn tts_is_unsupported_without_a_system_voice() {
     let tts = Tts::with_speaker(Box::new(NoSpeaker));

@@ -75,6 +75,11 @@ pub const MENU_IDS: &[&str] = &[
     "view.actualSize",
     "view.fitPage",
     "view.fitWidth",
+    // v0.3 pkg6 (V5): the four layouts, 두 쪽 (표지 따로) included
+    "view.layout.single",
+    "view.layout.continuous",
+    "view.layout.twoPage",
+    "view.layout.twoCover",
     "view.readingMode",
     "view.night",
     "view.readAloud",
@@ -161,6 +166,14 @@ const LABELS: &[(&str, &str, &str)] = &[
     ("view.actualSize", "실제 크기", "Actual Size"),
     ("view.fitPage", "페이지에 맞춤", "Fit Page"),
     ("view.fitWidth", "너비에 맞춤", "Fit Width"),
+    ("view.layout.single", "단일 페이지", "Single Page"),
+    ("view.layout.continuous", "연속 스크롤", "Continuous"),
+    ("view.layout.twoPage", "두 쪽", "Two Pages"),
+    (
+        "view.layout.twoCover",
+        "두 쪽 (표지 따로)",
+        "Two Pages (Cover Alone)",
+    ),
     ("view.readingMode", "읽기 모드", "Reading Mode"),
     ("view.night", "야간 모드", "Night Mode"),
     (
@@ -338,6 +351,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>, locale: Locale) -> tauri::Result<Me
         .item(&item("view.actualSize", Some("CmdOrCtrl+0"))?)
         .item(&item("view.fitPage", Some("CmdOrCtrl+9"))?)
         .item(&item("view.fitWidth", Some("CmdOrCtrl+8"))?)
+        .separator()
+        .item(&item("view.layout.single", Some("Ctrl+1"))?)
+        .item(&item("view.layout.continuous", Some("Ctrl+2"))?)
+        .item(&item("view.layout.twoPage", Some("Ctrl+3"))?)
+        .item(&item("view.layout.twoCover", Some("Ctrl+4"))?)
         .separator()
         .item(&item("view.readingMode", Some("Ctrl+Cmd+R"))?)
         // 끄기 → 어둡게 → 세피아 (P1-10); the item cycles, like the keymap row and the status bar.

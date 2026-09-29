@@ -99,10 +99,24 @@ pub fn get_settings(app: AppHandle) -> Settings {
 /// it (STAGE0 §4.6). Only when the locale actually moved: `set_settings` is also how the
 /// theme, the zoom default and every tool default are written, and rebuilding the macOS menu
 /// on each of those would flash the menu bar.
+///
+/// v0.3 (U3): a new 캐시 크기 applies at once — the tile cache evicts down to it (no pdfium,
+/// so it runs right here, not on the engine thread).
 #[tauri::command]
-pub fn set_settings(app: AppHandle, patch: serde_json::Value) -> Result<Settings, EngineError> {
-    let before = store::get_settings(&app).locale;
+pub fn set_settings(
+    app: AppHandle,
+    engine: State<'_, EngineHandle>,
+    patch: serde_json::Value,
+) -> Result<Settings, EngineError> {
+    let previous = store::get_settings(&app);
+    let before = previous.locale;
     let settings = store::set_settings(&app, patch)?;
+    if settings.tile_cache_mb != previous.tile_cache_mb {
+        engine
+            .shared
+            .tiles
+            .set_budget(tile_cache_bytes(settings.tile_cache_mb));
+    }
     #[cfg(target_os = "macos")]
     if settings.locale != before {
         crate::app::menu::rebuild(&app, settings.locale);
@@ -110,6 +124,51 @@ pub fn set_settings(app: AppHandle, patch: serde_json::Value) -> Result<Settings
     #[cfg(not(target_os = "macos"))]
     let _ = before;
     Ok(settings)
+}
+
+// --- v0.3 pkg6 (U3 설정 › 고급, V1 스냅샷) -------------------------------------------------
+
+/// `Settings.tileCacheMb` → the tile cache budget in bytes (16 MB … 1 GB, as at startup).
+pub fn tile_cache_bytes(mb: u32) -> usize {
+    (mb.clamp(16, 1024) as usize) * 1024 * 1024
+}
+
+/// 기본값으로 되돌리기: the built-in settings, so the frontend can reset to them without a
+/// second copy of the defaults (it keeps the author, the saved signatures and anything it
+/// does not know about).
+#[tauri::command]
+pub fn get_default_settings() -> Settings {
+    Settings::default()
+}
+
+/// 캐시 비우기: drops every encoded tile and page image. No pdfium; pages re-render on demand.
+/// Returns the bytes freed.
+#[tauri::command]
+pub fn clear_render_cache(engine: State<'_, EngineHandle>) -> u64 {
+    let freed = engine.shared.tiles.bytes() as u64;
+    engine.shared.tiles.clear();
+    freed
+}
+
+/// 스냅샷 › PNG로 저장… (V1): the clipboard refused the image, so it goes to the file the user
+/// picked in the save panel. Only a PNG (signature checked) to a `.png` path is written.
+#[tauri::command]
+pub async fn save_snapshot_png(path: String, bytes: Vec<u8>) -> Result<(), EngineError> {
+    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if !bytes.starts_with(PNG) {
+        return Err(EngineError::invalid("not a PNG image"));
+    }
+    let target = std::path::PathBuf::from(&path);
+    let is_png = target
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"));
+    if !is_png {
+        return Err(EngineError::invalid("a snapshot is saved as .png"));
+    }
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&target, &bytes))
+        .await
+        .map_err(|e| EngineError::io(format!("save snapshot: {e}")))?
+        .map_err(|e| EngineError::io(format!("{path}: {e}")))
 }
 
 /// Not part of the contract's command list: a diagnostics read the status bar and bug

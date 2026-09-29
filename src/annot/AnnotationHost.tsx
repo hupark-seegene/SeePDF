@@ -9,7 +9,7 @@
  */
 import { useSyncExternalStore } from "react";
 import * as api from "../ipc/api";
-import type { AnnotId, AnnotSpec, PageIndex } from "../ipc/types";
+import type { Annot, AnnotId, AnnotSpec, PageIndex, Point } from "../ipc/types";
 import type { PageLayerContext, PageLayers } from "../viewer";
 import { useSelectionStore } from "../viewer";
 import { DRAWING_TOOLS, MARKUP_TOOLS, toolController, type ToolSink } from "../tools/ToolController";
@@ -165,27 +165,52 @@ function duplicateSelection(): boolean {
   return true;
 }
 
-/** The annotation clipboard is in-process: an `AnnotSpec` survives a page change and a paste. */
-let clipboard: { spec: AnnotSpec }[] = [];
+/**
+ * The annotation clipboard is in-process: an `AnnotSpec` survives a page change and a paste. The
+ * source annotation rides along (v0.3, V2) so the canvas menu's 붙여넣기 can place the copy at the
+ * point that was right-clicked.
+ */
+let clipboard: { spec: AnnotSpec; annot: Annot }[] = [];
+
+function copyAnnots(entries: [PageIndex, AnnotId[]][]): boolean {
+  const next: { spec: AnnotSpec; annot: Annot }[] = [];
+  for (const [page, ids] of entries) {
+    for (const a of annotsOnPage(page).filter((x) => ids.includes(x.id))) {
+      const spec = specFromAnnot(a);
+      if (spec) next.push({ spec, annot: a });
+    }
+  }
+  if (next.length === 0) return false;
+  clipboard = next;
+  return true;
+}
 
 function copySelection(cut: boolean): boolean {
   const map = selectionByPage();
   if (map.size === 0) return false;
-  clipboard = [];
-  for (const [page, ids] of map) {
-    for (const a of annotsOnPage(page).filter((x) => ids.includes(x.id))) {
-      const spec = specFromAnnot(a);
-      if (spec) clipboard.push({ spec });
-    }
-  }
-  if (cut) deleteSelection();
-  return clipboard.length > 0;
+  const copied = copyAnnots([...map]);
+  if (cut && copied) deleteSelection();
+  return copied;
 }
 
 function pasteClipboard(): boolean {
   if (clipboard.length === 0) return false;
   const page = currentPage();
   for (const item of clipboard) void createAnnotation(page, item.spec, { select: false });
+  return true;
+}
+
+/** V2 붙여넣기 on the canvas: the copies keep their arrangement, top-left at `at` (PDF user space). */
+function pasteAt(page: PageIndex, at: Point): boolean {
+  if (clipboard.length === 0) return false;
+  const left = Math.min(...clipboard.map((c) => c.annot.rect.l));
+  const top = Math.max(...clipboard.map((c) => c.annot.rect.t));
+  const dx = at[0] - left;
+  // `specFromAnnot` takes dy downward (screen sense): y_new = y - dy
+  const dy = top - at[1];
+  for (const item of clipboard) {
+    void createAnnotation(page, specFromAnnot(item.annot, dx, dy) ?? item.spec, { select: false });
+  }
   return true;
 }
 
@@ -420,7 +445,17 @@ function start(): () => void {
   const offDragHide = startDragHide();
   const offToolDefaults = startToolDefaultsSync();
   const offForms = startFormSync();
-  setAnnotCommandHandler((id) => {
+  setAnnotCommandHandler((id, arg) => {
+    // v0.3 (V2): the canvas context menu's 복사 / 붙여넣기, in any mode
+    if (id === "annot.copy") {
+      const a = arg as { page: PageIndex; ids: AnnotId[] };
+      return copyAnnots([[a.page, a.ids]]);
+    }
+    if (id === "annot.canPaste") return clipboard.length > 0;
+    if (id === "annot.pasteAt") {
+      const a = arg as { page: PageIndex; at: Point };
+      return pasteAt(a.page, a.at);
+    }
     if (useAppStore.getState().mode !== "annotate") return false;
     switch (id) {
       case "edit.delete":

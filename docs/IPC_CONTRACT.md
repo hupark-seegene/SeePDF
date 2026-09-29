@@ -226,7 +226,11 @@ export interface EngineStats {
 ```
 
 `render_page_raw` exists for the 스냅샷 tool and the print path (regions the frontend composites itself);
-tiles never use it. Owner: S0 (render). Features F-02, F-26.
+tiles never use it — v0.3 (V1): 스냅샷 renders the marquee's `rect` at 2× the on-screen device scale (both edges
+≤ 8 192 px, ≤ 36 M px in all — the engine refuses a region over 40 M px) and turns it by the view rotation in the webview. Owner: S0 (render). Features F-02, F-26.
+
+`engine_stats` is **dev / diagnostics only** (v0.3, H5): the devtools console and bug reports read it; no UI
+calls it, and its shape may change without notice.
 
 **분할 보기 (P2).** The engine has one viewport per process, so the two panes of a split send **one** hint:
 `firstPage` / `lastPage` span both panes' on-screen pages, `centrePage` is the focused pane's, and `scaleKey` /
@@ -270,6 +274,32 @@ pub async fn search_start(engine: State<'_, EngineHandle>, jobs: State<'_, Jobs>
 | `get_page_text` | `page.text()?.all()` (cached) | S0 | F-06, F-25 |
 | `search_start` | one `Lane::Background` command per page, outward from `fromPage`, shared `JobToken` | S0 | F-07 |
 | `cancel_job` | flips the job's `AtomicBool` | S0 | F-07, F-21, F-24 |
+| `get_web_links` (v0.3) | `FPDFLink_LoadWebLinks` on a text page of our own (`engine/raw/weblinks.rs`) | pkg6 | V5 |
+| `get_reading_order` (v0.3) | `FPDF_StructTree_*` MCID walk × `FPDFText_GetTextObject` → `FPDFPageObj_GetMarkedContentID` | pkg6 | V6 |
+
+**v0.3 (pkg6-viewer-accessibility-settings).**
+
+```ts
+export interface WebLink { url: string; rects: Rect[]; charStart: number; charCount: number }
+get_web_links(a: { docId: DocId; page: PageIndex }): Promise<WebLink[]>          // V5
+export interface ReadingOrder { tagged: boolean; runs: [number, number][] }
+get_reading_order(a: { docId: DocId; page: PageIndex }): Promise<ReadingOrder>   // V6
+```
+
+`get_web_links` returns the addresses PDFium's own detector finds in the page **text** — `http(s)://…`, `www.…`
+(returned as `http://www.…`) and e-mail addresses (returned as `mailto:…`) — not Link annotations; `rects` are one
+per line the address spans (PDF user space), `charStart` / `charCount` index the text layer (§10.1). Nothing is
+written. The 읽기-mode link layer draws them as hit boxes and follows a click through the same 웹 주소 열기 confirm
+(http(s) / mailto only) as a Link annotation's URI; an address a Link annotation already covers is not doubled.
+
+`get_reading_order` gives the page's text-layer char ranges `[start, end)` in reading order. On a page with a
+structure tree (a tagged PDF) the runs follow the MCID sequence of a depth-first `/K` walk (a kid element's subtree in
+place, a marked-content kid as its MCID, so interleaved kids keep their order); each char's MCID is that of the text
+object that drew it; a generated `\r\n` stays with the run before it; content the tree does not reference
+(artifacts: running heads, page numbers) follows every tagged run in content order — nothing is dropped. `tagged:
+false` = no structure tree on the page (or none referencing its content): one run `[0, charCount]`, content order.
+Read aloud and the screen-reader text region use it; the frontend only asks when `DocInfo.tagged` is true. PDFium
+reads tags but cannot write them, so this is read-only.
 
 ---
 
@@ -521,6 +551,11 @@ copy PDFium could not write (an inline image) → `unsupported` (detail `notWrit
 at the end of its original's content stream, so on a page with several streams it may sit below later
 objects. `newObjectIds` are matched by type and expected bounds in the re-listed page, in request order
 (sorted, deduplicated ids). `stale` / `notFound` as for the other object commands.
+
+v0.3 (H5): `probe_text_edit` is **superseded** in the UI — 문단 편집 uses `probe_paragraph` / `edit_paragraph`, and a
+크기 / 색상 change (`edit_text_object` with no `text`) takes the engine's `fontCoverage` answer as its probe: the
+frontend then asks 글꼴이 대체됩니다 and retries with `allowFontSubstitution: true`. The command stays for scripts and
+tests.
 
 Engine: `engine/objects/`. `probe_text_edit` runs the trial coverage check (apply `set_text`, reopen
 `page.text()`, require `loose_bounds().width() > 0` for every non-generated char **including spaces**,
@@ -801,7 +836,9 @@ remove_metadata(a: { docId: DocId }): Promise<DocInfo>                          
 set_metadata(a: { docId: DocId; meta: DocMeta }): Promise<DocInfo>                                 // P1, implemented (Stage 3, lopdf)
 ```
 
-`apply_redactions` re-extracts the page text after `regenerate_content()` and fails with `verifyFailed`
+`apply_redactions` is **legacy** (v0.3, H5): the UI applies every mark through `apply_redactions_batch` (one undo
+step for all pages); the single-page command stays for scripts and tests. `apply_redactions` re-extracts the page
+text after `regenerate_content()` and fails with `verifyFailed`
 (rolling back to the snapshot) if any marked string survives — a fake redaction is never shipped.
 `apply_redactions_batch` (Stage 8) merges the marks per page (entries with no rects are ignored), checks the
 form-field refusal (`unsupported`) on **every** page before touching any, then runs the per-page apply for each
@@ -1149,6 +1186,7 @@ Semantics:
 'doc-saved'        { docId: DocId; path: string; docGeneration: DocGeneration }   // a save: generation unchanged, no doc-changed
 'recents-changed'  {}
 'engine-pressure'  { level: 'normal' | 'high' }         // budgets halved; the frontend lowers MAX_MOUNTED_TILES
+'tts-progress'     { sentenceIndex: number | null }     // v0.3: read aloud started sentence i; null = the queue ended
 'menu:<id>'        {}                                   // native macOS menu item -> the focused window
 // v0.3 pkg5
 'engine-crashed'   { docIds: DocId[]; label: string }   // H4: a panicking command closed these; their windows reopen them
@@ -1165,6 +1203,17 @@ export type JobEvent =
   | { type: 'cancelled'; jobId: JobId; done: number }
   | { type: 'error'; jobId: JobId; error: EngineError };
 ```
+
+**`engine-pressure`** (emitted since v0.3, H5) comes from the tile cache (`engine/render/cache.rs`), never from
+the engine thread: `high` when either load exceeds 85 % of its budget, `normal` again only below 70 % (hysteresis).
+The two loads: the tile cache's **churn** — bytes evicted in the last 10 s against the cache budget (an LRU sits at
+~100 % of its budget in steady state, so fullness is no signal; a working set that no longer fits is; evictions
+caused by lowering 설정 › 캐시 크기 are not churn, and a budget change restarts the window) — and the
+process RSS against 1 GiB (the 400 MB idle budget of ARCHITECTURE §13 plus the 256 MiB undo RAM budget), sampled
+every 3 s by a monitor thread, which is also what brings the level back while nothing renders. The viewer halves
+its in-flight and mounted-tile budgets while `high` (`TileManager.setPressure`).
+
+**`tts-progress`** (v0.3, V4): see §11a.
 
 Channels are used by `search_start` (own event type), `export_images`, `export_flattened`,
 `split_document`, `ocr_apply`, `scan_annotations`, `save_document`, `compress_estimate`, `compare_documents`. Every job id can be cancelled with
@@ -1268,7 +1317,7 @@ it in `ImageData` → `createImageBitmap`.
 export interface RecentEntry {
   path: string; name: string; dir: string; pages: number; bytes: number;
   lastOpened: string; lastPage: PageIndex; zoomPercent: number;
-  layout: 'single' | 'continuous' | 'two'; pinned: boolean; thumbId: string | null;
+  layout: 'single' | 'continuous' | 'two' | 'twoCover'; pinned: boolean; thumbId: string | null;
 }
 get_recent(): Promise<RecentEntry[]>
 update_recent(a: { entry: RecentEntry }): Promise<void>
@@ -1280,7 +1329,8 @@ reveal_in_file_manager(a: { path: string }): Promise<void>
 
 export interface Settings {
   locale: 'ko' | 'en'; theme: 'system' | 'light' | 'dark';
-  defaultLayout: 'single' | 'continuous' | 'two'; defaultZoom: 'fit-width' | 'fit-page' | 'actual' | number;
+  defaultLayout: 'single' | 'continuous' | 'two' | 'twoCover';   // v0.3: twoCover = 두 쪽 (표지 따로)
+  defaultZoom: 'fit-width' | 'fit-page' | 'actual' | number;
   restorePosition: boolean; author: string; renderQuality: 'balanced' | 'high';
   tileCacheMb: number; recentsCount: number;   // Stage 2: first-class, was `toolDefaults.recentsCount`
   backupsEnabled: boolean; ocrLanguages: string[]; ocrDpi: 'auto' | 200 | 300 | 400;
@@ -1297,7 +1347,22 @@ get_settings(): Promise<Settings>
 set_settings(a: { patch: Partial<Settings> }): Promise<Settings>
 write_signature_image(a: { bytes: number[] }): Promise<string>   // Stage 6b (P1-9): PNG → absolute path
 list_pdf_files(a: { dir: string; recursive?: boolean }): Promise<string[]>   // P2 여러 파일에서 검색 › 폴더 추가
+// v0.3 pkg6
+get_default_settings(): Promise<Settings>                        // U3 기본값으로 되돌리기
+clear_render_cache(): Promise<number>                            // U3 캐시 비우기 → bytes freed
+save_snapshot_png(a: { path: string; bytes: number[] }): Promise<void>   // V1 스냅샷 › PNG로 저장…
 ```
+
+**v0.3 (U3).** `renderQuality` takes effect: `high` renders page bitmaps and tiles at 1.5 × the display density
+(at most 3), so `sk = round(zoom × dpr × 1.5)`, and the viewer CSS-scales the denser bitmap into the same page box;
+a whole-page bitmap then serves as its own placeholder (no low-resolution draft pass). `balanced` is unchanged.
+`set_settings` applies a new `tileCacheMb` at once: the tile cache's budget changes and it evicts least recently used
+entries down to it (`TileCache::set_budget`, no pdfium — it runs on the command thread). `get_default_settings` is
+`Settings::default()`; 기본값으로 되돌리기 writes it with `set_settings` minus `author`, `signatures` and `stamps` (the
+user's own data; recents are a separate file). `clear_render_cache` empties the encoded tile / page cache (no pdfium)
+and returns the bytes it held. **`save_snapshot_png`** writes a PNG the 스냅샷 tool could not put on the clipboard to
+the path the save panel returned: the bytes must start with the PNG signature and the path end in `.png`
+(`invalidArgument` otherwise); file I/O on `spawn_blocking`, errors `io`.
 
 **`list_pdf_files`** (P2): every `*.pdf` (extension in any case) below `dir`, sorted by path — recursive unless
 `recursive: false`, at most 16 levels and 2 000 paths, hidden entries (`.name`) skipped, symbolic links not followed.
@@ -1330,8 +1395,12 @@ paths to the fs scope automatically.
 ### 11a. Read aloud — 읽어 주기 (P2)
 
 ```ts
-export interface TtsStatus { supported: boolean; speaking: boolean; engine: 'say' | 'sapi' | null; voice: string | null }
-tts_speak(a: { text: string; lang?: string; rate?: number }): Promise<TtsStatus>   // rate 0.5 … 2, default 1
+export interface TtsStatus {
+  supported: boolean; speaking: boolean; engine: 'say' | 'sapi' | null; voice: string | null;
+  sentenceIndex?: number | null;   // v0.3: the sentence being read (sentence mode)
+}
+tts_speak(a: { text?: string; lang?: string; rate?: number;
+               sentences?: string[]; startIndex?: number }): Promise<TtsStatus>   // rate 0.5 … 2, default 1
 tts_stop(): Promise<TtsStatus>
 tts_status(): Promise<TtsStatus>
 ```
@@ -1347,6 +1416,15 @@ the system voice. One utterance for the whole app: `tts_speak` stops the current
 state being dropped and `RunEvent::Exit` kill the process. `speaking` turns false by itself when the voice
 ends (the frontend polls `tts_status` every 500 ms while its bar is up). Errors: `invalidArgument` (blank text,
 > 200 000 characters, a non-positive rate), `unsupported`.
+
+**Sentences (v0.3, V4).** With `sentences` (the frontend splits the text Korean-aware — `src/tts/sentences.ts` — and
+keeps each sentence's text-layer ranges) `text` is ignored: the queue is kept in Rust and spoken one utterance per
+sentence from `startIndex` (default 0); a driver thread starts the next as soon as one ends (checked every 40 ms)
+and emits **`tts-progress { sentenceIndex }`** as each starts, then `{ sentenceIndex: null }` when the queue ends or
+is stopped. The voice's language is picked once for the whole text. `tts_status` reports `sentenceIndex` and stays
+`speaking` between two sentences. A 속도 change is a new `tts_speak` with the same sentences and `startIndex` = the
+current sentence, so reading continues where it was. Errors add: every sentence blank, `startIndex` past the end
+(`invalidArgument`).
 
 ### 11b. Diagnostics, about, licences (v0.3 pkg5)
 
@@ -1390,7 +1468,7 @@ third_party_notices(): Promise<string>          // H11: SeePDF 정보 › 오픈
 | `undo`, `redo` | S0 engine-core (history) | F-15 |
 | `list_annotations`, `scan_annotations`, `create_annotation`, `update_annotation`, `delete_annotations`, `set_annotations_hidden` | (a) backend annotations | F-08…F-14 |
 | `list_form_fields`, `set_form_field_value`, `reset_form` | (a) backend forms | F-20 |
-| `redact_preview`, `apply_redactions` | (a) backend redaction | F-22 |
+| `redact_preview`, `apply_redactions` (legacy since v0.3: the UI uses `apply_redactions_batch`) | (a) backend redaction | F-22 |
 | `apply_redactions_batch` | Stage 8, `engine/redact` | F-22 |
 | `page_ops`, `extract_pages`, `split_document`, `merge_documents` | (b) backend pages | F-16 |
 | `list_page_objects`, `probe_text_edit`, `edit_text_object`, `add_text_object`, `add_image_object`, `transform_object`, `delete_objects` | (b) backend objects | F-17, F-18, F-19 |
@@ -1412,6 +1490,8 @@ third_party_notices(): Promise<string>          // H11: SeePDF 정보 › 오픈
 | `reply_annotation` | P2, `engine/annot/reply.rs` (lopdf via `registry::mutate_bytes`) | P2 threads |
 | `list_pdf_files` | P2, `commands/save.rs` | P2 multi-file search |
 | `app_info`, `problem_report`, `open_log_folder`, `third_party_notices` | v0.3 pkg5, `commands/app.rs` + `app/diagnostics.rs` | H1, H10, H11 |
+| `get_web_links`, `get_reading_order` | v0.3 pkg6, `engine/text/{weblinks,structtree}.rs` + `engine/raw/` | V5, V6 |
+| `get_default_settings`, `clear_render_cache`, `save_snapshot_png` | v0.3 pkg6, `commands/app.rs` | U3, V1 |
 
 Frontend consumers: (c) viewer — documents, text, search, view, protocol routes; (d) tools —
 annotations, forms, objects, history; (e) organizer/dialogs — pages, save, export, merge/split,

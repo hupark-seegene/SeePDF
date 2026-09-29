@@ -2,18 +2,80 @@
  * 설정 (UI_SPEC §10, F-27/F-28): 일반 / 모양 / 주석 / 고급.
  * Every change is persisted with `set_settings` **and** applied live — the theme and the language
  * switch without a reload (`appStore.setTheme` / `setLocale` stamp `<html>` and re-render `useT`).
+ *
+ * v0.3 (U3): 렌더링 품질 and 캐시 크기 take effect at once (the viewer reads the quality, the engine
+ * resizes its tile cache in `set_settings`); 고급 adds 캐시 비우기 and 기본값으로 되돌리기.
  */
 import { useState } from "react";
+import * as api from "../ipc/api";
 import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
+import { useAnnotStore } from "../store/annotStore";
+import { readNight, useViewStore } from "../store/viewStore";
+import { toast } from "../app/toastStore";
+import { formatBytes } from "../i18n";
 import { Dialog, Row } from "./Dialog";
+import { askConfirm } from "./dialogState";
 import { AUTOSAVE_CHOICES, autosaveSecOf } from "../app/autosave";
 import type { Locale } from "../i18n";
 import type { Settings, ThemePref, ViewLayout } from "../ipc/types";
 
 type Tab = "general" | "appearance" | "annotation" | "advanced";
 const TABS: Tab[] = ["general", "appearance", "annotation", "advanced"];
-const LAYOUTS: ViewLayout[] = ["single", "continuous", "two"];
+const LAYOUTS: ViewLayout[] = ["single", "continuous", "two", "twoCover"];
+const LAYOUT_LABEL: Record<ViewLayout, string> = {
+  single: "view.layout.single",
+  continuous: "view.layout.continuous",
+  two: "view.layout.twoPage",
+  twoCover: "view.layout.twoCover",
+};
+
+/**
+ * 기본값으로 되돌리기 keeps what is the user's own data rather than a preference: the author name,
+ * the saved signatures and saved stamps. (Recents live in their own file and are untouched.)
+ */
+export const KEPT_ON_RESET = ["author", "signatures", "stamps"] as const;
+
+/** The patch that resets every preference to the engine's built-in default. */
+export function resetPatch(defaults: Settings): Partial<Settings> {
+  const patch: Record<string, unknown> = { ...defaults };
+  for (const key of KEPT_ON_RESET) delete patch[key];
+  return patch as Partial<Settings>;
+}
+
+/** 기본값으로 되돌리기: confirm, write the defaults, and apply what is live (language, theme, 야간). */
+export async function resetToDefaults(): Promise<boolean> {
+  const ok = await askConfirm({
+    titleKey: "settings.resetDefaults.title",
+    bodyKey: "settings.resetDefaults.body",
+    confirmKey: "settings.resetDefaults",
+  });
+  if (!ok) return false;
+  try {
+    const defaults = await api.getDefaultSettings();
+    const app = useAppStore.getState();
+    await app.patchSettings(resetPatch(defaults));
+    app.setLocale(defaults.locale);
+    app.setTheme(defaults.theme);
+    useViewStore.getState().setNight(readNight(defaults.night));
+    useAnnotStore.getState().loadToolDefaults({});
+    toast("settings.resetDefaults.done", undefined, { tone: "success" });
+    return true;
+  } catch (e) {
+    toast("error.generic", undefined, { tone: "danger", detail: e instanceof Error ? e.message : String(e) });
+    return false;
+  }
+}
+
+/** 캐시 비우기: the engine drops every cached tile and page image. */
+export async function clearCache(): Promise<void> {
+  try {
+    const freed = await api.clearRenderCache();
+    toast("settings.clearCache.done", { size: formatBytes(freed) }, { tone: "success" });
+  } catch (e) {
+    toast("error.generic", undefined, { tone: "danger", detail: e instanceof Error ? e.message : String(e) });
+  }
+}
 const THEMES: ThemePref[] = ["system", "light", "dark"];
 const ZOOMS = ["fit-width", "fit-page", "actual", 100, 125, 150] as const;
 const OCR_LANGS = ["kor", "eng"] as const;
@@ -91,7 +153,7 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                 >
                   {LAYOUTS.map((l) => (
                     <option key={l} value={l}>
-                      {t(l === "two" ? "view.layout.twoPage" : `view.layout.${l}`)}
+                      {t(LAYOUT_LABEL[l])}
                     </option>
                   ))}
                 </select>
@@ -192,7 +254,7 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
 
           {tab === "advanced" && (
             <>
-              <Row labelKey="settings.renderQuality">
+              <Row labelKey="settings.renderQuality" hintKey="settings.renderQuality.hint">
                 <div className="segmented">
                   {(["balanced", "high"] as const).map((q) => (
                     <button
@@ -207,7 +269,7 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                   ))}
                 </div>
               </Row>
-              <Row labelKey="settings.cacheSize">
+              <Row labelKey="settings.cacheSize" hintKey="settings.cacheSize.hint">
                 <div className="inline-row">
                   <input
                     className="slider"
@@ -220,6 +282,9 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                     onChange={(e) => void patch({ tileCacheMb: Number(e.target.value) })}
                   />
                   <span className="text-sm mono">{settings?.tileCacheMb ?? 64} MB</span>
+                  <button type="button" className="btn quiet" onClick={() => void clearCache()}>
+                    {t("settings.clearCache")}
+                  </button>
                 </div>
               </Row>
               <Row labelKey="ocr.language">
@@ -265,6 +330,11 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
                 />
                 <span>{t("settings.backups")}</span>
               </label>
+              <div className="inline-row">
+                <button type="button" className="btn" onClick={() => void resetToDefaults()}>
+                  {t("settings.resetDefaults")}
+                </button>
+              </div>
             </>
           )}
         </div>

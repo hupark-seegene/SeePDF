@@ -10,9 +10,10 @@
  * at the live zoom immediately, while the bitmap layer keeps the tiles of the previous scale key
  * and is CSS-scaled (≤ 1 ms) until the gesture settles 120 ms later and the sharp tiles land.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
 import * as api from "../ipc/api";
-import { pageUrl, tileUrl } from "../ipc/protocol";
+import { pageUrl, renderDpr, tileUrl } from "../ipc/protocol";
 import { onEnginePressure } from "../ipc/events";
 import type { DocInfo, PageIndex } from "../ipc/types";
 import { useT } from "../i18n/useT";
@@ -59,6 +60,12 @@ import { ensureTextLayers, getTextLayer, invalidateTextLayers } from "./text/tex
 import { useSelectionStore, type TextSelection } from "./text/selection";
 import { useSearchStore } from "./search/SearchController";
 import { useDevicePixelRatio } from "./useDevicePixelRatio";
+// v0.3 pkg6: 스냅샷 (V1), screen-reader text + 캐럿 탐색 (H9), split forwarding (V3)
+import { captureSnapshot, marqueeToPageRect, SNAPSHOT_MIN_CSS_PX } from "../tools/snapshot";
+import { DRAWING_TOOLS } from "../tools/ToolController";
+import { PageA11yText } from "./text/PageA11yText";
+import { useCaretStore } from "./text/caret";
+import { useCaretKeys } from "./text/caretKeys";
 
 /** How far the scroll offset may drift before the mounted set is recomputed. */
 const SCROLL_COMMIT_PX = 96;
@@ -99,6 +106,8 @@ export interface ScrollerProps {
   split?: boolean;
   /** the split's shared tile manager; a scroller on its own keeps a private one */
   tiles?: TileManager;
+  /** 분할 보기 (V3, v0.3): the pane's share of the split (its flex), set by the divider */
+  paneStyle?: CSSProperties;
 }
 
 export function Scroller({
@@ -111,6 +120,7 @@ export function Scroller({
   focused = true,
   split = false,
   tiles: sharedTiles,
+  paneStyle,
 }: ScrollerProps) {
   const t = useT();
   const zoomPercent = usePaneView(paneId, (v) => v.zoomPercent);
@@ -152,7 +162,12 @@ export function Scroller({
   viewportRef.current = viewport;
 
   // ---------------------------------------------------------------- layout
-  const liveScaleKey = scaleKeyFor(zoomPercent, dpr);
+  // 렌더링 품질 (U3, v0.3): 고품질 renders the bitmaps denser than the display (capped) and the
+  // page box CSS-scales them down; the layout, the text layer and every overlay keep the real dpr.
+  const quality = useAppStore((s) => s.settings?.renderQuality);
+  const tileDpr = renderDpr(dpr, quality);
+  const highQuality = tileDpr !== dpr;
+  const liveScaleKey = scaleKeyFor(zoomPercent, tileDpr);
   const [renderScaleKey, setRenderScaleKey] = useState(liveScaleKey);
 
   // Only 단일 mode's layout depends on the current page; letting the other two depend on it would
@@ -283,7 +298,7 @@ export function Scroller({
       void api
         .setViewport({
           docId: info.docId,
-          scaleKey: scaleKeyFor(view.zoomPercent, dpr),
+          scaleKey: scaleKeyFor(view.zoomPercent, tileDpr),
           rotation: view.rotation,
           centrePage: hint.centre,
           firstPage: hint.first,
@@ -292,7 +307,7 @@ export function Scroller({
         })
         .catch(() => undefined);
     }, SETTLE_MS);
-  }, [commitScroll, dpr, info.docId, paneId, paneNow]);
+  }, [commitScroll, tileDpr, info.docId, paneId, paneNow]);
 
   useEffect(() => {
     const el = elRef.current;
@@ -585,6 +600,11 @@ export function Scroller({
   // ---------------------------------------------------------------- pointer
   const selecting = useRef<{ page: PageIndex; offset: number; mode: "char" | "word" | "line" } | null>(null);
   const panning = useRef<{ x: number; y: number } | null>(null);
+  /** 스냅샷 (V1): the marquee being dragged, in scroll-content px, on one page */
+  const snapping = useRef<{ page: PageIndex; x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const marqueeRef = useRef<HTMLDivElement>(null);
+  const caretOn = useCaretStore((s) => s.on);
+  useCaretKeys(focused && caretOn);
   const setSelection = useSelectionStore((s) => s.setSelection);
 
   const pointToPage = useCallback(
@@ -627,6 +647,81 @@ export function Scroller({
 
   const selectsText = tool === "select" || tool === "highlight" || tool === "underline" || tool === "strikeout" || tool === "squiggly";
   const pans = tool === "hand";
+  const snaps = tool === "snapshot";
+
+  /** The marquee, drawn imperatively: a drag must not re-render 500 page shells per frame. */
+  const drawMarquee = useCallback(() => {
+    const div = marqueeRef.current;
+    const m = snapping.current;
+    if (!div) return;
+    if (!m) {
+      div.hidden = true;
+      return;
+    }
+    div.hidden = false;
+    div.style.left = `${Math.min(m.x0, m.x1)}px`;
+    div.style.top = `${Math.min(m.y0, m.y1)}px`;
+    div.style.width = `${Math.abs(m.x1 - m.x0)}px`;
+    div.style.height = `${Math.abs(m.y1 - m.y0)}px`;
+  }, []);
+
+  /** A content-space point clamped to one page's box (the marquee never leaves its page). */
+  const clampToPage = useCallback((page: PageIndex, x: number, y: number) => {
+    const item = layoutRef.current.byPage.get(page);
+    if (!item) return { x, y };
+    return {
+      x: Math.max(item.x, Math.min(item.x + item.w, x)),
+      y: Math.max(item.y, Math.min(item.y + item.h, y)),
+    };
+  }, []);
+
+  const contentPoint = useCallback((clientX: number, clientY: number) => {
+    const el = elRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return { x: clientX - rect.left + el.scrollLeft, y: clientY - rect.top + el.scrollTop };
+  }, []);
+
+  // Esc / another tool drops a marquee in flight.
+  useEffect(() => {
+    if (snaps) return;
+    snapping.current = null;
+    drawMarquee();
+  }, [snaps, drawMarquee]);
+
+  /** Release: the marquee's page rectangle goes to the clipboard as an image (`tools/snapshot.ts`). */
+  const finishSnapshot = useCallback(() => {
+    const m = snapping.current;
+    snapping.current = null;
+    drawMarquee();
+    if (!m) return;
+    if (Math.abs(m.x1 - m.x0) < SNAPSHOT_MIN_CSS_PX || Math.abs(m.y1 - m.y0) < SNAPSHOT_MIN_CSS_PX) return;
+    const item = layoutRef.current.byPage.get(m.page);
+    const geom = info.pages[m.page];
+    if (!item || !geom) return;
+    const view = paneNow();
+    const ctx = makePageLayerContext({
+      docId: info.docId,
+      docGeneration: info.docGeneration,
+      page: geom,
+      rotation: view.rotation,
+      zoomPercent: view.zoomPercent,
+      width: item.w,
+      height: item.h,
+    });
+    const rect = marqueeToPageRect([m.x0 - item.x, m.y0 - item.y], [m.x1 - item.x, m.y1 - item.y], ctx.toPage, geom.crop);
+    if (!rect) return;
+    // synchronously, inside the pointer-up: the clipboard write must start in the gesture
+    void captureSnapshot({
+      docId: info.docId,
+      page: m.page,
+      rect,
+      zoomPercent: view.zoomPercent,
+      rotation: view.rotation,
+      dpr,
+      docName: info.name,
+    });
+  }, [info, dpr, drawMarquee, paneNow]);
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -677,7 +772,11 @@ export function Scroller({
           focus: { page: at.page, offset: hit.offset },
         });
       }
-      el.setPointerCapture(e.pointerId);
+      // 캐럿 탐색 (H9): a click puts the caret where the selection's focus is
+      const caret = useCaretStore.getState();
+      const focus = useSelectionStore.getState().selection?.focus;
+      if (caret.on && focus) caret.set(true, { docId: info.docId, page: focus.page, offset: focus.offset });
+      el.setPointerCapture?.(e.pointerId);
       e.preventDefault();
     },
     [info, pans, pointToPage, selectsText, setSelection],
@@ -691,6 +790,16 @@ export function Scroller({
         el.scrollLeft -= e.clientX - panning.current.x;
         el.scrollTop -= e.clientY - panning.current.y;
         panning.current = { x: e.clientX, y: e.clientY };
+        return;
+      }
+      const snap = snapping.current;
+      if (snap) {
+        const p = contentPoint(e.clientX, e.clientY);
+        if (!p) return;
+        const end = clampToPage(snap.page, p.x, p.y);
+        snap.x1 = end.x;
+        snap.y1 = end.y;
+        drawMarquee();
         return;
       }
       const drag = selecting.current;
@@ -726,18 +835,85 @@ export function Scroller({
       }
       setSelection(next);
     },
-    [info, pointToPage, setSelection],
+    [info, pointToPage, setSelection, contentPoint, clampToPage, drawMarquee],
   );
 
-  const endPointer = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const el = elRef.current;
-    panning.current = null;
-    selecting.current = null;
-    if (el) {
-      delete el.dataset.panning;
-      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
-    }
-  }, []);
+  const endPointer = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const el = elRef.current;
+      panning.current = null;
+      selecting.current = null;
+      if (snapping.current) {
+        if (e.type === "pointerup") finishSnapshot();
+        else {
+          snapping.current = null;
+          drawMarquee();
+        }
+      }
+      if (el) {
+        delete el.dataset.panning;
+        if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      }
+    },
+    [finishSnapshot, drawMarquee],
+  );
+
+  /**
+   * 분할 보기 (V3, v0.3): a pointer-down in the other pane focuses it — and, with a drawing tool
+   * armed, is handed on to that tool, whose layer only now mounts in this pane: without it the
+   * first click only moved the focus (UI_SPEC §5). Text selection, panning and the snapshot marquee
+   * start from the same event anyway, so only the drawing tools need the hand-over.
+   */
+  const onPointerDownCapture = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      // 스냅샷 (V1) works in every mode: the marquee starts in the capture phase, before any layer
+      // (the 편집 surface, form inputs, link boxes) can claim the press, and the scroller keeps the
+      // pointer until release.
+      if (snaps && e.button === 0) {
+        const el = elRef.current;
+        const at = pointToPage(e.clientX, e.clientY);
+        const p = contentPoint(e.clientX, e.clientY);
+        if (!el || !at || !p) return;
+        e.stopPropagation();
+        e.preventDefault();
+        if (!focused) useViewStore.getState().focusPane(paneId);
+        el.focus({ preventScroll: true });
+        const start = clampToPage(at.page, p.x, p.y);
+        snapping.current = { page: at.page, x0: start.x, y0: start.y, x1: start.x, y1: start.y };
+        drawMarquee();
+        el.setPointerCapture?.(e.pointerId);
+        return;
+      }
+      if (focused) return;
+      const app = useAppStore.getState();
+      const drawing =
+        e.button === 0 &&
+        ((app.mode === "annotate" && DRAWING_TOOLS.includes(app.tool)) || (app.mode === "edit" && app.tool !== "select"));
+      if (!drawing) {
+        useViewStore.getState().focusPane(paneId);
+        return;
+      }
+      const page = (e.target as HTMLElement | null)?.closest?.<HTMLElement>(".page-shell")?.dataset.page;
+      e.stopPropagation();
+      e.preventDefault();
+      const init: PointerEventInit = {
+        bubbles: true, cancelable: true, composed: true,
+        clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY,
+        button: 0, buttons: e.buttons || 1, pointerId: e.pointerId, pointerType: e.pointerType || "mouse",
+        isPrimary: true, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey,
+      };
+      flushSync(() => useViewStore.getState().focusPane(paneId));
+      const el = elRef.current;
+      if (!el || page === undefined) return;
+      const hit = typeof document.elementFromPoint === "function" ? document.elementFromPoint(e.clientX, e.clientY) : null;
+      const target =
+        hit && el.contains(hit) && hit.closest(".page-surface")
+          ? hit
+          : el.querySelector(`.page-shell[data-page="${page}"] .annot-surface, .page-shell[data-page="${page}"] .edit-surface`);
+      target?.dispatchEvent(new PointerEvent("pointerdown", init));
+    },
+    [focused, paneId, snaps, pointToPage, contentPoint, clampToPage, drawMarquee],
+  );
 
   // ---------------------------------------------------------------- render
   const placeholderKeys = useMemo(() => {
@@ -773,14 +949,23 @@ export function Scroller({
       data-night={nightOn ? night : undefined}
       data-pane={paneId}
       data-focused={(split && focused) || undefined}
+      data-caret={(focused && caretOn) || undefined}
+      style={paneStyle}
       // 분할 보기: a click in the other pane makes it the one the keys, menus and tools act on
-      onPointerDownCapture={focused ? undefined : () => useViewStore.getState().focusPane(paneId)}
+      onPointerDownCapture={onPointerDownCapture}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPointer}
       onPointerCancel={endPointer}
     >
+      {/* H9: page changes are announced (the focused pane only; polite, never interrupting) */}
+      {focused && (
+        <div className="visually-hidden" aria-live="polite" data-testid="page-announcer">
+          {t("a11y.pageOf", { n: currentPage + 1, total: info.pageCount })}
+        </div>
+      )}
       <div className="viewer-content" style={{ width: layout.width, height: layout.height }}>
+        <div ref={marqueeRef} className="snapshot-marquee" hidden aria-hidden />
         {mountedItems.map((item) => {
           const geom = info.pages[item.page];
           if (!geom) return null;
@@ -796,6 +981,20 @@ export function Scroller({
           const renderBox = pageBoxCss(geom, rotation, renderScaleKey, dpr);
           const px = pagePixels(geom, rotation, renderScale);
           const tiled = shouldTile(renderScale, px.w, px.h);
+          const bitmapUrl = tiled
+            ? null
+            : pageUrl({
+                doc: info.docId,
+                gen: info.docGeneration,
+                page: item.page,
+                sk: renderScaleKey,
+                rot: rotation,
+                night: nightOn,
+                hl: fieldHighlight,
+                forms: renderFormWidgets,
+                vn: viewNonce[item.page],
+              });
+          const label = t("a11y.page", { n: item.page + 1 });
           return (
             <PageShell
               key={item.page}
@@ -805,25 +1004,15 @@ export function Scroller({
               bitmapScale={renderBox.w > 0 ? item.w / renderBox.w : 1}
               bitmapWidth={renderBox.w}
               bitmapHeight={renderBox.h}
-              placeholderUrl={pageUrl({
-                doc: info.docId,
-                gen: info.docGeneration,
-                page: item.page,
-                sk: placeholderKeys.get(item.page) ?? 100,
-                rot: rotation,
-                night: nightOn,
-                hl: fieldHighlight,
-                forms: renderFormWidgets,
-                vn: viewNonce[item.page],
-              })}
-              bitmapUrl={
-                tiled
-                  ? null
+              placeholderUrl={
+                // 고품질 skips the low-resolution draft of a whole-page bitmap: one render, not two
+                highQuality && bitmapUrl
+                  ? bitmapUrl
                   : pageUrl({
                       doc: info.docId,
                       gen: info.docGeneration,
                       page: item.page,
-                      sk: renderScaleKey,
+                      sk: placeholderKeys.get(item.page) ?? 100,
                       rot: rotation,
                       night: nightOn,
                       hl: fieldHighlight,
@@ -831,10 +1020,22 @@ export function Scroller({
                       vn: viewNonce[item.page],
                     })
               }
+              bitmapUrl={bitmapUrl}
               tiles={tilesByPage.get(item.page) ?? EMPTY_TILES}
               night={night}
               current={item.page === currentPage}
-              label={t("a11y.page", { n: item.page + 1 })}
+              label={label}
+              a11y={
+                focused ? (
+                  <PageA11yText
+                    docId={info.docId}
+                    docGeneration={info.docGeneration}
+                    page={item.page}
+                    tagged={info.tagged}
+                    label={label}
+                  />
+                ) : undefined
+              }
               marks={<PageMarks ctx={ctx} />}
               layers={layers?.(ctx)}
               onTileLoad={(key) => tiles.notifyLoaded(key)}
