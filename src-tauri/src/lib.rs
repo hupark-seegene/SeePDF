@@ -253,6 +253,9 @@ pub fn run() {
         // P2 읽어 주기: one system voice for the whole app, stopped on exit (below).
         .manage(std::sync::Arc::new(app::tts::Tts::system()))
         .setup(|app| {
+            // v0.3 pkg4-annotations-stamps-objects (A9): 작성자 from the OS user, once — before
+            // the settings are read, so the prefilled name is the one the menu / engine see.
+            app::store::prefill_author(app.handle());
             let settings = app::store::get_settings(app.handle());
             // v0.3 pkg5 (H10): a failure here used to propagate out of `build` into an
             // `expect` — the process vanished (no console on Windows). Now it says why.
@@ -304,6 +307,12 @@ pub fn run() {
             commands::annots::set_annotations_hidden,
             // --- annotation threads (P2) ---
             commands::annots::reply_annotation,
+            // v0.3 pkg4-annotations-stamps-objects
+            commands::annots::annotation_batch,
+            commands::images::image_preview,
+            commands::images::copy_library_image,
+            commands::images::remove_library_image,
+            commands::objects::restack_objects,
             // --- forms (Stage 1a) ---
             commands::forms::list_form_fields,
             commands::forms::set_form_field_value,

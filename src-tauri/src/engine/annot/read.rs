@@ -9,7 +9,9 @@
 use crate::engine::annot::{self, SUBJ_ARROW, SUBJ_LINE, SUBJ_PREFIX, SUBJ_TEXTBOX};
 use crate::engine::raw::{self, annot::AnnotRef, annot::ColorKind, consts};
 use crate::engine::registry::OpenDoc;
-use crate::ipc::types::{Annot, AnnotKind, Editability, PageIndex, Rect, Rgb};
+use crate::ipc::types::{
+    Annot, AnnotKind, Editability, MeasureUnit, PageIndex, Rect, Rgb, TextAlign,
+};
 use crate::ipc::EngineError;
 use pdfium_render::prelude::FPDF_DOCUMENT;
 use std::os::raw::c_int;
@@ -98,6 +100,16 @@ pub fn read_one(a: &AnnotRef<'_>, id: String, page: PageIndex, document: FPDF_DO
     let subj = a.string("Subj");
     let kind = annot::kind_of(subtype, subj.as_deref());
     let rect = a.rect().unwrap_or(Rect::ZERO);
+    // v0.3 A2: a callout is edited as its text box; the leader line is `callout`.
+    let rect = match kind {
+        AnnotKind::Callout => a
+            .string(annot::KEY_BOX)
+            .map(|s| parse_numbers(&s))
+            .filter(|v| v.len() == 4)
+            .map(|v| Rect::new(v[0], v[1], v[2], v[3]))
+            .unwrap_or(rect),
+        _ => rect,
+    };
     let flags = a.flags();
     let ap_len = a.ap_len();
 
@@ -157,14 +169,67 @@ pub fn read_one(a: &AnnotRef<'_>, id: String, page: PageIndex, document: FPDF_DO
 
     let da = a.string("DA");
     let font_size = match kind {
-        AnnotKind::Textbox => da.as_deref().and_then(parse_da_font_size),
+        AnnotKind::Textbox | AnnotKind::Callout => da.as_deref().and_then(parse_da_font_size),
         _ => None,
     };
     let contents = a.string("Contents").unwrap_or_default();
     let text = match kind {
-        AnnotKind::Textbox => Some(contents.clone()),
+        AnnotKind::Textbox | AnnotKind::Callout => Some(contents.clone()),
         _ => None,
     };
+
+    // v0.3 pkg4: the mirrors (`annot::KEY_*`) first, the real keys PDFium can read second.
+    let align = match kind {
+        AnnotKind::Textbox | AnnotKind::Callout => Some(
+            a.string(annot::KEY_ALIGN)
+                .as_deref()
+                .and_then(align_from_code)
+                .or_else(|| a.number("Q").and_then(|q| align_from_code(&format!("{q}"))))
+                .unwrap_or(TextAlign::Left),
+        ),
+        _ => None,
+    };
+    let heads = match kind {
+        AnnotKind::Line | AnnotKind::Arrow => Some(
+            a.string(annot::KEY_HEADS)
+                .as_deref()
+                .and_then(parse_heads)
+                .unwrap_or_else(|| {
+                    heads_from_strokes(
+                        ink_paths.as_deref().unwrap_or(&[]),
+                        kind == AnnotKind::Arrow,
+                    )
+                }),
+        ),
+        _ => None,
+    };
+    let vertices = match kind {
+        AnnotKind::Polygon | AnnotKind::Polyline => {
+            let v = a.vertices();
+            if v.len() >= 4 {
+                Some(v)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let callout = match kind {
+        AnnotKind::Callout => a
+            .string(annot::KEY_CALLOUT)
+            .map(|s| parse_numbers(&s))
+            .filter(|v| v.len() == 4 || v.len() == 6),
+        _ => None,
+    };
+    let dashed = a.string(annot::KEY_DASH).as_deref() == Some("1");
+    let measure = a.string(annot::KEY_MEASURE).and_then(|m| match m.as_str() {
+        "mm" => Some(MeasureUnit::Mm),
+        "pt" => Some(MeasureUnit::Pt),
+        _ => None,
+    });
+    let cloudy = kind == AnnotKind::Polygon
+        && subj.as_deref() == Some(annot::SUBJ_POLYGON)
+        && a.string(annot::KEY_CLOUD).as_deref() == Some("1");
 
     Annot {
         id,
@@ -203,7 +268,72 @@ pub fn read_one(a: &AnnotRef<'_>, id: String, page: PageIndex, document: FPDF_DO
         printed: flags & consts::FPDF_ANNOT_FLAG_PRINT != 0,
         locked: flags & consts::FPDF_ANNOT_FLAG_LOCKED != 0,
         editable: editability(subtype, flags, ap_len, subj.as_deref()),
+        align,
+        heads,
+        vertices,
+        cloudy,
+        callout,
+        dashed,
+        measure,
     }
+}
+
+/// `TextAlign` → the `/Q` code (`annot::KEY_ALIGN`).
+pub fn align_code(align: TextAlign) -> &'static str {
+    match align {
+        TextAlign::Left => "0",
+        TextAlign::Center => "1",
+        TextAlign::Right => "2",
+    }
+}
+
+/// `"0"` / `"1"` / `"2"` (also `"1.0"`, what `/Q` reads as a float) → `TextAlign`.
+pub fn align_from_code(code: &str) -> Option<TextAlign> {
+    match code.trim().parse::<f32>().ok()?.round() as i32 {
+        0 => Some(TextAlign::Left),
+        1 => Some(TextAlign::Center),
+        2 => Some(TextAlign::Right),
+        _ => None,
+    }
+}
+
+/// `"0 1"` → `[false, true]` (`annot::KEY_HEADS`).
+pub fn parse_heads(code: &str) -> Option<[bool; 2]> {
+    let v: Vec<&str> = code.split_whitespace().collect();
+    if v.len() != 2 {
+        return None;
+    }
+    Some([v[0] == "1", v[1] == "1"])
+}
+
+/// Space-separated numbers (the geometry mirrors).
+pub fn parse_numbers(text: &str) -> Vec<f32> {
+    text.split_whitespace()
+        .filter_map(|t| t.parse::<f32>().ok())
+        .collect()
+}
+
+/// The heads of a SeePDF ink line written before the `SeePDFHeads` mirror: its extra strokes
+/// start at the tip they belong to (`create::arrow_head`), so a head at `p1` has a stroke
+/// starting there. A bare `Arrow` without any geometry has its head at the end.
+pub fn heads_from_strokes(paths: &[Vec<f32>], arrow: bool) -> [bool; 2] {
+    let Some(segment) = paths.first().filter(|s| s.len() >= 4) else {
+        return [false, arrow];
+    };
+    let (p1, p2) = (
+        [segment[0], segment[1]],
+        [segment[segment.len() - 2], segment[segment.len() - 1]],
+    );
+    let near = |a: [f32; 2], b: &[f32]| (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01;
+    let mut heads = [false, false];
+    for stroke in paths.iter().skip(1).filter(|s| s.len() >= 2) {
+        if near(p2, stroke) {
+            heads[1] = true;
+        } else if near(p1, stroke) {
+            heads[0] = true;
+        }
+    }
+    heads
 }
 
 /// How much of an annotation SeePDF is willing to change (`IPC_CONTRACT.md` §7.1).
@@ -235,6 +365,8 @@ fn editability(subtype: c_int, flags: c_int, ap_len: usize, subj: Option<&str>) 
             | consts::FPDF_ANNOT_FREETEXT
             | consts::FPDF_ANNOT_LINK
     );
+    // `ours` covers the lopdf kinds (v0.3 A2): their appearance is rebuilt by
+    // `lopdf_annots` on every edit.
     if ours || ap_len == 0 || regenerable {
         Editability::Full
     } else {
@@ -296,6 +428,9 @@ pub fn subj_for(kind: AnnotKind) -> Option<&'static str> {
         AnnotKind::Line => Some(SUBJ_LINE),
         AnnotKind::Arrow => Some(SUBJ_ARROW),
         AnnotKind::Textbox => Some(SUBJ_TEXTBOX),
+        AnnotKind::Polygon => Some(annot::SUBJ_POLYGON),
+        AnnotKind::Polyline => Some(annot::SUBJ_POLYLINE),
+        AnnotKind::Callout => Some(annot::SUBJ_CALLOUT),
         _ => None,
     }
 }

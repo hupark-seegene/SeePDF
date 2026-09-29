@@ -41,6 +41,9 @@ const BUILT_IN: Record<string, Partial<ToolStyle>> = {
   line: { color: RED, opacity: 1, width: 2, heads: [false, false] },
   arrow: { color: RED, opacity: 1, width: 2, heads: [false, true] },
   textbox: { color: INK, opacity: 1, fontSize: 12, fillColor: null, align: "left" },
+  // v0.3 pkg4-annotations-stamps-objects
+  polygon: { color: RED, opacity: 1, width: 2, fillColor: null },
+  callout: { color: INK, opacity: 1, fontSize: 12, fillColor: null, align: "left" },
 };
 
 export const STYLED_TOOLS: readonly string[] = Object.keys(BUILT_IN);
@@ -67,6 +70,9 @@ export function toolOfKind(kind: AnnotKind | undefined): string | null {
       return "ellipse";
     case "ink":
       return "pen";
+    // v0.3 integration (pkg4 A2 × pkg6 이 스타일을 기본값으로): a polyline is drawn with the 다각형 tool
+    case "polyline":
+      return "polygon";
     case undefined:
       return null;
     default:

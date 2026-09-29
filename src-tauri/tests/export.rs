@@ -444,6 +444,7 @@ fn export_flatten_respects_the_selection() {
                                 fill_color: Some([250, 220, 40]),
                                 width: 2.0,
                                 opacity: 1.0,
+                                dashed: false,
                             },
                         ),
                         None,

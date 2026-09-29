@@ -128,6 +128,16 @@ pub struct OpenDoc<'p> {
 }
 
 impl<'p> OpenDoc<'p> {
+    /// v0.3 integration (pkg4 × pkg3 S1): may an **optional** lopdf pass rewrite this
+    /// document — one whose PDFium-only result is still correct, only less complete (a Line
+    /// drawn as Ink, a solid instead of a dashed border, stale `/L` keys)? Not when it is
+    /// encrypted (lopdf would need the key), nor when it is a signed file that still saves
+    /// incrementally (`pristine`): the rewrite would force a full save, which invalidates the
+    /// signatures. Mirrors `pages::can_carry` and `form::can_clear_radios`.
+    pub fn quiet_rewrite_ok(&self) -> bool {
+        !(self.encrypted || self.password.is_some() || self.pristine)
+    }
+
     pub fn page_count(&self) -> u16 {
         self.pages_meta.len() as u16
     }

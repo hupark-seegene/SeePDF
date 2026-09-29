@@ -919,3 +919,27 @@
   margin: 0 var(--space-1);
   background: var(--border-subtle);
 }
+
+/* v0.3 pkg4 (T2): the 도장 flyout's ⌄ beside its button */
+.toolstrip-item {
+  display: inline-flex;
+  align-items: center;
+}
+
+.toolstrip-flyout {
+  width: 14px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.toolstrip-flyout:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}

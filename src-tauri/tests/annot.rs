@@ -465,6 +465,7 @@ fn annot_shapes_roundtrip() {
             fill_color: Some([200, 220, 255]),
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     // Circle has no high-level constructor in pdfium-render 0.9.4: raw only.
@@ -477,6 +478,7 @@ fn annot_shapes_roundtrip() {
             fill_color: Some([255, 255, 0]),
             width: 3.0,
             opacity: 0.5,
+            dashed: false,
         }),
     );
 
@@ -527,6 +529,8 @@ fn annot_line_subj_roundtrip() {
             width: 2.0,
             opacity: 1.0,
             heads: None,
+            measure: None,
+            dashed: false,
         }),
     );
     let arrow = create(
@@ -539,6 +543,8 @@ fn annot_line_subj_roundtrip() {
             width: 2.0,
             opacity: 1.0,
             heads: None,
+            measure: None,
+            dashed: false,
         }),
     );
 
@@ -914,6 +920,7 @@ fn recolor_body() {
             fill_color: Some([0, 255, 0]),
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
 
@@ -1115,6 +1122,7 @@ fn annot_hidden_is_transient() {
             fill_color: Some([255, 200, 200]),
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let visible = render_rect(&doc.doc_id, 0, rect);
@@ -1290,6 +1298,7 @@ fn annot_drag_hide_unhides_before_the_undo_snapshot() {
             fill_color: None,
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let set_hidden = |hidden: bool| {
@@ -1524,6 +1533,7 @@ fn annot_bad_annots_entries_are_skipped() {
             fill_color: None,
             width: 1.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let after = list(&doc.doc_id, 0);
@@ -1642,5 +1652,966 @@ fn annot_ids_survive_undo_of_the_first_edit() {
             now, ids,
             "annotation ids are stable across undo (redo: {redo})"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg4-annotations-stamps-objects
+// ---------------------------------------------------------------------------------------
+
+mod pkg4 {
+    use super::*;
+    use seepdf_lib::engine::annot::create::{create_in, letterbox};
+    use seepdf_lib::engine::annot::update::update_in;
+    use seepdf_lib::engine::pages::boxes;
+    use seepdf_lib::ipc::types::{
+        AnnotPatch, CalloutSpec, MeasureUnit, PageSelection, PolySpec, ResizeMode, ResizeTarget,
+        StampShape,
+    };
+
+    fn make(doc_id: &str, page: u16, spec: AnnotSpec, author: Option<&'static str>) -> String {
+        let doc_id = doc_id.to_string();
+        with_state(move |st| create_in(st, &doc_id, page, &spec, None, author)).expect("create_in")
+    }
+
+    fn patch(doc_id: &str, page: u16, id: &str, p: AnnotPatch) -> Annot {
+        let (doc_id, id) = (doc_id.to_string(), id.to_string());
+        with_state(move |st| update_in(st, &doc_id, page, &id, &p)).expect("update_in")
+    }
+
+    fn undo(doc_id: &str) {
+        let doc_id = doc_id.to_string();
+        with_state(move |st| registry::undo(st, &doc_id, false)).expect("undo");
+    }
+
+    fn undo_depth(doc_id: &str) -> usize {
+        let doc_id = doc_id.to_string();
+        with_doc(&doc_id, |d| Ok(d.history.undo_depth())).unwrap()
+    }
+
+    /// The annotation dictionary named `id` on page 0 of `bytes`, read with lopdf.
+    fn lopdf_dict(bytes: &[u8], id: &str) -> lopdf::Dictionary {
+        let doc = lopdf::Document::load_mem(bytes).expect("lopdf parse");
+        let page = *doc.get_pages().get(&1).unwrap();
+        let annots = match doc.get_dictionary(page).unwrap().get(b"Annots").unwrap() {
+            lopdf::Object::Array(a) => a.clone(),
+            lopdf::Object::Reference(r) => doc.get_object(*r).unwrap().as_array().unwrap().clone(),
+            _ => panic!("no /Annots"),
+        };
+        for entry in annots {
+            let dict = match entry {
+                lopdf::Object::Reference(r) => doc.get_dictionary(r).unwrap().clone(),
+                lopdf::Object::Dictionary(d) => d,
+                _ => continue,
+            };
+            let nm = dict
+                .get(b"NM")
+                .ok()
+                .and_then(|o| lopdf::decode_text_string(o).ok());
+            if nm.as_deref() == Some(id) {
+                return dict;
+            }
+        }
+        panic!("annotation {id} not found with lopdf");
+    }
+
+    fn names(dict: &lopdf::Dictionary, key: &[u8]) -> Vec<String> {
+        match dict.get(key) {
+            Ok(lopdf::Object::Array(a)) => a
+                .iter()
+                .filter_map(|o| o.as_name().ok())
+                .map(|n| String::from_utf8_lossy(n).to_string())
+                .collect(),
+            Ok(lopdf::Object::Name(n)) => vec![String::from_utf8_lossy(n).to_string()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn nums(dict: &lopdf::Dictionary, key: &[u8]) -> Vec<f32> {
+        dict.get(key)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| match o {
+                lopdf::Object::Integer(i) => *i as f32,
+                lopdf::Object::Real(r) => *r,
+                _ => f32::NAN,
+            })
+            .collect()
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.05
+    }
+
+    fn square(rect: Rect) -> AnnotSpec {
+        AnnotSpec::Square(ShapeSpec {
+            rect,
+            color: [200, 0, 0],
+            fill_color: None,
+            width: 2.0,
+            opacity: 1.0,
+            dashed: false,
+        })
+    }
+
+    /// A9: 설정 ▸ 작성자 is `/T` on a markup, a built-in stamp and a text stamp; blank = none.
+    #[test]
+    fn author_is_written_on_every_new_annotation() {
+        let doc = open("tracemonkey.pdf");
+        let hl = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Highlight(MarkupSpec {
+                rects: vec![Rect::new(100.0, 600.0, 200.0, 612.0)],
+                color: [255, 212, 0],
+                opacity: 0.4,
+                contents: None,
+            }),
+            Some("홍길동"),
+        );
+        let stamp = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Stamp(StampSpec {
+                rect: Rect::new(300.0, 300.0, 364.0, 364.0),
+                image: StampImage::Builtin {
+                    builtin: "결재".into(),
+                },
+                rotate: None,
+                signature: false,
+            }),
+            Some("  홍길동 "),
+        );
+        let anonymous = make(
+            &doc.doc_id,
+            0,
+            square(Rect::new(50.0, 50.0, 90.0, 90.0)),
+            Some("  "),
+        );
+        let saved = reopen(save_bytes(&doc.doc_id));
+        let annots = list(&saved.doc_id, 0);
+        assert_eq!(find(&annots, &hl).author.as_deref(), Some("홍길동"));
+        assert_eq!(
+            find(&annots, &stamp).author.as_deref(),
+            Some("홍길동"),
+            "trimmed"
+        );
+        assert_eq!(
+            find(&annots, &anonymous).author,
+            None,
+            "a blank author writes no /T"
+        );
+    }
+
+    /// A1: a centred text box stays centred through a colour edit (a rebuild), reads back
+    /// `align`, and a patched alignment sticks.
+    #[test]
+    fn textbox_alignment_survives_edits() {
+        let doc = open("tracemonkey.pdf");
+        let id = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Textbox(TextBoxSpec {
+                rect: Rect::new(100.0, 400.0, 300.0, 440.0),
+                text: "가운데 정렬".into(),
+                font_size: 14.0,
+                color: [0, 0, 0],
+                align: TextAlign::Center,
+                fill_color: None,
+            }),
+            None,
+        );
+        assert_eq!(
+            find(&list(&doc.doc_id, 0), &id).align,
+            Some(TextAlign::Center)
+        );
+        patch(
+            &doc.doc_id,
+            0,
+            &id,
+            AnnotPatch {
+                color: Some([0, 0, 200]),
+                ..AnnotPatch::default()
+            },
+        );
+        let after = list(&doc.doc_id, 0);
+        let a = find(&after, &id);
+        assert_eq!(
+            a.align,
+            Some(TextAlign::Center),
+            "a colour edit keeps the alignment"
+        );
+        assert_eq!(a.color, [0, 0, 200]);
+        patch(
+            &doc.doc_id,
+            0,
+            &id,
+            AnnotPatch {
+                align: Some(TextAlign::Right),
+                ..AnnotPatch::default()
+            },
+        );
+        let saved = reopen(save_bytes(&doc.doc_id));
+        let a = find(&list(&saved.doc_id, 0), &id).clone();
+        assert_eq!(a.align, Some(TextAlign::Right), "round-trips through save");
+        assert_eq!(a.text.as_deref(), Some("가운데 정렬"));
+    }
+
+    /// A1: heads on a SeePDF ink line turn it into an arrow (both ends), and on a real `/Line`
+    /// they become `/LE [/OpenArrow /OpenArrow]`.
+    #[test]
+    fn heads_patch_turns_a_line_into_an_arrow() {
+        let doc = open("tracemonkey.pdf");
+        // The legacy Ink line (what an encrypted document still gets).
+        let ink = create(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Line(LineSpec {
+                p1: [80.0, 110.0],
+                p2: [380.0, 110.0],
+                color: [0, 0, 0],
+                width: 2.0,
+                opacity: 1.0,
+                heads: None,
+                measure: None,
+                dashed: false,
+            }),
+        );
+        assert_eq!(
+            find(&list(&doc.doc_id, 0), &ink).heads,
+            Some([false, false])
+        );
+        patch(
+            &doc.doc_id,
+            0,
+            &ink,
+            AnnotPatch {
+                heads: Some([true, true]),
+                ..AnnotPatch::default()
+            },
+        );
+        let a = find(&list(&doc.doc_id, 0), &ink).clone();
+        assert_eq!(a.kind, AnnotKind::Arrow);
+        assert_eq!(a.heads, Some([true, true]));
+        assert_eq!(
+            a.ink_paths.as_ref().unwrap().len(),
+            5,
+            "segment + two heads"
+        );
+
+        // The real /Line.
+        let real = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Line(LineSpec {
+                p1: [80.0, 200.0],
+                p2: [380.0, 200.0],
+                color: [0, 0, 0],
+                width: 2.0,
+                opacity: 1.0,
+                heads: None,
+                measure: None,
+                dashed: false,
+            }),
+            None,
+        );
+        let before = find(&list(&doc.doc_id, 0), &real).clone();
+        assert_eq!(
+            (before.subtype.as_str(), before.kind),
+            ("Line", AnnotKind::Line)
+        );
+        patch(
+            &doc.doc_id,
+            0,
+            &real,
+            AnnotPatch {
+                heads: Some([true, true]),
+                ..AnnotPatch::default()
+            },
+        );
+        let bytes = save_bytes(&doc.doc_id);
+        let dict = lopdf_dict(&bytes, &real);
+        assert_eq!(names(&dict, b"LE"), ["OpenArrow", "OpenArrow"]);
+        let saved = reopen(bytes);
+        let a = find(&list(&saved.doc_id, 0), &real).clone();
+        assert_eq!((a.kind, a.heads), (AnnotKind::Arrow, Some([true, true])));
+    }
+
+    /// A10: 인쇄 off clears the `/F` Print bit (and survives a text-box rebuild and a save).
+    #[test]
+    fn printed_flag_round_trips() {
+        let doc = open("tracemonkey.pdf");
+        let sq = make(
+            &doc.doc_id,
+            0,
+            square(Rect::new(100.0, 100.0, 200.0, 180.0)),
+            None,
+        );
+        let tb = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Textbox(TextBoxSpec {
+                rect: Rect::new(100.0, 400.0, 300.0, 440.0),
+                text: "인쇄 안 함".into(),
+                font_size: 12.0,
+                color: [0, 0, 0],
+                align: TextAlign::Left,
+                fill_color: None,
+            }),
+            None,
+        );
+        assert!(find(&list(&doc.doc_id, 0), &sq).printed);
+        for id in [&sq, &tb] {
+            patch(
+                &doc.doc_id,
+                0,
+                id,
+                AnnotPatch {
+                    printed: Some(false),
+                    ..AnnotPatch::default()
+                },
+            );
+        }
+        // A rebuild (new text) keeps the flag.
+        patch(
+            &doc.doc_id,
+            0,
+            &tb,
+            AnnotPatch {
+                text: Some("바뀐 글".into()),
+                ..AnnotPatch::default()
+            },
+        );
+        let saved = reopen(save_bytes(&doc.doc_id));
+        let annots = list(&saved.doc_id, 0);
+        assert!(!find(&annots, &sq).printed);
+        let t = find(&annots, &tb);
+        assert!(!t.printed, "the rebuilt text box is still not printed");
+        assert_eq!(t.text.as_deref(), Some("바뀐 글"));
+        patch(
+            &saved.doc_id,
+            0,
+            &sq,
+            AnnotPatch {
+                printed: Some(true),
+                ..AnnotPatch::default()
+            },
+        );
+        assert!(find(&list(&saved.doc_id, 0), &sq).printed);
+    }
+
+    /// A2: real `/Line` (measuring), `/Polygon` (cloudy, filled), `/PolyLine` and a
+    /// `FreeText` callout — each visible, one undo step, and read back by PDFium with its
+    /// subtype and geometry after a save; the dictionaries hold what other viewers need.
+    #[test]
+    fn lopdf_kinds_round_trip() {
+        let doc = open("tracemonkey.pdf");
+        let probe = Rect::new(40.0, 40.0, 580.0, 360.0);
+        let before = render_rect(&doc.doc_id, 0, probe);
+        let depth = undo_depth(&doc.doc_id);
+
+        let line = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Arrow(LineSpec {
+                p1: [60.0, 60.0],
+                p2: [276.0, 60.0],
+                color: [200, 0, 0],
+                width: 2.0,
+                opacity: 1.0,
+                heads: Some([false, true]),
+                measure: Some(MeasureUnit::Mm),
+                dashed: false,
+            }),
+            Some("홍길동"),
+        );
+        let polygon = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Polygon(PolySpec {
+                vertices: vec![300.0, 80.0, 420.0, 80.0, 420.0, 180.0, 300.0, 180.0],
+                color: [0, 90, 200],
+                fill_color: Some([200, 220, 255]),
+                width: 1.5,
+                opacity: 0.8,
+                cloudy: true,
+                dashed: false,
+                measure: None,
+            }),
+            None,
+        );
+        let polyline = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Polyline(PolySpec {
+                vertices: vec![60.0, 200.0, 120.0, 260.0, 180.0, 200.0, 240.0, 260.0],
+                color: [0, 140, 60],
+                fill_color: None,
+                width: 3.0,
+                opacity: 1.0,
+                cloudy: false,
+                dashed: true,
+                measure: Some(MeasureUnit::Pt),
+            }),
+            None,
+        );
+        assert_eq!(undo_depth(&doc.doc_id), depth + 3, "one undo step each");
+        let callout = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Callout(CalloutSpec {
+                rect: Rect::new(440.0, 260.0, 570.0, 300.0),
+                text: "설명선 확인".into(),
+                font_size: 12.0,
+                color: [0, 0, 0],
+                align: TextAlign::Left,
+                fill_color: Some([255, 255, 200]),
+                callout: vec![380.0, 220.0, 420.0, 280.0, 440.0, 280.0],
+            }),
+            None,
+        );
+        assert_eq!(
+            undo_depth(&doc.doc_id),
+            depth + 4,
+            "a callout is one undo step too"
+        );
+
+        let after = render_rect(&doc.doc_id, 0, probe);
+        assert!(changed_pixels(&before, &after) > 500, "all four are drawn");
+
+        let bytes = save_bytes(&doc.doc_id);
+        write_artifacts("pkg4-lopdf-kinds", &bytes, &doc.doc_id, 0);
+        let l = lopdf_dict(&bytes, &line);
+        assert_eq!(names(&l, b"Subtype"), ["Line"]);
+        assert_eq!(nums(&l, b"L"), [60.0, 60.0, 276.0, 60.0]);
+        assert_eq!(names(&l, b"LE"), ["None", "OpenArrow"]);
+        assert_eq!(names(&l, b"IT"), ["LineDimension"]);
+        assert!(l.get(b"AP").is_ok(), "own appearance");
+        let p = lopdf_dict(&bytes, &polygon);
+        assert_eq!(names(&p, b"Subtype"), ["Polygon"]);
+        let be = p.get(b"BE").unwrap().as_dict().unwrap();
+        assert_eq!(be.get(b"S").unwrap().as_name().unwrap(), b"C");
+        assert_eq!(nums(&p, b"IC").len(), 3);
+        let pl = lopdf_dict(&bytes, &polyline);
+        assert_eq!(names(&pl, b"Subtype"), ["PolyLine"]);
+        let bs = pl.get(b"BS").unwrap().as_dict().unwrap();
+        assert_eq!(bs.get(b"S").unwrap().as_name().unwrap(), b"D");
+        let c = lopdf_dict(&bytes, &callout);
+        assert_eq!(names(&c, b"Subtype"), ["FreeText"]);
+        assert_eq!(names(&c, b"IT"), ["FreeTextCallout"]);
+        assert_eq!(nums(&c, b"CL"), [380.0, 220.0, 420.0, 280.0, 440.0, 280.0]);
+        assert_eq!(nums(&c, b"RD").len(), 4);
+
+        let saved = reopen(bytes);
+        let annots = list(&saved.doc_id, 0);
+        let a = find(&annots, &line);
+        assert_eq!((a.kind, a.subtype.as_str()), (AnnotKind::Arrow, "Line"));
+        assert_eq!(a.line_points, Some([60.0, 60.0, 276.0, 60.0]));
+        assert_eq!(a.heads, Some([false, true]));
+        assert_eq!(a.measure, Some(MeasureUnit::Mm));
+        assert_eq!(a.author.as_deref(), Some("홍길동"));
+        assert_eq!(a.color, [200, 0, 0]);
+        assert_eq!(a.editable, Editability::Full);
+        let g = find(&annots, &polygon);
+        assert_eq!(g.kind, AnnotKind::Polygon);
+        assert_eq!(
+            g.vertices.as_deref(),
+            Some(&[300.0, 80.0, 420.0, 80.0, 420.0, 180.0, 300.0, 180.0][..])
+        );
+        assert!(g.cloudy);
+        assert_eq!(g.fill_color, Some([200, 220, 255]));
+        let pl = find(&annots, &polyline);
+        assert_eq!(pl.kind, AnnotKind::Polyline);
+        assert_eq!(pl.vertices.as_ref().map(Vec::len), Some(8));
+        assert!(pl.dashed);
+        let c = find(&annots, &callout);
+        assert_eq!(c.kind, AnnotKind::Callout);
+        assert_eq!(c.text.as_deref(), Some("설명선 확인"));
+        assert_eq!(c.callout.as_ref().map(Vec::len), Some(6));
+        let r = c.rect;
+        assert!(
+            close(r.l, 440.0) && close(r.t, 300.0),
+            "the rect is the text box: {r:?}"
+        );
+
+        // The callout was one step: one undo removes it entirely.
+        undo(&doc.doc_id);
+        assert!(!list(&doc.doc_id, 0).iter().any(|a| a.id == callout));
+        assert!(list(&doc.doc_id, 0).iter().any(|a| a.id == polyline));
+    }
+
+    /// A2: editing a lopdf annotation redraws it **in place** — same object (a reply's `/IRT`
+    /// still resolves), new geometry and colour — in one undo step; a callout's text edit keeps
+    /// its leader line.
+    #[test]
+    fn lopdf_kinds_edit_in_place() {
+        let doc = open("tracemonkey.pdf");
+        let polygon = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Polygon(PolySpec {
+                vertices: vec![300.0, 80.0, 420.0, 80.0, 360.0, 180.0],
+                color: [0, 90, 200],
+                fill_color: None,
+                width: 1.5,
+                opacity: 1.0,
+                cloudy: false,
+                dashed: false,
+                measure: Some(MeasureUnit::Mm),
+            }),
+            None,
+        );
+        let reply = {
+            let (doc_id, parent) = (doc.doc_id.clone(), polygon.clone());
+            with_state(move |st| annot::reply::reply(st, &doc_id, 0, &parent, "답글", None))
+                .expect("reply")
+        };
+        let depth = undo_depth(&doc.doc_id);
+        patch(
+            &doc.doc_id,
+            0,
+            &polygon,
+            AnnotPatch {
+                vertices: Some(vec![310.0, 90.0, 430.0, 90.0, 370.0, 190.0]),
+                rect: Some(Rect::new(0.0, 0.0, 1.0, 1.0)),
+                color: Some([200, 0, 0]),
+                ..AnnotPatch::default()
+            },
+        );
+        assert_eq!(undo_depth(&doc.doc_id), depth + 1);
+        let annots = list(&doc.doc_id, 0);
+        let g = find(&annots, &polygon);
+        assert_eq!(
+            g.vertices.as_deref(),
+            Some(&[310.0, 90.0, 430.0, 90.0, 370.0, 190.0][..])
+        );
+        assert_eq!(g.color, [200, 0, 0]);
+        assert!(
+            g.rect.l < 310.0 && g.rect.r > 430.0,
+            "the rect follows the vertices"
+        );
+        assert_eq!(
+            find(&annots, &reply).in_reply_to.as_deref(),
+            Some(polygon.as_str()),
+            "the reply still points at the same dictionary"
+        );
+        undo(&doc.doc_id);
+        let g = find(&list(&doc.doc_id, 0), &polygon).clone();
+        assert_eq!(
+            g.vertices.as_deref(),
+            Some(&[300.0, 80.0, 420.0, 80.0, 360.0, 180.0][..])
+        );
+
+        let callout = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Callout(CalloutSpec {
+                rect: Rect::new(440.0, 260.0, 570.0, 300.0),
+                text: "처음".into(),
+                font_size: 12.0,
+                color: [0, 0, 0],
+                align: TextAlign::Center,
+                fill_color: None,
+                callout: vec![380.0, 220.0, 440.0, 280.0],
+            }),
+            None,
+        );
+        let depth = undo_depth(&doc.doc_id);
+        patch(
+            &doc.doc_id,
+            0,
+            &callout,
+            AnnotPatch {
+                text: Some("바뀐 설명".into()),
+                contents: Some("바뀐 설명".into()),
+                ..AnnotPatch::default()
+            },
+        );
+        assert_eq!(
+            undo_depth(&doc.doc_id),
+            depth + 1,
+            "rebuild + leader = one step"
+        );
+        let c = find(&list(&doc.doc_id, 0), &callout).clone();
+        assert_eq!(c.kind, AnnotKind::Callout);
+        assert_eq!(c.text.as_deref(), Some("바뀐 설명"));
+        assert_eq!(c.callout, Some(vec![380.0, 220.0, 440.0, 280.0]));
+        assert_eq!(c.align, Some(TextAlign::Center));
+    }
+
+    /// T1: a picked image keeps its aspect — the engine letterboxes it inside a square rect —
+    /// and `image_preview` reports the image's own size.
+    #[test]
+    fn stamp_image_is_letterboxed_and_previewed() {
+        let dir = out_dir();
+        let path = dir.join("wide-400x100.png");
+        let img = image::RgbaImage::from_pixel(400, 100, image::Rgba([220, 0, 0, 255]));
+        img.save(&path).expect("write png");
+
+        let (w, h, png) = seepdf_lib::commands::images::preview_png(&path, 128).expect("preview");
+        assert_eq!((w, h), (400, 100));
+        let thumb = image::load_from_memory(&png).expect("preview decodes");
+        assert_eq!(
+            (thumb.width(), thumb.height()),
+            (128, 32),
+            "aspect kept, longest side 128"
+        );
+
+        let fit = letterbox(Rect::new(0.0, 0.0, 96.0, 96.0), 4.0);
+        assert!(
+            close(fit.l, 0.0) && close(fit.r, 96.0) && close(fit.b, 36.0) && close(fit.t, 60.0)
+        );
+
+        let doc = open("tracemonkey.pdf");
+        let rect = Rect::new(250.0, 450.0, 346.0, 546.0);
+        let top_band = Rect::new(252.0, 520.0, 344.0, 544.0);
+        let middle = Rect::new(252.0, 490.0, 344.0, 506.0);
+        let (top_before, mid_before) = (
+            render_rect(&doc.doc_id, 0, top_band),
+            render_rect(&doc.doc_id, 0, middle),
+        );
+        make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Stamp(StampSpec {
+                rect,
+                image: StampImage::Path {
+                    path: path.display().to_string(),
+                },
+                rotate: None,
+                signature: false,
+            }),
+            None,
+        );
+        let top_after = render_rect(&doc.doc_id, 0, top_band);
+        let mid_after = render_rect(&doc.doc_id, 0, middle);
+        assert!(
+            changed_pixels(&mid_before, &mid_after) > 1000,
+            "the image is in the middle"
+        );
+        assert_eq!(
+            changed_pixels(&top_before, &top_after),
+            0,
+            "not stretched into the top of the square"
+        );
+    }
+
+    /// T2: a text stamp expands `{{date}}` / `{{author}}` into its appearance; quick marks draw.
+    #[test]
+    fn text_stamp_expands_tokens_and_quick_marks_draw() {
+        let doc = open("tracemonkey.pdf");
+        let today = chrono::Local::now().format("%Y.%m.%d").to_string();
+        let id = make(
+            &doc.doc_id,
+            0,
+            AnnotSpec::Stamp(StampSpec {
+                rect: Rect::new(100.0, 300.0, 260.0, 340.0),
+                image: StampImage::Text {
+                    text: "{{date}} {{author}}".into(),
+                    color: [206, 32, 41],
+                    shape: StampShape::Round,
+                },
+                rotate: None,
+                signature: false,
+            }),
+            Some("홍길동"),
+        );
+        let expected = format!("{today} 홍길동");
+        let a = find(&list(&doc.doc_id, 0), &id).clone();
+        assert_eq!(a.kind, AnnotKind::Stamp);
+        assert_eq!(a.contents, expected);
+        // The appearance itself says it: flatten a saved copy (the AP becomes page content)
+        // and extract the page text.
+        let copy = reopen(save_bytes(&doc.doc_id));
+        let said = {
+            let doc_id = copy.doc_id.clone();
+            with_doc(&doc_id, move |d| {
+                let bindings = d.bindings();
+                raw::page::flatten(bindings, d.page(0)?, raw::page::FlattenMode::NormalDisplay)?;
+                d.invalidate_page(0);
+                Ok(seepdf_lib::engine::text::layer::page_text(d, 0)?
+                    .text
+                    .clone())
+            })
+            .unwrap()
+        };
+        assert!(
+            said.contains(&expected),
+            "the stamp's appearance says {expected}"
+        );
+
+        let probe = Rect::new(380.0, 380.0, 560.0, 440.0);
+        let before = render_rect(&doc.doc_id, 0, probe);
+        for (i, mark) in ["check", "cross", "dot"].iter().enumerate() {
+            let x = 390.0 + i as f32 * 60.0;
+            let id = make(
+                &doc.doc_id,
+                0,
+                AnnotSpec::Stamp(StampSpec {
+                    rect: Rect::new(x, 390.0, x + 40.0, 430.0),
+                    image: StampImage::Builtin {
+                        builtin: mark.to_string(),
+                    },
+                    rotate: None,
+                    signature: false,
+                }),
+                None,
+            );
+            assert_eq!(
+                find(&list(&doc.doc_id, 0), &id).stamp_kind.as_deref(),
+                Some(*mark)
+            );
+        }
+        let after = render_rect(&doc.doc_id, 0, probe);
+        assert!(changed_pixels(&before, &after) > 300, "the marks are drawn");
+    }
+
+    /// A8: resizing a page maps a third-party `/Line`'s `/L` with the same matrix as its
+    /// `/Rect` — one undo step.
+    #[test]
+    fn resize_maps_a_foreign_line() {
+        let doc = open("annotation-line.pdf");
+        let line = list(&doc.doc_id, 0)
+            .into_iter()
+            .find(|a| a.subtype == "Line")
+            .expect("a Line");
+        let (r0, p0) = (line.rect, line.line_points.unwrap());
+        let depth = undo_depth(&doc.doc_id);
+        {
+            let doc_id = doc.doc_id.clone();
+            with_state(move |st| {
+                boxes::resize_pages(
+                    st,
+                    &doc_id,
+                    &PageSelection::List(vec![0]),
+                    ResizeTarget::Size { w: 300.0, h: 400.0 },
+                    ResizeMode::ScaleContent,
+                )
+            })
+            .expect("resize");
+        }
+        assert_eq!(
+            undo_depth(&doc.doc_id),
+            depth + 1,
+            "resize + lopdf pass = one step"
+        );
+        let moved = list(&doc.doc_id, 0)
+            .into_iter()
+            .find(|a| a.id == line.id)
+            .expect("same line");
+        let (r1, p1) = (moved.rect, moved.line_points.unwrap());
+        let s = r1.width() / r0.width();
+        assert!(
+            (r1.height() / r0.height() - s).abs() < 0.01,
+            "uniform scale"
+        );
+        assert!(s < 1.0, "the page got smaller");
+        for (x0, y0, x1, y1) in [(p0[0], p0[1], p1[0], p1[1]), (p0[2], p0[3], p1[2], p1[3])] {
+            assert!(
+                close(x1, r1.l + (x0 - r0.l) * s),
+                "x mapped like the rect: {p0:?} → {p1:?}"
+            );
+            assert!(
+                close(y1, r1.b + (y0 - r0.b) * s),
+                "y mapped like the rect: {p0:?} → {p1:?}"
+            );
+        }
+        undo(&doc.doc_id);
+        let back = list(&doc.doc_id, 0)
+            .into_iter()
+            .find(|a| a.subtype == "Line")
+            .unwrap();
+        assert_eq!(back.line_points, Some(p0));
+    }
+
+    fn batch(
+        doc_id: &str,
+        ops: Vec<seepdf_lib::ipc::types::AnnotOp>,
+    ) -> Result<Vec<String>, seepdf_lib::ipc::EngineError> {
+        let doc_id = doc_id.to_string();
+        with_state(move |st| {
+            seepdf_lib::engine::annot::update::batch_in(st, &doc_id, 0, &ops, Some("Batch"))
+        })
+    }
+
+    fn ink(paths: Vec<Vec<f32>>, width: f32) -> AnnotSpec {
+        AnnotSpec::Ink(InkSpec {
+            paths,
+            color: [0, 0, 255],
+            width,
+            opacity: 1.0,
+        })
+    }
+
+    /// Verification round 1 (A3): one partial-eraser scrub across several strokes — the
+    /// patches of the split strokes and the delete of an erased one — is ONE undo step.
+    #[test]
+    fn batch_partial_erase_is_one_undo_step() {
+        use seepdf_lib::ipc::types::AnnotOp;
+        let doc = open("tracemonkey.pdf");
+        let a = make(
+            &doc.doc_id,
+            0,
+            ink(vec![vec![80.0, 100.0, 120.0, 100.0]], 2.0),
+            None,
+        );
+        let b = make(
+            &doc.doc_id,
+            0,
+            ink(vec![vec![80.0, 120.0, 120.0, 120.0]], 2.0),
+            None,
+        );
+        let c = make(
+            &doc.doc_id,
+            0,
+            ink(vec![vec![98.0, 110.0, 102.0, 110.0]], 2.0),
+            None,
+        );
+        let before = list(&doc.doc_id, 0);
+        let depth = undo_depth(&doc.doc_id);
+        let split = |y: f32| vec![vec![80.0, y, 95.0, y], vec![105.0, y, 120.0, y]];
+        let created = batch(
+            &doc.doc_id,
+            vec![
+                AnnotOp::Update {
+                    id: a.clone(),
+                    patch: AnnotPatch {
+                        paths: Some(split(100.0)),
+                        ..AnnotPatch::default()
+                    },
+                },
+                AnnotOp::Update {
+                    id: b.clone(),
+                    patch: AnnotPatch {
+                        paths: Some(split(120.0)),
+                        ..AnnotPatch::default()
+                    },
+                },
+                AnnotOp::Delete {
+                    ids: vec![c.clone()],
+                },
+            ],
+        )
+        .expect("batch");
+        assert!(created.is_empty());
+        let after = list(&doc.doc_id, 0);
+        let paths_of = |l: &[Annot], id: &str| {
+            l.iter()
+                .find(|x| x.id == id)
+                .and_then(|x| x.ink_paths.clone())
+                .map(|p| p.len())
+        };
+        assert_eq!(paths_of(&after, &a), Some(2));
+        assert_eq!(paths_of(&after, &b), Some(2));
+        assert!(after.iter().all(|x| x.id != c), "the erased stroke is gone");
+        let label = with_doc(&doc.doc_id, |d| Ok(d.history.undo_label())).unwrap();
+        assert_eq!(undo_depth(&doc.doc_id), depth + 1, "one undo step");
+        assert_eq!(label.as_deref(), Some("undo.annotEdit"));
+        undo(&doc.doc_id);
+        let back = list(&doc.doc_id, 0);
+        assert_eq!(paths_of(&back, &a), Some(1));
+        assert_eq!(paths_of(&back, &b), Some(1));
+        assert_eq!(
+            back.len(),
+            before.len(),
+            "one undo brings the whole scrub back"
+        );
+        assert_eq!(undo_depth(&doc.doc_id), depth);
+    }
+
+    /// Verification round 1 (A4): a pen stroke split into pressure bands is created — and
+    /// undone — as one step; `created` names the pieces in order, all with 작성자.
+    #[test]
+    fn batch_pressure_stroke_is_one_undo_step() {
+        use seepdf_lib::ipc::types::AnnotOp;
+        let doc = open("tracemonkey.pdf");
+        let before = list(&doc.doc_id, 0).len();
+        let depth = undo_depth(&doc.doc_id);
+        let ops = [(0.8, 1.0), (1.0, 2.0), (1.3, 3.0)]
+            .iter()
+            .map(|&(w, k)| AnnotOp::Create {
+                spec: ink(vec![vec![100.0 * k, 300.0, 100.0 * k + 90.0, 310.0]], w),
+                id: None,
+            })
+            .collect();
+        let created = batch(&doc.doc_id, ops).expect("batch");
+        assert_eq!(created.len(), 3);
+        let after = list(&doc.doc_id, 0);
+        for id in &created {
+            let a = after.iter().find(|a| &a.id == id).expect("created");
+            assert_eq!(a.author.as_deref(), Some("Batch"));
+        }
+        assert_eq!(undo_depth(&doc.doc_id), depth + 1);
+        let label = with_doc(&doc.doc_id, |d| Ok(d.history.undo_label())).unwrap();
+        assert_eq!(label.as_deref(), Some("undo.annotCreate"));
+        undo(&doc.doc_id);
+        assert_eq!(
+            list(&doc.doc_id, 0).len(),
+            before,
+            "one undo removes every band"
+        );
+        // …and one redo brings all three back, with their ids.
+        let id = doc.doc_id.clone();
+        with_state(move |st| registry::undo(st, &id, true)).expect("redo");
+        let redone = list(&doc.doc_id, 0);
+        assert!(created.iter().all(|id| redone.iter().any(|a| &a.id == id)));
+    }
+
+    /// A batch is all or nothing: an op that fails undoes the ones before it, and leaves no
+    /// undo or redo entry behind.
+    #[test]
+    fn batch_failure_rolls_back_everything() {
+        use seepdf_lib::ipc::types::AnnotOp;
+        let doc = open("tracemonkey.pdf");
+        let a = make(
+            &doc.doc_id,
+            0,
+            ink(vec![vec![80.0, 100.0, 120.0, 100.0]], 2.0),
+            None,
+        );
+        let before = list(&doc.doc_id, 0);
+        let depth = undo_depth(&doc.doc_id);
+        let err = batch(
+            &doc.doc_id,
+            vec![
+                AnnotOp::Update {
+                    id: a.clone(),
+                    patch: AnnotPatch {
+                        paths: Some(vec![vec![80.0, 100.0, 90.0, 100.0]]),
+                        ..AnnotPatch::default()
+                    },
+                },
+                AnnotOp::Create {
+                    spec: ink(vec![vec![10.0, 10.0, 50.0, 50.0]], 1.0),
+                    id: None,
+                },
+                AnnotOp::Delete {
+                    ids: vec!["no-such-annotation".into()],
+                },
+            ],
+        )
+        .expect_err("the delete fails");
+        assert!(!err.message.is_empty());
+        let after = list(&doc.doc_id, 0);
+        assert_eq!(after.len(), before.len(), "the create was rolled back");
+        let a_after = after.iter().find(|x| x.id == a).unwrap();
+        assert_eq!(
+            a_after.ink_paths.as_ref().unwrap()[0].len(),
+            4,
+            "the update was rolled back"
+        );
+        let (d, redo) = with_doc(&doc.doc_id, |d| {
+            Ok((d.history.undo_depth(), d.history.redo_depth()))
+        })
+        .unwrap();
+        assert_eq!(
+            (d, redo),
+            (depth, 0),
+            "no undo or redo entry is left behind"
+        );
+        let empty = batch(&doc.doc_id, Vec::new()).expect_err("empty");
+        assert_eq!(empty.code, seepdf_lib::ipc::ErrorCode::InvalidArgument);
     }
 }

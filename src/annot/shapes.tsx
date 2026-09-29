@@ -15,7 +15,7 @@
  */
 import type { Annot, Rect, Rgb } from "../ipc/types";
 import type { ToolPreview } from "../tools/ToolController";
-import { builtinColor, builtinLabel, isBuiltinStampKind } from "../tools/stampCatalog";
+import { builtinColor, builtinLabel, isBuiltinStampKind, isQuickMark, QUICK_MARK_COLOR, TEXT_STAMP_KIND } from "../tools/stampCatalog";
 import { getSnapshot, type AppearanceSnapshot } from "./snapshots";
 
 export function rgb(c: Rgb): string {
@@ -59,16 +59,20 @@ function arrowHead(x: number, y: number, fx: number, fy: number, size: number): 
 /**
  * Border + label, centred, in PDF user space (`scale(1 -1)` counter-flips the text). The font
  * size mirrors the engine's rule: half the height, shrunk until it fits 84 % of the width.
+ * v0.3 T2: a text stamp's border is a rectangle, a rounded one, or none.
  */
-function StampLabel({ rect, label, color, dashed }: { rect: Rect; label: string; color: Rgb; dashed?: boolean }) {
+function StampLabel({ rect, label, color, dashed, shape = "rect" }: { rect: Rect; label: string; color: Rgb; dashed?: boolean; shape?: "rect" | "round" | "none" }) {
   const b = box(rect);
   const hangul = /[ㄱ-힝]/.test(label);
-  const em = label.length * (hangul ? 1 : 0.68);
+  const em = [...label].reduce((sum, ch) => sum + (/[ㄱ-힝]/.test(ch) ? 1 : 0.68), 0);
   const size = Math.max(4, Math.min(b.height * 0.5, 48, em > 0 ? (b.width * 0.84) / em : b.height));
   const stroke = rgb(color);
+  const radius = shape === "round" ? Math.min(b.height, b.width) / 2 : 0;
   return (
     <g>
-      <rect {...b} fill="none" stroke={stroke} strokeWidth={hangul ? 2.5 : 2} strokeDasharray={dashed ? "4 3" : undefined} />
+      {shape !== "none" && (
+        <rect {...b} rx={radius} fill="none" stroke={stroke} strokeWidth={hangul ? 2.5 : 2} strokeDasharray={dashed ? "4 3" : undefined} />
+      )}
       <g transform={`translate(${b.x + b.width / 2} ${b.y + b.height / 2}) scale(1 -1)`}>
         <text x={0} y={0} fontSize={size} fill={stroke} textAnchor="middle" dominantBaseline="central" fontWeight={hangul ? 700 : 600}>
           {label}
@@ -112,10 +116,72 @@ function StampImage({ a }: { a: Annot }) {
   );
 }
 
+/** v0.3 T2: ✓ ✗ ● inside `rect` — the engine's `quick_mark` geometry. */
+function QuickMarkShape({ rect, mark, color = QUICK_MARK_COLOR }: { rect: Rect; mark: string; color?: Rgb }) {
+  const b = box(rect);
+  const side = Math.min(b.width, b.height);
+  const x0 = b.x + (b.width - side) / 2;
+  const y0 = b.y + (b.height - side) / 2;
+  const at = (u: number, v: number) => `${x0 + u * side} ${y0 + v * side}`;
+  const stroke = rgb(color);
+  if (mark === "dot") return <circle cx={x0 + side / 2} cy={y0 + side / 2} r={side * 0.3} fill={stroke} />;
+  const d = mark === "cross" ? `M ${at(0.15, 0.15)} L ${at(0.85, 0.85)} M ${at(0.15, 0.85)} L ${at(0.85, 0.15)}` : `M ${at(0.12, 0.52)} L ${at(0.4, 0.2)} L ${at(0.88, 0.85)}`;
+  return <path d={d} stroke={stroke} strokeWidth={Math.max(1, side * 0.12)} fill="none" strokeLinecap="round" strokeLinejoin="round" />;
+}
+
+/** v0.3 A2: a closed ring or an open polyline through flat `[x0,y0,…]` vertices. */
+function polyPath(v: number[], closed: boolean): string {
+  const d = inkPath(v);
+  return d && closed ? `${d} Z` : d;
+}
+
+/** v0.3 A2: a cloudy border — outward half-circle bumps along every edge (`cloud_ops`). */
+function cloudPath(v: number[], width: number): string {
+  const n = Math.floor(v.length / 2);
+  if (n < 3) return polyPath(v, true);
+  let signed = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    signed += v[2 * i] * v[2 * j + 1] - v[2 * j] * v[2 * i + 1];
+  }
+  const ccw = signed >= 0;
+  const arc = Math.max(8, width * 4);
+  let d = `M ${v[0]} ${v[1]}`;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const [x0, y0, x1, y1] = [v[2 * i], v[2 * i + 1], v[2 * j], v[2 * j + 1]];
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    if (len < 1e-3) continue;
+    const bumps = Math.max(1, Math.ceil(len / arc));
+    const [ux, uy] = [(x1 - x0) / len, (y1 - y0) / len];
+    const [nx, ny] = ccw ? [uy, -ux] : [-uy, ux];
+    const step = len / bumps;
+    const k = (step / 2) * (4 / 3);
+    for (let b = 0; b < bumps; b++) {
+      const [ax, ay] = [x0 + ux * step * b, y0 + uy * step * b];
+      const [bx, by] = [ax + ux * step, ay + uy * step];
+      d += ` C ${ax + nx * k} ${ay + ny * k} ${bx + nx * k} ${by + ny * k} ${bx} ${by}`;
+    }
+  }
+  return `${d} Z`;
+}
+
+/** v0.3 A2: a measuring label (the engine draws Helvetica 9 pt). */
+function MeasureText({ x, y, text, color }: { x: number; y: number; text: string; color: string }) {
+  return (
+    <g transform={`translate(${x} ${y}) scale(1 -1)`}>
+      <text x={0} y={0} fontSize={9} fill={color} data-testid="measure-label">
+        {text}
+      </text>
+    </g>
+  );
+}
+
 /** One annotation, fully painted. Used for ghosts and for the 텍스트 상자 draft. */
 export function AnnotShape({ annot: a }: { annot: Annot }) {
   const stroke = rgb(a.color);
   const fill = a.fillColor ? rgb(a.fillColor) : "none";
+  const dash = a.dashed ? "4 3" : undefined;
   switch (a.kind) {
     case "highlight":
       return (
@@ -150,7 +216,45 @@ export function AnnotShape({ annot: a }: { annot: Annot }) {
         </g>
       );
     case "square":
-      return <rect {...box(a.rect)} fill={fill} stroke={stroke} strokeWidth={a.borderWidth} opacity={a.opacity} />;
+      return <rect {...box(a.rect)} fill={fill} stroke={stroke} strokeWidth={a.borderWidth} strokeDasharray={dash} opacity={a.opacity} />;
+    case "polygon":
+    case "polyline": {
+      const v = a.vertices ?? [];
+      const closed = a.kind === "polygon";
+      return (
+        <path
+          d={closed && a.cloudy ? cloudPath(v, a.borderWidth) : polyPath(v, closed)}
+          fill={closed ? fill : "none"}
+          stroke={stroke}
+          strokeWidth={a.borderWidth}
+          strokeDasharray={dash}
+          strokeLinejoin="round"
+          opacity={a.opacity}
+        />
+      );
+    }
+    case "callout": {
+      const b = box(a.rect);
+      const cl = a.callout ?? [];
+      const size = a.fontSize ?? 12;
+      return (
+        <g>
+          {cl.length >= 4 && (
+            <g stroke={stroke} strokeWidth={1} fill="none">
+              <path d={inkPath(cl)} />
+              <path d={arrowHead(cl[0], cl[1], cl[2], cl[3], 6)} />
+            </g>
+          )}
+          {a.fillColor && <rect {...b} fill={fill} opacity={a.opacity} />}
+          <rect {...b} fill="none" stroke={stroke} strokeWidth={0.75} opacity={a.opacity} />
+          <g transform={`translate(${b.x + 2} ${b.y + b.height - 2}) scale(1 -1)`}>
+            <text x={0} y={0} fontSize={size} fill={stroke} dominantBaseline="hanging">
+              {a.text ?? a.contents}
+            </text>
+          </g>
+        </g>
+      );
+    }
     case "circle": {
       const b = box(a.rect);
       return (
@@ -162,6 +266,7 @@ export function AnnotShape({ annot: a }: { annot: Annot }) {
           fill={fill}
           stroke={stroke}
           strokeWidth={a.borderWidth}
+          strokeDasharray={dash}
           opacity={a.opacity}
         />
       );
@@ -172,8 +277,9 @@ export function AnnotShape({ annot: a }: { annot: Annot }) {
       const size = Math.max(4, a.borderWidth * 3);
       return (
         <g stroke={stroke} strokeWidth={a.borderWidth} fill="none" opacity={a.opacity} strokeLinecap="round">
-          <line x1={p[0]} y1={p[1]} x2={p[2]} y2={p[3]} />
-          {a.kind === "arrow" && <path d={arrowHead(p[2], p[3], p[0], p[1], size)} />}
+          <line x1={p[0]} y1={p[1]} x2={p[2]} y2={p[3]} strokeDasharray={dash} />
+          {(a.heads ? a.heads[1] : a.kind === "arrow") && <path d={arrowHead(p[2], p[3], p[0], p[1], size)} />}
+          {a.heads?.[0] && <path d={arrowHead(p[0], p[1], p[2], p[3], size)} />}
         </g>
       );
     }
@@ -230,6 +336,11 @@ export function AnnotShape({ annot: a }: { annot: Annot }) {
           </g>
         );
       }
+      // v0.3 T2: a quick mark and a text stamp are drawn like the engine does
+      if (isQuickMark(a.stampKind)) return <QuickMarkShape rect={a.rect} mark={a.stampKind} />;
+      if (a.stampKind === TEXT_STAMP_KIND && a.contents) {
+        return <StampLabel rect={a.rect} label={a.contents} color={a.color} />;
+      }
       return <StampImage a={a} />;
     default:
       return <rect {...box(a.rect)} fill="none" stroke={stroke} strokeWidth={1} opacity={a.opacity} />;
@@ -270,6 +381,36 @@ export function PreviewShape({ preview, scale }: { preview: ToolPreview; scale: 
           <line x1={p[0]} y1={p[1]} x2={p[2]} y2={p[3]} />
           {preview.heads?.[1] && <path d={arrowHead(p[2], p[3], p[0], p[1], size)} />}
           {preview.heads?.[0] && <path d={arrowHead(p[0], p[1], p[2], p[3], size)} />}
+          {preview.measureText && <MeasureText x={(p[0] + p[2]) / 2} y={(p[1] + p[3]) / 2 + 4} text={preview.measureText} color={stroke} />}
+        </g>
+      );
+    }
+    case "poly": {
+      const v = preview.points ?? [];
+      const closed = !!preview.closed && v.length >= 6;
+      return (
+        <g data-testid="poly-preview">
+          <path
+            d={closed && preview.cloudy ? cloudPath(v, width) : polyPath(v, closed)}
+            fill={closed ? fill : "none"}
+            stroke={stroke}
+            strokeWidth={width}
+            strokeLinejoin="round"
+            opacity={opacity}
+          />
+          {preview.measureText && v.length >= 2 && (
+            <MeasureText x={v[v.length - 2] + 6} y={v[v.length - 1] + 6} text={preview.measureText} color={stroke} />
+          )}
+        </g>
+      );
+    }
+    case "callout": {
+      const cl = preview.points ?? [];
+      return (
+        <g stroke={stroke} fill="none">
+          {preview.rect && <rect {...box(preview.rect)} strokeWidth={0.75} strokeDasharray={`${4 / scale} ${3 / scale}`} vectorEffect="non-scaling-stroke" />}
+          {cl.length >= 4 && <path d={inkPath(cl)} strokeWidth={1} />}
+          {cl.length >= 4 && <path d={arrowHead(cl[0], cl[1], cl[2], cl[3], 6)} strokeWidth={1} />}
         </g>
       );
     }
@@ -290,15 +431,35 @@ export function PreviewShape({ preview, scale }: { preview: ToolPreview; scale: 
         />
       );
     }
-    case "stamp":
+    case "stamp": {
       if (!preview.rect) return null;
-      return preview.label && preview.color ? (
-        <g opacity={0.7}>
-          <StampLabel rect={preview.rect} label={preview.label} color={preview.color} dashed />
+      if (preview.label && preview.color && isQuickMark(preview.label)) {
+        return (
+          <g opacity={0.7}>
+            <QuickMarkShape rect={preview.rect} mark={preview.label} color={preview.color} />
+          </g>
+        );
+      }
+      if (preview.label && preview.color) {
+        return (
+          <g opacity={0.7}>
+            <StampLabel rect={preview.rect} label={preview.label} color={preview.color} shape={preview.shape} dashed />
+          </g>
+        );
+      }
+      const b = box(preview.rect);
+      // v0.3 T1: the picked image itself at 50 %, over the dashed placement box
+      return (
+        <g>
+          {preview.imageUrl && (
+            <g transform={`translate(${b.x} ${b.y + b.height}) scale(1 -1)`}>
+              <image href={preview.imageUrl} x={0} y={0} width={b.width} height={b.height} opacity={0.5} preserveAspectRatio="none" data-testid="stamp-ghost-image" />
+            </g>
+          )}
+          <rect {...b} className="annot-placing" strokeDasharray={`${6 / scale} ${4 / scale}`} vectorEffect="non-scaling-stroke" />
         </g>
-      ) : (
-        <rect {...box(preview.rect)} className="annot-placing" strokeDasharray={`${6 / scale} ${4 / scale}`} vectorEffect="non-scaling-stroke" />
       );
+    }
     default:
       return null;
   }

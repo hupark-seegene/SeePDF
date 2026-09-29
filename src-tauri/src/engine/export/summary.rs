@@ -49,6 +49,12 @@ pub struct SummaryRow {
     pub contents: String,
     /// The marked-up words, text markup only.
     pub quote: String,
+    /// v0.3 A7: the annotation's id (`/NM`) — what a reply's `reply_to` names.
+    pub id: String,
+    /// v0.3 A7: the id of the annotation this one replies to (P2 threads), when it does.
+    pub reply_to: Option<String>,
+    /// v0.3 A7: 0 for a top-level annotation, 1 for a reply, 2 for a reply to a reply…
+    pub depth: u32,
 }
 
 /// `export_annotation_summary`.
@@ -98,7 +104,7 @@ pub fn collect(
         } else {
             None
         };
-        for a in annots {
+        for (a, depth) in threaded(annots) {
             let quote = match (&text, is_text_markup(a.kind)) {
                 (Some(text), true) => {
                     let quads = match &a.quads {
@@ -124,10 +130,64 @@ pub fn collect(
                 color: format!("#{:02X}{:02X}{:02X}", a.color[0], a.color[1], a.color[2]),
                 contents,
                 quote,
+                id: a.id.clone(),
+                reply_to: if depth > 0 {
+                    a.in_reply_to.clone()
+                } else {
+                    None
+                },
+                depth,
             });
         }
     }
     Ok(rows)
+}
+
+/// v0.3 A7: the page's annotations in thread order — each top-level annotation (in `/Annots`
+/// order) followed by its replies, depth-first, each level oldest first — with their depth. A
+/// reply whose parent is not in the list (another page, a link) is listed as top-level.
+pub fn threaded(annots: Vec<Annot>) -> Vec<(Annot, u32)> {
+    let ids: std::collections::HashSet<String> = annots.iter().map(|a| a.id.clone()).collect();
+    let parent_of = |a: &Annot| {
+        a.in_reply_to
+            .clone()
+            .filter(|p| ids.contains(p) && *p != a.id)
+    };
+    let created = |a: &Annot| a.created.as_deref().map(format_date).unwrap_or_default();
+    let mut out: Vec<(Annot, u32)> = Vec::with_capacity(annots.len());
+    let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    fn visit(
+        node: &Annot,
+        depth: u32,
+        all: &[Annot],
+        parent_of: &dyn Fn(&Annot) -> Option<String>,
+        created: &dyn Fn(&Annot) -> String,
+        placed: &mut std::collections::HashSet<String>,
+        out: &mut Vec<(Annot, u32)>,
+    ) {
+        if !placed.insert(node.id.clone()) {
+            return; // a cycle (`/IRT` loops exist in the wild) is listed once
+        }
+        out.push((node.clone(), depth));
+        let mut children: Vec<&Annot> = all
+            .iter()
+            .filter(|c| parent_of(c).as_deref() == Some(node.id.as_str()))
+            .collect();
+        children.sort_by_key(|c| created(c));
+        for child in children {
+            visit(child, depth + 1, all, parent_of, created, placed, out);
+        }
+    }
+    for a in annots.iter().filter(|a| parent_of(a).is_none()) {
+        visit(a, 0, &annots, &parent_of, &created, &mut placed, &mut out);
+    }
+    // Anything only reachable through a cycle.
+    for a in &annots {
+        if !placed.contains(&a.id) {
+            visit(a, 0, &annots, &parent_of, &created, &mut placed, &mut out);
+        }
+    }
+    out
 }
 
 fn is_text_markup(kind: AnnotKind) -> bool {
@@ -203,6 +263,9 @@ pub fn kind_label(a: &Annot, locale: Locale) -> String {
         AnnotKind::Textbox => ("annot.kind.textbox", "Text box"),
         AnnotKind::Stamp => ("tool.stamp", "Stamp"),
         AnnotKind::Signature => ("tool.signature", "Signature"),
+        AnnotKind::Polygon => ("annot.kind.polygon", "Polygon"),
+        AnnotKind::Polyline => ("annot.kind.polyline", "Polyline"),
+        AnnotKind::Callout => ("annot.kind.callout", "Callout"),
         AnnotKind::Link | AnnotKind::Widget | AnnotKind::Other => return a.subtype.clone(),
     };
     tr(key, locale, fallback)
@@ -293,6 +356,8 @@ struct Headers {
     color: String,
     contents: String,
     quote: String,
+    id: String,
+    reply_to: String,
 }
 
 fn headers(locale: Locale) -> Headers {
@@ -306,6 +371,8 @@ fn headers(locale: Locale) -> Headers {
         color: tr("annotSummary.col.color", locale, "Colour"),
         contents: tr("annotSummary.col.contents", locale, "Contents"),
         quote: tr("annotSummary.col.quote", locale, "Quoted text"),
+        id: tr("annotSummary.col.id", locale, "id"),
+        reply_to: tr("annotSummary.col.replyTo", locale, "reply_to"),
     }
 }
 
@@ -337,6 +404,8 @@ fn render_csv(rows: &[SummaryRow], locale: Locale) -> Vec<u8> {
         &h.color,
         &h.contents,
         &h.quote,
+        &h.id,
+        &h.reply_to,
     ];
     out.push_str(
         &header
@@ -357,6 +426,8 @@ fn render_csv(rows: &[SummaryRow], locale: Locale) -> Vec<u8> {
             csv_field(&r.color, false),
             csv_field(&r.contents, true),
             csv_field(&r.quote, true),
+            csv_field(&r.id, true),
+            csv_field(r.reply_to.as_deref().unwrap_or(""), true),
         ];
         out.push_str(&cells.join(","));
         out.push_str("\r\n");
@@ -407,22 +478,34 @@ fn render_txt(rows: &[SummaryRow], doc_name: &str, locale: Locale) -> String {
         if !when.is_empty() {
             head.push(when.clone());
         }
-        out.push_str(&format!(
-            "[{}] {}\n",
-            page_heading(r, locale),
-            head.join(" · ")
-        ));
+        // v0.3 A7: a reply sits under its parent, indented by its depth (no blank line).
+        let pad = "    ".repeat(r.depth as usize);
+        if r.depth > 0 {
+            out.pop();
+            out.push_str(&format!("{pad}\u{21B3} {}\n", head.join(" · ")));
+        } else {
+            out.push_str(&format!(
+                "[{}] {}\n",
+                page_heading(r, locale),
+                head.join(" · ")
+            ));
+        }
         if !r.quote.is_empty() {
-            out.push_str(&format!("  {}: \u{201C}{}\u{201D}\n", h.quote, r.quote));
+            out.push_str(&format!(
+                "{pad}  {}: \u{201C}{}\u{201D}\n",
+                h.quote, r.quote
+            ));
         }
         if !r.contents.trim().is_empty() {
             out.push_str(&format!(
-                "  {}: {}\n",
+                "{pad}  {}: {}\n",
                 h.contents,
-                indent(&r.contents, "    ")
+                indent(&r.contents, &format!("{pad}    "))
             ));
         }
-        out.push_str(&format!("  {}: {}\n", h.color, r.color));
+        if r.depth == 0 {
+            out.push_str(&format!("  {}: {}\n", h.color, r.color));
+        }
     }
     out
 }
@@ -457,10 +540,16 @@ fn render_md(rows: &[SummaryRow], doc_name: &str, locale: Locale) -> String {
         if !when.is_empty() {
             head.push(when.clone());
         }
-        head.push(format!("`{}`", r.color));
-        out.push_str(&format!("- {}\n", head.join(" · ")));
+        // v0.3 A7: a reply is a nested list item under its parent (two spaces per level).
+        let pad = "  ".repeat(r.depth as usize);
+        if r.depth == 0 {
+            head.push(format!("`{}`", r.color));
+        } else {
+            out.push('\n');
+        }
+        out.push_str(&format!("{pad}- {}\n", head.join(" · ")));
         if !r.quote.is_empty() {
-            out.push_str(&format!("\n  > {}\n", md_escape(&r.quote)));
+            out.push_str(&format!("\n{pad}  > {}\n", md_escape(&r.quote)));
         }
         if !r.contents.trim().is_empty() {
             out.push('\n');
@@ -468,7 +557,7 @@ fn render_md(rows: &[SummaryRow], doc_name: &str, locale: Locale) -> String {
                 if line.trim().is_empty() {
                     out.push('\n');
                 } else {
-                    out.push_str(&format!("  {}\n", md_escape(line)));
+                    out.push_str(&format!("{pad}  {}\n", md_escape(line)));
                 }
             }
         }
@@ -511,7 +600,33 @@ mod tests {
             color: "#FFD400".into(),
             contents: contents.into(),
             quote: quote.into(),
+            id: format!("id-{page}"),
+            reply_to: None,
+            depth: 0,
         }
+    }
+
+    #[test]
+    fn replies_nest_under_their_parent() {
+        let mut parent = row(1, "형광펜", "원문", "Trace");
+        parent.id = "p".into();
+        let mut r1 = row(1, "메모", "첫 답글", "");
+        (r1.id, r1.reply_to, r1.depth) = ("r1".into(), Some("p".into()), 1);
+        let mut r2 = row(1, "메모", "두 번째", "");
+        (r2.id, r2.reply_to, r2.depth) = ("r2".into(), Some("p".into()), 1);
+        let rows = vec![parent, r1, r2];
+        let md = String::from_utf8(render(&rows, SummaryFormat::Md, "a.pdf", Locale::Ko)).unwrap();
+        assert!(md.contains("\n  - **메모** · 홍길동"), "{md}");
+        assert!(md.contains("\n    첫 답글\n"), "{md}");
+        let txt =
+            String::from_utf8(render(&rows, SummaryFormat::Txt, "a.pdf", Locale::En)).unwrap();
+        assert!(txt.contains("\n    \u{21B3} 메모 · 홍길동"), "{txt}");
+        let csv =
+            String::from_utf8(render(&rows, SummaryFormat::Csv, "a.pdf", Locale::En)).unwrap();
+        assert!(
+            csv.contains(",r1,p\r\n") && csv.contains(",r2,p\r\n"),
+            "{csv}"
+        );
     }
 
     #[test]
@@ -536,7 +651,7 @@ mod tests {
         let text = String::from_utf8(bytes[3..].to_vec()).unwrap();
         assert!(text.starts_with("페이지,페이지 레이블,종류,"));
         assert!(text.contains(
-            "1,,형광펜,홍길동,,2026-09-28 12:00:00,#FFD400,\"메모, \"\"인용\"\"\",Trace-based\r\n"
+            "1,,형광펜,홍길동,,2026-09-28 12:00:00,#FFD400,\"메모, \"\"인용\"\"\",Trace-based,id-1,\r\n"
         ));
         assert!(text.contains("\"두 줄\n내용\""));
         // header + 2 records; the embedded LF is inside quotes, so count CRLFs

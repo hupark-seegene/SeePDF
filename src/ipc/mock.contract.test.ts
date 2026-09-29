@@ -79,7 +79,9 @@ describe("mock ↔ engine contract", () => {
       docId: info.docId, page: 0, id: line.annot!.id, patch: { p2: [50, 40] },
     })).annot!;
     expect(stretched.linePoints).toEqual([0, 0, 50, 40]);
-    expect(stretched.inkPaths?.[0]).toEqual([0, 0, 50, 40]);
+    // v0.3 (A2): a real /Line — its geometry is /L (linePoints), there are no ink strokes
+    expect(stretched.subtype).toBe("Line");
+    expect(stretched.inkPaths).toBeUndefined();
     expect("p2" in stretched).toBe(false);
 
     const box = await api.createAnnotation({

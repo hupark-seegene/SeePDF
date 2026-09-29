@@ -9,6 +9,8 @@ import { useT } from "../../i18n/useT";
 import type { PageObject } from "../../ipc/types";
 import { useEditStore } from "../../edit/editStore";
 import { deleteSelection, reasonKey, restyleText, setSelectionGeometry } from "../../edit/actions";
+// v0.3 pkg4-annotations-stamps-objects (E1 이미지 바꾸기, A6 비율 고정 / 맨 앞으로 / 맨 뒤로)
+import { lockedSize, replaceSelectedImage, restackSelection } from "../../edit/actions";
 import { unionRects } from "../../edit/geometry";
 import { Swatches } from "../Swatches";
 import { useAppStore } from "../../store/appStore";
@@ -44,6 +46,7 @@ export function EditPanel() {
 
 function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
   const t = useT();
+  const [lockOverride, setLockOverride] = useState<boolean | null>(null);
   const selection = useEditStore((s) => s.selection);
   const objects = useEditStore((s) => (s.selection ? s.pages[s.selection.page]?.objects ?? NONE : NONE));
   const chosen = selection ? objects.filter((o) => selection.ids.includes(o.objectId)) : NONE;
@@ -54,6 +57,9 @@ function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
   const box = unionRects(chosen.map((o) => o.rect))!;
   const canMove = chosen.some((o) => o.editable !== "readOnly");
   const canScale = one?.editable === "full";
+  // A6 비율 고정: on by default for an image (a photo should not be squashed), off for the rest
+  const lock = lockOverride ?? one?.type === "image";
+  const sized = (patch: { w?: number; h?: number }) => (lock && one ? lockedSize(one.rect, patch) : patch);
 
   return (
     <>
@@ -110,18 +116,43 @@ function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
             value={box.r - box.l}
             min={1}
             disabled={!canScale}
-            onCommit={(w) => void setSelectionGeometry({ w })}
+            onCommit={(w) => void setSelectionGeometry(sized({ w }))}
           />
           <NumberField
             label={t("edit.geometry.h")}
             value={box.t - box.b}
             min={1}
             disabled={!canScale}
-            onCommit={(h) => void setSelectionGeometry({ h })}
+            onCommit={(h) => void setSelectionGeometry(sized({ h }))}
           />
         </div>
+        {canScale && (
+          <label className="text-sm inspector-row">
+            <input type="checkbox" checked={lock} onChange={(e) => setLockOverride(e.currentTarget.checked)} />
+            {t("prop.lockAspect")}
+          </label>
+        )}
         <p className="text-xs dim">{t("edit.geometry.hint")}</p>
       </section>
+      {(one?.type === "image" && one.editable !== "readOnly") || canMove ? (
+        <section className="field-group">
+          {one?.type === "image" && one.editable !== "readOnly" && (
+            <button type="button" className="btn quiet" onClick={() => void replaceSelectedImage()}>
+              {t("edit.replaceImage")}
+            </button>
+          )}
+          {canMove && (
+            <div className="inspector-row">
+              <button type="button" className="btn quiet" onClick={() => void restackSelection(true)}>
+                {t("prop.bringToFront")}
+              </button>
+              <button type="button" className="btn quiet" onClick={() => void restackSelection(false)}>
+                {t("prop.sendToBack")}
+              </button>
+            </div>
+          )}
+        </section>
+      ) : null}
       {canDelete && (
         <section className="field-group">
           <button type="button" className="btn quiet" onClick={() => void deleteSelection()}>

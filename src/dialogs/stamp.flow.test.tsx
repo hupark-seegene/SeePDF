@@ -6,6 +6,8 @@ import { useDocStore } from "../store/docStore";
 import { useToastStore } from "../app/toastStore";
 import { mock } from "../ipc/mock";
 import { stampImageSource } from "./StampDialog";
+import * as api from "../ipc/api";
+import { setMockImageSize } from "../ipc/mock";
 
 const SAMPLE = "/Users/veri/Documents/SeePDF-샘플.pdf"; // 3 pages
 
@@ -169,36 +171,57 @@ describe("dialogs.stamp.preview (Stage 8)", () => {
     expect(page.style.width).toBe("168px");
   });
 
-  it("an image stamp shows the picked file when the webview can load it, at its real aspect", async () => {
+  it("an image stamp shows the picked file (image_preview, v0.3 T1) at its real aspect", async () => {
     await useDocStore.getState().open(SAMPLE);
-    vi.spyOn(stampImageSource, "resolve").mockImplementation((path) => `asset://localhost/${encodeURIComponent(path)}`);
+    vi.spyOn(api, "openFileDialog").mockResolvedValue(["/Users/veri/Pictures/logo.png"]);
+    setMockImageSize("/Users/veri/Pictures/logo.png", 400, 100);
+    vi.spyOn(api, "previewUrl").mockReturnValue("blob:seepdf/logo");
     render(<DialogHost />);
     openDialog("stamp");
     fireEvent.click(await screen.findByRole("radio", { name: "이미지" }));
+    // nothing picked yet: 적용 is off and the dialog says why
+    expect(screen.getByText("이미지를 선택하세요")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "이미지 선택…" }));
     const img = (await screen.findByTestId("stamp-preview-image")) as HTMLImageElement;
-    expect(img.src).toContain("asset://localhost/");
-    expect(img.hidden).toBe(true); // until it has loaded
-    Object.defineProperty(img, "naturalWidth", { value: 400 });
-    Object.defineProperty(img, "naturalHeight", { value: 100 });
-    fireEvent.load(img);
-    await waitFor(() => expect(img.hidden).toBe(false));
+    expect(img.src).toBe("blob:seepdf/logo");
+    expect(screen.queryByText("이미지를 선택하세요")).toBeNull();
     const box = img.parentElement as HTMLElement;
     // 144 pt wide at 400 × 100 → 36 pt tall, not the 0.6 placeholder
     expect(parseFloat(box.style.height) / parseFloat(box.style.width)).toBeCloseTo(0.25, 2);
   });
 
-  it("keeps the placeholder when the image cannot be loaded (no asset protocol)", async () => {
+  it("keeps the placeholder when the image cannot be read", async () => {
     await useDocStore.getState().open(SAMPLE);
-    vi.spyOn(stampImageSource, "resolve").mockImplementation(() => "asset://localhost/x.png");
+    vi.spyOn(api, "openFileDialog").mockResolvedValue(["/Users/veri/Pictures/broken.png"]);
+    vi.spyOn(stampImageSource, "preview").mockRejectedValue(new Error("not an image"));
     render(<DialogHost />);
     openDialog("stamp");
     fireEvent.click(await screen.findByRole("radio", { name: "이미지" }));
     fireEvent.click(screen.getByRole("button", { name: "이미지 선택…" }));
-    const img = await screen.findByTestId("stamp-preview-image");
-    fireEvent.error(img);
-    await waitFor(() => expect(screen.queryByTestId("stamp-preview-image")).toBeNull());
+    await screen.findByText("이미지를 읽을 수 없습니다");
+    expect(screen.queryByTestId("stamp-preview-image")).toBeNull();
     const box = document.querySelector(".stamp-image") as HTMLElement;
     expect(parseFloat(box.style.height) / parseFloat(box.style.width)).toBeCloseTo(0.6, 2);
+  });
+
+  it("뒤에 배치 and 배경색 reach add_stamp (v0.3 T4)", async () => {
+    await useDocStore.getState().open(SAMPLE);
+    const spy = vi.spyOn(mock, "addStamp");
+    render(<DialogHost />);
+    openDialog("stamp");
+    fireEvent.click(await screen.findByRole("checkbox", { name: /뒤에 배치/ }));
+    fireEvent.click(screen.getByRole("button", { name: "적용" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(spy.mock.calls[0][0].spec).toMatchObject({ behind: true, source: { kind: "text" } });
+
+    openDialog("stamp");
+    fireEvent.click(await screen.findByRole("radio", { name: "배경색" }));
+    expect(screen.getByTestId("stamp-preview-background")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /뒤에 배치/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "적용" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+    const spec = spy.mock.calls[1][0].spec;
+    expect(spec.source).toEqual({ kind: "background", color: [255, 248, 220] });
+    expect(spec.behind).toBeUndefined();
   });
 });

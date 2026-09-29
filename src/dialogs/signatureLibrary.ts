@@ -32,10 +32,17 @@ export function savedFromTyped(text: string, style: string, now = new Date()): S
   return { kind: "typed", id: newId(), text: text.trim(), style, createdAt: now.toISOString() };
 }
 
+/** v0.3 T3: a picked image (scan, 도장) — `path` is the library copy (`copy_library_image`). */
+export function savedFromImage(path: string, aspect: number, now = new Date()): SavedSignature {
+  return { kind: "image", id: newId(), path, aspect, createdAt: now.toISOString() };
+}
+
 /** Same signature, whatever its id: a re-save of an identical one is a no-op. */
 export function sameSignature(a: SavedSignature, b: SavedSignature): boolean {
   if (a.kind === "typed" && b.kind === "typed") return a.text === b.text && a.style === b.style;
   if (a.kind === "drawn" && b.kind === "drawn") return JSON.stringify(a.paths) === JSON.stringify(b.paths);
+  // the library copy is content-addressed: the same image has the same path
+  if (a.kind === "image" && b.kind === "image") return a.path === b.path;
   return false;
 }
 
@@ -70,6 +77,9 @@ export function readSignatures(value: unknown): SavedSignature[] {
       typeof s.aspect === "number"
     ) {
       out.push({ kind: "drawn", id: s.id, paths: s.paths as number[][], aspect: s.aspect, createdAt: String(s.createdAt ?? "") });
+    } else if (s.kind === "image" && typeof s.path === "string" && typeof s.aspect === "number" && s.aspect > 0) {
+      // v0.3 T3
+      out.push({ kind: "image", id: s.id, path: s.path, aspect: s.aspect, createdAt: String(s.createdAt ?? "") });
     }
     if (out.length >= MAX_SAVED_SIGNATURES) break;
   }

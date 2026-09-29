@@ -1,14 +1,15 @@
 /**
- * 선 and 화살표 — F-10. PDFium cannot create a `/Line` annotation (`FPDFPage_CreateAnnot` returns
- * NULL for it, spikes/annotations §2), so the engine writes both as **Ink with a `/Subj`**
- * (`SeePDF:Line` / `SeePDF:Arrow`) and reads them back as lines. Other viewers show ink; the UI
- * says so once through `annot.lineAsInk`.
+ * 선 and 화살표 — F-10. v0.3 (A2): the engine writes a real `/Line` with lopdf (`/L`, `/LE
+ * /OpenArrow` for the heads, its own appearance), so other viewers see a line with arrow heads;
+ * only an encrypted document still gets SeePDF's Ink line (`/Subj SeePDF:Line` / `SeePDF:Arrow`).
+ * With 측정 on (`toolOptions.measure`) the line is labelled with its length in mm or pt.
  *
  * ⇧ snaps the far end to 15° (UI_SPEC §6).
  */
 import type { AnnotSpec, PageIndex, Point } from "../ipc/types";
 import type { ToolModule, ToolResult } from "./ToolController";
-import { snapAngle } from "./geometry";
+import { measureLabel, snapAngle } from "./geometry";
+import { toolOptions } from "./toolOptions";
 
 export interface LineState {
   page: PageIndex | null;
@@ -32,6 +33,7 @@ export function makeLineTool(id: "line" | "arrow"): ToolModule<LineState> {
     onMove(state, p, ctx): ToolResult<LineState> {
       if (!state.from || state.page === null) return { state };
       const to = ctx.modifiers.shift ? snapAngle(state.from, p.pt) : p.pt;
+      const measure = toolOptions().measure;
       return {
         state,
         preview: {
@@ -42,6 +44,8 @@ export function makeLineTool(id: "line" | "arrow"): ToolModule<LineState> {
           color: ctx.style.color,
           opacity: ctx.style.opacity,
           width: ctx.style.width,
+          measureText:
+            measure === "off" ? undefined : measureLabel(Math.hypot(to[0] - state.from[0], to[1] - state.from[1]), measure, false),
         },
       };
     },
@@ -52,6 +56,7 @@ export function makeLineTool(id: "line" | "arrow"): ToolModule<LineState> {
       if (Math.hypot(to[0] - state.from[0], to[1] - state.from[1]) < MIN_LENGTH_PT) {
         return { state: { ...EMPTY }, preview: null };
       }
+      const measure = toolOptions().measure;
       const spec: AnnotSpec = {
         kind: id,
         p1: state.from,
@@ -60,6 +65,7 @@ export function makeLineTool(id: "line" | "arrow"): ToolModule<LineState> {
         width: ctx.style.width,
         opacity: ctx.style.opacity,
         heads: id === "arrow" ? ctx.style.heads : undefined,
+        ...(measure !== "off" ? { measure } : {}),
       };
       return { state: { ...EMPTY }, preview: null, commit: { page: state.page, spec } };
     },

@@ -990,6 +990,7 @@ fn annotated_doc() -> (TestDoc, Marks) {
             fill_color: None,
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let ink = create_annot(
@@ -1027,6 +1028,7 @@ fn annotated_doc() -> (TestDoc, Marks) {
         opacity: 0.3,
         pages: PageSelection::All(AllPages::All),
         bates: Default::default(),
+        behind: false,
     };
     with_state(move |st| stamp::add_stamp(st, &doc_id, &watermark)).expect("watermark");
     (
@@ -1257,6 +1259,159 @@ fn flow_moves_annotations_with_the_text_but_not_widgets_or_stamps() {
     assert_eq!(probe(&doc.doc_id, 200.0, 690.0).text, PARA_A_TEXT);
 }
 
+// v0.3 pkg4-annotations-stamps-objects (verification round 1): SeePDF's own lines are real
+// `/Line`s now (not Ink), so the flow must move `/L` — and `/Vertices`, `/CL` and SeePDF's
+// callout mirrors — with the `/Rect`, or the next edit (rebuilt from those keys) snaps the
+// shape back to where it was before the flow.
+#[test]
+fn flow_moves_line_polygon_and_callout_geometry_in_one_step() {
+    use seepdf_lib::engine::annot::create::create_in;
+    use seepdf_lib::engine::annot::update::update_in;
+    use seepdf_lib::ipc::types::{AnnotPatch, CalloutSpec, LineSpec, PolySpec, TextAlign};
+    let (doc, _marks) = annotated_doc();
+    let create = |spec: AnnotSpec| {
+        let doc_id = doc.doc_id.clone();
+        with_state(move |st| create_in(st, &doc_id, 0, &spec, None, None)).expect("create")
+    };
+    let line = create(AnnotSpec::Line(LineSpec {
+        p1: [345.0, 576.0],
+        p2: [366.0, 576.0],
+        color: [0, 0, 255],
+        width: 2.0,
+        opacity: 1.0,
+        heads: Some([false, true]),
+        measure: None,
+        dashed: false,
+    }));
+    let polygon = create(AnnotSpec::Polygon(PolySpec {
+        vertices: vec![300.0, 570.0, 330.0, 570.0, 315.0, 585.0],
+        color: [0, 128, 0],
+        fill_color: None,
+        width: 1.0,
+        opacity: 1.0,
+        cloudy: false,
+        dashed: false,
+        measure: None,
+    }));
+    let callout = create(AnnotSpec::Callout(CalloutSpec {
+        rect: Rect::new(100.0, 565.0, 200.0, 585.0),
+        text: "note".into(),
+        font_size: 10.0,
+        color: [0, 0, 0],
+        align: TextAlign::Left,
+        fill_color: None,
+        callout: vec![90.0, 590.0, 100.0, 575.0],
+    }));
+    let find = |id: &str| {
+        annots_of(&doc.doc_id)
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap()
+    };
+    let (line0, poly0, call0) = (find(&line), find(&polygon), find(&callout));
+    let depth0 = with_doc(&doc.doc_id, |d| Ok(d.history.undo_depth())).unwrap();
+
+    let a = probe(&doc.doc_id, 200.0, 690.0);
+    let long = format!("{PARA_A_TEXT} {EXTRA}");
+    let res = run(
+        &doc.doc_id,
+        a.doc_generation,
+        edit_of(&a, &long, None, false),
+        false,
+    )
+    .unwrap();
+    let dy = -res.shifted_pt;
+    assert!(dy < -10.0, "the push moved things: {dy}");
+    let shifted = |v: &[f32]| -> Vec<f32> {
+        v.iter()
+            .enumerate()
+            .map(|(k, x)| if k % 2 == 1 { x + dy } else { *x })
+            .collect()
+    };
+    let near = |a: &[f32], b: &[f32]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.05)
+    };
+    let (line1, poly1, call1) = (find(&line), find(&polygon), find(&callout));
+    for (before, after) in [(&line0, &line1), (&poly0, &poly1), (&call0, &call1)] {
+        assert!(
+            (after.rect.t - (before.rect.t + dy)).abs() < 0.1,
+            "{:?}: {:?} → {:?}",
+            before.kind,
+            before.rect,
+            after.rect
+        );
+    }
+    let l0 = line0.line_points.unwrap();
+    let l1 = line1.line_points.unwrap();
+    assert!(
+        near(&l1, &shifted(&l0)),
+        "/L did not move with the flow: {l0:?} → {l1:?} dy={dy}"
+    );
+    let (v0, v1) = (
+        poly0.vertices.clone().unwrap(),
+        poly1.vertices.clone().unwrap(),
+    );
+    assert!(near(&v1, &shifted(&v0)), "/Vertices: {v0:?} → {v1:?}");
+    let (c0, c1) = (
+        call0.callout.clone().unwrap(),
+        call1.callout.clone().unwrap(),
+    );
+    assert!(near(&c1, &shifted(&c0)), "/CL: {c0:?} → {c1:?}");
+    assert_eq!(
+        line1.heads, line0.heads,
+        "the arrow head survives the rewrite"
+    );
+    // The text, the moves and the lopdf pass are one undo step.
+    let (depth1, label) = with_doc(&doc.doc_id, |d| {
+        Ok((d.history.undo_depth(), d.history.undo_label()))
+    })
+    .unwrap();
+    assert_eq!(depth1, depth0 + 1);
+    assert_eq!(label.as_deref(), Some("undo.paragraphEdit"));
+
+    // A later edit rebuilds from the keys: nothing jumps back.
+    for id in [&line, &polygon] {
+        let (doc_id, id) = (doc.doc_id.clone(), id.clone());
+        with_state(move |st| {
+            update_in(
+                st,
+                &doc_id,
+                0,
+                &id,
+                &AnnotPatch {
+                    color: Some([200, 0, 0]),
+                    ..AnnotPatch::default()
+                },
+            )
+        })
+        .expect("recolour");
+    }
+    let (line2, poly2) = (find(&line), find(&polygon));
+    assert!(
+        (line2.rect.t - line1.rect.t).abs() < 0.1,
+        "a colour edit moved the line back: {:?} → {:?}",
+        line1.rect,
+        line2.rect
+    );
+    assert_eq!(line2.border_width, 2.0, "a colour edit keeps the width");
+    assert!(near(&line2.line_points.unwrap(), &l1));
+    assert!(
+        (poly2.rect.t - poly1.rect.t).abs() < 0.1,
+        "a colour edit moved the polygon back"
+    );
+    assert!(near(&poly2.vertices.clone().unwrap(), &v1));
+
+    // Undo both recolours and the flow: everything is where it started.
+    for _ in 0..3 {
+        let id = doc.doc_id.clone();
+        with_state(move |st| registry::undo(st, &id, false)).expect("undo");
+    }
+    assert!(near(&find(&line).line_points.unwrap(), &l0));
+    assert!(near(&find(&polygon).vertices.unwrap(), &v0));
+    assert!(near(&find(&callout).callout.unwrap(), &c0));
+    assert_eq!(probe(&doc.doc_id, 200.0, 690.0).text, PARA_A_TEXT);
+}
+
 #[test]
 fn flow_stale_generation_is_refused() {
     let doc = open_bytes(pdf(&flow_content(), &[]));
@@ -1373,6 +1528,7 @@ fn flow_seepdf_footer_stamp_stops_the_push() {
         opacity: 1.0,
         pages: PageSelection::All(AllPages::All),
         bates: Default::default(),
+        behind: false,
     };
     with_state(move |st| stamp::add_stamp(st, &id, &footer)).expect("footer stamp");
     let before = objects_of(&doc.doc_id);
@@ -2398,6 +2554,7 @@ fn flow_header_stamp_never_joins_the_paragraph() {
         opacity: 1.0,
         pages: PageSelection::All(AllPages::All),
         bates: Default::default(),
+        behind: false,
     };
     with_state(move |st| stamp::add_stamp(st, &id, &header)).expect("header stamp");
     let before = objects_of(&doc.doc_id);

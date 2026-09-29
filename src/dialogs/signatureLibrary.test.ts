@@ -3,7 +3,13 @@
  * strokes are rounded before they go into settings.json, and a hand-edited file cannot break
  * the dialog.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import * as api from "../ipc/api";
+import { resetMock, setMockImageSize } from "../ipc/mock";
+import { useAppStore } from "../store/appStore";
+import SignatureDialog from "./SignatureDialog";
 import type { SavedSignature } from "../ipc/types";
 import {
   MAX_SAVED_SIGNATURES,
@@ -13,6 +19,7 @@ import {
   removeSignature,
   roundPaths,
   savedFromDrawn,
+  savedFromImage,
   savedFromTyped,
 } from "./signatureLibrary";
 
@@ -62,5 +69,57 @@ describe("signature library", () => {
     ]);
     expect(out.map((s) => s.id)).toEqual(["t1", "d"]);
     expect(readSignatures(Array.from({ length: 15 }, (_, i) => typed(i)))).toHaveLength(10);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// v0.3 pkg4-annotations-stamps-objects (T3): image signatures
+// ---------------------------------------------------------------------------------------------
+
+describe("저장된 서명 — image signatures (v0.3 T3)", () => {
+  beforeEach(async () => {
+    resetMock();
+    await useAppStore.getState().bootstrap();
+    await useAppStore.getState().patchSettings({ signatures: [] });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("an image signature is kept by path: a re-save is a no-op, a malformed one is dropped", () => {
+    const img = savedFromImage("/app/signatures/img-1.png", 3);
+    expect(img).toMatchObject({ kind: "image", path: "/app/signatures/img-1.png", aspect: 3 });
+    const list = addSignature([], img)!;
+    expect(addSignature(list, { ...img, id: "again" })).toBe(list);
+    expect(readSignatures([img, { kind: "image", id: "x", path: 5, aspect: 1 }, { kind: "image", id: "y", path: "/a.png", aspect: 0 }]))
+      .toEqual([img]);
+  });
+
+  it("이미지 저장… copies the image, it is listed after a settings reload and placed at its aspect", async () => {
+    vi.spyOn(api, "openFileDialog").mockResolvedValue(["/Users/veri/Pictures/scan.png"]);
+    setMockImageSize("/Users/veri/Pictures/scan.png", 600, 200);
+    const onImage = vi.fn();
+    const onClose = vi.fn();
+    const view = render(
+      createElement(SignatureDialog, { onClose, onDrawn: vi.fn(), onImage, onChooseImage: vi.fn() }),
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "이미지" }));
+    fireEvent.click(screen.getByRole("button", { name: "이미지 저장…" }));
+    await waitFor(() => expect(useAppStore.getState().settings?.signatures).toHaveLength(1));
+    view.unmount();
+
+    // reload: what the backend kept, read back through the defensive reader
+    const settings = await api.getSettings();
+    const saved = readSignatures(settings.signatures);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ kind: "image", aspect: 3 });
+    expect((saved[0] as { path: string }).path).toMatch(/^\/mock\/app-data\/signatures\/img-[0-9a-f]+\.png$/);
+
+    useAppStore.setState({ settings });
+    render(createElement(SignatureDialog, { onClose, onDrawn: vi.fn(), onImage, onChooseImage: vi.fn() }));
+    fireEvent.click(screen.getByRole("button", { name: /이미지 서명/ }));
+    expect(onImage).toHaveBeenCalledWith({ path: (saved[0] as { path: string }).path, aspect: 3 });
+    expect(onClose).toHaveBeenCalled();
   });
 });

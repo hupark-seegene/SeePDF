@@ -338,3 +338,55 @@ fn history_coalesces_a_gesture() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// v0.3 pkg4 (verification round 2, A3): a batch on a depth-3 (large) document — more ops
+/// than the depth — stays one entry whose snapshot is the pre-batch state; the entries
+/// before the batch are trimmed only once it ends.
+#[test]
+fn history_batch_survives_a_depth_of_three() {
+    let dir = std::env::temp_dir().join(format!("seepdf-batch-{}", std::process::id()));
+    let mut history = History::new(
+        dir.clone(),
+        seepdf_lib::engine::history::LARGE_DOC_BYTES + 1,
+        64 * 1024 * 1024,
+    );
+    let snap = |b: u8| -> Arc<[u8]> { Arc::from(vec![b; 16].into_boxed_slice()) };
+    history.push("undo.a", snap(1), false).expect("push");
+    history.push("undo.b", snap(2), false).expect("push");
+    let mark = history.begin_batch();
+    for k in 0..6u8 {
+        // an op may store more than one entry (a PDFium step, then a lopdf step)
+        history
+            .push("undo.op", snap(10 + 2 * k), false)
+            .expect("push");
+        history
+            .push("undo.op2", snap(11 + 2 * k), false)
+            .expect("push");
+        assert!(history.squash_since(mark, "undo.annotEdit"));
+        assert_eq!(history.undo_depth(), 3, "the batch is one entry mid-way");
+    }
+    assert!(history.end_batch(mark, "undo.annotEdit"));
+    assert_eq!(history.undo_depth(), 3);
+    assert_eq!(history.undo_label().as_deref(), Some("undo.annotEdit"));
+    let (label, bytes) = history
+        .take_undo(snap(99))
+        .expect("undo")
+        .expect("an entry");
+    assert_eq!(label, "undo.annotEdit");
+    assert!(
+        bytes.iter().all(|&b| b == 10),
+        "one undo restores the state before the batch"
+    );
+    let (label, _) = history
+        .take_undo(snap(10))
+        .expect("undo")
+        .expect("an entry");
+    assert_eq!(label, "undo.b", "the pre-batch entries are untouched");
+
+    // after the batch, trimming is back on
+    for k in 0..5u8 {
+        history.push("undo.c", snap(50 + k), false).expect("push");
+    }
+    assert_eq!(history.undo_depth(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}

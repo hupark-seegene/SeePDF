@@ -9,7 +9,7 @@
  */
 import { useSyncExternalStore } from "react";
 import * as api from "../ipc/api";
-import type { Annot, AnnotId, AnnotSpec, PageIndex, Point } from "../ipc/types";
+import type { Annot, AnnotId, AnnotSpec, CustomStamp, PageIndex, Point } from "../ipc/types";
 import type { PageLayerContext, PageLayers } from "../viewer";
 import { useSelectionStore } from "../viewer";
 import { DRAWING_TOOLS, MARKUP_TOOLS, toolController, type ToolSink } from "../tools/ToolController";
@@ -26,10 +26,16 @@ import {
   createAnnotation,
   deleteAnnotations,
   duplicateAnnotations,
+  erasePartial,
+  createAnnotations,
   flushPatches,
   patchAnnotation,
   specFromAnnot,
 } from "./actions";
+// v0.3 pkg4-annotations-stamps-objects
+import { polygonInProgress } from "../tools/polygon";
+import { QuickPopover, quickPopoverTarget } from "./quickPopover";
+import { dragHidePage } from "./dragHide";
 import { closeDialog, isDialogOpen, openDialog } from "../dialogs/dialogState";
 import { startAnnotSync } from "./sync";
 import { dragPatch, endDrag, startDragHide } from "./dragHide";
@@ -73,6 +79,14 @@ const sink: ToolSink = {
   erase(page, ids) {
     void deleteAnnotations(page, ids);
   },
+  // v0.3 A3: 부분 지우개 — the pieces left of each stroke, the whole scrub one undo step
+  erasePartial(page, edits) {
+    void erasePartial(page, edits);
+  },
+  // v0.3 A4: a pen stroke split into pressure bands — one undo step
+  commitMany(page, specs: AnnotSpec[]) {
+    void createAnnotations(page, specs);
+  },
   patch(page, edits, live) {
     // Only the 선택 tool's move / resize reaches here: the drag hides the bitmap copy (P1-12).
     dragPatch(page, edits, live);
@@ -86,7 +100,7 @@ const sink: ToolSink = {
       if (found) useAnnotStore.getState().setEditing({ page: found.page, id: target.id });
       return;
     }
-    if (target.rect) setDraft({ page: target.page, rect: target.rect });
+    if (target.rect) setDraft({ page: target.page, rect: target.rect, callout: target.callout });
   },
   done() {
     useAppStore.getState().setTool(toolController.current() === "eraser" ? "pen" : "select");
@@ -243,6 +257,21 @@ function onKeyDownCapture(e: KeyboardEvent): void {
   if (target?.closest?.("[data-own-keys]")) return;
   const hasSelection = useAnnotStore.getState().selected.length > 0;
 
+  // v0.3 A2: a polygon being drawn owns ↵ (finish), ⌫ (last vertex) and Esc (cancel)
+  if (app.tool === "polygon" && polygonInProgress(toolController.pendingState()) && ["Enter", "Backspace", "Escape"].includes(e.key)) {
+    const info = useDocStore.getState().info;
+    toolController.key(e.key, {
+      docId: info?.docId ?? "",
+      docGeneration: info?.docGeneration ?? 0,
+      style: useAnnotStore.getState().style,
+      modifiers: { shift: e.shiftKey, alt: e.altKey, meta: e.metaKey, ctrl: e.ctrlKey },
+      scale: useViewStore.getState().zoomPercent / 100,
+    });
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+
   if (e.key === "Escape") {
     if (useAnnotStore.getState().editing || useAnnotStore.getState().thread || draft) {
       useAnnotStore.getState().setEditing(null);
@@ -337,6 +366,9 @@ function SurfaceSlot({ ctx }: { ctx: PageLayerContext }) {
       ? (annots ?? []).find((a) => a.id === thread.id)
       : undefined;
   const pageDraft = draft && draft.page === ctx.index ? draft : null;
+  // v0.3 A5: the quick popover of a single selected highlight / shape / ink (not while dragging)
+  const selected = useAnnotStore((s) => s.selected);
+  const quick = mode === "annotate" && !editTarget && !threadTarget && dragHidePage() === null ? quickPopoverTarget(ctx.index, selected, annots ?? [], ghosts) : null;
 
   return (
     <>
@@ -345,9 +377,10 @@ function SurfaceSlot({ ctx }: { ctx: PageLayerContext }) {
       {active && <ToolSurface ctx={ctx} tool={active} />}
       {editTarget?.kind === "note" && <NotePopover ctx={ctx} annot={editTarget} />}
       {threadTarget && threadTarget.kind !== "note" && <ThreadPopover ctx={ctx} annot={threadTarget} />}
-      {editTarget?.kind === "textbox" && (
+      {(editTarget?.kind === "textbox" || editTarget?.kind === "callout") && (
         <TextBoxEditor ctx={ctx} annot={editTarget} onClose={() => useAnnotStore.getState().setEditing(null)} />
       )}
+      {quick && <QuickPopover ctx={ctx} annot={quick} />}
       {pageDraft && <TextBoxEditor ctx={ctx} draft={pageDraft} onClose={() => setDraft(null)} />}
     </>
   );
@@ -394,7 +427,20 @@ function openStampPicker(): void {
       closeDialog("stampPicker");
       void pickStamp("stamp");
     },
+    // v0.3 T2: 내 도장 (an image from the library, or a text stamp) and 오늘 날짜
+    onPickCustom: (stamp: CustomStamp) => void armCustomStamp(stamp),
   });
+}
+
+/** v0.3 T2: arm 도장 with a 내 도장 entry — an image at its own aspect (with a ghost), or a text stamp. */
+export async function armCustomStamp(stamp: CustomStamp): Promise<void> {
+  if (stamp.kind === "text") {
+    setStampImage("stamp", { text: stamp.text, color: stamp.color, shape: stamp.shape });
+    return;
+  }
+  setStampImage("stamp", { path: stamp.path }, stamp.aspect);
+  const preview = await api.imagePreview({ path: stamp.path, maxPx: 512 }).catch(() => null);
+  if (preview) setStampImage("stamp", { path: stamp.path }, stamp.aspect, api.previewUrl(preview));
 }
 
 async function pickStamp(id: "stamp" | "signature"): Promise<void> {
@@ -405,7 +451,10 @@ async function pickStamp(id: "stamp" | "signature"): Promise<void> {
     })
     .catch(() => null);
   if (picked?.length) {
-    setStampImage(id, { path: picked[0] });
+    // v0.3 T1: the image's own aspect (so it is placed undistorted) and a preview for the ghost
+    const preview = await api.imagePreview({ path: picked[0], maxPx: 512 }).catch(() => null);
+    const aspect = preview && preview.height > 0 ? preview.width / preview.height : undefined;
+    setStampImage(id, { path: picked[0] }, aspect, preview ? api.previewUrl(preview) : null);
   } else {
     useAppStore.getState().setTool("select");
     toolController.arm("select");

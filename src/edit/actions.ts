@@ -898,3 +898,77 @@ export async function pasteSystemImage(data?: DataTransfer | null): Promise<bool
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg4-annotations-stamps-objects
+// ---------------------------------------------------------------------------
+
+/**
+ * E1 이미지 바꾸기: the selected image object (exactly one) — or `objectId` on `page` (the canvas
+ * menu) — gets the pixels of a picked PNG / JPEG; its position and size (the object matrix) are
+ * kept. One `replace_image`, one undo step.
+ */
+export async function replaceSelectedImage(target?: { page: PageIndex; objectId: ObjectId }): Promise<boolean> {
+  const doc = docId();
+  let page: PageIndex;
+  let objectId: ObjectId;
+  if (target) {
+    ({ page, objectId } = target);
+  } else {
+    const chosen = selectedObjects();
+    if (!chosen || chosen.objects.length !== 1 || chosen.objects[0].type !== "image") return false;
+    page = chosen.page;
+    objectId = chosen.objects[0].objectId;
+  }
+  const object = objectsOn(page).find((o) => o.objectId === objectId);
+  if (!doc || !object || object.type !== "image" || object.editable === "readOnly") return false;
+  const picked = await api
+    .openFileDialog({ multiple: false, filters: [{ name: "PNG / JPEG", extensions: ["png", "jpg", "jpeg"] }] })
+    .catch(() => null);
+  const path = picked?.[0];
+  if (!path) return false;
+  try {
+    const result = await api.replaceImage({ docId: doc, page, objectId, expectGeneration: generationFor(page), path });
+    useEditStore.getState().setPage(page, result, true);
+    return true;
+  } catch (e) {
+    fail(e, page);
+    return false;
+  }
+}
+
+/**
+ * A6 맨 앞으로 / 맨 뒤로: the selection moves to the end (front) or the start (back) of the page's
+ * paint order — one `restack_objects`, one undo step. Object ids are indices, so the selection
+ * follows the objects to their new indices.
+ */
+export async function restackSelection(toFront: boolean): Promise<boolean> {
+  const chosen = selectedObjects();
+  const doc = docId();
+  if (!chosen || !doc) return false;
+  const ids = chosen.objects.map((o) => o.objectId).sort((a, b) => a - b);
+  try {
+    const result = await api.restackObjects({ docId: doc, page: chosen.page, objectIds: ids, expectGeneration: generationFor(chosen.page), toFront });
+    useEditStore.getState().setPage(chosen.page, result, true);
+    const count = result.objects.length;
+    const moved = ids.map((_, i) => (toFront ? count - ids.length + i : i));
+    useEditStore.getState().select(chosen.page, moved);
+    return true;
+  } catch (e) {
+    fail(e, chosen.page);
+    return false;
+  }
+}
+
+/**
+ * A6 비율 고정: a new width (or height) of `rect` with the other side following the current
+ * aspect — what the Inspector's W / H fields send when the lock is on.
+ */
+export function lockedSize(rect: Rect, patch: { w?: number; h?: number }): { w: number; h: number } {
+  const w0 = rect.r - rect.l;
+  const h0 = rect.t - rect.b;
+  const aspect = h0 > 0 ? w0 / h0 : 1;
+  if (patch.w !== undefined) return { w: patch.w, h: Math.round((patch.w / aspect) * 100) / 100 };
+  if (patch.h !== undefined) return { w: Math.round(patch.h * aspect * 100) / 100, h: patch.h };
+  return { w: w0, h: h0 };
+}

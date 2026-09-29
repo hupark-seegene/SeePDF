@@ -14,7 +14,7 @@
  *   keeps the engine at one `update_annotation` — and therefore one undo step — per gesture.
  */
 import * as api from "../ipc/api";
-import type { Annot, AnnotId, AnnotPatch, AnnotSpec, DocId, PageIndex, Rect } from "../ipc/types";
+import type { Annot, AnnotId, AnnotOp, AnnotPatch, AnnotSpec, DocId, PageIndex, Rect } from "../ipc/types";
 import { useAnnotStore } from "../store/annotStore";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
@@ -75,23 +75,44 @@ export function ghostFromSpec(page: PageIndex, spec: AnnotSpec, author: string |
       return { ...base, subtype: "Ink", inkPaths: spec.paths, rect: boundsOfPaths(spec.paths), color: spec.color, borderWidth: spec.width, opacity: spec.opacity };
     case "square":
     case "circle":
-      return { ...base, subtype: spec.kind === "square" ? "Square" : "Circle", rect: spec.rect, color: spec.color, fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity };
+      return { ...base, subtype: spec.kind === "square" ? "Square" : "Circle", rect: spec.rect, color: spec.color, fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity, dashed: spec.dashed };
     case "line":
     case "arrow":
       return {
         ...base,
-        subtype: "Ink",
+        // v0.3: a real /Line (the engine falls back to Ink only in an encrypted document)
+        subtype: "Line",
         linePoints: [spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]],
-        inkPaths: [[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]],
+        heads: spec.heads ?? (spec.kind === "arrow" ? [false, true] : [false, false]),
+        measure: spec.measure,
+        dashed: spec.dashed,
         rect: boundsOfPaths([[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]]),
         color: spec.color,
         borderWidth: spec.width,
         opacity: spec.opacity,
       };
     case "textbox":
-      return { ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, contents: spec.text, fontSize: spec.fontSize, color: spec.color, fillColor: spec.fillColor };
+      return { ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, contents: spec.text, fontSize: spec.fontSize, color: spec.color, fillColor: spec.fillColor, align: spec.align };
+    case "callout":
+      return {
+        ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, contents: spec.text, fontSize: spec.fontSize,
+        color: spec.color, fillColor: spec.fillColor, align: spec.align, callout: spec.callout,
+      };
+    case "polygon":
+    case "polyline":
+      return {
+        ...base, subtype: spec.kind === "polygon" ? "Polygon" : "PolyLine", vertices: spec.vertices, rect: boundsOfPaths([spec.vertices]),
+        color: spec.color, fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity,
+        cloudy: spec.cloudy, dashed: spec.dashed, measure: spec.measure,
+      };
     case "stamp":
-      return { ...base, subtype: "Stamp", rect: spec.rect, stampKind: "builtin" in spec.image ? spec.image.builtin : "image" };
+      return {
+        ...base,
+        subtype: "Stamp",
+        rect: spec.rect,
+        stampKind: "builtin" in spec.image ? spec.image.builtin : "text" in spec.image ? "SeePDF:TextStamp" : "image",
+        ...("text" in spec.image ? { contents: spec.image.text, color: spec.image.color } : {}),
+      };
   }
 }
 
@@ -113,7 +134,8 @@ export async function createAnnotation(page: PageIndex, spec: AnnotSpec, opts: C
   const id = docId();
   if (!id) return null;
   const store = useAnnotStore.getState();
-  const author = useAppStore.getState().settings?.author ?? null;
+  // v0.3 A9: the engine writes 설정 ▸ 작성자 as /T (blank = none); the ghost says the same
+  const author = useAppStore.getState().settings?.author?.trim() || null;
   const ghost = ghostFromSpec(page, spec, author);
   store.addGhost(ghost);
   try {
@@ -190,6 +212,16 @@ function applyLocally(page: PageIndex, id: AnnotId, patch: AnnotPatch): void {
   if (patch.text !== undefined) next.text = patch.text;
   if (patch.fontSize !== undefined) next.fontSize = patch.fontSize;
   if (patch.locked !== undefined) next.locked = patch.locked;
+  // v0.3 pkg4
+  if (patch.align !== undefined) next.align = patch.align;
+  if (patch.heads !== undefined) {
+    next.heads = patch.heads;
+    if (next.kind === "line" || next.kind === "arrow") next.kind = patch.heads[0] || patch.heads[1] ? "arrow" : "line";
+  }
+  if (patch.printed !== undefined) next.printed = patch.printed;
+  if (patch.dashed !== undefined) next.dashed = patch.dashed;
+  if (patch.vertices) next.vertices = patch.vertices;
+  if (patch.callout) next.callout = patch.callout;
   if (found) useAnnotStore.getState().upsert(next);
   if (ghost) {
     useAnnotStore.setState((s) => ({
@@ -391,14 +423,38 @@ export function specFromAnnot(a: Annot, dx = 0, dy = 0): AnnotSpec | null {
       };
     case "square":
     case "circle":
-      return { kind: a.kind, rect: move(a.rect), color: a.color, fillColor: a.fillColor, width: a.borderWidth, opacity: a.opacity };
+      // v0.3 pkg4 (round 2): 복제 / 붙여넣기 keep a dashed border
+      return {
+        kind: a.kind, rect: move(a.rect), color: a.color, fillColor: a.fillColor, width: a.borderWidth, opacity: a.opacity,
+        ...(a.dashed ? { dashed: true } : {}),
+      };
     case "line":
     case "arrow": {
       const p = a.linePoints ?? [a.rect.l, a.rect.b, a.rect.r, a.rect.t];
-      return { kind: a.kind, p1: [p[0] + dx, p[1] - dy], p2: [p[2] + dx, p[3] - dy], color: a.color, width: a.borderWidth, opacity: a.opacity };
+      return {
+        kind: a.kind, p1: [p[0] + dx, p[1] - dy], p2: [p[2] + dx, p[3] - dy], color: a.color, width: a.borderWidth, opacity: a.opacity,
+        // v0.3 A1: the copy keeps its heads (and its measuring label)
+        ...(a.heads ? { heads: a.heads } : {}),
+        ...(a.measure ? { measure: a.measure } : {}),
+        ...(a.dashed ? { dashed: true } : {}),
+      };
     }
     case "textbox":
-      return { kind: "textbox", rect: move(a.rect), text: a.text ?? a.contents, fontSize: a.fontSize ?? 12, color: a.color, align: "left", fillColor: a.fillColor };
+      // v0.3 A1: 복제 / 붙여넣기 keep the alignment
+      return { kind: "textbox", rect: move(a.rect), text: a.text ?? a.contents, fontSize: a.fontSize ?? 12, color: a.color, align: a.align ?? "left", fillColor: a.fillColor };
+    case "callout":
+      return {
+        kind: "callout", rect: move(a.rect), text: a.text ?? a.contents, fontSize: a.fontSize ?? 12, color: a.color,
+        align: a.align ?? "left", fillColor: a.fillColor,
+        callout: (a.callout ?? []).map((v, i) => (i % 2 === 0 ? v + dx : v - dy)),
+      };
+    case "polygon":
+    case "polyline":
+      if (!a.vertices?.length) return null;
+      return {
+        kind: a.kind, vertices: a.vertices.map((v, i) => (i % 2 === 0 ? v + dx : v - dy)), color: a.color, fillColor: a.fillColor,
+        width: a.borderWidth, opacity: a.opacity, cloudy: a.cloudy, dashed: a.dashed, measure: a.measure,
+      };
     default:
       return null;
   }
@@ -431,5 +487,86 @@ export async function reloadPage(page: PageIndex): Promise<void> {
     useAnnotStore.getState().setPage(page, list.annots, list.docGeneration);
   } catch {
     // `unsupported` while (a) is still landing: leave whatever we have rather than blanking it.
+  }
+}
+
+// ---------------------------------------------------------------- v0.3 pkg4-annotations-stamps-objects
+
+/**
+ * A3 부분 지우개: the pieces left of each touched ink annotation — `update {paths}` for what is
+ * left, `delete` for a stroke erased whole — sent as ONE `annotation_batch`, so the scrub is one
+ * undo step. Queued behind the patches already in flight. An erased stroke with replies asks
+ * first, like 삭제; kept, it stays whole.
+ */
+export async function erasePartial(page: PageIndex, edits: { id: AnnotId; paths: number[][] }[]): Promise<void> {
+  const id = docId();
+  if (!id || edits.length === 0) return;
+  let gone = edits.filter((e) => e.paths.length === 0).map((e) => e.id);
+  const list = useAnnotStore.getState().byPage[page] ?? [];
+  const replies = [...new Set(gone.flatMap((target) => descendantIds(list, target)))].filter((r) => !gone.includes(r));
+  if (replies.length) {
+    const ok = await askConfirm({
+      titleKey: "annot.thread.deleteTitle",
+      bodyKey: "annot.thread.deleteBody",
+      bodyParams: { count: replies.length },
+      confirmKey: "common.delete",
+      danger: true,
+    });
+    if (!ok) gone = [];
+  }
+  const ops: AnnotOp[] = edits
+    .filter((e) => e.paths.length > 0)
+    .map((e) => ({ op: "update", id: e.id, patch: { paths: e.paths } }));
+  if (gone.length) ops.push({ op: "delete", ids: gone });
+  if (ops.length === 0) return;
+  for (const e of edits) if (e.paths.length) applyLocally(page, e.id, { paths: e.paths });
+  if (gone.length) useAnnotStore.getState().remove(page, [...gone, ...replies]);
+  const run = sendPatches(takePendingPatches()).then(async () => {
+    try {
+      const result = await api.annotationBatch({ docId: id, page, ops });
+      useAnnotStore.getState().setPage(page, result.list.annots, result.list.docGeneration);
+    } catch {
+      void reloadPage(page);
+    }
+  });
+  inFlight = run;
+  return run;
+}
+
+/**
+ * A4: the annotations of one gesture (a pen stroke split into pressure bands) as ONE
+ * `annotation_batch` — one undo step — with a ghost each until the page repaints. Selects them.
+ */
+export async function createAnnotations(page: PageIndex, specs: AnnotSpec[]): Promise<Annot[]> {
+  if (specs.length <= 1) {
+    const one = specs.length ? await createAnnotation(page, specs[0]) : null;
+    return one ? [one] : [];
+  }
+  const id = docId();
+  if (!id) return [];
+  const author = useAppStore.getState().settings?.author?.trim() || null;
+  const ghosts = specs.map((spec) => ghostFromSpec(page, spec, author));
+  for (const g of ghosts) useAnnotStore.getState().addGhost(g);
+  try {
+    const result = await api.annotationBatch({ docId: id, page, ops: specs.map((spec) => ({ op: "create", spec })) });
+    const generation = result.list.docGeneration;
+    useAnnotStore.getState().setPage(page, result.list.annots, generation);
+    const made = result.created.map((nm) => result.list.annots.find((a) => a.id === nm));
+    useAnnotStore.setState((s) => ({
+      ghosts: s.ghosts.map((g) => {
+        const k = ghosts.findIndex((x) => x.id === g.annot.id);
+        const annot = k >= 0 ? made[k] : undefined;
+        return annot ? { annot: { ...annot }, generation } : g;
+      }),
+    }));
+    ghosts.forEach((g, k) => {
+      if (!made[k]) useAnnotStore.getState().clearGhostById(g.id);
+    });
+    const annots = made.filter((a): a is Annot => a !== undefined);
+    if (annots.length) useAnnotStore.getState().select(annots.map((a) => a.id));
+    return annots;
+  } catch {
+    for (const g of ghosts) useAnnotStore.getState().clearGhostById(g.id);
+    return [];
   }
 }

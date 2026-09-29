@@ -848,3 +848,229 @@ fn duplicate_objects_across_pages() {
     let err = duplicate(&doc.doc_id, page, vec![99_999], [0.0, 0.0], None).unwrap_err();
     assert_eq!(err.code, ErrorCode::NotFound);
 }
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg4-annotations-stamps-objects: stacking order (A6), dashed borders (A6), stamps
+// behind the content (T4)
+// ---------------------------------------------------------------------------------------
+
+mod pkg4 {
+    use super::*;
+    use seepdf_lib::engine::annot;
+    use seepdf_lib::engine::render::tiles;
+    use seepdf_lib::engine::stamp;
+    use seepdf_lib::ipc::types::{
+        AllPages, AnnotPatch, AnnotSpec, PageSelection, PageStampSource, PageStampSpec, ShapeSpec,
+        StampAnchor, StampRole,
+    };
+
+    fn undo_depth(doc_id: &str) -> usize {
+        let doc_id = doc_id.to_string();
+        with_doc(&doc_id, |d| Ok(d.history.undo_depth())).unwrap()
+    }
+
+    fn generation(doc_id: &str) -> u32 {
+        let doc_id = doc_id.to_string();
+        with_doc(&doc_id, |d| Ok(d.generation)).unwrap()
+    }
+
+    /// RGBA pixels of `rect` at 2×.
+    fn pixels(doc_id: &str, rect: Rect) -> Vec<u8> {
+        let doc_id = doc_id.to_string();
+        let buffer =
+            with_state(move |st| tiles::render_raw_buffer(st, &doc_id, 0, 2.0, Some(rect)))
+                .expect("render");
+        buffer[32..].to_vec()
+    }
+
+    fn count(px: &[u8], pred: impl Fn(&[u8]) -> bool) -> usize {
+        px.chunks_exact(4).filter(|p| pred(p)).count()
+    }
+
+    /// A6: 맨 뒤로 puts the object at index 0, 맨 앞으로 at the end; one undo step each; the
+    /// page still saves and reopens with the same objects.
+    #[test]
+    fn restack_sends_to_back_and_brings_to_front() {
+        let doc = open("tracemonkey.pdf");
+        let before = list(&doc.doc_id, 0).objects;
+        let last = before.len() - 1;
+        let depth = undo_depth(&doc.doc_id);
+        let after = {
+            let (doc_id, generation) = (doc.doc_id.clone(), generation(&doc.doc_id));
+            with_state(move |st| {
+                objects::restack(st, &doc_id, 0, &[last as u32], generation, false)
+            })
+            .expect("send to back")
+        };
+        assert_eq!(undo_depth(&doc.doc_id), depth + 1);
+        assert_eq!(after.objects.len(), before.len());
+        assert_eq!(
+            after.objects[0].rect, before[last].rect,
+            "the last object is now first"
+        );
+        assert_eq!(after.objects[1].rect, before[0].rect);
+        let front = {
+            let (doc_id, generation) = (doc.doc_id.clone(), generation(&doc.doc_id));
+            with_state(move |st| objects::restack(st, &doc_id, 0, &[0], generation, true))
+                .expect("bring to front")
+        };
+        assert_eq!(
+            front.objects[last].rect, before[last].rect,
+            "and back on top"
+        );
+        // A stale generation is refused.
+        let doc_id = doc.doc_id.clone();
+        let err =
+            with_state(move |st| objects::restack(st, &doc_id, 0, &[0], 1, true)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Stale);
+        let saved = reopen(save_bytes(&doc.doc_id));
+        assert_eq!(list(&saved.doc_id, 0).objects.len(), before.len());
+    }
+
+    /// A6: 점선 on a square writes `/BS << /S /D >>` (lopdf), reads back `dashed`, keeps it
+    /// through a width change, and is one undo step.
+    #[test]
+    fn dashed_square_reads_back_bs_d() {
+        let doc = open("tracemonkey.pdf");
+        let id = {
+            let doc_id = doc.doc_id.clone();
+            with_state(move |st| {
+                annot::create::create_in(
+                    st,
+                    &doc_id,
+                    0,
+                    &AnnotSpec::Square(ShapeSpec {
+                        rect: Rect::new(100.0, 100.0, 220.0, 180.0),
+                        color: [200, 0, 0],
+                        fill_color: None,
+                        width: 2.0,
+                        opacity: 1.0,
+                        dashed: false,
+                    }),
+                    None,
+                    None,
+                )
+            })
+            .expect("square")
+        };
+        let depth = undo_depth(&doc.doc_id);
+        let patch = |p: AnnotPatch| {
+            let (doc_id, id) = (doc.doc_id.clone(), id.clone());
+            with_state(move |st| annot::update::update_in(st, &doc_id, 0, &id, &p)).expect("patch")
+        };
+        patch(AnnotPatch {
+            dashed: Some(true),
+            ..AnnotPatch::default()
+        });
+        assert_eq!(undo_depth(&doc.doc_id), depth + 1, "one undo step");
+        patch(AnnotPatch {
+            border_width: Some(4.0),
+            ..AnnotPatch::default()
+        });
+        let bytes = save_bytes(&doc.doc_id);
+        let lo = lopdf::Document::load_mem(&bytes).unwrap();
+        let page = *lo.get_pages().get(&1).unwrap();
+        let annots = lo.get_page_annotations(page).unwrap();
+        let dict = annots
+            .iter()
+            .find(|d| {
+                d.get(b"NM")
+                    .ok()
+                    .and_then(|o| lopdf::decode_text_string(o).ok())
+                    .as_deref()
+                    == Some(id.as_str())
+            })
+            .expect("the square");
+        let bs = dict.get(b"BS").unwrap().as_dict().unwrap();
+        assert_eq!(bs.get(b"S").unwrap().as_name().unwrap(), b"D");
+        assert!(bs.get(b"D").is_ok(), "a dash array");
+        assert_eq!(bs.get(b"W").unwrap().as_float().unwrap(), 4.0);
+        let saved = reopen(bytes);
+        let annots = with_doc(&saved.doc_id.clone(), |d| annot::list(d, 0)).unwrap();
+        let a = annots.iter().find(|a| a.id == id).unwrap();
+        assert!(a.dashed);
+        assert_eq!(a.border_width, 4.0);
+    }
+
+    fn watermark(behind: bool, source: PageStampSource) -> PageStampSpec {
+        PageStampSpec {
+            role: StampRole::Watermark,
+            source,
+            anchor: StampAnchor::Mc,
+            margin_pt: 0.0,
+            rotate_deg: 0.0,
+            opacity: 1.0,
+            pages: PageSelection::List(vec![0]),
+            bates: Default::default(),
+            behind,
+        }
+    }
+
+    /// T4: 뒤에 배치 inserts the watermark at index 0 — the page text is still extractable and
+    /// is drawn over it; a background colour fills the page under everything.
+    #[test]
+    fn stamp_behind_goes_under_the_text() {
+        let doc = open("tracemonkey.pdf");
+        let text_before = page_text(&doc.doc_id, 0);
+        let spec = watermark(
+            true,
+            PageStampSource::Text {
+                text: "WATERMARK".into(),
+                font_size_pt: 120.0,
+                color: [255, 170, 170],
+            },
+        );
+        {
+            let doc_id = doc.doc_id.clone();
+            with_state(move |st| stamp::add_stamp(st, &doc_id, &spec)).expect("add_stamp");
+        }
+        let objs = list(&doc.doc_id, 0).objects;
+        assert_eq!(
+            objs[0].text.as_deref(),
+            Some("WATERMARK"),
+            "the stamp is object 0"
+        );
+        let saved = reopen(save_bytes(&doc.doc_id));
+        let text = page_text(&saved.doc_id, 0);
+        assert!(
+            text.contains("Trace-based"),
+            "the page text is still extractable"
+        );
+        assert!(text.len() >= text_before.len());
+
+        // A solid background under everything: the text's dark pixels survive.
+        let doc = open("tracemonkey.pdf");
+        let area = Rect::new(80.0, 640.0, 540.0, 720.0); // the title block
+        let dark = |p: &[u8]| p[0] < 90 && p[1] < 90 && p[2] < 90;
+        let dark_before = count(&pixels(&doc.doc_id, area), dark);
+        let spec = PageStampSpec {
+            pages: PageSelection::All(AllPages::All),
+            ..watermark(
+                false,
+                PageStampSource::Background {
+                    color: [255, 240, 150],
+                },
+            )
+        };
+        {
+            let doc_id = doc.doc_id.clone();
+            with_state(move |st| stamp::add_stamp(st, &doc_id, &spec)).expect("background");
+        }
+        let px = pixels(&doc.doc_id, area);
+        let yellow = count(&px, |p| p[0] > 240 && p[1] > 225 && p[2] < 180);
+        let dark_after = count(&px, dark);
+        assert!(yellow > px.len() / 4 / 2, "the page is yellow: {yellow}");
+        assert!(
+            dark_after as f32 > dark_before as f32 * 0.9,
+            "the text is drawn over it: {dark_after} of {dark_before}"
+        );
+        assert!(list(&doc.doc_id, 0).objects[0].object_type == PageObjectType::Path);
+        // remove_stamps takes it away again.
+        let doc_id = doc.doc_id.clone();
+        let removed = with_state(move |st| {
+            stamp::remove_stamps(st, &doc_id, None, Some(StampRole::Watermark))
+        })
+        .unwrap();
+        assert_eq!(removed.removed, 14, "one background per page");
+    }
+}

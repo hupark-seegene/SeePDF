@@ -18,6 +18,10 @@
  *   command are off with the reason, and the OCR sheet cannot start; 페이지 회전 자동 감지 also turns
  *   pages, so it is off where page assembly is forbidden. The mock refuses a turning OCR as
  *   "modify" first, like the engine (whose structural guard alone would only check "assemble").
+ * - pkg3 S1 × pkg4 A6 / A3 / A4: 맨 앞으로 / 맨 뒤로 and the one-gesture annotation batches (partial
+ *   eraser, pressure pen) go through the signed-document gate.
+ * - pkg6 V2 (canvas menu 이 스타일을 기본값으로) × pkg4 A2: a polygon / polyline keeps its stroke width and
+ *   a polygon its fill, and a polyline's default belongs to the 다각형 tool.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -32,6 +36,9 @@ import { resetToDefaults } from "../dialogs/SettingsDialog";
 import { copySnapshot, toolAfterSnapshot } from "../tools/snapshot";
 import { mutatingCall } from "../ipc/api";
 import { permissionBlock } from "./permissions";
+import { styleOfAnnot } from "./pageMenus";
+import { toolOfKind } from "../store/toolStyles";
+import type { Annot } from "../ipc/types";
 import { onCaretKey } from "../viewer/text/caretKeys";
 import { useCaretStore } from "../viewer/text/caret";
 import { mock, mockEvents, mockOpenInOtherWindow } from "../ipc/mock";
@@ -317,5 +324,27 @@ describe("S5 × pkg7: OCR on a document that forbids changes", () => {
     await expect(
       mock.ocrApply({ docId: info.docId, pages: [{ page: 0, ocr, setRotation: 90 }], replaceExisting: false }, () => {}),
     ).rejects.toMatchObject({ code: "permissionDenied", detail: "modify" });
+  });
+});
+
+describe("S1 × pkg4: 맨 앞으로 / 맨 뒤로 and annotation batches are edits", () => {
+  it("restack_objects and annotation_batch go through the signed-document gate", () => {
+    expect(mutatingCall("restack_objects", { docId: "d1", page: 0, objectIds: [1], expectGeneration: 1, toFront: true })).toMatchObject({ docId: "d1" });
+    expect(mutatingCall("annotation_batch", { docId: "d1", page: 0, ops: [] })).toMatchObject({ docId: "d1" });
+    // the read-only pkg4 commands are not gated
+    expect(mutatingCall("image_preview", { path: "/x.png" })).toBeNull();
+    expect(mutatingCall("copy_library_image", { path: "/x.png", library: "stamp" })).toBeNull();
+  });
+});
+
+describe("V2 × pkg4 A2: 이 스타일을 기본값으로 on the new kinds", () => {
+  const base = { id: "a", page: 0, rect: { l: 0, b: 0, r: 10, t: 10 }, color: [1, 2, 3], opacity: 1, borderWidth: 3 } as unknown as Annot;
+  it("a polygon keeps its width and fill, a polyline its width (the 다각형 tool's default)", () => {
+    expect(styleOfAnnot({ ...base, kind: "polygon", fillColor: [9, 9, 9] } as Annot)).toMatchObject({ width: 3, fillColor: [9, 9, 9] });
+    expect(styleOfAnnot({ ...base, kind: "polyline" } as Annot)).toMatchObject({ width: 3 });
+    expect(styleOfAnnot({ ...base, kind: "polyline" } as Annot)).not.toHaveProperty("fillColor");
+    expect(toolOfKind("polyline")).toBe("polygon");
+    expect(toolOfKind("polygon")).toBe("polygon");
+    expect(toolOfKind("callout")).toBe("callout");
   });
 });

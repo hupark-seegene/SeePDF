@@ -157,6 +157,34 @@ describe("annot.actions — delete and duplicate", () => {
     expect(useAnnotStore.getState().selected).toEqual([copy.id]);
   });
 
+  // v0.3 pkg4 (verification round 2, A6): a dashed square / circle / line / arrow copies dashed
+  it("duplicates a dashed square, circle, line and arrow as dashed copies", async () => {
+    await open();
+    const specs: AnnotSpec[] = [
+      SQUARE,
+      { ...SQUARE, kind: "circle" },
+      { kind: "line", p1: [0, 0], p2: [40, 40], color: [1, 2, 3], width: 2, opacity: 1 },
+      { kind: "arrow", p1: [0, 0], p2: [40, 40], color: [1, 2, 3], width: 2, opacity: 1 },
+    ];
+    for (const spec of specs) {
+      const annot = await createAnnotation(0, spec);
+      if (!annot) throw new Error("create failed");
+      patchAnnotation(0, annot.id, { dashed: true }, false);
+      await flushPatches();
+      const listed = useAnnotStore.getState().byPage[0].find((a) => a.id === annot.id);
+      expect(listed?.dashed).toBe(true);
+      const before = useAnnotStore.getState().byPage[0].map((a) => a.id);
+      await duplicateAnnotations(0, [annot.id]);
+      const copy = useAnnotStore.getState().byPage[0].find((a) => !before.includes(a.id));
+      expect(copy?.kind).toBe(spec.kind);
+      expect(copy?.dashed).toBe(true);
+    }
+    // a solid shape stays solid, and its spec carries no `dashed` at all
+    const solid = await createAnnotation(0, SQUARE);
+    if (!solid) throw new Error("create failed");
+    expect(specFromAnnot(solid)).not.toHaveProperty("dashed");
+  });
+
   it("round-trips every P0 kind through specFromAnnot", async () => {
     await open();
     const kinds: AnnotSpec[] = [

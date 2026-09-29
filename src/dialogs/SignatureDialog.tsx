@@ -21,7 +21,7 @@
  * signature can be placed at any size on any page; `stamp.ts` maps them into the placement
  * rectangle in PDF points.
  */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import * as api from "../ipc/api";
 import type { SavedSignature } from "../ipc/types";
@@ -36,6 +36,7 @@ import {
   readSignatures,
   removeSignature,
   savedFromDrawn,
+  savedFromImage,
   savedFromTyped,
 } from "./signatureLibrary";
 import {
@@ -201,10 +202,42 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
       onClose();
       return;
     }
+    if (entry.kind === "image") {
+      // v0.3 T3: a saved image signature is placed at its own aspect
+      onImage?.({ path: entry.path, aspect: entry.aspect });
+      onClose();
+      return;
+    }
     if (await placeTyped(entry.text, entry.style)) onClose();
   };
 
-  const deleteSaved = (id: string) => void persist(removeSignature(saved, id));
+  const deleteSaved = (id: string) => {
+    const gone = saved.find((s) => s.id === id);
+    void persist(removeSignature(saved, id));
+    if (gone?.kind === "image") void api.removeLibraryImage({ path: gone.path, library: "signature" }).catch(() => false);
+  };
+
+  /**
+   * v0.3 T3 이미지 저장…: pick a scanned signature / 도장 image, keep a copy under
+   * `$APPDATA/SeePDF/signatures/` and list it under 저장된 서명 (it is placed with a click there).
+   */
+  const saveImage = async () => {
+    if (busy || full) return;
+    const picked = await api
+      .openFileDialog({ multiple: false, filters: [{ name: "PNG / JPEG", extensions: ["png", "jpg", "jpeg"] }] })
+      .catch(() => null);
+    if (!picked?.length) return;
+    setBusy(true);
+    try {
+      const copy = await api.copyLibraryImage({ path: picked[0], library: "signature" });
+      const next = addSignature(saved, savedFromImage(copy.path, copy.width / Math.max(1, copy.height)));
+      if (next && next !== saved) await persist(next);
+    } catch {
+      toast("sign.error.image", undefined, { tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const canConfirm = !busy && (tab === "draw" ? !empty : tab === "type" ? typed.trim().length > 0 : false);
   const sample = typed.trim() || t("sign.typeSample");
@@ -298,9 +331,15 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
       {tab === "image" && (
         <div className="sign-panel sign-image" role="tabpanel">
           <p className="text-sm dlg-hint">{t("sign.imageHint")}</p>
-          <button type="button" className="btn" onClick={onChooseImage}>
-            {t("sign.chooseImage")}
-          </button>
+          <div className="sign-image-actions">
+            <button type="button" className="btn" onClick={onChooseImage}>
+              {t("sign.chooseImage")}
+            </button>
+            <button type="button" className="btn quiet" onClick={() => void saveImage()} disabled={busy || full}>
+              {t("sign.saveImage")}
+            </button>
+          </div>
+          {full && <p className="text-xs dlg-hint">{t("sign.libraryFull", { max: MAX_SAVED_SIGNATURES })}</p>}
         </div>
       )}
 
@@ -326,7 +365,9 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
                   type="button"
                   className="sign-saved-pick"
                   disabled={busy}
-                  aria-label={t("sign.useSaved", { name: entry.kind === "typed" ? entry.text : t("sign.drawnName") })}
+                  aria-label={t("sign.useSaved", {
+                    name: entry.kind === "typed" ? entry.text : entry.kind === "image" ? t("sign.imageName") : t("sign.drawnName"),
+                  })}
                   onClick={() => void pickSaved(entry)}
                 >
                   <SavedPreview entry={entry} />
@@ -349,8 +390,35 @@ export function SignatureDialog({ onClose, onDrawn, onImage, onChooseImage }: Si
   );
 }
 
+/** v0.3 T3: a saved image signature's thumbnail (`image_preview` → `blob:` URL). */
+function SavedImage({ path, aspect }: { path: string; aspect: number }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    let made: string | null = null;
+    void api
+      .imagePreview({ path, maxPx: 160 })
+      .then((p) => {
+        made = api.previewUrl(p);
+        if (live) setUrl(made);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+      if (made && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(made);
+    };
+  }, [path]);
+  const w = Math.max(0.2, aspect) * 40;
+  return url ? (
+    <img className="sign-saved-img" src={url} alt="" style={{ width: Math.min(w, 120), height: Math.min(w, 120) / Math.max(0.2, aspect) }} />
+  ) : (
+    <span className="sign-saved-text">🖼</span>
+  );
+}
+
 /** A saved signature as a thumbnail: the strokes as SVG, or the text in its style. */
 function SavedPreview({ entry }: { entry: SavedSignature }) {
+  if (entry.kind === "image") return <SavedImage path={entry.path} aspect={entry.aspect} />;
   if (entry.kind === "typed") {
     return (
       <span className="sign-saved-text" style={signatureCss(entry.style)}>

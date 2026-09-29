@@ -11,7 +11,7 @@
 import { appBus } from "./bus";
 import { setMockAssetResolver } from "./protocol";
 import { encodeRawPage, encodeTextLayer, CHAR_SPACE, type TextChar, type TextLine, type TextWord } from "./binary";
-import { pngDataUrl, solidPngDataUrl, type RgbaPixel } from "./png";
+import { encodePng, pngDataUrl, solidPngDataUrl, type RgbaPixel } from "./png";
 import { marginsToUser, resizedVisualSize, visualSize, visualToUserSize } from "../organize/cropGeometry";
 import type {
   Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, DocGeneration, DocId, DocInfo, EngineError,
@@ -30,6 +30,8 @@ import type {
 } from "./types";
 // v0.3 pkg7-ocr
 import type { OcrCapabilities, OrientationResult, Rotation } from "./types";
+// v0.3 pkg4-annotations-stamps-objects
+import type { AnnotBatchResult, AnnotOp, LibraryImage } from "./types";
 import { labelsFor, normalizeRanges } from "../dialogs/pageLabels";
 
 import documentFixture from "../test/ipc-samples/document.json";
@@ -96,6 +98,13 @@ let settings = seedSettings();
  * of the undo snapshot: the mock only needs the counts to be plausible.
  */
 const stampsOf = new Map<DocId, { role: StampRole; page: PageIndex }[]>();
+/** v0.3 T1: the pixel size `image_preview` reports per path (default 400 × 300). */
+const mockImageSizes = new Map<string, [number, number]>();
+
+/** Test seam (v0.3 T1): the size of the image at `path`, as `image_preview` will report it. */
+export function setMockImageSize(path: string, width: number, height: number): void {
+  mockImageSizes.set(path, [width, height]);
+}
 const pendingOpens: { path: string; source: "argv" | "macos-opened" | "drop" | "dialog" | "recent" }[] = [];
 // --- v0.3 pkg3-security-save-integrity ---------------------------------------------------
 /** S4: each document's attachments (a path containing `attach` or `risky` starts with one). */
@@ -139,6 +148,7 @@ function seedSettings(): Settings {
     signatures: seed.signatures ?? [],
     night: lenientNight(seed.night),
     checkUpdates: seed.checkUpdates ?? true,
+    stamps: seed.stamps ?? [],   // v0.3 T2 (serde default)
   } as Settings;
 }
 
@@ -816,7 +826,8 @@ export const mock = {
   },
   async createAnnotation(a: { docId: DocId; page: PageIndex; spec: AnnotSpec; id?: string }): Promise<AnnotResult> {
     const d = doc(a.docId);
-    const annot = annotFromSpec(a.page, a.spec, a.id ?? `mock-${nextAnnot++}`, settings.author);
+    // v0.3 A9: like `create_annotation`, 설정 ▸ 작성자 trimmed — blank means no /T (author null)
+    const annot = annotFromSpec(a.page, a.spec, a.id ?? `mock-${nextAnnot++}`, settings.author?.trim() || null);
     return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.annotCreate" }, () => {
       d.annots.set(a.page, [...(d.annots.get(a.page) ?? []), annot]);
       return { list: listOf(d, a.page), annot: structuredClone(annot), previous: null };
@@ -1883,6 +1894,106 @@ export const mock = {
     settings.night = lenientNight(settings.night);
     return structuredClone(settings);
   },
+
+  // v0.3 pkg4-annotations-stamps-objects -------------------------------------
+  /** E1: like `replace_image` — an image object only, its rect / matrix kept, one undo step. */
+  async replaceImage(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration; path: string }) {
+    const d = doc(a.docId);
+    checkGeneration(d, a.expectGeneration);
+    if (!/\.(png|jpe?g)$/i.test(a.path)) throw err("invalidArgument", "not a PNG / JPEG");
+    const o = pageObjects(d, a.page)[a.objectId];
+    if (!o) throw err("notFound", `no object ${a.objectId}`);
+    if (o.type !== "image") throw err("invalidArgument", `object ${a.objectId} is not an image`);
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectEdit" }, () => {
+      d.info.bytes += 1200;
+      return () => listObjects(d, a.page);
+    })();
+  },
+  /** A6: like `restack_objects` — the ids keep their order, at the end (front) or the start (back). */
+  async restackObjects(a: { docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration; toFront: boolean }) {
+    const d = doc(a.docId);
+    checkGeneration(d, a.expectGeneration);
+    const list = pageObjects(d, a.page);
+    const ids = [...new Set(a.objectIds)].sort((x, y) => x - y);
+    for (const id of ids) if (!list[id]) throw err("notFound", `no object ${id}`);
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.objectArrange" }, () => {
+      const moving = ids.map((id) => list[id]);
+      const rest = list.filter((_, i) => !ids.includes(i));
+      d.objects.set(a.page, a.toFront ? [...rest, ...moving] : [...moving, ...rest]);
+      return () => listObjects(d, a.page);
+    })();
+  },
+  /** T1: `image_preview` — the size from `setMockImageSize` (default 400 × 300), a 4 × 3 px PNG. */
+  async imagePreview(a: { path: string; maxPx?: number }): Promise<Uint8Array> {
+    if (!/\.(png|jpe?g)$/i.test(a.path)) throw err("invalidArgument", `${a.path} is not a PNG or JPEG image`);
+    const [w, h] = mockImageSizes.get(a.path) ?? [400, 300];
+    const png = encodePng(4, 3, new Uint8Array(4 * 3 * 4).fill(200));
+    const out = new Uint8Array(8 + png.length);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, w, true);
+    view.setUint32(4, h, true);
+    out.set(png, 8);
+    return out;
+  },
+  /** T2 / T3: the library copy is content-addressed like the engine's (`img-<hash>.<ext>`). */
+  async copyLibraryImage(a: { path: string; library: "stamp" | "signature" }): Promise<LibraryImage> {
+    const ext = /\.png$/i.test(a.path) ? "png" : /\.jpe?g$/i.test(a.path) ? "jpg" : null;
+    if (!ext) throw err("invalidArgument", "not a PNG or JPEG image");
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < a.path.length; i++) hash = Math.imul(hash ^ a.path.charCodeAt(i), 0x01000193) >>> 0;
+    const dir = a.library === "stamp" ? "stamps" : "signatures";
+    const path = `/mock/app-data/${dir}/img-${hash.toString(16).padStart(8, "0")}.${ext}`;
+    writtenFiles.add(path);
+    const [width, height] = mockImageSizes.get(a.path) ?? [400, 300];
+    mockImageSizes.set(path, [width, height]);
+    return { path, width, height };
+  },
+  async removeLibraryImage(a: { path: string; library: "stamp" | "signature" }): Promise<boolean> {
+    const dir = a.library === "stamp" ? "/mock/app-data/stamps/" : "/mock/app-data/signatures/";
+    if (!a.path.startsWith(`${dir}img-`)) return false;
+    return writtenFiles.delete(a.path);
+  },
+  /** A3 / A4: like `annotation_batch` — every op on a working copy, then ONE mutation (all or nothing). */
+  async annotationBatch(a: { docId: DocId; page: PageIndex; ops: AnnotOp[] }): Promise<AnnotBatchResult> {
+    const d = doc(a.docId);
+    if (a.ops.length === 0) throw err("invalidArgument", "ops is empty");
+    const author = settings.author?.trim() || null;
+    let list = structuredClone(d.annots.get(a.page) ?? []);
+    const created: string[] = [];
+    for (const op of a.ops) {
+      if (op.op === "create") {
+        const annot = annotFromSpec(a.page, op.spec, op.id ?? `mock-${nextAnnot++}`, author);
+        list.push(annot);
+        created.push(annot.id);
+      } else if (op.op === "update") {
+        const idx = list.findIndex((x) => x.id === op.id);
+        if (idx < 0) throw err("notFound", `annotation ${op.id}`);
+        list[idx] = { ...patchedAnnot(list[idx], op.patch), modified: new Date().toISOString() };
+      } else {
+        const onPage = new Set(list.map((x) => x.id));
+        const missing = op.ids.filter((id) => !onPage.has(id));
+        if (missing.length) throw err("notFound", `annotation(s) ${JSON.stringify(missing)} are not on page ${a.page}`, { page: a.page });
+        const doomed = new Set(op.ids);
+        for (let grew = true; grew; ) {
+          grew = false;
+          for (const x of list) {
+            if (x.inReplyTo && doomed.has(x.inReplyTo) && !doomed.has(x.id)) {
+              doomed.add(x.id);
+              grew = true;
+            }
+          }
+        }
+        list = list.filter((x) => !doomed.has(x.id));
+      }
+    }
+    const undoLabel = a.ops.every((o) => o.op === "create")
+      ? "undo.annotCreate"
+      : a.ops.every((o) => o.op === "delete") ? "undo.annotDelete" : "undo.annotEdit";
+    return mutate(d, { reason: "edit", pages: [a.page], undoLabel }, () => {
+      d.annots.set(a.page, list);
+      return { list: listOf(d, a.page), created };
+    });
+  },
   /** P1-9: the path is content-addressed like the real one, so the same PNG gives the same path. */
   async writeSignatureImage(a: { bytes: number[] }): Promise<string> {
     if (a.bytes.length < 8 || a.bytes[0] !== 0x89 || a.bytes[1] !== 0x50) {
@@ -2231,7 +2342,7 @@ function applyPageOp(d: MockDoc, op: PageOp): void {
   }
 }
 
-function annotFromSpec(page: PageIndex, spec: AnnotSpec, id: string, author: string): Annot {
+function annotFromSpec(page: PageIndex, spec: AnnotSpec, id: string, author: string | null): Annot {
   const now = new Date().toISOString();
   const base: Annot = {
     id, page, kind: spec.kind as Annot["kind"], subtype: "Square",
@@ -2266,27 +2377,62 @@ function annotFromSpec(page: PageIndex, spec: AnnotSpec, id: string, author: str
       return {
         ...base, subtype: spec.kind === "square" ? "Square" : "Circle", rect: spec.rect, color: spec.color,
         fillColor: spec.fillColor, borderWidth: spec.width, opacity: spec.opacity,
+        ...(spec.dashed ? { dashed: true } : {}),
       };
     case "line":
-    case "arrow":
+    case "arrow": {
+      // v0.3: a real /Line (lopdf) with its heads; any head reads back as an arrow
+      const heads = spec.heads ?? (spec.kind === "arrow" ? [false, true] : [false, false]);
       return {
-        ...base, subtype: "Ink", linePoints: [spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]],
-        inkPaths: [[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]], color: spec.color, borderWidth: spec.width,
-        opacity: spec.opacity, rect: boundsOfPaths([[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]]),
+        ...base, kind: heads[0] || heads[1] ? "arrow" : "line", subtype: "Line",
+        linePoints: [spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]], heads,
+        ...(spec.measure ? { measure: spec.measure } : {}),
+        ...(spec.dashed ? { dashed: true } : {}),
+        color: spec.color, borderWidth: spec.width,
+        opacity: spec.opacity, rect: paddedBounds([[spec.p1[0], spec.p1[1], spec.p2[0], spec.p2[1]]], spec.width),
       };
+    }
     case "textbox":
       return {
         ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, fontSize: spec.fontSize,
-        color: spec.color, fillColor: spec.fillColor,
+        color: spec.color, fillColor: spec.fillColor, align: spec.align,
       };
-    case "stamp":
+    case "callout":
+      return {
+        ...base, subtype: "FreeText", rect: spec.rect, text: spec.text, contents: spec.text, fontSize: spec.fontSize,
+        color: spec.color, fillColor: spec.fillColor, align: spec.align, callout: [...spec.callout],
+      };
+    case "polygon":
+    case "polyline":
+      if (spec.vertices.length < (spec.kind === "polygon" ? 6 : 4)) throw err("invalidArgument", "too few vertices");
+      return {
+        ...base, subtype: spec.kind === "polygon" ? "Polygon" : "PolyLine", vertices: [...spec.vertices],
+        rect: paddedBounds([spec.vertices], spec.width), color: spec.color, fillColor: spec.kind === "polygon" ? spec.fillColor : null,
+        borderWidth: spec.width, opacity: spec.opacity,
+        ...(spec.cloudy && spec.kind === "polygon" ? { cloudy: true } : {}),
+        ...(spec.dashed ? { dashed: true } : {}),
+        ...(spec.measure ? { measure: spec.measure } : {}),
+      };
+    case "stamp": {
+      // v0.3 T2: a text stamp expands {{date}} / {{author}} like the engine
+      const text = "text" in spec.image ? expandStampText(spec.image.text, author) : null;
       return {
         ...base,
         // Stage 8: `/Subj "SeePDF:Signature"` reads back as a 서명
         kind: spec.signature ? "signature" : "stamp",
-        subtype: "Stamp", rect: spec.rect, stampKind: "builtin" in spec.image ? spec.image.builtin : "image",
+        subtype: "Stamp", rect: spec.rect,
+        stampKind: "builtin" in spec.image ? spec.image.builtin : text !== null ? "SeePDF:TextStamp" : "image",
+        ...(text !== null ? { contents: text } : {}),
       };
+    }
   }
+}
+
+/** v0.3 T2: `{{date}}` → yyyy.MM.dd (local), `{{author}}` → 설정 ▸ 작성자. */
+function expandStampText(text: string, author: string | null): string {
+  const now = new Date();
+  const date = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, "0")}.${String(now.getDate()).padStart(2, "0")}`;
+  return text.replaceAll("{{date}}", date).replaceAll("{{author}}", author ?? "").trim() || "-";
 }
 
 /**
@@ -2318,10 +2464,13 @@ function patchedAnnot(annot: Annot, patch: AnnotPatch): Annot {
     const p1 = patch.p1 ?? [x1, y1];
     const p2 = patch.p2 ?? [x2, y2];
     next.linePoints = [p1[0], p1[1], p2[0], p2[1]];
-    next.inkPaths = [[p1[0], p1[1], p2[0], p2[1]]];
-    next.rect = paddedBounds(next.inkPaths, width);
+    // only SeePDF's Ink line (an encrypted document's) has strokes; a real /Line has /L
+    if (annot.inkPaths) next.inkPaths = [[p1[0], p1[1], p2[0], p2[1]]];
+    next.rect = paddedBounds([[p1[0], p1[1], p2[0], p2[1]]], width);
   }
-  if (patch.rect) next.rect = structuredClone(patch.rect);
+  // v0.3: a lopdf kind's /Rect always follows its geometry (`lopdf_annots::rewrite`)
+  const lopdfGeometry = ["Line", "Polygon", "PolyLine"].includes(annot.subtype) && !!(patch.p1 || patch.p2 || patch.vertices);
+  if (patch.rect && !lopdfGeometry) next.rect = structuredClone(patch.rect);
   if (patch.contents !== undefined) next.contents = patch.contents;
   if (patch.author !== undefined) next.author = patch.author;
   if (patch.fontSize !== undefined) next.fontSize = patch.fontSize;
@@ -2331,6 +2480,25 @@ function patchedAnnot(annot: Annot, patch: AnnotPatch): Annot {
     if (annot.kind === "textbox" && patch.contents === undefined) next.contents = patch.text;
   }
   if (patch.locked !== undefined) next.locked = patch.locked;
+  // v0.3 pkg4-annotations-stamps-objects
+  if (patch.align !== undefined) next.align = patch.align;
+  if (patch.heads !== undefined && (annot.kind === "line" || annot.kind === "arrow")) {
+    next.heads = [...patch.heads];
+    next.kind = patch.heads[0] || patch.heads[1] ? "arrow" : "line";
+  }
+  if (patch.printed !== undefined) next.printed = patch.printed;
+  if (patch.dashed !== undefined) next.dashed = patch.dashed;
+  if (patch.vertices && (annot.kind === "polygon" || annot.kind === "polyline")) {
+    next.vertices = [...patch.vertices];
+    next.rect = paddedBounds([patch.vertices], width);
+  }
+  if (patch.callout && annot.kind === "callout") next.callout = [...patch.callout];
+  else if (patch.rect && annot.kind === "callout" && annot.callout && annot.callout.length >= 4) {
+    // like `update::reattach`: the tip stays, the leader re-attaches to the nearer side of the box
+    const r = patch.rect;
+    const x = annot.callout[0] <= (r.l + r.r) / 2 ? r.l : r.r;
+    next.callout = [...annot.callout.slice(0, -2), x, (r.b + r.t) / 2];
+  }
   return next;
 }
 
@@ -2837,6 +3005,7 @@ export function resetMock(): void {
   recoveryIdOf.clear();
   stampsOf.clear();
   writtenFiles.clear();
+  mockImageSizes.clear();
   if (mockTts.timer) clearTimeout(mockTts.timer);
   Object.assign(mockTts, { speaking: false, text: "", rate: 1, lang: undefined, timer: 0, sentences: null, index: null });
   Object.assign(mockRenderCache, { bytes: 12 * 1024 * 1024, clears: 0 });

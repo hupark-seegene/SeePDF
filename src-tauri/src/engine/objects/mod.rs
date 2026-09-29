@@ -1126,3 +1126,100 @@ fn relist(
     let doc = st.doc_mut(doc_id)?;
     list(doc, page_index)
 }
+
+// ---------------------------------------------------------------------------------------
+// v0.3 pkg4-annotations-stamps-objects (A6 / T4): stacking order
+// ---------------------------------------------------------------------------------------
+
+/// Moves the top-level objects `ids` of `page` to the front (the end of the content, painted
+/// last) or to the back (index 0, painted first), keeping their relative order.
+/// `FPDFPage_RemoveObject` hands an object back without destroying it and
+/// `FPDFPage_InsertObjectAtIndex` takes it again, so nothing is copied. The caller regenerates
+/// the page content.
+pub fn restack_raw(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    ids: &[usize],
+    to_front: bool,
+) -> Result<(), EngineError> {
+    let handle = page.raw_handle();
+    // SAFETY: `handle` is a live page.
+    let count = unsafe { bindings.FPDFPage_CountObjects(handle) }.max(0) as usize;
+    if let Some(&max) = ids.iter().max() {
+        if max >= count {
+            return Err(EngineError::not_found(format!("object {max} of {count}")));
+        }
+    }
+    let mut sorted = ids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    // Handles first: indices shift as soon as one object leaves.
+    let objects: Vec<FPDF_PAGEOBJECT> = sorted
+        .iter()
+        // SAFETY: `i < count`, checked above.
+        .map(|&i| unsafe { bindings.FPDFPage_GetObject(handle, i as i32) })
+        .collect();
+    if objects.iter().any(|o| o.is_null()) {
+        return Err(EngineError::new(
+            ErrorCode::Pdfium,
+            "FPDFPage_GetObject failed",
+        ));
+    }
+    for &object in &objects {
+        // SAFETY: `object` belongs to `handle`; after this call it is unowned until inserted.
+        let ok = unsafe { bindings.FPDFPage_RemoveObject(handle, object) };
+        if !bindings.is_true(ok) {
+            return Err(EngineError::new(
+                ErrorCode::Pdfium,
+                "FPDFPage_RemoveObject failed",
+            ));
+        }
+    }
+    // SAFETY: `handle` is live.
+    let remaining = unsafe { bindings.FPDFPage_CountObjects(handle) }.max(0) as usize;
+    for (n, &object) in objects.iter().enumerate() {
+        let at = if to_front { remaining + n } else { n };
+        // SAFETY: `object` is unowned (removed above); ownership passes to the page.
+        let ok = unsafe { bindings.FPDFPage_InsertObjectAtIndex(handle, object, at) };
+        if !bindings.is_true(ok) {
+            return Err(EngineError::new(
+                ErrorCode::Pdfium,
+                "FPDFPage_InsertObjectAtIndex failed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `restack_objects` (v0.3 A6) — 맨 앞으로 / 맨 뒤로 for the selected objects. One undo step
+/// `undo.objectArrange`.
+pub fn restack(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page_index: PageIndex,
+    object_ids: &[ObjectId],
+    expect_generation: DocGeneration,
+    to_front: bool,
+) -> Result<PageObjectList, EngineError> {
+    check_generation(st.doc(doc_id)?, expect_generation)?;
+    let ids: Vec<usize> = object_ids.iter().map(|&i| i as usize).collect();
+    if ids.is_empty() {
+        return relist(st, doc_id, page_index);
+    }
+    registry::mutate(
+        st,
+        doc_id,
+        MutateOpts::new("undo.objectArrange", ChangeReason::Edit).page(page_index),
+        |doc| {
+            let bindings = doc.bindings();
+            let mut scratch = ScratchPage::open(doc, page_index)?;
+            restack_raw(bindings, &scratch.page, &ids, to_front)?;
+            scratch
+                .page
+                .regenerate_content()
+                .ctx("regenerate page content")?;
+            Ok(())
+        },
+    )?;
+    relist(st, doc_id, page_index)
+}

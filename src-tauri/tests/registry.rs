@@ -476,6 +476,7 @@ fn display_name_replaces_the_file_name() {
         opacity: 1.0,
         pages: PageSelection::List(vec![0]),
         bates: Default::default(),
+        behind: false,
     };
     let d = doc.doc_id.clone();
     let stamped = with_state(move |st| stamp::add_stamp(st, &d, &spec)).expect("stamp");

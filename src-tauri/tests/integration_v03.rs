@@ -23,10 +23,15 @@
 //!
 //! pkg7 (O5) writes the OCR layer in a glyphless CID font; pkg1 (R2) splits a partly redacted
 //! text object and re-sets its text through the font's `/ToUnicode`, which must work on it.
+//!
+//! pkg4 (A2 / A6) draws lines and arrows as real `/Line` annotations and dashes borders with a
+//! `lopdf` step; both have a PDFium form (the Ink line, a solid border), which a signed file
+//! that still saves incrementally (pkg3 S1) keeps, so the signature survives the save.
 
 mod common;
 
 use common::*;
+use seepdf_lib::engine::annot::create::create_in;
 use seepdf_lib::engine::objects::paragraph;
 use seepdf_lib::engine::redact;
 use seepdf_lib::engine::registry;
@@ -35,8 +40,9 @@ use seepdf_lib::engine::save;
 use seepdf_lib::engine::text::{layer, structtree};
 use seepdf_lib::engine::{form, ocr, pages, security};
 use seepdf_lib::ipc::types::{
-    OcrLine, OcrPage, OcrWord, PageIndex, PageOp, ParagraphEdit, ParagraphFlow, PermissionsRequest,
-    ReadingOrder, Rect, RedactBatchMark, RedactOptions,
+    AnnotSpec, LineSpec, OcrLine, OcrPage, OcrWord, PageIndex, PageOp, ParagraphEdit,
+    ParagraphFlow, PermissionsRequest, PolySpec, ReadingOrder, Rect, RedactBatchMark,
+    RedactOptions, ShapeSpec,
 };
 use seepdf_lib::ipc::ErrorCode;
 
@@ -662,7 +668,7 @@ fn restricted_copy(name: &str, permissions: PermissionsRequest) -> String {
 
 /// One English word recognised on page 0 at `rotation` (150 DPI image of a Letter page).
 fn one_word_ocr(rotation: u16) -> OcrPage {
-    let (w, h) = if rotation % 180 == 0 {
+    let (w, h) = if rotation.is_multiple_of(180) {
         (1275, 1650)
     } else {
         (1650, 1275)
@@ -844,4 +850,122 @@ fn a_word_redacted_out_of_a_glyphless_ocr_line_leaves_the_rest() {
     let saved = open_bytes(save_bytes(&doc.doc_id));
     check(&saved, "after save");
     close(saved);
+}
+
+// ---------------------------------------------------------------------------------------
+// pkg4 (A2 real /Line, A6 dashed borders) × pkg3 (S1 incremental save of a signed file)
+// ---------------------------------------------------------------------------------------
+
+fn create_annot(doc_id: &str, spec: AnnotSpec) -> Result<String, seepdf_lib::ipc::EngineError> {
+    let d = doc_id.to_string();
+    with_state(move |st| create_in(st, &d, 0, &spec, None, Some("검토자")))
+}
+
+fn annot_subtype(doc_id: &str, id: &str) -> (String, bool) {
+    let id = id.to_string();
+    with_doc(doc_id, move |d| {
+        let a = seepdf_lib::engine::annot::list(d, 0)?
+            .into_iter()
+            .find(|a| a.id == id)
+            .expect("the new annotation is listed");
+        Ok((a.subtype, a.dashed))
+    })
+    .unwrap()
+}
+
+fn line_specs() -> Vec<AnnotSpec> {
+    let line = LineSpec {
+        p1: [100.0, 300.0],
+        p2: [300.0, 360.0],
+        color: [0, 0, 200],
+        width: 2.0,
+        opacity: 1.0,
+        heads: None,
+        measure: None,
+        dashed: false,
+    };
+    vec![
+        AnnotSpec::Line(line.clone()),
+        AnnotSpec::Arrow(line),
+        AnnotSpec::Square(ShapeSpec {
+            rect: Rect::new(100.0, 100.0, 200.0, 180.0),
+            color: [200, 0, 0],
+            fill_color: None,
+            width: 2.0,
+            opacity: 1.0,
+            dashed: true,
+        }),
+    ]
+}
+
+/// A2 / A6 × S1: on a signed file that still saves incrementally a line / arrow is drawn as
+/// the Ink line and a dashed square solid (PDFium only), so the save appends to the signed
+/// bytes. A polygon has no PDFium form: it is still written (by lopdf), and the file then
+/// saves as a full rewrite (S1's save warning covers it). On an unsigned file the same specs
+/// give a real `/Line` and a dashed border (A2 / A6).
+#[test]
+fn lines_and_dashed_shapes_on_a_signed_file_keep_the_signature() {
+    let original = signed_paragraphs_pdf();
+    let (doc_id, path) = open_signed("signed-lines.pdf", &original);
+    for spec in line_specs() {
+        let id = create_annot(&doc_id, spec.clone()).expect("create on a signed file");
+        let (subtype, dashed) = annot_subtype(&doc_id, &id);
+        assert_ne!(
+            subtype, "Line",
+            "{spec:?}: PDFium's Ink line on a signed file"
+        );
+        assert!(!dashed, "{spec:?}: solid on a signed file");
+        assert_eq!(
+            incremental_save(&doc_id),
+            Some(true),
+            "{spec:?} kept the signed file incrementally saveable"
+        );
+    }
+    save_in_place(&doc_id);
+    let saved = std::fs::read(&path).expect("read the saved file");
+    assert!(
+        saved.starts_with(&original),
+        "the signed revision stays byte-identical"
+    );
+    let count = |doc_id: &str| {
+        with_doc(doc_id, |d| Ok(seepdf_lib::engine::annot::list(d, 0)?.len())).unwrap()
+    };
+    let (before, reopened) = (open_bytes(original.clone()), open_bytes(saved));
+    assert_eq!(
+        count(&reopened),
+        count(&before) + 3,
+        "the three annotations were saved"
+    );
+    close(before);
+    close(reopened);
+
+    // A polygon has no PDFium fallback: it is written, and the next save is a full rewrite.
+    let polygon = AnnotSpec::Polygon(PolySpec {
+        vertices: vec![100.0, 400.0, 200.0, 400.0, 150.0, 480.0],
+        color: [0, 120, 0],
+        fill_color: None,
+        width: 1.0,
+        opacity: 1.0,
+        cloudy: false,
+        dashed: false,
+        measure: None,
+    });
+    let id = create_annot(&doc_id, polygon).expect("a polygon on a signed file");
+    assert_eq!(annot_subtype(&doc_id, &id).0, "Polygon");
+    assert_eq!(incremental_save(&doc_id), Some(false));
+    close(doc_id);
+
+    // Unsigned: a real /Line and a dashed border.
+    let unsigned = open_bytes(original);
+    let kinds: Vec<(String, bool)> = line_specs()
+        .into_iter()
+        .map(|spec| {
+            let id = create_annot(&unsigned, spec).expect("create");
+            annot_subtype(&unsigned, &id)
+        })
+        .collect();
+    assert_eq!(kinds[0].0, "Line", "{kinds:?}");
+    assert_eq!(kinds[1].0, "Line", "{kinds:?}");
+    assert!(kinds[2].1, "the square is dashed: {kinds:?}");
+    close(unsigned);
 }

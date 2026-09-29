@@ -146,7 +146,7 @@ export const selectTool: ToolModule<SelectState> = {
 
     // A plain click on a 메모 or a 텍스트 상자 opens its editor (UI_SPEC §12 "메모 열기").
     const target = state.targets[0];
-    if (target && (target.kind === "note" || target.kind === "textbox")) {
+    if (target && (target.kind === "note" || target.kind === "textbox" || target.kind === "callout")) {
       return { state: { ...EMPTY }, preview: null, edit: { page: state.page, id: target.id } };
     }
     return { state: { ...EMPTY }, preview: null };

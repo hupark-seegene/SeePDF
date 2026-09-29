@@ -36,6 +36,8 @@ import { useAnnotStore, type ToolStyle } from "../store/annotStore";
 import { styleFor, toolOfKind } from "../store/toolStyles";
 import type { Annot, PageIndex, PageOp, Point } from "../ipc/types";
 import { permissionBlock } from "./permissions";
+// v0.3 pkg4-annotations-stamps-objects (E1): 이미지 바꾸기 on an image object in 편집 mode
+import { useEditStore } from "../edit/editStore";
 
 /** The page a context-menu event happened on, or `null` when it was not over a page. */
 export function pageFromEvent(target: EventTarget | null): { page: PageIndex; source: "canvas" | "thumbnail" } | null {
@@ -130,8 +132,9 @@ function inAnnotate(then: () => void): void {
 
 /** 이 스타일을 기본값으로: the annotation's look becomes its tool's default (P1-12). */
 export function styleOfAnnot(a: Annot): Partial<ToolStyle> {
-  const stroked = a.kind === "ink" || a.kind === "square" || a.kind === "circle" || a.kind === "line" || a.kind === "arrow";
-  const filled = a.kind === "square" || a.kind === "circle" || a.kind === "textbox";
+  // v0.3 integration (pkg4 A2): the polygon / polyline stroke and the polygon / callout fill too
+  const stroked = ["ink", "square", "circle", "line", "arrow", "polygon", "polyline"].includes(a.kind);
+  const filled = ["square", "circle", "textbox", "polygon", "callout"].includes(a.kind);
   return {
     color: a.color,
     opacity: a.opacity,
@@ -192,9 +195,11 @@ export function openPageContextMenu(
             inAnnotate(() => {
               const store = useAnnotStore.getState();
               store.select([annot.id]);
-              // a note opens its popover and a text box its editor; anything else gets its handles
-              if (annot.kind === "note" || annot.kind === "textbox") store.setEditing({ page, id: annot.id });
-              else {
+              // a note opens its popover and a text box (v0.3 integration: or a pkg4 callout, which
+              // double-click edits the same way) its editor; anything else gets its handles
+              if (annot.kind === "note" || annot.kind === "textbox" || annot.kind === "callout") {
+                store.setEditing({ page, id: annot.id });
+              } else {
                 useAppStore.getState().setTool("select");
                 toolController.arm("select");
               }
@@ -294,6 +299,22 @@ export function openPageContextMenu(
             }),
         },
         { id: "sepEmpty", separator: true },
+      ]
+    : [];
+
+  // v0.3 E1: 편집 mode, an image object under the pointer → 이미지 바꾸기…
+  const image = source === "canvas" && app.mode === "edit" ? imageObjectUnder(page, x, y, target) : null;
+  const imageItems: MenuEntry[] = image !== null
+    ? [
+        {
+          id: "replaceImage",
+          labelKey: "edit.replaceImage",
+          // v0.3 integration (E1 × S5): 편집 changes the page, like the 편집 mode it lives in
+          disabled: !!editBlock,
+          hintKey: editBlock ?? undefined,
+          onSelect: () => void import("../edit/actions").then((m) => m.replaceSelectedImage({ page, objectId: image })),
+        },
+        { id: "sepImage", separator: true },
       ]
     : [];
 
@@ -423,6 +444,36 @@ export function openPageContextMenu(
     y,
     labelKey: source === "thumbnail" ? "sidebar.tab.thumbnails" : "a11y.canvas",
     items:
-      source === "thumbnail" ? [...shared, ...editing] : [...annotItems, ...textItems, ...emptyItems, ...shared, ...canvasOnly],
+      source === "thumbnail"
+        ? [...shared, ...editing]
+        : [...imageItems, ...annotItems, ...textItems, ...emptyItems, ...shared, ...canvasOnly],
   });
+}
+
+/** v0.3 E1: the topmost editable image object of 편집 mode under a canvas right-click, or `null`. */
+function imageObjectUnder(page: PageIndex, x: number, y: number, target: EventTarget | null | undefined): number | null {
+  const info = useDocStore.getState().info;
+  const geom = info?.pages[page];
+  const shell = (target as HTMLElement | null)?.closest?.<HTMLElement>(".page-shell");
+  const objects = useEditStore.getState().pages[page]?.objects;
+  if (!info || !geom || !shell || !objects?.length) return null;
+  const pane = (shell.closest<HTMLElement>("[data-pane]")?.dataset.pane ?? "main") as PaneId;
+  const view = paneView(useViewStore.getState(), pane);
+  const box = shell.getBoundingClientRect();
+  const ctx = makePageLayerContext({
+    docId: info.docId,
+    docGeneration: info.docGeneration,
+    page: geom,
+    rotation: view.rotation,
+    zoomPercent: view.zoomPercent,
+    width: box.width,
+    height: box.height,
+  });
+  const [px, py] = ctx.toPage(x - box.left, y - box.top);
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+    if (o.type !== "image" || o.editable === "readOnly") continue;
+    if (px >= o.rect.l && px <= o.rect.r && py >= o.rect.b && py <= o.rect.t) return o.objectId;
+  }
+  return null;
 }

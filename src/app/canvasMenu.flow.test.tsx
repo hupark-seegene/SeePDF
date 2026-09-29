@@ -8,6 +8,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
 import App from "../App";
 import { mock } from "../ipc/mock";
+import * as api from "../ipc/api";
 import { useAppStore } from "../store/appStore";
 import { useAnnotStore } from "../store/annotStore";
 import { useDocStore } from "../store/docStore";
@@ -134,5 +135,37 @@ describe("canvas context menus (UI_SPEC §12)", () => {
     expect(snapshot.labelKey).toBe("tool.snapshot");
     act(() => snapshot.onSelect?.());
     expect(useAppStore.getState().tool).toBe("snapshot");
+  });
+
+  // v0.3 integration (pkg6 V2 × pkg4 A2): a callout is a text box with a leader — 편집 opens its
+  // editor as double-clicking it does, and 이 스타일을 기본값으로 reaches the 설명선 tool with its fill
+  it("편집 on a pkg4 callout opens its text editor; 이 스타일을 기본값으로 sets the 설명선 default", async () => {
+    await openSample();
+    const docId = useDocStore.getState().docId!;
+    const rect = { l: 380, b: 120, r: 500, t: 170 };
+    const made = await act(() =>
+      api.createAnnotation({
+        docId,
+        page: 0,
+        spec: {
+          kind: "callout", rect, text: "확인 필요", fontSize: 12, color: [43, 47, 51], align: "center",
+          fillColor: [255, 244, 200], callout: [330, 90, rect.l, 145],
+        },
+      }),
+    );
+    const callout = made.annot!;
+    expect(callout.kind).toBe("callout");
+    act(() => useAnnotStore.getState().setPage(0, made.list.annots, made.list.docGeneration));
+    const at: Point = [(rect.l + rect.r) / 2, (rect.b + rect.t) / 2];
+    // the editor may commit and close again at once in jsdom (focus): record what was opened
+    const opened: unknown[] = [];
+    const stop = useAnnotStore.subscribe((s) => s.editing && opened.push(s.editing));
+    act(() => item(menuAt(at), "editAnnot").onSelect?.());
+    stop();
+    expect(useAppStore.getState().mode).toBe("annotate");
+    expect(opened).toContainEqual({ page: 0, id: callout.id });
+
+    act(() => item(menuAt(at), "defaultStyle").onSelect?.());
+    expect(useAnnotStore.getState().toolDefaults.callout).toMatchObject({ color: [43, 47, 51], fillColor: [255, 244, 200] });
   });
 });

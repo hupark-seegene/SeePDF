@@ -13,6 +13,9 @@ import { makeStampTool } from "./stamp";
 import { eraserTool } from "./eraser";
 import { selectTool } from "./select";
 import { snapshotTool } from "./snapshot";
+// v0.3 pkg4-annotations-stamps-objects
+import { polygonTool } from "./polygon";
+import { calloutTool } from "./callout";
 
 let registered = false;
 
@@ -36,6 +39,9 @@ export function registerTools(): void {
   toolController.register(makeStampTool("signature"));
   // v0.3 (V1): the marquee is the viewer's; the controller knows its cursor and Esc
   toolController.register(snapshotTool);
+  // v0.3 pkg4-annotations-stamps-objects
+  toolController.register(polygonTool);
+  toolController.register(calloutTool);
 }
 
 /** Test seam: lets a suite re-register after `toolController` was driven by another test. */

@@ -218,6 +218,8 @@ function Current({ entry }: { entry: DialogEntry }) {
             onPick={p.onPick as (builtin: string) => void}
             onChooseImage={p.onChooseImage as () => void}
             current={p.current as string | null | undefined}
+            // v0.3 pkg4 (T2): 내 도장 / 오늘 날짜
+            onPickCustom={p.onPickCustom as ((stamp: import("../ipc/types").CustomStamp) => void) | undefined}
           />
         </Suspense>
       );

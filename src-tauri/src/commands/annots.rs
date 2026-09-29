@@ -12,8 +12,8 @@ use crate::engine::registry::{self, MutateOpts};
 use crate::engine::types::CmdStatus;
 use crate::engine::{EngineHandle, Lane, Submit};
 use crate::ipc::types::{
-    Annot, AnnotList, AnnotPatch, AnnotResult, AnnotScanEvent, AnnotSpec, ChangeReason, JobId,
-    PageIndex, ViewNonce,
+    Annot, AnnotBatchResult, AnnotList, AnnotOp, AnnotPatch, AnnotResult, AnnotScanEvent,
+    AnnotSpec, ChangeReason, JobId, PageIndex, ViewNonce,
 };
 use crate::ipc::EngineError;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -110,24 +110,23 @@ pub async fn scan_annotations(
     Ok(token.id)
 }
 
+/// v0.3 A9: the author is 설정 ▸ 주석 작성자, read here on the command side (never taken
+/// from the webview) and written as `/T` on every new annotation, stamp and signature.
+/// v0.3 A2: `create_in` picks PDFium or lopdf per kind — still one undo step.
 #[tauri::command]
 pub async fn create_annotation(
+    app: tauri::AppHandle,
     engine: State<'_, EngineHandle>,
     doc_id: String,
     page: PageIndex,
     spec: AnnotSpec,
     id: Option<String>,
 ) -> Result<AnnotResult, EngineError> {
+    let author = crate::app::store::get_settings(&app).author;
     engine
         .call(Lane::Edit, "create_annotation", move |st| {
-            let new_id = registry::mutate(
-                st,
-                &doc_id,
-                MutateOpts::new("undo.annotCreate", ChangeReason::Edit)
-                    .page(page)
-                    .keeps_text(),
-                |doc| annot::create::create(doc, page, &spec, id),
-            )?;
+            let new_id =
+                annot::create::create_in(st, &doc_id, page, &spec, id, Some(author.as_str()))?;
             result_for(st, &doc_id, page, Some(new_id), None)
         })
         .await
@@ -143,14 +142,7 @@ pub async fn update_annotation(
 ) -> Result<AnnotResult, EngineError> {
     engine
         .call(Lane::Edit, "update_annotation", move |st| {
-            let previous = registry::mutate(
-                st,
-                &doc_id,
-                MutateOpts::new("undo.annotEdit", ChangeReason::Edit)
-                    .page(page)
-                    .keeps_text(),
-                |doc| annot::update::update(doc, page, &id, &patch),
-            )?;
+            let previous = annot::update::update_in(st, &doc_id, page, &id, &patch)?;
             result_for(st, &doc_id, page, Some(previous.id.clone()), Some(previous))
         })
         .await
@@ -174,6 +166,28 @@ pub async fn delete_annotations(
                 |doc| annot::delete(doc, page, &ids),
             )?;
             result_for(st, &doc_id, page, None, None)
+        })
+        .await
+}
+
+/// v0.3 A3 / A4 (pkg4): several edits of one gesture on `page` — a partial-eraser scrub's
+/// patches and deletes, a pen stroke's pressure bands — as **one** undo step
+/// (`engine::annot::update::batch_in`); all or nothing. Creates are written with 작성자 like
+/// `create_annotation`.
+#[tauri::command]
+pub async fn annotation_batch(
+    app: tauri::AppHandle,
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    ops: Vec<AnnotOp>,
+) -> Result<AnnotBatchResult, EngineError> {
+    let author = crate::app::store::get_settings(&app).author;
+    engine
+        .call(Lane::Edit, "annotation_batch", move |st| {
+            let created = annot::update::batch_in(st, &doc_id, page, &ops, Some(author.as_str()))?;
+            let list = result_for(st, &doc_id, page, None, None)?.list;
+            Ok(AnnotBatchResult { list, created })
         })
         .await
 }

@@ -492,6 +492,30 @@ impl AnnotRef<'_> {
         }
     }
 
+    /// v0.3 pkg4: `FPDFAnnot_GetVertices` → `/Vertices` of a Polygon / PolyLine as
+    /// `[x0, y0, x1, y1, …]` (empty for any other subtype).
+    pub fn vertices(&self) -> Vec<f32> {
+        // SAFETY: `self.handle` is live; a null buffer asks for the point count.
+        let count = unsafe {
+            self.bindings
+                .FPDFAnnot_GetVertices(self.handle, std::ptr::null_mut(), 0)
+        } as usize;
+        if count == 0 {
+            return Vec::new();
+        }
+        let mut buffer = vec![FS_POINTF { x: 0.0, y: 0.0 }; count];
+        // SAFETY: `buffer` holds exactly `count` points, what PDFium just asked for.
+        let written = unsafe {
+            self.bindings
+                .FPDFAnnot_GetVertices(self.handle, buffer.as_mut_ptr(), count as c_ulong)
+        } as usize;
+        buffer
+            .iter()
+            .take(written.min(count))
+            .flat_map(|p| [p.x, p.y])
+            .collect()
+    }
+
     /// `FPDFAnnot_CountAttachmentPoints` — the number of `/QuadPoints` quads.
     pub fn quad_count(&self) -> usize {
         // SAFETY: `self.handle` is live.

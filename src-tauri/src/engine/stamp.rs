@@ -87,7 +87,7 @@ pub fn add_stamp(
         PageStampSource::Image { path, width_pt } => {
             Some(image_page(st.pdfium, path, *width_pt, spec.opacity)?)
         }
-        PageStampSource::Text { .. } => None,
+        PageStampSource::Text { .. } | PageStampSource::Background { .. } => None,
     };
 
     let label = match spec.role {
@@ -160,7 +160,34 @@ pub fn add_stamp(
             let geom = registry::geom_from_page(p, &page)
                 .ok_or_else(|| EngineError::new(ErrorCode::Pdfium, "read page geometry"))?;
             let space = VisualSpace::new(geom.rotation, geom.crop);
+            // v0.3 T4: what this stamp adds is appended, then moved to index 0 when it goes
+            // behind the page content (뒤에 배치, or a background colour).
+            let before = raw::object::object_count(bindings, &page);
             match (&spec.source, &xobject) {
+                (PageStampSource::Background { color }, _) => {
+                    let alpha = (spec.opacity * 255.0).round().clamp(0.0, 255.0) as u8;
+                    let fill = PdfColor::new(color[0], color[1], color[2], alpha);
+                    let crop = geom.crop;
+                    let rect = PdfRect::new_from_values(crop.b, crop.l, crop.t, crop.r);
+                    let object =
+                        PdfPagePathObject::new_rect(document, rect, None, None, Some(fill))
+                            .ctx("background rect")?;
+                    page.objects_mut()
+                        .add_path_object(object)
+                        .ctx("add background")?;
+                    let index = raw::object::object_count(bindings, &page).saturating_sub(1);
+                    let role = [(ROLE_PARAM, spec.role.as_str())];
+                    raw::object::add_mark(
+                        bindings,
+                        document,
+                        &page,
+                        index,
+                        Mark {
+                            name: STAMP_MARK,
+                            params: &role,
+                        },
+                    )?;
+                }
                 (
                     PageStampSource::Text {
                         font_size_pt,
@@ -195,6 +222,12 @@ pub fn add_stamp(
                     )?;
                 }
                 (PageStampSource::Image { .. }, None) => unreachable!("image source prepared"),
+            }
+            let behind = spec.behind || matches!(spec.source, PageStampSource::Background { .. });
+            let after = raw::object::object_count(bindings, &page);
+            if behind && after > before {
+                let added: Vec<usize> = (before..after).collect();
+                crate::engine::objects::restack_raw(bindings, &page, &added, false)?;
             }
             page.regenerate_content().ctx("regenerate page content")?;
         }
@@ -246,6 +279,7 @@ fn validate(spec: &PageStampSpec) -> Result<(), EngineError> {
                 )));
             }
         }
+        PageStampSource::Background { .. } => {}
         PageStampSource::Image { path, width_pt } => {
             if !width_pt.is_finite() || *width_pt <= 0.0 || *width_pt > 14_400.0 {
                 return Err(EngineError::invalid(format!(
@@ -817,6 +851,7 @@ mod tests {
                     opacity: 1.0,
                     pages: PageSelection::All(crate::ipc::types::AllPages::All),
                     bates: Default::default(),
+                    behind: false,
                 };
                 let m = placement(&spec, &space, w, h);
                 for (u, v) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
@@ -850,6 +885,7 @@ mod tests {
             opacity: 1.0,
             pages: PageSelection::All(crate::ipc::types::AllPages::All),
             bates: Default::default(),
+            behind: false,
         };
         let m = placement(&spec, &space, 200.0, 40.0);
         let (x, y) = apply(m, 100.0, 20.0);

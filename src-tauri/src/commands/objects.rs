@@ -255,3 +255,22 @@ pub async fn ungroup_object(
         })
         .await
 }
+
+// v0.3 pkg4-annotations-stamps-objects (A6): 맨 앞으로 / 맨 뒤로.
+/// Moves `objectIds` to the front (`toFront: true`) or the back of the page's paint order.
+/// One undo step `undo.objectArrange`; `stale` on a generation mismatch.
+#[tauri::command]
+pub async fn restack_objects(
+    engine: State<'_, EngineHandle>,
+    doc_id: String,
+    page: PageIndex,
+    object_ids: Vec<ObjectId>,
+    expect_generation: DocGeneration,
+    to_front: bool,
+) -> Result<PageObjectList, EngineError> {
+    engine
+        .call(Lane::Edit, "restack_objects", move |st| {
+            objects::restack(st, &doc_id, page, &object_ids, expect_generation, to_front)
+        })
+        .await
+}

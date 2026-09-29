@@ -263,6 +263,8 @@ export function ThreadPopover({ ctx, annot }: { ctx: PageLayerContext; annot: An
 export interface TextDraft {
   page: number;
   rect: Rect;
+  /** v0.3 A2: a 설명선 draft — the leader line (`/CL`, tip first); absent = a plain text box */
+  callout?: number[];
 }
 
 /**
@@ -302,6 +304,18 @@ export function TextBoxEditor({
     const value = (ref.current?.value ?? "").replace(/\s+$/, "");
     if (annot) {
       if (value !== (annot.text ?? annot.contents)) patchAnnotation(annot.page, annot.id, { text: value, contents: value });
+    } else if (value && draft?.callout?.length) {
+      // v0.3 A2: 설명선 — the text box plus its leader, one annotation, one undo step
+      void createAnnotation(page, {
+        kind: "callout",
+        rect,
+        text: value,
+        fontSize: style.fontSize,
+        color: style.color,
+        align: style.align,
+        fillColor: style.fillColor,
+        callout: draft.callout,
+      });
     } else if (value) {
       void createAnnotation(page, {
         kind: "textbox",

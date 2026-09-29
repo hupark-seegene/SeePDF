@@ -120,6 +120,7 @@ fn annotated() -> TestDoc {
             fill_color: None,
             width: 2.0,
             opacity: 1.0,
+            dashed: false,
         }),
     );
     let trace = rects_of(&doc.doc_id, 0, "Trace-based");
@@ -191,13 +192,15 @@ fn summary_csv_one_row_per_annotation_in_page_order() {
             "수정한 날짜",
             "색상",
             "내용",
-            "인용 텍스트"
+            "인용 텍스트",
+            "ID",
+            "답글 대상"
         ]
     );
     let pages: Vec<&str> = records[1..].iter().map(|r| r[0].as_str()).collect();
     assert_eq!(pages, ["1", "1", "2", "2", "4"], "page order");
     for r in &records[1..] {
-        assert_eq!(r.len(), 9, "every row has every column: {r:?}");
+        assert_eq!(r.len(), 11, "every row has every column: {r:?}");
     }
     let highlight = records
         .iter()
@@ -291,4 +294,77 @@ fn summary_reads_third_party_annotations() {
         .find(|r| r.kind == "Highlight")
         .expect("a highlight row");
     assert!(!hl.quote.is_empty(), "highlighted words are quoted: {hl:?}");
+}
+
+/// v0.3 A7: a parent with two replies — the replies nest under it in Markdown / TXT (oldest
+/// first) and the CSV names their parent in `답글 대상`.
+#[test]
+fn summary_nests_reply_threads() {
+    let doc = open("tracemonkey.pdf");
+    let doc_id = doc.doc_id.clone();
+    let parent = with_state({
+        let doc_id = doc_id.clone();
+        move |st| {
+            registry::mutate(
+                st,
+                &doc_id,
+                MutateOpts::new("undo.annotCreate", ChangeReason::Edit).page(0),
+                |doc| {
+                    annot::create::create(
+                        doc,
+                        0,
+                        &AnnotSpec::Note(NoteSpec {
+                            at: [100.0, 700.0],
+                            color: [255, 200, 0],
+                            contents: "원문 메모".into(),
+                        }),
+                        None,
+                    )
+                },
+            )
+        }
+    })
+    .expect("parent");
+    for (text, who) in [("첫 번째 답글", "김철수"), ("두 번째 답글", "이영희")] {
+        let (doc_id, parent) = (doc_id.clone(), parent.clone());
+        with_state(move |st| annot::reply::reply(st, &doc_id, 0, &parent, text, Some(who)))
+            .expect("reply");
+        // Distinct creation seconds, so "oldest first" is observable.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+    }
+
+    let (md, count) = export(&doc_id, "threads.md", SummaryFormat::Md, None);
+    assert_eq!(count, 3);
+    let md = std::fs::read_to_string(md).unwrap();
+    let top = md.find("- **메모** · ").expect("parent item");
+    let first = md
+        .find("  - **메모** · 김철수")
+        .expect("first reply nested");
+    let second = md
+        .find("  - **메모** · 이영희")
+        .expect("second reply nested");
+    assert!(top < first && first < second, "{md}");
+    assert!(md.contains("    첫 번째 답글\n"), "{md}");
+
+    let (txt, _) = export(&doc_id, "threads.txt", SummaryFormat::Txt, None);
+    let txt = std::fs::read_to_string(txt).unwrap();
+    assert!(txt.contains("\n    \u{21B3} 메모 · 김철수"), "{txt}");
+
+    let (csv, _) = export(&doc_id, "threads.csv", SummaryFormat::Csv, None);
+    let text = String::from_utf8(std::fs::read(csv).unwrap()[3..].to_vec()).unwrap();
+    let records = parse_csv(&text);
+    assert_eq!(records.len(), 4);
+    let top_row = records
+        .iter()
+        .find(|r| r[7] == "원문 메모")
+        .expect("parent row");
+    assert_eq!(top_row[9], parent);
+    assert!(top_row[10].is_empty(), "a top-level row replies to nothing");
+    let replies: Vec<&Vec<String>> = records.iter().filter(|r| r[10] == parent).collect();
+    assert_eq!(
+        replies.len(),
+        2,
+        "both replies name their parent: {records:?}"
+    );
+    assert_eq!(replies[0][7], "첫 번째 답글");
 }

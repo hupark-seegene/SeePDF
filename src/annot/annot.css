@@ -472,3 +472,22 @@
   outline-offset: 1px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
+
+/* ---------------------------------------------------------------- v0.3 pkg4: quick popover (A5) */
+
+.annot-quick-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.annot-quick-row .slider {
+  flex: 1;
+}
+
+.annot-quick .annot-popover-foot .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}

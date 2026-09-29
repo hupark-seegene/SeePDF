@@ -26,6 +26,8 @@ import type {
 } from "./types";
 // v0.3 pkg7-ocr
 import type { OcrCapabilities, OrientationResult, Rotation } from "./types";
+// v0.3 pkg4-annotations-stamps-objects
+import type { AnnotBatchResult, AnnotOp, ImagePreview, LibraryImage } from "./types";
 
 export { parseTextLayer, parseRawPage };
 export type { RawPage, TextLayerView };
@@ -128,6 +130,9 @@ export const MUTATING_COMMANDS: ReadonlySet<string> = new Set([
   // at the v0.3 integration; `import_pages_from_doc` gates on its target (`DOC_ARG`)
   "create_form_field", "update_form_field", "delete_form_field", "import_form_data", "flatten_form",
   "import_pages_from_doc",
+  // v0.3 pkg4 (A6 맨 앞으로 / 맨 뒤로, A3 / A4 one-gesture annotation batches) — added at the v0.3
+  // integration
+  "restack_objects", "annotation_batch",
 ]);
 /** Commands whose changed document is not `docId` but another argument. */
 const DOC_ARG: Readonly<Record<string, string>> = {
@@ -1040,4 +1045,61 @@ export function importFormData(a: { docId: DocId; path: string; format?: FormDat
 /** 양식 평면화: every field drawn into its page, the form removed; one undo step. */
 export function flattenForm(a: { docId: DocId }): Promise<DocInfo> {
   return call("flatten_form", a, (mock) => mock.flattenForm(a));
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 pkg4-annotations-stamps-objects
+// ---------------------------------------------------------------------------
+
+/**
+ * E1 이미지 바꾸기: the image object `objectId` gets the pixels of `path` (PNG / JPEG); its matrix
+ * — position and size — is kept. One undo step `undo.objectEdit`; `stale` on a generation mismatch.
+ */
+export function replaceImage(a: {
+  docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration; path: string;
+}): Promise<ObjectsResult> {
+  return call("replace_image", a, (mock) => mock.replaceImage(a));
+}
+
+/** A6 맨 앞으로 / 맨 뒤로: moves `objectIds` in the paint order. One undo step `undo.objectArrange`. */
+export function restackObjects(a: {
+  docId: DocId; page: PageIndex; objectIds: ObjectId[]; expectGeneration: DocGeneration; toFront: boolean;
+}): Promise<ObjectsResult> {
+  return call("restack_objects", a, (mock) => mock.restackObjects(a));
+}
+
+/**
+ * T1: a picked PNG / JPEG's own size plus a small PNG (longest side ≤ `maxPx`) for a `blob:` URL.
+ * Decoded off the engine thread; the wire format is `u32 LE width, u32 LE height, PNG` (§11).
+ */
+export async function imagePreview(a: { path: string; maxPx?: number }): Promise<ImagePreview> {
+  const buffer = await call<ArrayBuffer | Uint8Array | number[]>("image_preview", a, (mock) => mock.imagePreview(a));
+  const bytes = buffer instanceof Uint8Array ? buffer : Array.isArray(buffer) ? Uint8Array.from(buffer) : new Uint8Array(buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(0, true), height: view.getUint32(4, true), png: bytes.slice(8) };
+}
+
+/** A `blob:` URL for a preview's PNG (`null` where the platform has no object URLs, e.g. jsdom). */
+export function previewUrl(preview: ImagePreview): string | null {
+  if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function" || preview.png.length === 0) return null;
+  return URL.createObjectURL(new Blob([preview.png as BlobPart], { type: "image/png" }));
+}
+
+/** T2 / T3: copies a picked image into 내 도장 (`stamp`) or 저장된 서명 (`signature`). */
+export function copyLibraryImage(a: { path: string; library: "stamp" | "signature" }): Promise<LibraryImage> {
+  return call("copy_library_image", a, (mock) => mock.copyLibraryImage(a));
+}
+
+/** T2 / T3: deletes a library copy when its entry is removed (anything else is left alone → `false`). */
+export function removeLibraryImage(a: { path: string; library: "stamp" | "signature" }): Promise<boolean> {
+  return call("remove_library_image", a, (mock) => mock.removeLibraryImage(a));
+}
+
+/**
+ * A3 / A4: several annotation edits of one gesture on `page` — a partial-eraser scrub's patches
+ * and deletes, a pen stroke's pressure bands — as ONE undo step (`undo.annotCreate` when all
+ * create, `undo.annotDelete` when all delete, else `undo.annotEdit`). All or nothing.
+ */
+export function annotationBatch(a: { docId: DocId; page: PageIndex; ops: AnnotOp[] }): Promise<AnnotBatchResult> {
+  return call("annotation_batch", a, (mock) => mock.annotationBatch(a));
 }
