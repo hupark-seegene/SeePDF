@@ -16,7 +16,9 @@
 //! is checked by reopening with PDFium and reading the link back by its `/NM`.
 //!
 //! Every command returns the page's fresh `AnnotResult` (like `create_annotation`), announces
-//! only that page and keeps the page text — a link has no appearance and touches no content.
+//! only that page and keeps the page text — a link touches no content. A link with a visible
+//! border (v0.3 P5) gets a small `/AP /N` that strokes it ([`border_stream`]), since PDFium
+//! draws no `/Border` of an appearance-less link; the border off removes it again.
 
 use super::{
     dest_array, encode_uri, finite, normalize_view, page_id, page_ids, refuse_encrypted, same_f32,
@@ -130,19 +132,111 @@ fn style_with_pdfium(
     let scratch = ScratchPage::open(doc, page)?;
     let index = annot::index_of(bindings, &scratch.page, id)?;
     let mut a = raw::annot::get(bindings, &scratch.page, index)?;
+    // `SetColor` refuses an annotation that has an `/AP`, so the old one goes first.
+    a.clear_ap();
     let ok = match border {
         Some(b) => {
-            a.set_border_width(b.width) && a.set_color(raw::annot::ColorKind::Stroke, b.color, 255)
+            a.set_border_width(b.width)
+                && a.set_color(raw::annot::ColorKind::Stroke, b.color, 255)
+                && a.rect()
+                    .is_some_and(|r| a.set_ap(&border_stream(r, &a.quads(), b)))
         }
         None => a.set_no_border(),
     };
     if !ok {
         return Err(EngineError::new(
             ErrorCode::Pdfium,
-            "FPDFAnnot_SetBorder / SetColor failed",
+            "FPDFAnnot_SetBorder / SetColor / SetAP failed",
         ));
     }
     Ok(())
+}
+
+/// The visible border of a link as an appearance stream, in page space (PDFium's
+/// `FPDFAnnot_SetAP` and [`border_ap`] both give the stream `/BBox = /Rect`): a `width`-wide
+/// stroke in the border colour just inside the click area — one box per quad for a link made
+/// from a text selection. PDFium draws no `/Border` of a link that has no `/AP`, so without this
+/// the border would show in Acrobat but not in SeePDF.
+fn border_stream(rect: Rect, quads: &[Rect], b: LinkBorder) -> String {
+    let [r, g, bl] = b.color.map(|c| c as f32 / 255.0);
+    let w = b.width;
+    let inside = |q: &Rect| {
+        q.l >= rect.l - 0.5 && q.r <= rect.r + 0.5 && q.b >= rect.b - 0.5 && q.t <= rect.t + 0.5
+    };
+    // Quads that no longer sit inside the click area (the link was moved) are ignored.
+    let boxes: Vec<Rect> = if !quads.is_empty() && quads.iter().all(inside) {
+        quads.to_vec()
+    } else {
+        vec![rect]
+    };
+    let mut out = format!("q {r:.3} {g:.3} {bl:.3} RG {w:.2} w 0 J 0 j []0 d\n");
+    for q in boxes {
+        let inset = (w / 2.0).min(q.width() / 2.0).min(q.height() / 2.0);
+        out.push_str(&format!(
+            "{:.2} {:.2} {:.2} {:.2} re S\n",
+            q.l + inset,
+            q.b + inset,
+            (q.width() - 2.0 * inset).max(0.0),
+            (q.height() - 2.0 * inset).max(0.0),
+        ));
+    }
+    out.push_str("Q\n");
+    out
+}
+
+/// lopdf: what a link's `/AP` becomes after an edit — `Some(stream)` to write, `None` to
+/// remove, from the edited dictionary's `/Rect`, `/QuadPoints`, `/Border` and `/C`.
+fn border_ap(doc: &mut Document, dict: &Dictionary) -> Option<Object> {
+    let nums = |key: &[u8]| -> Vec<f32> {
+        dict.get(key)
+            .ok()
+            .and_then(|o| o.as_array().ok())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| {
+                        v.as_float()
+                            .ok()
+                            .or_else(|| v.as_i64().ok().map(|i| i as f32))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let border = nums(b"Border");
+    let width = border.get(2).copied().filter(|w| *w > 0.0)?;
+    let color = nums(b"C");
+    let color: [u8; 3] = match color.as_slice() {
+        [r, g, b] => [r, g, b].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
+        _ => [0, 0, 0],
+    };
+    let r = nums(b"Rect");
+    let [l, b, rr, t] = <[f32; 4]>::try_from(r).ok()?;
+    let rect = Rect::new(l.min(rr), b.min(t), l.max(rr), b.max(t));
+    let quads: Vec<Rect> = nums(b"QuadPoints")
+        .chunks_exact(8)
+        .map(|q| {
+            let xs = [q[0], q[2], q[4], q[6]];
+            let ys = [q[1], q[3], q[5], q[7]];
+            Rect::new(
+                xs.iter().copied().fold(f32::MAX, f32::min),
+                ys.iter().copied().fold(f32::MAX, f32::min),
+                xs.iter().copied().fold(f32::MIN, f32::max),
+                ys.iter().copied().fold(f32::MIN, f32::max),
+            )
+        })
+        .collect();
+    let content = border_stream(rect, &quads, LinkBorder { width, color });
+    let mut form = Dictionary::new();
+    form.set("Type", Object::Name(b"XObject".to_vec()));
+    form.set("Subtype", Object::Name(b"Form".to_vec()));
+    form.set("BBox", rect_object(rect));
+    let stream = doc.add_object(Object::Stream(lopdf::Stream::new(
+        form,
+        content.into_bytes(),
+    )));
+    let mut ap = Dictionary::new();
+    ap.set("N", Object::Reference(stream));
+    Some(Object::Dictionary(ap))
 }
 
 fn border_objects(border: Option<LinkBorder>) -> (Object, Option<Object>) {
@@ -237,6 +331,16 @@ pub fn update_link_styled(
                         ErrorCode::Pdfium,
                         "FPDFAnnot_SetRect failed",
                     ));
+                }
+                // A visible border follows the click area.
+                if restyle.is_none() {
+                    let width = a.border_width().unwrap_or(0.0);
+                    if let (true, Some((color, _))) =
+                        (width > 0.0, a.color(raw::annot::ColorKind::Stroke))
+                    {
+                        a.clear_ap();
+                        a.set_ap(&border_stream(r, &a.quads(), LinkBorder { width, color }));
+                    }
                 }
             }
             if let Some(url) = &url {
@@ -467,6 +571,9 @@ fn add_link(
         Object::string_literal(now.as_bytes().to_vec()),
     );
     dict.set("M", Object::string_literal(now.as_bytes().to_vec()));
+    if let Some(ap) = border_ap(&mut doc, &dict) {
+        dict.set("AP", ap);
+    }
     let annot_id = doc.add_object(Object::Dictionary(dict));
 
     let existing = doc
@@ -577,15 +684,27 @@ fn rewrite_link(
         if name.as_deref() != Some(id) {
             continue;
         }
+        // The edited dictionary, and its `/AP`: rebuilt when the border changed, or when the
+        // click area of a bordered link moved; left alone otherwise (a third-party appearance).
+        let mut edited = dict.clone();
+        edit(&mut edited);
+        if restyle.is_some() || rect.is_some() {
+            match border_ap(&mut doc, &edited) {
+                Some(ap) => edited.set("AP", ap),
+                None if restyle.is_some() => {
+                    edited.remove(b"AP");
+                }
+                None => {}
+            }
+        }
         match indirect {
-            Some(r) => edit(
-                doc.get_dictionary_mut(r)
-                    .map_err(|e| crate::engine::save::lopdf_error("link", e))?,
-            ),
+            Some(r) => {
+                doc.objects.insert(r, Object::Dictionary(edited));
+            }
             None => {
                 let annots = inline_annots_mut(&mut doc, page_obj)?;
-                if let Some(Object::Dictionary(d)) = annots.get_mut(index) {
-                    edit(d);
+                if let Some(slot) = annots.get_mut(index) {
+                    *slot = Object::Dictionary(edited);
                 }
             }
         }

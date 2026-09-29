@@ -1706,7 +1706,10 @@ export const mock = {
     const name = a.patch.name?.trim();
     if (name !== undefined) {
       if (!name || name.includes(".")) throw err("invalidArgument", "a field needs a name without '.'");
-      if (d.fields.some((f) => f !== field && f.name === name && f.name !== field.name)) throw err("invalidArgument", `a field named '${name}' already exists`);
+      const taken = d.fields.filter((f) => f !== field && f.name === name && f.name !== field.name);
+      // a radio group renamed after another radio group joins it (the engine merges the groups)
+      const joins = field.type === "radio" && taken.every((f) => f.type === "radio");
+      if (taken.length && !joins) throw err("invalidArgument", `a field named '${name}' already exists`);
     }
     return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.formFieldEdit" }, () => {
       const group = d.fields.filter((f) => f.name === field.name);

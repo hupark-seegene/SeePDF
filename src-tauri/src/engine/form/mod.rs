@@ -99,7 +99,55 @@ pub fn list(doc: &mut OpenDoc<'_>, page: Option<PageIndex>) -> Result<Vec<FormFi
             Some(&extras),
         ));
     }
+    fix_button_values(&mut out, &extras);
     Ok(out)
+}
+
+/// A checkbox / radio field's value is the export value of its widget that is on, or `Off`
+/// (what `FPDFAnnot_GetFormFieldValue` reports). PDFium decodes that export value — a name —
+/// as PDFDocEncoding, so a Hangul one (`여`, every UI-made `선택 N`) comes back as mojibake;
+/// the export value read with lopdf ([`extras::WidgetExtra::export`]) replaces it. A field
+/// with a widget lopdf could not see (an encrypted file, a widget on a page not listed) keeps
+/// PDFium's value.
+fn fix_button_values(fields: &mut [FormField], extras: &Extras) {
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (i, f) in fields.iter().enumerate() {
+        if matches!(f.field_type, FieldType::Checkbox | FieldType::Radio) {
+            groups.entry(f.name.clone()).or_default().push(i);
+        }
+    }
+    for members in groups.into_values() {
+        let exports: Option<Vec<String>> = members
+            .iter()
+            .map(|&i| {
+                let f = &fields[i];
+                extras.get(&f.name, f.rect)?.export.clone()
+            })
+            .collect();
+        let Some(exports) = exports else {
+            continue;
+        };
+        let on = members
+            .iter()
+            .zip(&exports)
+            .find(|(&i, _)| fields[i].checked == Some(true))
+            .map(|(_, e)| e.clone());
+        let value = match on {
+            Some(export) => export,
+            // None on here; PDFium saying otherwise means the button that is on is on a page
+            // this listing does not cover — its (possibly garbled) value is the best there is.
+            None if members
+                .iter()
+                .all(|&i| matches!(fields[i].value.as_deref(), None | Some("") | Some("Off"))) =>
+            {
+                "Off".to_string()
+            }
+            None => continue,
+        };
+        for &i in &members {
+            fields[i].value = Some(value.clone());
+        }
+    }
 }
 
 /// The widgets of one loaded page (a page of the open document or of a scratch copy).
@@ -223,9 +271,19 @@ pub fn set_value(
     let form = writable_form(doc)?;
     let bindings = doc.bindings();
     let scratch = ScratchPage::open_with_form(doc, page_index)?;
-    let outcome = write_on_page(bindings, form, &scratch.page, page_index, index, value)?;
+    let mut outcome = write_on_page(bindings, form, &scratch.page, page_index, index, value)?;
     drop(scratch);
     doc.annots.remove(&page_index);
+    // A button that is now on reports its export value decoded like `list` does.
+    if outcome.field.checked == Some(true) {
+        let f = &outcome.field;
+        if let Some(export) = extras::of(doc)
+            .get(&f.name, f.rect)
+            .and_then(|x| x.export.clone())
+        {
+            outcome.field.value = Some(export);
+        }
+    }
     Ok(outcome)
 }
 
@@ -604,7 +662,9 @@ pub fn field_at(
 /// * a list box selects the options its `/DV` names, or none;
 /// * a checkbox is on only when its `/DV` names its on-state;
 /// * a radio group turns on the button whose export value its `/DV` names, and is switched
-///   off entirely when it has no `/DV` (or `/DV /Off`).
+///   off entirely when it has no `/DV` (or `/DV /Off`) — except on an encrypted document,
+///   where switching a group off (a lopdf rewrite) is impossible and radio groups are left as
+///   they are ([`can_clear_radios`]).
 ///
 /// Returns how many fields were changed.
 pub fn reset_form(st: &mut EngineState<'_>, doc_id: &str) -> Result<usize, EngineError> {
@@ -612,7 +672,15 @@ pub fn reset_form(st: &mut EngineState<'_>, doc_id: &str) -> Result<usize, Engin
     write_fields(st, doc_id, "undo.formReset", writes)
 }
 
+/// Whether [`FieldWrite::ClearRadio`] can be applied: it is a lopdf rewrite, which an encrypted
+/// document refuses. Where it cannot, reset and import leave radio groups as they are and still
+/// apply every other write (the pre-v0.3 behaviour) instead of failing the whole batch.
+pub(crate) fn can_clear_radios(st: &EngineState<'_>, doc_id: &str) -> bool {
+    crate::engine::structure::refuse_encrypted(st, doc_id).is_ok()
+}
+
 fn reset_writes(st: &mut EngineState<'_>, doc_id: &str) -> Result<Vec<FieldWrite>, EngineError> {
+    let can_clear = can_clear_radios(st, doc_id);
     let doc = st.doc_mut(doc_id)?;
     let extras = extras::of(doc);
     let fields = list(doc, None)?;
@@ -701,6 +769,7 @@ fn reset_writes(st: &mut EngineState<'_>, doc_id: &str) -> Result<Vec<FieldWrite
                         value: FieldValue::Checked { checked: true },
                     }),
                     Some(_) => {}
+                    None if !can_clear => {}
                     None => {
                         if let Some(on) = group.iter().find(|f| f.checked.unwrap_or(false)) {
                             writes.push(FieldWrite::ClearRadio {

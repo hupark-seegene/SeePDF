@@ -410,7 +410,9 @@ flatten_form(a: { docId: DocId }): Promise<DocInfo>                             
   `/Ff` required 2 / multiline 4096 / combo 131072, `/MaxLen`, `/Opt`, `/DA (/Helv 0 Tf 0 g)` or `/ZaDb` for
   toggles, `/F 4`, `/P`, a grey `/MK /BC` border and a basic `/AP`); a radio button is a kid widget of a group
   field (`/Ff 49152`) whose on-state is its export value — a button named after an existing radio group joins
-  it. `/AcroForm` gains `/Fields`, `/DA` and `/DR /Font` (`/Helv`, `/ZaDb`) as needed; a document that had no
+  it (an export value the group already has is renumbered: `선택 1` → `선택 2`). `update_form_field` renaming a
+  radio group after another radio group **merges** them: its buttons join that group (clashing export values
+  renumbered), the target keeps its value. `/AcroForm` gains `/Fields`, `/DA` and `/DR /Font` (`/Helv`, `/ZaDb`) as needed; a document that had no
   form gets its form handle on the reload. `field` in the result is the created / edited field (PDFium's
   listing). Errors: `invalidArgument` for an empty name or one with `.`, a name another root field has (except a
   radio joining its group), a rect under 4 × 4 pt, a page out of range, a combo without choices;
@@ -419,11 +421,15 @@ flatten_form(a: { docId: DocId }): Promise<DocInfo>                             
 * **Data**: CSV is UTF-8 with a BOM, header `name,value`, one row per field (a multi-select list: one row per
   selected option), RFC 4180 quoting; XFDF is `<xfdf><fields><field name><value>` with dotted names nested
   (import accepts nested and dotted). Values are what `list_form_fields` reports (a checkbox / radio: its state
-  name, `Off` or the export value); push buttons and signatures are skipped. Import writes every matching field
+  name, `Off` or the export value — read with lopdf as UTF-8, so a Hangul export value such as `여` or `선택2`
+  is written and matched exactly as typed; `FormField.value` of a checkbox / radio reports it the same way,
+  where PDFium's own reading garbles it); push buttons and signatures are skipped. Import writes every matching field
   in **one** undo step; `unknown` lists names with no field. `format` absent = sniffed (`<` first → XFDF).
 * **`reset_form`** (changed in v0.3): every writable field goes back to its **`/DV`** — text / combo to the `/DV`
   string or empty, a list to the options `/DV` names, a checkbox on only when `/DV` names its on-state, a radio
-  group to the button whose export value `/DV` names, or **switched off** when it has none. `/DV` and `/MaxLen`
+  group to the button whose export value `/DV` names, or **switched off** when it has none — except on an
+  encrypted document, where no group can be switched off (a lopdf rewrite): radio groups are then left as they
+  are and every other field is still reset (import likewise skips a radio set to `Off`). `/DV` and `/MaxLen`
   are read with lopdf from the bytes the document was loaded from (matched by field name + rect).
 * **`set_form_field_value { checked: false }` on a radio button that is on** (v0.3) switches its whole group off
   (`/V /Off`, every kid `/AS /Off`, a lopdf rewrite after the form-fill environment wrote the rest) instead of
@@ -1241,6 +1247,9 @@ update_link(a: { docId; page; id; rect?; target?; border?: LinkBorder }): Promis
 * `border` — `/Border [0 0 w]` and `/C` (0…1 per channel); `width` 0…12 pt, `0` writes `/Border [0 0 0]` and
   drops `/C`. Absent on `create_link` = invisible (as before); absent on `update_link` = unchanged; a border-only
   `update_link` is valid (it no longer needs a rect or a target). Read back as `Annot.borderWidth` / `color`.
+  A visible border is also written as a small `/AP /N` (a `w`-wide stroke in `/C` inside the click area, one box
+  per quad) because PDFium — SeePDF's own view — draws no `/Border` of a link without an appearance; the stream is
+  rebuilt when a bordered link moves and removed with `width: 0` (verification round 1).
 * `set_outline` (v0.3) keeps what the contract cannot carry for **untouched nodes**: the old items are walked
   in document order beside PDFium's reading of them, and a new node whose title, page, view and url equal an old
   item's gets that item's original target object back (a named `/Dest`, a GoTo `/A` with a named `/D`, or any

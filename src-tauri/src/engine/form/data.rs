@@ -8,8 +8,10 @@
 //! Values are what `list_form_fields` reports (a checkbox / radio group: its state name —
 //! `Off` or the export value). Push buttons and signature fields have no value and are skipped.
 //! Import writes every matching field through [`super::write_fields`] as **one** undo step
-//! `undo.formImport` (a radio group set to `Off` is switched off, like 값 지우기); names that
-//! match no field are returned in `unknown`.
+//! `undo.formImport` (a radio group set to `Off` is switched off, like 값 지우기 — except on an
+//! encrypted document, where the group is left as it is); names that match no field are
+//! returned in `unknown`. Checkbox / radio values are the export values read with lopdf, so a
+//! Hangul export value is written and matched exactly as typed.
 
 use super::{list, write_fields, FieldWrite};
 use crate::engine::pages::write_atomic;
@@ -394,22 +396,31 @@ fn writes_for(
     doc_id: &str,
     values: &[(String, Vec<String>)],
 ) -> Result<(Vec<FieldWrite>, Vec<String>), EngineError> {
+    let can_clear = super::can_clear_radios(st, doc_id);
     let doc = st.doc_mut(doc_id)?;
     let fields = list(doc, None)?;
     let bindings = doc.bindings();
     let form = doc.form_handle();
+    let extras = super::extras::of(doc);
+    // Each button's export value: read with lopdf (UTF-8, like the values `list` reports and
+    // export writes); PDFium's — which garbles a Hangul one — only where lopdf has none (an
+    // encrypted file).
     let mut exports: BTreeMap<(PageIndex, u32), String> = BTreeMap::new();
-    if let Some(form) = form {
-        for f in fields
-            .iter()
-            .filter(|f| matches!(f.field_type, FieldType::Radio | FieldType::Checkbox))
-        {
-            let page = doc.page(f.page)?;
-            if let Ok(a) = raw::annot::get(bindings, page, f.index as usize) {
-                if let Some(e) = a.form_field_export_value(form) {
-                    exports.insert((f.page, f.index), e);
-                }
-            }
+    for f in fields
+        .iter()
+        .filter(|f| matches!(f.field_type, FieldType::Radio | FieldType::Checkbox))
+    {
+        let export = match extras.get(&f.name, f.rect).and_then(|x| x.export.clone()) {
+            Some(e) => Some(e),
+            None => match form {
+                Some(form) => raw::annot::get(bindings, doc.page(f.page)?, f.index as usize)
+                    .ok()
+                    .and_then(|a| a.form_field_export_value(form)),
+                None => None,
+            },
+        };
+        if let Some(e) = export {
+            exports.insert((f.page, f.index), e);
         }
     }
     let mut writes = Vec::new();
@@ -472,6 +483,10 @@ fn writes_for(
             }
             FieldType::Radio => {
                 if off {
+                    // An encrypted document cannot have a group switched off: left as it is.
+                    if !can_clear {
+                        continue;
+                    }
                     if let Some(on) = matching.iter().find(|f| f.checked.unwrap_or(false)) {
                         writes.push(FieldWrite::ClearRadio {
                             page: on.page,

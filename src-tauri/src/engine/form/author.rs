@@ -12,7 +12,7 @@
 //! |---|---|
 //! | text | one widget + field: `/FT /Tx`, `/Ff` (required 2, multiline 4096), `/MaxLen`, `/DA (/Helv 0 Tf 0 g)` (auto size) |
 //! | checkbox | `/FT /Btn`, `/V /Off`, `/AS /Off`, `/MK /CA (4)`, `/AP /N << /Yes /Off >>` — a ZapfDingbats check |
-//! | radio | a group field `/FT /Btn /Ff 49152` (radio + no-toggle-to-off) with one widget kid per button whose on-state is its export value (`options[0]`, else `선택N`); a button named after an existing group joins it |
+//! | radio | a group field `/FT /Btn /Ff 49152` (radio + no-toggle-to-off) with one widget kid per button whose on-state is its export value (`options[0]`, else `선택N`, renumbered if the group already has it); a button named after an existing group joins it, and so does a group renamed after one (`update_form_field`) |
 //! | combo | `/FT /Ch /Ff 131072`, `/Opt [...]` |
 //! | signature | `/FT /Sig` |
 //!
@@ -22,6 +22,7 @@
 //! (`/Helv`) and ZapfDingbats (`/ZaDb`) when it lacks them. Korean typed into a `/Helv` field is
 //! drawn by PDFium's font substitution when the value is committed.
 
+use super::extras;
 use crate::engine::registry::{self, MutateOpts};
 use crate::engine::structure::{self, refuse_encrypted};
 use crate::engine::types::EngineState;
@@ -429,6 +430,9 @@ fn write_new_field(
             };
             let kids = radio_kid_count(&doc, group);
             let export = export.unwrap_or_else(|| format!("선택{}", kids + 1));
+            // Two buttons with one export value would switch on and off together: a button
+            // joining a group gets a state no other button of the group has.
+            let export = unique_state(&group_states(&doc, group), &export);
             let on = appearance(&mut doc, w, h, glyph(w, h, 'l'), true);
             let off = appearance(&mut doc, w, h, border(w, h), false);
             widget.set("AP", state_ap(export.as_bytes(), on, off));
@@ -454,6 +458,203 @@ fn write_new_field(
         set_fields_array(&mut doc, af, fields)?;
     }
     structure::write(doc)
+}
+
+/// The widget ids under a field: its `/Kids`, or the field itself when it is also its only
+/// widget (no `/Kids`).
+fn kids_of(doc: &Document, field: ObjectId) -> Vec<ObjectId> {
+    let kids = doc
+        .get_dictionary(field)
+        .ok()
+        .and_then(|g| g.get(b"Kids").ok())
+        .and_then(|k| doc.dereference(k).ok())
+        .and_then(|(_, k)| k.as_array().ok().cloned());
+    match kids {
+        Some(kids) => kids.iter().filter_map(|o| o.as_reference().ok()).collect(),
+        None => vec![field],
+    }
+}
+
+/// A widget's on-state: its `/AP /N` key other than `Off`.
+fn on_state_of(doc: &Document, widget: ObjectId) -> Option<Vec<u8>> {
+    let w = doc.get_dictionary(widget).ok()?;
+    let (_, ap) = doc.dereference(w.get(b"AP").ok()?).ok()?;
+    let (_, normal) = doc.dereference(ap.as_dict().ok()?.get(b"N").ok()?).ok()?;
+    normal
+        .as_dict()
+        .ok()?
+        .iter()
+        .map(|(k, _)| k.clone())
+        .find(|k| k.as_slice() != b"Off")
+}
+
+/// The on-states of the buttons of a radio group.
+fn group_states(doc: &Document, group: ObjectId) -> Vec<Vec<u8>> {
+    kids_of(doc, group)
+        .into_iter()
+        .filter_map(|k| on_state_of(doc, k))
+        .collect()
+}
+
+/// `wanted`, or — when a button of the group already has that state — the same text with the
+/// next free number (`선택 2` → `선택 3`, `예` → `예 2`).
+fn unique_state(taken: &[Vec<u8>], wanted: &str) -> String {
+    let free = |s: &str| !taken.iter().any(|t| t.as_slice() == s.as_bytes());
+    if free(wanted) {
+        return wanted.to_string();
+    }
+    let digits = wanted
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+    let (base, start) = if digits > 0 {
+        let at = wanted.len() - digits;
+        (
+            wanted[..at].to_string(),
+            wanted[at..].parse::<u64>().unwrap_or(1) + 1,
+        )
+    } else {
+        (format!("{wanted} "), 2)
+    };
+    (start..)
+        .map(|n| format!("{base}{n}"))
+        .find(|s| free(s))
+        .expect("an unbounded range has a free number")
+}
+
+/// Renames a widget's on-state `from` to `to` in `/AP /N`, `/AP /D` and `/AS`, wherever those
+/// dictionaries live (inline or indirect).
+fn rename_state(doc: &mut Document, widget: ObjectId, from: &[u8], to: &[u8]) {
+    let rename = |states: &mut Dictionary| {
+        if let Some(stream) = states.remove(from) {
+            states.set(to.to_vec(), stream);
+        }
+    };
+    let ap = doc
+        .get_dictionary(widget)
+        .ok()
+        .and_then(|w| w.get(b"AP").ok().cloned());
+    let (ap_ref, mut ap) = match ap {
+        Some(Object::Reference(r)) => match doc.get_dictionary(r) {
+            Ok(d) => (Some(r), d.clone()),
+            Err(_) => return,
+        },
+        Some(Object::Dictionary(d)) => (None, d),
+        _ => return,
+    };
+    for key in [&b"N"[..], b"D"] {
+        match ap.get(key).ok().cloned() {
+            Some(Object::Reference(r)) => {
+                if let Ok(states) = doc.get_dictionary_mut(r) {
+                    rename(states);
+                }
+            }
+            Some(Object::Dictionary(mut states)) => {
+                rename(&mut states);
+                ap.set(key.to_vec(), Object::Dictionary(states));
+            }
+            _ => {}
+        }
+    }
+    match ap_ref {
+        Some(r) => {
+            doc.objects.insert(r, Object::Dictionary(ap));
+        }
+        None => {
+            if let Ok(w) = doc.get_dictionary_mut(widget) {
+                w.set("AP", Object::Dictionary(ap));
+            }
+        }
+    }
+    if let Ok(w) = doc.get_dictionary_mut(widget) {
+        if w.get(b"AS").and_then(Object::as_name).ok() == Some(from) {
+            w.set("AS", Object::Name(to.to_vec()));
+        }
+    }
+}
+
+fn is_radio_group(doc: &Document, field: ObjectId) -> bool {
+    doc.get_dictionary(field)
+        .ok()
+        .filter(|d| !d.has(b"Opt"))
+        .and_then(|d| d.get(b"Ff").ok().and_then(|f| f.as_i64().ok()))
+        .is_some_and(|ff| ff & FF_RADIO != 0)
+}
+
+/// 필드 속성's 이름 naming another radio group: the buttons of radio group `src` join `dst`
+/// (a clashing export value is renumbered, [`unique_state`]) and `src` goes. `dst` keeps its
+/// value; when it has none, the button that was on in `src` stays on.
+fn merge_radio_groups(
+    doc: &mut Document,
+    af: ObjectId,
+    src: ObjectId,
+    dst: ObjectId,
+) -> Result<(), EngineError> {
+    let mut taken = group_states(doc, dst);
+    let dst_value = doc
+        .get_dictionary(dst)
+        .ok()
+        .and_then(|d| d.get(b"V").ok())
+        .and_then(|v| v.as_name().ok())
+        .filter(|v| *v != b"Off")
+        .map(<[u8]>::to_vec);
+    let mut src_value = doc
+        .get_dictionary(src)
+        .ok()
+        .and_then(|d| d.get(b"V").ok())
+        .and_then(|v| v.as_name().ok())
+        .filter(|v| *v != b"Off")
+        .map(<[u8]>::to_vec);
+    let widgets = kids_of(doc, src);
+    let merged_widget = widgets == [src];
+    for &w in &widgets {
+        if let Some(state) = on_state_of(doc, w) {
+            let wanted = extras::name_text(&state);
+            let new = unique_state(&taken, &wanted).into_bytes();
+            if new != state {
+                rename_state(doc, w, &state, &new);
+                if src_value.as_deref() == Some(state.as_slice()) {
+                    src_value = Some(new.clone());
+                }
+            }
+            taken.push(new.clone());
+            let keep_on = dst_value.is_none() && src_value.as_deref() == Some(new.as_slice());
+            if !keep_on {
+                if let Ok(d) = doc.get_dictionary_mut(w) {
+                    d.set("AS", Object::Name(b"Off".to_vec()));
+                }
+            }
+        }
+        if let Ok(d) = doc.get_dictionary_mut(w) {
+            d.set("Parent", Object::Reference(dst));
+            if merged_widget {
+                // A field-and-widget in one dictionary becomes a plain widget kid.
+                for key in [&b"FT"[..], b"T", b"Ff", b"V", b"DV", b"TU", b"TM"] {
+                    d.remove(key);
+                }
+            }
+        }
+    }
+    let mut kids: Vec<Object> = kids_of(doc, dst)
+        .into_iter()
+        .map(Object::Reference)
+        .collect();
+    kids.extend(widgets.iter().copied().map(Object::Reference));
+    let dst_dict = doc.get_dictionary_mut(dst).map_err(lopdf_err("field"))?;
+    dst_dict.set("Kids", Object::Array(kids));
+    if dst_value.is_none() {
+        if let Some(v) = src_value {
+            dst_dict.set("V", Object::Name(v));
+        }
+    }
+    let mut fields = fields_array(doc, af);
+    fields.retain(|o| o.as_reference().ok() != Some(src));
+    set_fields_array(doc, af, fields)?;
+    if !merged_widget {
+        doc.objects.remove(&src);
+    }
+    Ok(())
 }
 
 fn radio_kid_count(doc: &Document, group: ObjectId) -> usize {
@@ -680,7 +881,8 @@ pub fn delete_field(
 
 /// `update_form_field` (v0.3 F1): 이름, 선택 항목, 필수, 최대 글자 수 of the field the widget at
 /// `(page, index)` belongs to. One undo step `undo.formFieldEdit`. A new name must not be
-/// taken by another root field.
+/// taken by another root field — unless both are radio groups: then the buttons of this group
+/// join that one ([`merge_radio_groups`]).
 pub fn update_field(
     st: &mut EngineState<'_>,
     doc_id: &str,
@@ -701,7 +903,8 @@ pub fn update_field(
             let mut doc = structure::load(bytes)?;
             let pages = structure::page_ids(&doc);
             let widget = widget_id(&doc, &pages, page, index)?;
-            let field = field_of(&doc, widget);
+            let mut field = field_of(&doc, widget);
+            let mut renamed = false;
             if let Some(name) = &new_name {
                 let af = acroform(&mut doc)?;
                 let is_root = doc
@@ -710,14 +913,21 @@ pub fn update_field(
                     .unwrap_or(true);
                 if let Some(other) = root_named(&doc, af, name) {
                     if other != field && is_root {
-                        return Err(EngineError::invalid(format!(
-                            "a field named '{name}' already exists"
-                        )));
+                        // A radio group renamed after another radio group joins it — the one
+                        // way 필드 속성 has to put buttons drawn apart into one group.
+                        if !(is_radio_group(&doc, field) && is_radio_group(&doc, other)) {
+                            return Err(EngineError::invalid(format!(
+                                "a field named '{name}' already exists"
+                            )));
+                        }
+                        merge_radio_groups(&mut doc, af, field, other)?;
+                        field = other;
+                        renamed = true;
                     }
                 }
             }
             let dict = doc.get_dictionary_mut(field).map_err(lopdf_err("field"))?;
-            if let Some(name) = &new_name {
+            if let Some(name) = new_name.as_ref().filter(|_| !renamed) {
                 dict.set("T", crate::engine::save::pdf_text_string(name));
             }
             if let Some(options) = &patch.options {

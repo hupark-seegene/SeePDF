@@ -234,6 +234,8 @@ function AuthorSurface({ ctx, type }: { ctx: PageLayerContext; type: NewFieldTyp
     e.stopPropagation();
     e.preventDefault();
     const p = local(e);
+    // Alt (⌥) while drawing a radio button starts a new group instead of joining the selected one.
+    const newGroup = e.altKey;
     const start = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
     setDraft(start);
     let last = start;
@@ -253,7 +255,7 @@ function AuthorSurface({ ctx, type }: { ctx: PageLayerContext; type: NewFieldTyp
         const [w, h] = DEFAULT_SIZE_PT[type];
         rect = { l: a0, b: b0 - h, r: a0 + w, t: b0 };
       }
-      void import("./formActions").then((m) => m.createFieldAt(ctx.index, rect, type));
+      void import("./formActions").then((m) => m.createFieldAt(ctx.index, rect, type, { newGroup }));
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);

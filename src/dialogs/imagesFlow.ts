@@ -4,7 +4,7 @@
  *
  *  * 파일 ▸ 이미지로 PDF 만들기… (⋯ menu, native 파일 menu): an image picker, then the dialog;
  *  * images dropped on the window or the welcome screen: the dialog (not `open_document`, which
- *    would fail on a JPEG);
+ *    would fail on a JPEG); PDFs dropped with them open in new windows;
  *  * 파일 ▸ 클립보드에서 새로 만들기: the system clipboard's image → a temp PNG → a one-page document;
  *  * 편집 ⌘V with an image on the system clipboard: see `edit/actions.ts` `pasteSystemImage`.
  *
@@ -38,15 +38,33 @@ export async function imagesToPdfFlow(): Promise<void> {
   openDialog("imagesToPdf", { paths: picked.filter(isImagePath) });
 }
 
-/** Dropped files: images go to the dialog, everything else opens as before. */
+/**
+ * Dropped files: images go to the dialog, everything else opens as before. A drop that mixes
+ * both opens the other files (the PDFs) each in a new window — this window's document is what
+ * 만들기 replaces — and says so, rather than dropping them silently.
+ */
 export async function routeDroppedPaths(paths: string[]): Promise<void> {
   const images = paths.filter(isImagePath);
   const others = paths.filter((p) => !isImagePath(p));
-  if (images.length) openDialog("imagesToPdf", { paths: images });
-  if (others.length && !images.length) {
-    const { openPaths } = await import("./flows");
-    await openPaths(others);
+  if (!images.length) {
+    if (others.length) {
+      const { openPaths } = await import("./flows");
+      await openPaths(others);
+    }
+    return;
   }
+  openDialog("imagesToPdf", { paths: images });
+  if (!others.length) return;
+  let opened = 0;
+  for (const path of others) {
+    try {
+      await api.openInNewWindow({ path });
+      opened++;
+    } catch {
+      /* the new window reports its own open error */
+    }
+  }
+  if (opened) toast("imagesToPdf.othersOpened", { count: opened }, { tone: "info" });
 }
 
 export interface ImagesOptions {

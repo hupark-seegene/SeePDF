@@ -12,6 +12,7 @@ import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { useContextMenuStore } from "../app/contextMenuStore";
 import { useDialogStore } from "../dialogs/dialogState";
+import { useToastStore } from "../app/toastStore";
 import { InspectorBody } from "../app/Inspector/InspectorBody";
 import { FormLayer } from "./FormLayer";
 import { fieldKey, loadFields, useFormStore } from "./formStore";
@@ -84,6 +85,44 @@ describe("필드 만들기", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
     expect(spy.mock.calls[0][0].patch).toEqual({ name: "동의함" });
     await waitFor(() => expect(useFormStore.getState().fields.some((f) => f.name === "동의함")).toBe(true));
+  });
+});
+
+describe("라디오 단추 그룹 (verification round 1)", () => {
+  it("radio buttons drawn one after another share one group; Alt starts a new group", async () => {
+    await openForm(0);
+    useToastStore.setState({ toasts: [] });
+    const spy = vi.spyOn(api, "createFormField");
+    const { createFieldAt } = await import("./formActions");
+    await createFieldAt(0, { l: 50, b: 50, r: 64, t: 64 }, "radio");
+    await createFieldAt(0, { l: 80, b: 50, r: 94, t: 64 }, "radio");
+    await createFieldAt(0, { l: 110, b: 50, r: 124, t: 64 }, "radio");
+    await createFieldAt(0, { l: 50, b: 90, r: 64, t: 104 }, "radio", { newGroup: true });
+    await createFieldAt(0, { l: 80, b: 90, r: 94, t: 104 }, "radio");
+    const specs = spy.mock.calls.map((c) => c[0].spec);
+    expect(specs.map((s) => s.name)).toEqual(["라디오1", "라디오1", "라디오1", "라디오2", "라디오2"]);
+    expect(specs.map((s) => s.options)).toEqual([["선택 1"], ["선택 2"], ["선택 3"], ["선택 1"], ["선택 2"]]);
+    expect(useFormStore.getState().fields.filter((f) => f.name === "라디오1")).toHaveLength(3);
+    expect(useToastStore.getState().toasts.at(-1)?.messageKey).toBe("form.author.radioJoined");
+    spy.mockRestore();
+  });
+
+  it("a radio drawn while a non-radio field is selected starts a new group", async () => {
+    await openForm(0);
+    const { createFieldAt } = await import("./formActions");
+    const first = await createFieldAt(0, { l: 50, b: 50, r: 64, t: 64 }, "radio");
+    await createFieldAt(0, { l: 50, b: 150, r: 200, t: 170 }, "text");
+    const second = await createFieldAt(0, { l: 80, b: 50, r: 94, t: 64 }, "radio");
+    expect(second?.name).not.toBe(first?.name);
+  });
+
+  it("필드 속성 renaming a radio group after another joins it", async () => {
+    await openForm(0);
+    const { createFieldAt, updateField } = await import("./formActions");
+    const a = await createFieldAt(0, { l: 50, b: 50, r: 64, t: 64 }, "radio");
+    const b = await createFieldAt(0, { l: 80, b: 50, r: 94, t: 64 }, "radio", { newGroup: true });
+    expect(await updateField(b!, { name: a!.name })).toBe(true);
+    expect(useFormStore.getState().fields.filter((f) => f.name === a!.name)).toHaveLength(2);
   });
 });
 

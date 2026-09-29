@@ -4,7 +4,9 @@
  *
  *  * 필드 만들기: a rectangle drawn with one of the five field tools → `create_form_field` with a
  *    default name (텍스트1, 확인란1, 라디오1, 목록1, 서명1 — the next free number), then the new field
- *    is focused so the inspector shows its properties;
+ *    is focused so the inspector shows its properties; a radio button joins the selected radio
+ *    button's group (Alt-drag starts a new one), and 필드 속성 renaming a radio group after
+ *    another merges the two;
  *  * 필드 속성: `update_form_field` / `delete_form_field`;
  *  * 양식 데이터 내보내기 / 가져오기: CSV or XFDF (the save / open panel's filter picks the format);
  *  * 양식 평면화: confirm (`form.flattenWarning`), then `flatten_form` — one undo step;
@@ -63,21 +65,43 @@ export function defaultFieldName(type: NewFieldType, fields: FormField[]): strin
   return `${base}${n}`;
 }
 
-/** A field tool's rectangle (PDF user space) on `page`. */
-export async function createFieldAt(page: PageIndex, rect: Rect, type: NewFieldType): Promise<FormField | null> {
+/**
+ * The radio group a new 라디오 단추 joins: the selected field's, when that is a radio button
+ * (drawing a radio selects it, so buttons drawn one after another form one group).
+ */
+export function radioGroupToJoin(): FormField[] {
+  const { selected, fields } = useFormStore.getState();
+  const picked = selected ? fields.find((f) => fieldKey(f.page, f.index) === selected) : undefined;
+  if (!picked || picked.type !== "radio") return [];
+  return fields.filter((f) => f.type === "radio" && f.name === picked.name);
+}
+
+/**
+ * A field tool's rectangle (PDF user space) on `page`. A radio button joins the selected radio
+ * button's group (the engine renumbers a clashing export value) unless `newGroup` (Alt held while
+ * drawing) — a radio group of one button could hold no choice.
+ */
+export async function createFieldAt(
+  page: PageIndex,
+  rect: Rect,
+  type: NewFieldType,
+  opts: { newGroup?: boolean } = {},
+): Promise<FormField | null> {
   const doc = docId();
   if (!doc) return null;
   const fields = useFormStore.getState().fields;
-  const name = defaultFieldName(type, fields);
+  const group = type === "radio" && !opts.newGroup ? radioGroupToJoin() : [];
+  const name = group.length ? group[0].name : defaultFieldName(type, fields);
   const options =
     type === "combo"
       ? [t("form.author.choice", { n: 1 }), t("form.author.choice", { n: 2 })]
       : type === "radio"
-        ? [t("form.author.choice", { n: fields.filter((f) => f.type === "radio").length + 1 })]
+        ? [t("form.author.choice", { n: group.length + 1 })]
         : [];
   try {
     const result = await api.createFormField({ docId: doc, spec: { page, rect, type, name, options } });
     adopt(result);
+    if (group.length) toast("form.author.radioJoined", { name }, { tone: "info" });
     return result.field ?? null;
   } catch (e) {
     fail(e);

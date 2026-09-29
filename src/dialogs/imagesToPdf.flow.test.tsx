@@ -1,6 +1,7 @@
 /**
  * v0.3 D1 (이미지로 PDF 만들기) and H7 (pointer-event reordering) against the mock:
- *  * a .png dropped on the window opens the dialog — `open_document` is never called;
+ *  * a .png dropped on the window opens the dialog — `open_document` is never called; a PDF dropped
+ *    with images opens in a new window (verification round 1);
  *  * the dialog's list reorders by a pointer drag, and 만들기 sends the paths in that order;
  *  * 파일 합치기's list reorders by a pointer drag of item 1 below item 3;
  *  * 편집 ⌘V with an image on the system clipboard places it with `add_image_object`.
@@ -12,6 +13,7 @@ import { mock } from "../ipc/mock";
 import { useAppStore } from "../store/appStore";
 import { useDocStore } from "../store/docStore";
 import { useDialogStore } from "./dialogState";
+import { useToastStore } from "../app/toastStore";
 import DialogHost from "./DialogHost";
 import { MergeDialog } from "./MergeDialog";
 import { warmLazyChunks } from "../test/warmLazy";
@@ -58,6 +60,23 @@ describe("이미지로 PDF 만들기", () => {
     expect(useDialogStore.getState().stack.at(-1)?.props.paths).toEqual(["스캔-1.png"]);
     expect(await screen.findByRole("dialog", { name: "이미지로 PDF 만들기" })).toBeInTheDocument();
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it("a PDF dropped together with images opens in a new window, not silently dropped", async () => {
+    const open = vi.spyOn(mock, "openDocument");
+    const newWindow = vi.spyOn(mock, "openInNewWindow");
+    useToastStore.setState({ toasts: [] });
+    const { routeDroppedPaths } = await import("./imagesFlow");
+    await routeDroppedPaths(["/p/report.pdf", "/p/scan.png"]);
+    const top = useDialogStore.getState().stack.at(-1);
+    expect(top?.name).toBe("imagesToPdf");
+    expect(top?.props.paths).toEqual(["/p/scan.png"]);
+    expect(newWindow).toHaveBeenCalledWith({ path: "/p/report.pdf" });
+    expect(open).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts.at(-1)?.messageKey).toBe("imagesToPdf.othersOpened");
+    expect(useToastStore.getState().toasts.at(-1)?.params).toEqual({ count: 1 });
+    newWindow.mockRestore();
+    open.mockRestore();
   });
 
   it("reorders by pointer drag and creates the document in that order", async () => {

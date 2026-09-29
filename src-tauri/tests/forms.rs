@@ -332,6 +332,13 @@ fn forms_xfdf_and_csv_round_trip() {
             exported.fields, 4,
             "text, checkbox, radio group, combo (the signature has no value)"
         );
+        // The Hangul export value exactly as typed (PDFium's own reading garbles it).
+        let text = std::fs::read_to_string(&path).unwrap();
+        let expected = match format {
+            FormDataFormat::Csv => "성별,여",
+            FormDataFormat::Xfdf => "<field name=\"성별\"><value>여</value>",
+        };
+        assert!(text.contains(expected), "{ext}: {text}");
 
         with_state({
             let id = id.clone();
@@ -504,4 +511,284 @@ fn forms_flatten_in_place_and_undo() {
         move |st| flatten::flatten_form(st, &id)
     });
     assert!(refused.is_err(), "nothing to flatten");
+}
+
+// ---------------------------------------------------------------------------------------
+// Verification round 1
+// ---------------------------------------------------------------------------------------
+
+fn radios(doc_id: &str, name: &str) -> Vec<FormField> {
+    fields(doc_id)
+        .into_iter()
+        .filter(|f| f.name == name)
+        .collect()
+}
+
+fn states(doc_id: &str, name: &str) -> Vec<Option<bool>> {
+    radios(doc_id, name).iter().map(|f| f.checked).collect()
+}
+
+fn import_csv(doc_id: &str, file: &str, csv: &str) -> seepdf_lib::ipc::types::FormDataResult {
+    let path = out_dir().join(file);
+    std::fs::write(&path, csv).unwrap();
+    let (id, path) = (doc_id.to_string(), path.display().to_string());
+    with_state(move |st| data::import(st, &id, &path, None)).expect("import_form_data")
+}
+
+/// 모든 필드 지우기 and 양식 데이터 가져오기 on an **encrypted** form whose radio group is on: a
+/// group cannot be switched off there (a lopdf rewrite), so it is left as it is — and every
+/// other field is still reset / imported instead of the whole batch failing.
+#[test]
+fn forms_reset_and_import_on_encrypted_form_keep_radios() {
+    let doc = open("tracemonkey.pdf");
+    let r = |x: f32| Rect::new(x, 620.0, x + 14.0, 634.0);
+    create(
+        &doc.doc_id,
+        spec(
+            NewFieldType::Text,
+            "name",
+            Rect::new(72.0, 700.0, 250.0, 720.0),
+            &[],
+        ),
+    );
+    create(
+        &doc.doc_id,
+        spec(NewFieldType::Radio, "grp", r(72.0), &["a"]),
+    );
+    create(
+        &doc.doc_id,
+        spec(NewFieldType::Radio, "grp", r(100.0), &["b"]),
+    );
+    let plain = with_state({
+        let id = doc.doc_id.clone();
+        move |st| seepdf_lib::engine::save::serialize(st, &id)
+    })
+    .unwrap();
+    let encrypted =
+        seepdf_lib::engine::security::encrypt_bytes(&plain, "", "owner", Default::default())
+            .expect("encrypt");
+    let info = with_state(move |st| registry::open(st, None, encrypted, None)).unwrap();
+    assert!(info.encrypted);
+    let id = info.doc_id.clone();
+    let list = fields(&id);
+    set(
+        &id,
+        by_name(&list, "name"),
+        FieldValue::Text {
+            text: "hello".into(),
+        },
+    );
+    set(
+        &id,
+        &radios(&id, "grp")[0],
+        FieldValue::Checked { checked: true },
+    );
+
+    let changed = with_state({
+        let id = id.clone();
+        move |st| form::reset_form(st, &id)
+    })
+    .expect("reset_form works on an encrypted form");
+    assert_eq!(changed, 1, "the text field only");
+    assert_eq!(
+        by_name(&fields(&id), "name").value.as_deref().unwrap_or(""),
+        ""
+    );
+    assert_eq!(
+        states(&id, "grp"),
+        [Some(true), Some(false)],
+        "the radio is kept"
+    );
+
+    // Import: the radio set to Off is skipped, the text still lands.
+    let result = import_csv(&id, "encrypted.csv", "name,value\nname,again\ngrp,Off\n");
+    assert_eq!(result.fields, 1);
+    assert_eq!(
+        by_name(&fields(&id), "name").value.as_deref(),
+        Some("again")
+    );
+    assert_eq!(states(&id, "grp"), [Some(true), Some(false)]);
+    // …and picking the other button by its export value works (PDFium's export values).
+    import_csv(&id, "encrypted-b.csv", "name,value\ngrp,b\n");
+    assert_eq!(states(&id, "grp"), [Some(false), Some(true)]);
+
+    // 값 지우기 itself still says why it cannot switch the group off.
+    let on = radios(&id, "grp")[1].clone();
+    let err = with_state({
+        let id = id.clone();
+        move |st| form::clear_radio(st, &id, on.page, on.index)
+    })
+    .expect_err("clear_radio on an encrypted document");
+    assert_eq!(err.code, seepdf_lib::ipc::ErrorCode::Unsupported);
+}
+
+/// Hangul export values — including the `선택N` every UI-made radio gets — are listed,
+/// exported and matched on import exactly as typed.
+#[test]
+fn forms_hangul_export_values_are_exact() {
+    let doc = open("tracemonkey.pdf");
+    let id = doc.doc_id.clone();
+    let r = |x: f32| Rect::new(x, 620.0, x + 14.0, 634.0);
+    create(&id, spec(NewFieldType::Radio, "성별", r(72.0), &["남"]));
+    create(&id, spec(NewFieldType::Radio, "성별", r(100.0), &["여"]));
+    create(&id, spec(NewFieldType::Radio, "선택", r(140.0), &[]));
+    create(&id, spec(NewFieldType::Radio, "선택", r(170.0), &[]));
+
+    // A hand-written CSV picks 여.
+    let result = import_csv(&id, "hangul-radio.csv", "name,value\n성별,여\n선택,선택2\n");
+    assert_eq!(result.fields, 2, "{result:?}");
+    assert!(result.unknown.is_empty());
+    assert_eq!(states(&id, "성별"), [Some(false), Some(true)]);
+    assert_eq!(states(&id, "선택"), [Some(false), Some(true)]);
+    let listed = fields(&id);
+    assert!(listed
+        .iter()
+        .filter(|f| f.name == "성별")
+        .all(|f| f.value.as_deref() == Some("여")));
+    assert_eq!(by_name(&listed, "선택").value.as_deref(), Some("선택2"));
+
+    // set_form_field_value answers with the export value too.
+    let picked = set(
+        &id,
+        &radios(&id, "성별")[0],
+        FieldValue::Checked { checked: true },
+    );
+    assert_eq!(picked.value.as_deref(), Some("남"));
+
+    let path = out_dir().join("hangul-radio-export.csv");
+    with_state({
+        let (id, path) = (id.clone(), path.display().to_string());
+        move |st| data::export(st, &id, FormDataFormat::Csv, &path)
+    })
+    .unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(text, "\u{feff}name,value\r\n성별,남\r\n선택,선택2\r\n");
+
+    // …and survive save + reopen.
+    let re = save_and_reopen(&id);
+    assert_eq!(
+        by_name(&fields(&re.doc_id), "선택").value.as_deref(),
+        Some("선택2")
+    );
+}
+
+/// 필드 속성: renaming a radio group after another radio group puts its buttons into that
+/// group (the way the UI joins buttons drawn apart); a clashing export value is renumbered,
+/// and the merged group is one group — in SeePDF and after save + reopen. One undo step.
+#[test]
+fn forms_radio_rename_joins_group() {
+    let doc = open("tracemonkey.pdf");
+    let id = doc.doc_id.clone();
+    let r = |x: f32| Rect::new(x, 620.0, x + 14.0, 634.0);
+    create(
+        &id,
+        spec(NewFieldType::Radio, "라디오1", r(72.0), &["선택 1"]),
+    );
+    create(
+        &id,
+        spec(NewFieldType::Radio, "라디오2", r(100.0), &["선택 1"]),
+    );
+    // A button drawn into a group with a clashing export value is renumbered as well.
+    create(
+        &id,
+        spec(NewFieldType::Radio, "라디오2", r(130.0), &["선택 1"]),
+    );
+    let second = radios(&id, "라디오2")[0].clone();
+    let merged = with_state({
+        let id = id.clone();
+        move |st| {
+            author::update_field(
+                st,
+                &id,
+                second.page,
+                second.index,
+                &FormFieldPatch {
+                    name: Some("라디오1".into()),
+                    ..Default::default()
+                },
+            )
+        }
+    })
+    .expect("a radio group renamed after another joins it");
+    assert_eq!(
+        merged.field.as_ref().map(|f| f.name.as_str()),
+        Some("라디오1")
+    );
+    assert!(radios(&id, "라디오2").is_empty());
+    let group = radios(&id, "라디오1");
+    assert_eq!(group.len(), 3);
+
+    // Three distinct export values: picking each turns only that one on.
+    let mut values = Vec::new();
+    for i in 0..3 {
+        let picked = set(
+            &id,
+            &radios(&id, "라디오1")[i],
+            FieldValue::Checked { checked: true },
+        );
+        values.push(picked.value.clone().unwrap());
+        let on: Vec<bool> = states(&id, "라디오1")
+            .iter()
+            .map(|c| *c == Some(true))
+            .collect();
+        assert_eq!(on.iter().filter(|b| **b).count(), 1, "{on:?}");
+        assert!(on[i]);
+    }
+    assert_eq!(values, ["선택 1", "선택 2", "선택 3"]);
+
+    let re = save_and_reopen(&id);
+    let reopened: Vec<FormField> = radios(&re.doc_id, "라디오1");
+    assert_eq!(reopened.len(), 3);
+    assert_eq!(
+        reopened.iter().map(|f| f.checked).collect::<Vec<_>>(),
+        [Some(false), Some(false), Some(true)]
+    );
+    set(
+        &re.doc_id,
+        &reopened[0],
+        FieldValue::Checked { checked: true },
+    );
+    assert_eq!(
+        states(&re.doc_id, "라디오1"),
+        [Some(true), Some(false), Some(false)]
+    );
+
+    // A text field still cannot take a radio group's name, nor the reverse.
+    create(
+        &id,
+        spec(
+            NewFieldType::Text,
+            "메모",
+            Rect::new(72.0, 700.0, 250.0, 720.0),
+            &[],
+        ),
+    );
+    let memo = by_name(&fields(&id), "메모").clone();
+    let refused = with_state({
+        let id = id.clone();
+        move |st| {
+            author::update_field(
+                st,
+                &id,
+                memo.page,
+                memo.index,
+                &FormFieldPatch {
+                    name: Some("라디오1".into()),
+                    ..Default::default()
+                },
+            )
+        }
+    });
+    assert!(refused.is_err());
+
+    // One undo step brings the two groups back (the picks are undone first, the refused
+    // rename and the 메모 field aside).
+    let label = |id: &str| with_doc(id, |d| Ok(d.info().undo_label)).unwrap();
+    undo(&id); // 메모
+    while label(&id).as_deref() != Some("undo.formFieldEdit") {
+        undo(&id);
+    }
+    undo(&id); // the merge
+    assert_eq!(radios(&id, "라디오2").len(), 2);
+    assert_eq!(radios(&id, "라디오1").len(), 1);
 }

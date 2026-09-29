@@ -1331,7 +1331,8 @@ from the same catalogue). The native menu's `view.readAloud` label lives in `app
 ### 15.20c v0.3 pkg2 — 이미지로 PDF 만들기, 필드 만들기, 양식 데이터, pages between windows
 
 **이미지로 PDF 만들기** (파일 ▸ 이미지로 PDF 만들기…, the ⋯ menu, the native 파일 menu; any PNG / JPEG dropped on
-the window or the welcome screen opens it instead of `open_document`): the images in page order (pointer drag,
+the window or the welcome screen opens it instead of `open_document` — PDFs dropped together with images open
+each in a new window, toast `imagesToPdf.othersOpened`): the images in page order (pointer drag,
 ↑ / ↓, ×, 이미지 추가…), 페이지 크기 원본 크기 / A4 / 레터 (radio), 여백 없음 / 좁게 6 mm / 보통 13 mm / 넓게 25 mm,
 and on A4 / 레터 배치 페이지에 맞춤 / 실제 크기; 만들기 opens the new, unsaved document named after the first image
 (status-bar progress past 5 images). **클립보드에서 새로 만들기** (파일 menu, ⋯): the clipboard's image as a
@@ -1342,7 +1343,9 @@ the page in view, at most half the page each way (one undo step).
 **양식 ▸ 필드 만들기** — with a field tool armed the page is a crosshair drawing surface under the existing
 controls: drag a rectangle (a click places a default-sized field: text 160 × 20, check / radio 14 × 14, combo
 120 × 20, signature 150 × 40 pt). The field is created with the next free default name (텍스트1, 확인란1, 라디오1,
-목록1, 서명1; a radio button starts a group) and selected; the inspector's **필드 속성** (under the field summary)
+목록1, 서명1) and selected. A radio button joins the group of the selected radio button — drawing radios one after
+another makes one group (toast `form.author.radioJoined`) — and Alt (⌥) held while drawing starts a new group
+(라디오2); renaming a radio group in 필드 속성 to another group's name merges the two; the inspector's **필드 속성** (under the field summary)
 edits 필드 이름, 필수 항목, 최대 글자 수 (text), 선택 항목 (combo, one per line) and 필드 삭제 — each one undo
 step, committed on blur / Enter. 양식 데이터 내보내기… / 가져오기… use the save / open panel (XFDF or CSV by
 extension); an import names fields the document does not have. **양식 평면화** asks first (danger button,
@@ -1354,7 +1357,8 @@ switches the whole group off; a text field's 최대 글자 수 limits typing; a 
 없습니다 in the inspector; right-clicking a field opens 값 지우기 · 모든 필드 지우기 · 필드 강조 표시 · 필드 속성 ·
 필드 삭제.
 
-**링크 패널** (P5): 테두리 표시 (checkbox) — a 1 pt box, blue by default — and 테두리 색 (the 8 swatches) when on.
+**링크 패널** (P5): 테두리 표시 (checkbox) — a 1 pt box, blue by default, drawn on the page (an appearance
+stream, so SeePDF shows it too) — and 테두리 색 (the 8 swatches) when on.
 With the 링크 tool, a click (no drag) on a page where text is selected links the selection, one quad per line.
 
 **Welcome** (H7): the drop zone's highlight follows the native drag state (Windows never sends HTML5
@@ -1376,10 +1380,12 @@ With the 링크 tool, a click (no drag) on a page where text is selected links t
 | `form.author.properties` / `.delete` / `.maxLen` / `.options` | 필드 속성 / 필드 삭제 / 최대 글자 수 / 선택 항목 (한 줄에 하나) | Field Properties / Delete Field / Max length / Choices (one per line) |
 | `form.data.export` / `.import` | 양식 데이터 내보내기… / 양식 데이터 가져오기… | Export Form Data… / Import Form Data… |
 | `form.flattened` | 양식을 평면화했습니다 | The form was flattened |
+| `form.author.radioJoined` | ‘{{name}}’ 그룹에 단추를 추가했습니다. 새 그룹은 Alt(⌥)를 누른 채 그리세요 | Added a button to the ‘{{name}}’ group. Hold Alt (⌥) while drawing to start a new group |
+| `imagesToPdf.othersOpened` | 이미지가 아닌 파일 {{count}}개는 새 창에서 열었습니다 | Opened {{count}} other file(s) in new windows |
 | `link.border` / `link.borderColor` | 테두리 표시 / 테두리 색 | Show border / Border colour |
 | `undo.pageImport`, `undo.formFieldCreate` / `Edit` / `Delete`, `undo.formImport`, `undo.formFlatten` | 다른 문서에서 페이지 가져오기, 필드 만들기 / 필드 속성 / 필드 삭제, 양식 데이터 가져오기, 양식 평면화 | Pages from Another Document, Create Field / Field Properties / Delete Field, Import Form Data, Flatten Form |
 
-(Full list: the 75 keys appended to `src/i18n/ko.json` / `en.json` in v0.3 pkg2.)
+(Full list: the 77 keys appended to `src/i18n/ko.json` / `en.json` in v0.3 pkg2.)
 
 ### 15.21 Notes for the implementer
 

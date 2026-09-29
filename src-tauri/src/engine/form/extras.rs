@@ -35,6 +35,12 @@ pub struct WidgetExtra {
     /// same way as `default` — so the two compare even for a non-ASCII export value, which
     /// PDFium's `FPDFAnnot_GetFormFieldExportValue` decodes differently.
     pub on_state: Option<String>,
+    /// A checkbox / radio widget's export value — what `list_form_fields` reports as its value
+    /// when it is on and what data export / import use: the field's `/Opt` entry for this
+    /// widget when the field has `/Opt`, else [`Self::on_state`]. Decoded as UTF-8 (names) or
+    /// a PDF text string (`/Opt`), unlike PDFium, which reads name bytes as PDFDocEncoding and
+    /// so turns every Hangul export value (`여`, `선택2`) into mojibake.
+    pub export: Option<String>,
 }
 
 /// Keyed by `(fully qualified name, rect rounded to 0.1 pt)`.
@@ -89,13 +95,16 @@ impl Extras {
                 };
                 let id = item.as_reference().ok();
                 let name = qualified_name(&doc, w, id);
+                let on_state = on_state(&doc, w);
+                let export = opt_export(&doc, w, id).or_else(|| on_state.clone());
                 let extra = WidgetExtra {
                     max_len: inherited(&doc, w, b"MaxLen")
                         .and_then(|o| o.as_i64().ok())
                         .and_then(|v| u32::try_from(v).ok())
                         .filter(|v| *v > 0),
                     default: inherited(&doc, w, b"DV").and_then(|o| default_of(&doc, o)),
-                    on_state: on_state(&doc, w),
+                    on_state,
+                    export,
                 };
                 out.by_widget.insert((name, rect_key(rect)), extra);
             }
@@ -172,12 +181,40 @@ fn on_state(doc: &Document, widget: &Dictionary) -> Option<String> {
         .iter()
         .map(|(k, _)| k)
         .find(|k| k.as_slice() != b"Off")
-        .map(|k| String::from_utf8_lossy(k).to_string())
+        .map(|k| name_text(k))
+}
+
+/// A name's bytes as text: UTF-8 (ISO 32000-2 §7.3.5, and what SeePDF writes), or — for a
+/// legacy name that is not valid UTF-8 — one char per byte (Latin-1, which is PDFDocEncoding
+/// for every letter a name is likely to hold).
+pub(crate) fn name_text(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+    }
+}
+
+/// `/Opt[i]` of the widget's field, `i` being the widget's position in the field's `/Kids`
+/// (ISO 32000 §12.7.4.2.4) — only for a widget that is a kid of a field with `/Opt`.
+fn opt_export(doc: &Document, widget: &Dictionary, id: Option<ObjectId>) -> Option<String> {
+    let id = id?;
+    let opt = inherited(doc, widget, b"Opt")?.as_array().ok()?;
+    let parent = widget.get(b"Parent").and_then(Object::as_reference).ok()?;
+    let (_, kids) = doc
+        .dereference(doc.get_dictionary(parent).ok()?.get(b"Kids").ok()?)
+        .ok()?;
+    let at = kids
+        .as_array()
+        .ok()?
+        .iter()
+        .position(|k| k.as_reference().ok() == Some(id))?;
+    let (_, entry) = doc.dereference(opt.get(at)?).ok()?;
+    lopdf::decode_text_string(entry).ok()
 }
 
 fn default_of(doc: &Document, value: &Object) -> Option<DefaultValue> {
     match value {
-        Object::Name(n) => Some(DefaultValue::State(String::from_utf8_lossy(n).to_string())),
+        Object::Name(n) => Some(DefaultValue::State(name_text(n))),
         Object::String(..) => lopdf::decode_text_string(value)
             .ok()
             .map(DefaultValue::Text),

@@ -1001,3 +1001,115 @@ fn structure_outline_keeps_named_dests_and_styles() {
     let again = reopen(saved);
     assert_eq!(get_outline(&again.doc_id)[0].page, Some(2));
 }
+
+/// One pixel of page `page` rendered at 100 % with annotations (`render_raw_buffer`).
+fn pixel(doc_id: &str, page: u16, x: usize, y: usize) -> [u8; 3] {
+    let doc_id = doc_id.to_string();
+    let buffer = with_state(move |st| {
+        seepdf_lib::engine::render::tiles::render_raw_buffer(st, &doc_id, page, 1.0, None)
+    })
+    .expect("render");
+    let width = u32::from_le_bytes(buffer[8..12].try_into().unwrap()) as usize;
+    let at = 32 + (y * width + x) * 4;
+    [buffer[at], buffer[at + 1], buffer[at + 2]]
+}
+
+fn is_red(p: &[u8; 3]) -> bool {
+    p[0] > 180 && p[1] < 100 && p[2] < 100
+}
+
+/// P5 (verification round 1): 테두리 표시 shows in SeePDF's own rendering — PDFium draws no
+/// `/Border` of a link without `/AP`, so the border is written as an appearance stream — for
+/// both writers (page target: lopdf, web address: PDFium); it follows a moved link and goes
+/// when the border is switched off.
+#[test]
+fn structure_link_border_is_visible() {
+    use seepdf_lib::ipc::types::LinkBorder;
+    let doc = open("tracemonkey.pdf");
+    let h = doc.info.pages[0].height_pt;
+    let y = (h - 350.0) as usize;
+    let red = LinkBorder {
+        width: 3.0,
+        color: [255, 0, 0],
+    };
+    let left_edge = |x: f32| -> Vec<[u8; 3]> {
+        (0..3)
+            .map(|dx| pixel(&doc.doc_id, 0, x as usize + dx, y))
+            .collect()
+    };
+    assert!(
+        !left_edge(8.0).iter().any(is_red),
+        "the margin starts blank"
+    );
+    for (i, target) in [page_target(3, None), url_target("https://example.com")]
+        .into_iter()
+        .enumerate()
+    {
+        let x = 8.0 + 60.0 * i as f32;
+        let rect = Rect::new(x, 300.0, x + 40.0, 400.0);
+        let r = with_state({
+            let id = doc.doc_id.clone();
+            move |st| links::create_link_styled(st, &id, 0, rect, &target, &[], Some(red))
+        })
+        .expect("create a bordered link");
+        let link = r.annot.expect("the link");
+        assert_eq!(link.border_width, 3.0);
+        assert!(
+            left_edge(x).iter().any(is_red),
+            "target {i}: the red border shows: {:?}",
+            left_edge(x)
+        );
+
+        // Moved down the margin: the border moves with it and the old place is clear again.
+        let moved = Rect::new(x, 200.0, x + 40.0, 280.0);
+        with_state({
+            let (id, link_id) = (doc.doc_id.clone(), link.id.clone());
+            move |st| links::update_link(st, &id, 0, &link_id, Some(moved), None)
+        })
+        .expect("move");
+        assert!(
+            !left_edge(x).iter().any(is_red),
+            "target {i}: old place clear"
+        );
+        let y2 = (h - 240.0) as usize;
+        let at_new: Vec<[u8; 3]> = (0..3)
+            .map(|dx| pixel(&doc.doc_id, 0, x as usize + dx, y2))
+            .collect();
+        assert!(
+            at_new.iter().any(is_red),
+            "target {i}: moved border {at_new:?}"
+        );
+
+        // Border off: nothing drawn, /AP gone.
+        with_state({
+            let (id, link_id) = (doc.doc_id.clone(), link.id.clone());
+            move |st| {
+                links::update_link_styled(
+                    st,
+                    &id,
+                    0,
+                    &link_id,
+                    None,
+                    None,
+                    Some(LinkBorder {
+                        width: 0.0,
+                        color: [0, 0, 0],
+                    }),
+                )
+            }
+        })
+        .expect("border off");
+        let after: Vec<[u8; 3]> = (0..3)
+            .map(|dx| pixel(&doc.doc_id, 0, x as usize + dx, y2))
+            .collect();
+        assert!(
+            !after.iter().any(is_red),
+            "target {i}: border off {after:?}"
+        );
+        let bytes = save_as(&doc.doc_id, "link-border-off.pdf");
+        assert!(
+            !link_dict(&bytes, &link.id).has(b"AP"),
+            "target {i}: /AP removed"
+        );
+    }
+}
