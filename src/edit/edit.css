@@ -204,7 +204,7 @@
 /* ------------------------------------------------------------ 영역 표시 panel */
 
 .redact-fills { display: flex; gap: 6px; }
-.redact-fills .swatch { border: 1px solid var(--border-default); }
+.redact-fills .swatch { border: 1px solid var(--border-default); width: 24px; flex: none; }
 
 .redact-page { margin-top: var(--space-2); }
 

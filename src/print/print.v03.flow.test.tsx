@@ -5,6 +5,7 @@
  * `print=` flag the engine sees is what is asserted — not a component prop.
  */
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrintRoot } from "./PrintRoot";
 import { PRINT_CHUNK, PRINT_DPI, scaleKeyForDpi, usePrintStore } from "./printStore";
@@ -110,6 +111,27 @@ describe("print v0.3", () => {
     expect(print).toHaveBeenCalledTimes(1);
     // The temporary n-up document is closed with the job.
     await waitFor(() => expect(close).toHaveBeenCalledWith({ docId: "d1" }));
+  });
+
+  it("an n-up job's temp document stays open under StrictMode until the job ends", async () => {
+    // v0.3 integration QA: the dev build's StrictMode ran the close-on-cleanup straight after the
+    // first mount, so every sheet after the first came back a broken image.
+    vi.spyOn(window, "print").mockImplementation(() => undefined);
+    const close = vi.spyOn(mock, "closeDocument");
+    // App mounts PrintRoot only once a job exists (`printing && <PrintRoot />`), so start first.
+    usePrintStore.getState().start({
+      docId: "d9", generation: 1, pages: [0, 1, 2, 3],
+      rotation: 0, scaleKey: 208, tempDocId: "d9",
+    });
+    render(
+      <StrictMode>
+        <PrintRoot />
+      </StrictMode>,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(close).not.toHaveBeenCalled();
+    act(() => usePrintStore.getState().clear());
+    await waitFor(() => expect(close).toHaveBeenCalledWith({ docId: "d9" }));
   });
 
   it("취소 on the progress line stops a chunked job while its pages are still loading", () => {

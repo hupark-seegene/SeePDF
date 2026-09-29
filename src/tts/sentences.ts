@@ -41,6 +41,9 @@ const LIST_MARKER = /^(\d{1,3}|[A-Za-z]|[ivxlcIVXLC]{1,5})$/;
 export function speakableText(text: string): string {
   return text
     .replace(/(\p{L})-\r?\n(\p{Ll})/gu, "$1$2")
+    // PDFium reports a line-end soft hyphen as U+0002 (or U+00AD): "com\u0002\r\npile" is "compile"
+    .replace(/(\p{L})[\u0002\u00ad]\s*(\p{L})/gu, "$1$2")
+    .replace(/[\u0002\u00ad]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }

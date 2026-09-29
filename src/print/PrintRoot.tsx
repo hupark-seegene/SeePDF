@@ -15,9 +15,10 @@
  * v0.3 (pkg8):
  * * X7 — every image URL carries `print=<annots>`: the engine renders with `FPDF_PRINTING`, so
  *   annotation Print / NoView flags are honoured, and 문서만 / 문서와 도장·서명 filter the markup.
- * * X8 — each sheet is a `100vw × 100vh` box with the page `object-fit: contain`ed in it; a page
- *   whose orientation differs from the sheet's is turned 90° (`data-orient` + the print media
- *   query `orientation`). More than `PRINT_CHUNK` pages are printed as consecutive print jobs of
+ * * X8 — one sheet per page, the page as wide as the paper (integration QA: WKWebView resolves
+ *   `100vw`/`100vh` and the `orientation` media query against the window while printing, so the
+ *   viewport-sized sheet and its 90° turn printed every portrait page sideways; `data-orient` is
+ *   kept for a later paper-aware layout). More than `PRINT_CHUNK` pages are printed as consecutive print jobs of
  *   at most that many images each, with an on-screen progress line, so a 500-page job never
  *   decodes 500 bitmaps at once. `afterprint` fires for 인쇄 and 취소 alike, so after each
  *   chunk but the last the job waits (`waiting`, no images mounted) for 다음 묶음 인쇄 / 중지,
@@ -69,6 +70,9 @@ export function PrintRoot() {
     const temp = job?.tempDocId;
     if (!temp) return;
     return () => {
+      // Only once the job is really over: React's StrictMode (dev) runs this cleanup straight after
+      // the first mount, and closing then made every sheet after the first a broken image.
+      if (usePrintStore.getState().job?.tempDocId === temp) return;
       void api.closeDocument({ docId: temp }).catch(() => undefined);
     };
   }, [job]);

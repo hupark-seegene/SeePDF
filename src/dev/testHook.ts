@@ -470,6 +470,151 @@ async function execute(cmd: Cmd, run: Run): Promise<unknown> {
         toasts: renderedToasts(0).slice(-3),
       };
     }
+    /**
+     * v0.3 real-app QA: call one exported function of a fixed set of modules (still a table, not
+     * an `eval`), e.g. `{op:"call", mod:"edit/redact", fn:"findAndMark", args:[…]}`. A store module
+     * takes `fn:"getState"` plus an optional `pick` (a key of the state) or `method` + `args`.
+     */
+    case "call": {
+      const loaders: Record<string, () => Promise<unknown>> = {
+        "edit/redact": () => import("../edit/redact"),
+        "edit/actions": () => import("../edit/actions"),
+        "edit/editStore": () => import("../edit/editStore"),
+        "forms/formActions": () => import("../forms/formActions"),
+        "forms/formStore": () => import("../forms/formStore"),
+        "annot/actions": () => import("../annot/actions"),
+        "batch/flow": () => import("../batch/flow"),
+        "print/printFlow": () => import("../print/printFlow"),
+        "print/printStore": () => import("../print/printStore"),
+        "tools/snapshot": () => import("../tools/snapshot"),
+        "tts/speak": () => import("../tts/speak"),
+        "tts/ttsStore": () => import("../tts/ttsStore"),
+        "dialogs/flows": () => import("../dialogs/flows"),
+        "dialogs/imagesFlow": () => import("../dialogs/imagesFlow"),
+        "store/viewStore": () => Promise.resolve({ useViewStore }),
+        "store/appStore": () => Promise.resolve({ useAppStore }),
+        "store/docStore": () => Promise.resolve({ useDocStore }),
+        "dialogs/dialogState": () => Promise.resolve({ useDialogStore }),
+      };
+      const load = loaders[String(cmd.mod)];
+      if (!load) throw new Error(`unknown module ${String(cmd.mod)}`);
+      const m = (await load()) as Record<string, unknown>;
+      const target = m[String(cmd.fn)];
+      if (target && typeof target === "function" && "getState" in target) {
+        const st = (target as { getState(): Record<string, unknown> }).getState();
+        if (cmd.method) {
+          const out = await (st[String(cmd.method)] as (...a: unknown[]) => unknown)(...((cmd.args as unknown[]) ?? []));
+          await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 200)));
+          return { out: safeClone(out) };
+        }
+        return safeClone(cmd.pick ? st[String(cmd.pick)] : st);
+      }
+      if (typeof target !== "function") throw new Error(`unknown function ${String(cmd.mod)}.${String(cmd.fn)}`);
+      // prompts that open while the call runs are answered in order from `answers` (then cancelled)
+      const answers = ((cmd.answers as unknown[]) ?? []).slice();
+      const prompts: unknown[] = [];
+      const lastToast = Math.max(0, ...useToastStore.getState().toasts.map((x) => x.id));
+      let settled = false;
+      const call = Promise.resolve((target as (...a: unknown[]) => unknown)(...((cmd.args as unknown[]) ?? []))).finally(() => {
+        settled = true;
+      });
+      while (!settled) {
+        const top = useDialogStore.getState().stack.at(-1);
+        const p = top?.props as Record<string, unknown> | undefined;
+        if (top && p && typeof p.resolve === "function" && !p.__qaAnswered) {
+          p.__qaAnswered = true;
+          const texts: Record<string, string> = {};
+          for (const k of ["titleKey", "bodyKey", "hintKey", "confirmKey"]) {
+            if (typeof p[k] === "string") texts[k] = t(p[k] as string, (p.bodyParams ?? undefined) as TParams);
+          }
+          const answer = answers.length ? answers.shift() : undefined;
+          prompts.push({ name: top.name, texts, answer: answer ?? null });
+          if (answer === undefined) useDialogStore.getState().close(top.name);
+          else (p.resolve as (v: unknown) => void)(answer);
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const out = await call;
+      await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 300)));
+      return { out: safeClone(out), prompts, toasts: renderedToasts(lastToast).slice(-6) };
+    }
+    /** v0.3 real-app QA: the top dialog (name + rendered prompt text); `answer` resolves a prompt. */
+    case "dialog": {
+      const top = useDialogStore.getState().stack.at(-1);
+      if (!top) return { top: null };
+      const p = top.props as Record<string, unknown>;
+      const text: Record<string, string> = {};
+      for (const k of ["titleKey", "bodyKey", "hintKey", "confirmKey", "messageKey"]) {
+        if (typeof p[k] === "string") text[k] = t(p[k] as string, (p[k.replace("Key", "Params")] ?? p.bodyParams) as TParams);
+      }
+      if ("answer" in cmd && typeof p.resolve === "function") {
+        (p.resolve as (v: unknown) => void)(cmd.answer);
+        await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 300)));
+      }
+      const dom = document.querySelector(".dialog, [role=dialog], [role=alertdialog]");
+      return { top: top.name, stack: useDialogStore.getState().stack.map((d) => d.name), text, domText: dom?.textContent?.slice(0, 600) ?? null };
+    }
+    /** v0.3 real-app QA: click the first element matching `selector` (and containing `text`). */
+    case "click": {
+      const all = [...document.querySelectorAll<HTMLElement>(String(cmd.selector ?? "button"))];
+      const el = cmd.text ? all.find((e) => (e.textContent ?? "").includes(String(cmd.text)) || e.getAttribute("aria-label")?.includes(String(cmd.text))) : all[0];
+      if (!el) throw new Error(`no element ${String(cmd.selector)} ${String(cmd.text ?? "")}`);
+      el.click();
+      await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 400)));
+      return { clicked: el.textContent?.slice(0, 80) ?? el.tagName, disabled: (el as HTMLButtonElement).disabled ?? null, toasts: renderedToasts(Number(cmd.toastsAfter ?? 0)).slice(-4), dialogs: useDialogStore.getState().stack.map((d) => d.name) };
+    }
+    /** v0.3 real-app QA: text / attributes of the elements matching `selector`. */
+    case "dom": {
+      const all = [...document.querySelectorAll<HTMLElement>(String(cmd.selector))];
+      return {
+        count: all.length,
+        items: all.slice(0, Number(cmd.limit ?? 10)).map((e) => {
+          const r = e.getBoundingClientRect();
+          return { tag: e.tagName, cls: e.className, text: e.textContent?.slice(0, Number(cmd.chars ?? 120)), title: e.getAttribute("title"), aria: e.getAttribute("aria-label"), disabled: (e as HTMLButtonElement).disabled ?? null, value: (e as HTMLInputElement).value ?? null, img: e instanceof HTMLImageElement ? { complete: e.complete, w: e.naturalWidth, src: e.src.slice(0, 200) } : undefined, rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] };
+        }),
+      };
+    }
+    /** v0.3 real-app QA: fetch a URL from the page (e.g. a `seepdf://` render) — status and a text head. */
+    case "fetch": {
+      const res = await fetch(String(cmd.url), { cache: "no-store" });
+      const type = res.headers.get("content-type") ?? "";
+      const body = type.startsWith("text") ? (await res.text()).slice(0, 300) : `${(await res.arrayBuffer()).byteLength} bytes`;
+      return { status: res.status, type, body, xcache: res.headers.get("x-cache") };
+    }
+    /** v0.3 real-app QA: set a form control's value the way typing / picking would (React sees it). */
+    case "setValue": {
+      const el = document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(String(cmd.selector));
+      if (!el) throw new Error(`no element ${String(cmd.selector)}`);
+      const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
+        if (el.checked !== Boolean(cmd.value)) el.click();
+      } else {
+        Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, String(cmd.value));
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 300)));
+      return { value: (el as HTMLInputElement).value, checked: (el as HTMLInputElement).checked ?? null };
+    }
+    /** v0.3 real-app QA: a pointer drag on the element under client point `from` to `to`. */
+    case "drag": {
+      const [x0, y0] = cmd.from as [number, number];
+      const [x1, y1] = cmd.to as [number, number];
+      const target = (cmd.selector ? document.querySelector<HTMLElement>(String(cmd.selector)) : document.elementFromPoint(x0, y0)) as HTMLElement | null;
+      if (!target) throw new Error("nothing under the start point");
+      const base = { bubbles: true, cancelable: true, composed: true, pointerId: Number(cmd.pointerId ?? 1), pointerType: "mouse", isPrimary: true, button: 0 };
+      target.dispatchEvent(new PointerEvent("pointerdown", { ...base, clientX: x0, clientY: y0, buttons: 1 }));
+      const steps = Number(cmd.steps ?? 8);
+      for (let i = 1; i <= steps; i++) {
+        const x = x0 + ((x1 - x0) * i) / steps;
+        const y = y0 + ((y1 - y0) * i) / steps;
+        (document.elementFromPoint(x, y) ?? target).dispatchEvent(new PointerEvent("pointermove", { ...base, clientX: x, clientY: y, buttons: 1 }));
+        await new Promise((r) => setTimeout(r, 16));
+      }
+      (document.elementFromPoint(x1, y1) ?? target).dispatchEvent(new PointerEvent("pointerup", { ...base, clientX: x1, clientY: y1, buttons: 0 }));
+      await new Promise((r) => setTimeout(r, Number(cmd.settleMs ?? 500)));
+      return { target: `${target.tagName}.${target.className}`, toasts: renderedToasts(Number(cmd.toastsAfter ?? 0)).slice(-4) };
+    }
     case "closeDialogs":
       useDialogStore.getState().closeAll();
       return snapshot();
@@ -534,6 +679,13 @@ function captureConsole(): void {
   }
   window.addEventListener("error", (e) => push("uncaught", [e.error ?? e.message]));
   window.addEventListener("unhandledrejection", (e) => push("unhandledrejection", [e.reason]));
+}
+function safeClone(v: unknown): unknown {
+  try {
+    return JSON.parse(JSON.stringify(v ?? null, (_k, x) => (typeof x === "function" ? undefined : x)));
+  } catch {
+    return String(v);
+  }
 }
 function safeJson(v: unknown): string {
   try {

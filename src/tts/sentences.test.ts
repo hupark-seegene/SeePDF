@@ -2,7 +2,7 @@
  * V4 (v0.3): the Korean-aware sentence splitter behind 읽어 주기's sentence queue and highlight.
  */
 import { describe, expect, it } from "vitest";
-import { splitSentences, textSentences } from "./sentences";
+import { speakableText, splitSentences, textSentences } from "./sentences";
 
 const texts = (text: string) => splitSentences(text).map((s) => text.slice(s.start, s.end));
 
@@ -45,5 +45,13 @@ describe("splitSentences", () => {
   it("textSentences folds whitespace and drops empty pieces", () => {
     expect(textSentences("  하나.   둘.\n\n ").map((s) => s.text)).toEqual(["하나.", "둘."]);
     expect(textSentences(" \n ")).toEqual([]);
+  });
+});
+
+describe("speakableText", () => {
+  it("joins a word PDFium split with a soft hyphen (U+0002) at a line end", () => {
+    expect(speakableText("more difficult to com\u0002\r\npile than")).toBe("more difficult to compile than");
+    expect(speakableText("discov­\nered paths")).toBe("discovered paths");
+    expect(speakableText("a stray \u0002 mark")).toBe("a stray mark");
   });
 });

@@ -9,6 +9,7 @@
 import { lazy, Suspense, useMemo, useSyncExternalStore } from "react";
 import type { Annot, AnnotKind } from "../../ipc/types";
 import { formatRelativeDay } from "../../i18n";
+import { isoOf } from "../../annot/threads";
 import { useT } from "../../i18n/useT";
 import { useAppStore } from "../../store/appStore";
 import { MARKUP_KINDS, useAnnotStore } from "../../store/annotStore";
@@ -88,9 +89,9 @@ function AnnotMeta({ annot }: { annot: Annot }) {
       <dt>{t("prop.author")}</dt>
       <dd>{annot.author ?? "—"}</dd>
       <dt>{t("prop.created")}</dt>
-      <dd>{annot.created ? formatRelativeDay(annot.created) : "—"}</dd>
+      <dd>{isoOf(annot.created) ? formatRelativeDay(isoOf(annot.created)) : "—"}</dd>
       <dt>{t("prop.modified")}</dt>
-      <dd>{annot.modified ? formatRelativeDay(annot.modified) : "—"}</dd>
+      <dd>{isoOf(annot.modified) ? formatRelativeDay(isoOf(annot.modified)) : "—"}</dd>
     </dl>
   );
 }
