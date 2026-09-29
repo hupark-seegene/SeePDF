@@ -12,13 +12,14 @@
 //!   marked characters go and the rest is re-emitted at the same positions ("Gal" no longer
 //!   takes "Andreas" with it). Type3 fonts, fonts without a usable `/ToUnicode`, `/ActualText`
 //!   runs, vertical runs and runs whose re-emission fails its check fall back to whole-run
-//!   removal, which [`preview`] reports as `collateral` *before* the destructive step — it runs
-//!   the same re-emission on a throw-away parse to know. Text-bearing marked-content params
-//!   (`/Alt`, `/E`, …) that would carry the redacted words along are dropped.
+//!   removal, which the preview reports as `collateral` *before* the destructive step —
+//!   [`preview_checked`] (the command) runs the whole apply as a dry run on a throw-away copy
+//!   to know. Text-bearing marked-content params (`/Alt`, `/E`, …) that would carry the
+//!   redacted words along are dropped.
 //! * **Images** (v0.3, R1 — [`image`]): an image entirely inside a mark is removed; a partly
-//!   covered one has the pixels under the marks set to black in its own bitmap (scans), unless
-//!   it cannot be re-encoded faithfully (transparency, palette, stencil), in which case it is
-//!   removed whole.
+//!   covered one has the pixels under the marks set to black in its own bitmap (scans; a
+//!   stencil-mask scan is rewritten as its rasterisation), unless it cannot be re-encoded
+//!   faithfully (transparency, palette), in which case it is removed whole.
 //! * **Paths**: removed when entirely inside a mark; a partly covered path is removed when it
 //!   is small (at least a quarter of its box under the marks, or no side longer than
 //!   [`SMALL_PATH_PT`]) or has curves (outlined glyphs, signatures, logos). A large path of
@@ -31,13 +32,24 @@
 //! Finally the page text is re-extracted and every marked string is counted again. If one
 //! survives, the whole command fails with `verifyFailed` and `registry::mutate` rolls the
 //! document back to the snapshot — a fake redaction is never written to disk.
+//!
+//! **Everything else stays** (verification round 2, [`survivors`]): PDFium's generator drops
+//! `Tc` / `Tw` and cannot write Type3 text, and a page whose content streams break mid-object
+//! loses everything after a regenerated stream. After each regeneration the runs it moved are
+//! put back; then every visible character outside the marks that no removed object drew must
+//! still be extractable at its box, else `verifyFailed` (detail `lost`). A page whose streams
+//! break mid-object is joined into one stream first ([`contents`], on that failure) and the
+//! spacing is written back as `Tc` / `Tw` after the batch ([`spacing`]).
 
+pub mod contents;
 pub mod image;
 // Same rules and the same allowance as `engine::raw`: the wrappers take PDFium handles as plain
 // values, always from a live page on the engine thread.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub mod raw;
+pub mod spacing;
 pub mod split;
+pub mod survivors;
 
 use crate::engine::annot::{self, ScratchPage};
 use crate::engine::objects::ungroup;
@@ -74,6 +86,22 @@ enum Action {
     /// Left alone under the fill box (a large straight-segment path).
     Keep,
 }
+
+/// What a retry does differently for a text object whose split did not survive the
+/// regeneration (`splitFailed`, see [`drive`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fallback {
+    /// Split again, the spaces left out of the re-encoded runs: a font whose `/ToUnicode`
+    /// has no entry for U+0020 has `set_text` write the space as code 0, which reads back as
+    /// a space in memory but draws — and moves the rest of the run — after the save
+    /// (`TAMReview.pdf` p.0). The glyphs keep their places; the gaps stay gaps.
+    NoSpaces,
+    /// Remove the whole run (named as collateral).
+    Whole,
+}
+
+/// Per text object index: what its retry does.
+type Fallbacks = HashMap<u32, Fallback>;
 
 /// One page object that a set of marks hits.
 #[derive(Debug, Clone)]
@@ -113,7 +141,7 @@ pub fn preview(
     if rects.is_empty() {
         return Err(EngineError::invalid("redaction needs at least one rect"));
     }
-    let analysis = analyze(doc, page_index, rects, &HashSet::new())?;
+    let analysis = analyze(doc, page_index, rects, &Fallbacks::new())?;
     let annots = annot::list(doc, page_index)?;
 
     let mut text_objects = Vec::new();
@@ -181,6 +209,11 @@ struct PageOutcome {
     blanked: u32,
     /// Text removed although outside the marks (whole-run fallbacks).
     collateral: Vec<String>,
+    /// Objects the preview's static trial meant to split that went whole after all (a split
+    /// that did not survive the regeneration, or failed its read-back in place).
+    whole: Vec<u32>,
+    /// Text objects put back where they were after a regeneration moved them (`survivors`).
+    repaired: usize,
 }
 
 /// `apply_redactions` for one page inside an open mutation — see [`apply_verified`] for the
@@ -192,7 +225,7 @@ pub fn apply(
     rects: &[Rect],
     options: &RedactOptions,
 ) -> Result<u32, EngineError> {
-    apply_page(doc, page_index, rects, options, &HashSet::new()).map(|o| o.changed)
+    apply_page(doc, page_index, rects, options, &Fallbacks::new(), false).map(|o| o.changed)
 }
 
 /// The destructive step, verified **before and after**.
@@ -214,12 +247,16 @@ pub fn apply(
 ///    caller retries with those objects removed whole), no content mark may still hold a
 ///    marked string, and the page text is counted again — a marked string that survived is
 ///    `verifyFailed`.
+///
+/// `dry` (the preview's dry run on a throw-away copy, [`preview_checked`]) skips the image
+/// pixel work, which decides nothing about the text.
 fn apply_page(
     doc: &mut OpenDoc<'_>,
     page_index: PageIndex,
     rects: &[Rect],
     options: &RedactOptions,
-    forced_whole: &HashSet<u32>,
+    forced: &Fallbacks,
+    dry: bool,
 ) -> Result<PageOutcome, EngineError> {
     if rects.is_empty() {
         return Err(EngineError::invalid("redaction needs at least one rect"));
@@ -243,12 +280,16 @@ fn apply_page(
         .collect();
 
     // 2. groups.
-    let mut analysis = analyze(doc, page_index, rects, forced_whole)?;
+    let mut analysis = analyze(doc, page_index, rects, forced)?;
+    // What was on the page before anything changed — the page-wide post-condition (5.)
+    // compares against it, so a run the ungroup below moved is caught too.
+    let chars_before = analysis.chars.clone();
+    let mut repaired = 0;
     if options.ungroup {
         let mut depth = 0;
         while !analysis.groups.is_empty() && depth < MAX_GROUP_DEPTH {
-            ungroup_all(doc, page_index, &analysis.groups)?;
-            analysis = analyze(doc, page_index, rects, forced_whole)?;
+            repaired += ungroup_all(doc, page_index, &analysis.groups)?;
+            analysis = analyze(doc, page_index, rects, forced)?;
             depth += 1;
         }
     }
@@ -290,10 +331,14 @@ fn apply_page(
     if !annotations.is_empty() {
         annot::delete(doc, page_index, &annotations)?;
     }
-    let mut outcome = PageOutcome::default();
+    let mut outcome = PageOutcome {
+        repaired,
+        ..PageOutcome::default()
+    };
     let bindings = doc.bindings();
     let mut split_done: Vec<(u32, Vec<split::Run>)> = Vec::new();
     let mut split_kept: Vec<FPDF_PAGEOBJECT> = Vec::new();
+    let staged: Vec<Vec<RawChar>>;
     {
         let mut scratch = ScratchPage::open(doc, page_index)?;
         let page = &scratch.page;
@@ -301,7 +346,7 @@ fn apply_page(
         // 4a. images first, while every index is still the listed one.
         let mut remove: Vec<FPDF_PAGEOBJECT> = Vec::new();
         for v in &analysis.victims {
-            if let Action::Blank(jpeg) = v.action {
+            if let (Action::Blank(jpeg), false) = (v.action.clone(), dry) {
                 match image::blank(bindings, doc.pdf(), page, v.index as usize, rects, jpeg)? {
                     image::Blanked::Done => {
                         outcome.changed += 1;
@@ -320,8 +365,11 @@ fn apply_page(
                 remove.push(raw::object_at(bindings, page, v.index as usize)?);
                 // The preview named every other whole-run removal already; these are runs it
                 // promised to split that failed the check on a first attempt.
-                if forced_whole.contains(&v.index) && !v.collateral.trim().is_empty() {
-                    outcome.collateral.push(v.collateral.trim().to_string());
+                if forced.get(&v.index) == Some(&Fallback::Whole) {
+                    outcome.whole.push(v.index);
+                    if !v.collateral.trim().is_empty() {
+                        outcome.collateral.push(v.collateral.trim().to_string());
+                    }
                 }
             }
         }
@@ -340,6 +388,7 @@ fn apply_page(
                 split_done.push((a.index, a.runs));
             } else {
                 remove.extend(handles);
+                outcome.whole.push(a.index);
                 outcome
                     .collateral
                     .push(whole_of.get(&a.index).cloned().unwrap_or_default());
@@ -370,7 +419,9 @@ fn apply_page(
             raw::remove_and_destroy(bindings, page, handle)?;
             outcome.changed += 1;
         }
-        // 4f. the fill boxes, one per mark.
+        // 4f. what every text object draws now, in memory — where `Tc` / `Tw` still apply
+        // (`survivors`) — then the fill boxes, one per mark.
+        staged = survivors::staged(bindings, page)?;
         let fill = PdfColor::new(options.fill[0], options.fill[1], options.fill[2], 255);
         for r in rects {
             scratch
@@ -385,6 +436,8 @@ fn apply_page(
             .regenerate_content()
             .ctx("regenerate page content")?;
     }
+    // 4h. the generator drops `Tc` / `Tw`: put every run it moved back (`survivors`).
+    outcome.repaired += settle(doc, page_index, &staged)?;
     doc.text.invalidate_page(page_index);
     doc.annots.remove(&page_index);
     doc.touched.insert(page_index);
@@ -433,7 +486,95 @@ fn apply_page(
         )
         .with_page(page_index));
     }
+    // …and everything else is still there: every visible character outside the marks that
+    // no object removed whole (named collateral) drew is extractable at its box.
+    let expected = keep_list(&analysis, rects, &chars_before, &outcome.whole);
+    let after = split::page_chars(bindings, doc.page(page_index)?)?;
+    let lost = survivors::missing(&expected, &after);
+    if !lost.is_empty() {
+        return Err(EngineError::new(
+            ErrorCode::VerifyFailed,
+            format!(
+                "{} character(s) outside the marks would be lost or moved ({:?}); the page was \
+                 restored",
+                lost.len(),
+                survivors::sample(&lost, 40)
+            ),
+        )
+        .with_page(page_index)
+        .with_detail("lost"));
+    }
     Ok(outcome)
+}
+
+/// Opens a fresh parse of the regenerated page and [`survivors::repair`]s it against
+/// `staged`; regenerates once more when anything was rewritten.
+fn settle(
+    doc: &mut OpenDoc<'_>,
+    page_index: PageIndex,
+    staged: &[Vec<RawChar>],
+) -> Result<usize, EngineError> {
+    let bindings = doc.bindings();
+    let mut scratch = ScratchPage::open(doc, page_index)?;
+    let mut trial = doc
+        .pdf()
+        .pages()
+        .get(page_index as PdfPageIndex)
+        .ctx(&format!("load page {page_index}"))?;
+    trial.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+    let repaired = survivors::repair(bindings, &trial, &scratch.page, staged)
+        .map_err(|e| e.with_page(page_index))?;
+    drop(trial);
+    if repaired > 0 {
+        scratch
+            .page
+            .regenerate_content()
+            .ctx("regenerate page content")?;
+    }
+    Ok(repaired)
+}
+
+/// The characters the apply must leave in place (see `survivors`): every visible character
+/// of `before` (the page before the apply) that is not under a mark and was not drawn by a
+/// text object removed whole — the victims `analysis` removes plus `whole` (splits that fell
+/// back). A character with no owner goes with a removed object whose bounds hold it.
+fn keep_list(
+    analysis: &Analysis,
+    rects: &[Rect],
+    before: &[RawChar],
+    whole: &[u32],
+) -> Vec<RawChar> {
+    let removed: Vec<&Victim> = analysis
+        .victims
+        .iter()
+        .filter(|v| {
+            v.kind == PdfPageObjectType::Text
+                && (v.action == Action::Remove || whole.contains(&v.index))
+        })
+        .collect();
+    let removed_ids: HashSet<u32> = removed.iter().map(|v| v.index).collect();
+    // Owners are known on the page as it was analysed (after any ungroup); `before` may be
+    // the page before the ungroup, so the removed characters are matched by value and box.
+    let gone: Vec<&RawChar> = analysis
+        .chars
+        .iter()
+        .filter(|c| !c.generated)
+        .filter(|c| match analysis.index_of.get(&c.object) {
+            Some(index) => removed_ids.contains(index),
+            None if analysis.in_group.contains_key(&c.object) => false,
+            None => removed.iter().any(|v| contains(&v.rect, &c.tight)),
+        })
+        .collect();
+    before
+        .iter()
+        .filter(|c| split::visible(c) && !split::marked(c, rects))
+        .filter(|c| {
+            !gone.iter().any(|g| {
+                split::same_char(g.unicode, c.unicode) && split::same_box(&g.tight, &c.tight)
+            })
+        })
+        .copied()
+        .collect()
 }
 
 /// A text object rewritten to its first run, with a copy per further run.
@@ -566,25 +707,29 @@ impl Victim {
     }
 }
 
-/// Ungroups every group in `groups` (highest index first) and regenerates the page.
+/// Ungroups every group in `groups` (highest index first) and regenerates the page; returns
+/// how many text objects the regeneration moved and [`settle`] put back.
 fn ungroup_all(
     doc: &mut OpenDoc<'_>,
     page_index: PageIndex,
     groups: &BTreeSet<u32>,
-) -> Result<(), EngineError> {
+) -> Result<usize, EngineError> {
     let bindings = doc.bindings();
-    {
+    let staged = {
         let mut scratch = ScratchPage::open(doc, page_index)?;
         for &g in groups.iter().rev() {
             ungroup::ungroup_at(bindings, &scratch.page, g as usize, true)?;
         }
+        let staged = survivors::staged(bindings, &scratch.page)?;
         scratch
             .page
             .regenerate_content()
             .ctx("regenerate page content")?;
-    }
+        staged
+    };
+    let repaired = settle(doc, page_index, &staged)?;
     doc.text.invalidate_page(page_index);
-    Ok(())
+    Ok(repaired)
 }
 
 /// The `detail` of a post-regeneration split failure: `splitFailed:<page>:<i>,<j>,…`.
@@ -686,48 +831,55 @@ pub fn apply_batch(
     }
 
     let pages: Vec<PageIndex> = by_page.keys().copied().collect();
-    let snapshot = st.doc(doc_id)?.to_bytes()?;
-    let mut forced: HashMap<PageIndex, HashSet<u32>> = HashMap::new();
-    let mut attempts = 0;
-    let outcome = loop {
-        attempts += 1;
-        let result = registry::mutate(
+    let snapshot = current_bytes(st.doc(doc_id)?)?;
+    let (outcome, joined) = drive(st, doc_id, &pages, snapshot.clone(), |st, forced| {
+        registry::mutate(
             st,
             doc_id,
             MutateOpts::new("undo.redact", ChangeReason::Redact).pages(pages.clone()),
             |doc| {
                 let mut total = PageOutcome::default();
                 for (&page, rects) in &by_page {
-                    let none = HashSet::new();
-                    let whole = forced.get(&page).unwrap_or(&none);
-                    let o = apply_page(doc, page, rects, options, whole)?;
+                    let none = Fallbacks::new();
+                    let fallbacks = forced.get(&page).unwrap_or(&none);
+                    let o = apply_page(doc, page, rects, options, fallbacks, false)?;
                     total.changed += o.changed;
                     total.blanked += o.blanked;
                     total.collateral.extend(o.collateral);
+                    total.whole.extend(o.whole);
+                    total.repaired += o.repaired;
                 }
                 Ok(total)
             },
-        );
-        match result {
-            Err(e) if e.code == ErrorCode::VerifyFailed => {
-                registry::replace(st, doc_id, snapshot.clone())?;
-                match parse_split_failed(&e) {
-                    // `mutate` rolled everything back; go again with those objects whole.
-                    Some((page, indices)) if attempts < 3 => {
-                        forced.entry(page).or_default().extend(indices);
-                        continue;
-                    }
-                    _ => return Err(e),
-                }
-            }
-            other => break other?,
-        }
+        )
+    })?;
+    if joined {
+        // `mutate` took its undo snapshot after the streams were joined; undo goes back to
+        // the document exactly as it was before this command.
+        let doc = st.doc_mut(doc_id)?;
+        doc.history.discard_last_undo();
+        doc.history.push("undo.redact", snapshot, false)?;
+    }
+    // Runs put back after a regeneration carry their spacing as `TJ` adjustments; write it
+    // back as `Tc` / `Tw` (`spacing`), so they extract as before — same undo step, best effort:
+    // the pinned version is already correct on the page.
+    let respaced = if outcome.repaired > 0 {
+        let bytes = crate::engine::save::serialize(st, doc_id)?;
+        respace(st, doc_id, &bytes, &pages).unwrap_or_else(|e| {
+            tracing::warn!(doc_id, error = %e, "text spacing not restored after a redaction");
+            None
+        })
+    } else {
+        None
     };
-    if outcome.blanked > 0 {
+    if let Some(bytes) = respaced {
+        registry::replace(st, doc_id, std::sync::Arc::from(bytes.into_boxed_slice()))?;
+    } else if outcome.blanked > 0 {
         // PDFium shares one decoded image between every object that draws the same image
         // XObject — on other pages too — so the blank shows on all of them in memory, while the
         // saved file blanks only this page's (the others still reference the old stream). Reload
         // from the bytes a save would write, so what the viewer shows is what the file holds.
+        // (A respaced reload above is such a reload too.)
         let bytes = crate::engine::save::serialize(st, doc_id)?;
         registry::replace(st, doc_id, std::sync::Arc::from(bytes.into_boxed_slice()))?;
     }
@@ -738,6 +890,208 @@ pub fn apply_batch(
         pages,
         collateral: outcome.collateral,
     })
+}
+
+/// [`spacing::restore_spacing`] on `bytes` (the serialised document), accepted only when the
+/// reopened file draws every character of `pages` exactly where the open document does.
+fn respace(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    bytes: &[u8],
+    pages: &[PageIndex],
+) -> Result<Option<Vec<u8>>, EngineError> {
+    let Some(out) = spacing::restore_spacing(bytes, pages)? else {
+        return Ok(None);
+    };
+    let pdfium = st.pdfium;
+    let doc = st.doc_mut(doc_id)?;
+    let bindings = doc.bindings();
+    let same = {
+        let reopened = pdfium
+            .load_pdf_from_byte_slice(&out, doc.password.as_deref())
+            .map_err(|e| EngineError::pdfium("reopen the respaced document", e))?;
+        let mut same = reopened.pages().len() == i32::from(doc.page_count());
+        for &p in pages {
+            if !same {
+                break;
+            }
+            let now = split::page_chars(bindings, doc.page(p)?)?;
+            let page = reopened
+                .pages()
+                .get(p as PdfPageIndex)
+                .ctx(&format!("load page {p}"))?;
+            let then = split::page_chars(bindings, &page)?;
+            same = survivors::missing(&now, &then).is_empty()
+                && survivors::missing(&then, &now).is_empty();
+        }
+        same
+    };
+    if !same {
+        return Ok(None);
+    }
+    Ok(Some(out))
+}
+
+/// The document as it is now, as bytes: the loaded file when nothing changed since (free),
+/// else a serialisation (5 ms/MB). The same rule as `registry::mutate`'s undo snapshot.
+fn current_bytes(doc: &OpenDoc<'_>) -> Result<std::sync::Arc<[u8]>, EngineError> {
+    if doc.generation == doc.saved_generation && doc.history.undo_depth() == 0 && !doc.ids_stamped {
+        Ok(doc.bytes.clone())
+    } else {
+        doc.to_bytes()
+    }
+}
+
+/// How many times [`drive`] runs an attempt at most: a split may fall back twice (without
+/// spaces, then whole) on two rounds of objects, and the streams may be joined once.
+const MAX_ATTEMPTS: usize = 6;
+
+/// The retry loop [`apply_batch`] and the preview's dry run ([`preview_checked`]) share.
+///
+/// `run` makes one attempt, given the objects to remove whole per page. After a failed
+/// attempt the document is reloaded from the attempt's starting bytes, then:
+///
+/// * a split that did not survive the regeneration (`splitFailed`) → again, those objects
+///   split without their spaces ([`Fallback::NoSpaces`]); when that fails too, removed whole
+///   (the result names them as collateral);
+/// * unmarked text lost (`lost`) on a page whose content streams break mid-object → again,
+///   once, after joining the streams (`contents`);
+/// * anything else → the error, with the document back to `snapshot`.
+///
+/// Returns the outcome and whether the streams were joined (the document then no longer
+/// starts from `snapshot`).
+fn drive<'p>(
+    st: &mut EngineState<'p>,
+    doc_id: &str,
+    pages: &[PageIndex],
+    snapshot: std::sync::Arc<[u8]>,
+    mut run: impl FnMut(
+        &mut EngineState<'p>,
+        &HashMap<PageIndex, Fallbacks>,
+    ) -> Result<PageOutcome, EngineError>,
+) -> Result<(PageOutcome, bool), EngineError> {
+    let mut base = snapshot.clone();
+    let mut joined = false;
+    let mut forced: HashMap<PageIndex, Fallbacks> = HashMap::new();
+    for attempt in 1..=MAX_ATTEMPTS {
+        let e = match run(st, &forced) {
+            Ok(outcome) => return Ok((outcome, joined)),
+            Err(e) => e,
+        };
+        // `mutate` already rolled back to its own snapshot; this is the second safety net
+        // (and the only one for the dry run, which has no `mutate`).
+        registry::replace(st, doc_id, base.clone())?;
+        if attempt < MAX_ATTEMPTS {
+            if let Some((page, indices)) = parse_split_failed(&e) {
+                let page = forced.entry(page).or_default();
+                for i in indices {
+                    let next = match page.get(&i) {
+                        None => Fallback::NoSpaces,
+                        Some(_) => Fallback::Whole,
+                    };
+                    page.insert(i, next);
+                }
+                continue;
+            }
+            if !joined && e.detail.as_deref() == Some("lost") {
+                if let Some(bytes) = join_streams(st, doc_id, pages)? {
+                    base = bytes;
+                    joined = true;
+                    continue;
+                }
+            }
+        }
+        if joined {
+            registry::replace(st, doc_id, snapshot)?;
+        }
+        return Err(e);
+    }
+    unreachable!("the last attempt returns")
+}
+
+/// Joins the content streams of `pages` that break mid-object ([`contents`]) and reloads the
+/// document from the result. `None` when no page needed it.
+fn join_streams(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    pages: &[PageIndex],
+) -> Result<Option<std::sync::Arc<[u8]>>, EngineError> {
+    let bytes = crate::engine::save::serialize(st, doc_id)?;
+    let Some(out) = contents::join_split_streams(&bytes, pages)? else {
+        return Ok(None);
+    };
+    let (count, password) = {
+        let doc = st.doc(doc_id)?;
+        (doc.page_count(), doc.password.clone())
+    };
+    crate::engine::save::verify_bytes(st, &out, count, password)?;
+    let out: std::sync::Arc<[u8]> = std::sync::Arc::from(out.into_boxed_slice());
+    registry::replace(st, doc_id, out.clone())?;
+    Ok(Some(out))
+}
+
+/// `redact_preview` as the command runs it: [`preview`], then the apply itself — split,
+/// regeneration, re-parse, every post-condition — as a **dry run on a throw-away copy** of the
+/// document ([`drive`] on a second open document, closed again), so a split that would not
+/// survive the regeneration is named as collateral here, before the confirm. When the dry run
+/// fails (`verifyFailed`: unmarked text the apply could not keep), so does the preview — the
+/// apply would refuse the same way.
+///
+/// Groups are ungrouped in the dry run (what the apply does after the one confirm the UI asks
+/// for); a form field under a mark skips it (the apply refuses anyway). Image pixels are not
+/// touched in the dry run.
+pub fn preview_checked(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page_index: PageIndex,
+    rects: &[Rect],
+) -> Result<RedactPreview, EngineError> {
+    let mut plan = preview(st.doc_mut(doc_id)?, page_index, rects)?;
+    if !plan.form_fields.is_empty() {
+        return Ok(plan);
+    }
+    let options = RedactOptions {
+        fill: [0, 0, 0],
+        overlay_text: None,
+        ungroup: !plan.groups.is_empty(),
+    };
+    let (bytes, password) = {
+        let doc = st.doc(doc_id)?;
+        (current_bytes(doc)?, doc.password.clone())
+    };
+    let copy = registry::open(st, None, bytes.to_vec(), password)?.doc_id;
+    let result = drive(st, &copy, &[page_index], bytes, |st, forced| {
+        let none = Fallbacks::new();
+        let fallbacks = forced.get(&page_index).unwrap_or(&none);
+        apply_page(
+            st.doc_mut(&copy)?,
+            page_index,
+            rects,
+            &options,
+            fallbacks,
+            true,
+        )
+    });
+    let _ = registry::close(st, &copy);
+    let (outcome, _) = result?;
+    for c in outcome.collateral {
+        let c = c.trim();
+        if !c.is_empty() && !plan.collateral.iter().any(|x| x == c) {
+            plan.collateral.push(c.to_string());
+        }
+    }
+    // Object indices are the dry run's; they are the preview's own unless groups were
+    // ungrouped first (the listed objects are then the page's top level before that).
+    if plan.groups.is_empty() {
+        for o in plan
+            .text_objects
+            .iter_mut()
+            .filter(|o| outcome.whole.contains(&o.object_id))
+        {
+            o.split = false;
+        }
+    }
+    Ok(plan)
 }
 
 /// One contiguous run of characters under the marks, and whether it can actually be deleted.
@@ -820,7 +1174,7 @@ fn analyze(
     doc: &mut OpenDoc<'_>,
     page_index: PageIndex,
     rects: &[Rect],
-    forced_whole: &HashSet<u32>,
+    forced: &Fallbacks,
 ) -> Result<Analysis, EngineError> {
     let bindings = doc.bindings();
     let page = doc.page(page_index)?;
@@ -924,9 +1278,14 @@ fn analyze(
                 match split::runs(cs, rects) {
                     Some(runs) if runs.is_empty() => (text, String::new(), Action::Remove),
                     Some(runs)
-                        if !forced_whole.contains(&(index as u32))
+                        if forced.get(&(index as u32)) != Some(&Fallback::Whole)
                             && split::splittable(bindings, handle, cs) =>
                     {
+                        let runs = if forced.get(&(index as u32)) == Some(&Fallback::NoSpaces) {
+                            runs.into_iter().map(split::Run::without_spaces).collect()
+                        } else {
+                            runs
+                        };
                         (text, String::new(), Action::Split(runs))
                     }
                     _ => (text, outside, Action::Remove),

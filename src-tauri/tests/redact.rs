@@ -898,6 +898,103 @@ fn redact_removes_a_transparent_image_whole() {
     assert_eq!(images, 0, "the image went whole");
 }
 
+/// v0.3 verification round 2 (R1): a scan stored as a 1-bit **stencil mask**
+/// (`/ImageMask true`, painted in the fill colour) over a red background. Marking one area
+/// blanks it in place — the page keeps its scan, the background still shows through the
+/// unpainted samples, the rest looks the same — and the mask stream is gone from the file.
+#[test]
+fn redact_blanks_a_stencil_mask_scan_in_place() {
+    use lopdf::{dictionary, Object, Stream};
+    // 200 × 250 samples over 400 × 500 pt (2 pt per sample), a checkerboard of "ink".
+    let (w, h) = (200usize, 250usize);
+    let row = w.div_ceil(8);
+    let mut samples = vec![0xFFu8; row * h]; // 1 = not painted (default /Decode [0 1])
+    for y in 0..h {
+        for x in 0..w {
+            if (x / 5 + y / 5) % 2 == 0 {
+                samples[y * row + x / 8] &= !(0x80 >> (x % 8));
+            }
+        }
+    }
+    let mut file = lopdf::Document::with_version("1.7");
+    let pages_id = file.new_object_id();
+    let mask = file.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => w as i64,
+            "Height" => h as i64, "ImageMask" => true, "BitsPerComponent" => 1,
+        },
+        samples.clone(),
+    ));
+    let content = b"q 1 0 0 rg 0 0 400 500 re f Q q 0 0 1 rg 400 0 0 500 0 0 cm /Im0 Do Q";
+    let contents = file.add_object(Stream::new(dictionary! {}, content.to_vec()));
+    let page = file.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 400.into(), 500.into()],
+        "Contents" => contents,
+        "Resources" => dictionary! { "XObject" => dictionary! { "Im0" => mask } },
+    });
+    file.objects.insert(
+        pages_id,
+        Object::Dictionary(
+            dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+        ),
+    );
+    let catalog = file.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    file.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    file.save_to(&mut bytes).expect("lopdf save");
+    let doc = reopen(bytes);
+
+    let mark = Rect::new(100.0, 200.0, 200.0, 260.0);
+    let plan = preview(&doc.doc_id, 0, vec![mark]);
+    let image = plan.image_objects.first().expect("the scan is listed");
+    assert!(
+        image.blank,
+        "a stencil scan is blanked, not removed: {plan:?}"
+    );
+    let far = Rect::new(250.0, 300.0, 390.0, 480.0);
+    let before_far = render(&doc.doc_id, 0, far);
+    apply_opts(&doc.doc_id, 0, vec![mark], false).expect("apply");
+
+    let bytes = save_bytes(&doc.doc_id);
+    let saved = reopen(bytes.clone());
+    let images = with_doc(&saved.doc_id, |d| {
+        let p = d.page(0)?;
+        Ok(p.objects()
+            .iter()
+            .filter(|o| o.as_image_object().is_some())
+            .count())
+    })
+    .unwrap();
+    assert_eq!(images, 1, "the scan stays on the page");
+    let (far_mean, far_off) = pixel_diff(&before_far, &render(&saved.doc_id, 0, far));
+    assert!(
+        far_mean < 1.0 && far_off < 0.002,
+        "far from the mark the page looks the same ({far_mean:.2}, {far_off:.4})"
+    );
+    let inside = render(&saved.doc_id, 0, Rect::new(101.0, 201.0, 199.0, 259.0));
+    assert!(
+        inside[32..]
+            .chunks_exact(4)
+            .all(|p| p[0] < 8 && p[1] < 8 && p[2] < 8),
+        "the marked area is black"
+    );
+    // The mask is not in the file any more, in any form.
+    let reread = lopdf::Document::load_mem(&bytes).expect("lopdf");
+    assert!(
+        !reread
+            .objects
+            .values()
+            .filter_map(|o| o.as_stream().ok())
+            .any(|s| s.dict.has(b"ImageMask")),
+        "no stencil stream is left"
+    );
+    assert!(
+        !image_streams(&bytes).contains(&samples),
+        "the unredacted samples must not survive in the saved file"
+    );
+}
+
 // --- R2: word-level split -------------------------------------------------------------
 
 /// The characters of `needle`'s first occurrence on `page`, with their tight boxes.
@@ -1088,10 +1185,8 @@ fn lopdf_doc(
     out
 }
 
-/// R2 fallback: a Type3 font has no font program, so the run is removed whole and the
-/// preview names the collateral first.
-#[test]
-fn redact_type3_run_falls_back_to_whole_removal() {
+/// One page: "abc def" in a Type3 font at y 150, "Helvetica stays" at y 100.
+fn type3_doc() -> TestDoc {
     use lopdf::{dictionary, Object, Stream};
     let bytes = lopdf_doc(
         "BT /T3 12 Tf 50 150 Td (abc def) Tj ET BT /F1 12 Tf 50 100 Td (Helvetica stays) Tj ET",
@@ -1140,7 +1235,14 @@ fn redact_type3_run_falls_back_to_whole_removal() {
             dictionary! { "Font" => dictionary! { "T3" => t3, "F1" => f1 } }
         },
     );
-    let doc = reopen(bytes);
+    reopen(bytes)
+}
+
+/// R2 fallback: a Type3 font has no font program, so the run is removed whole and the
+/// preview names the collateral first.
+#[test]
+fn redact_type3_run_falls_back_to_whole_removal() {
+    let doc = type3_doc();
     let text = page_text(&doc.doc_id, 0);
     assert!(text.contains("abc def"), "the Type3 run extracts: {text:?}");
     let mark = word_rect(&doc.doc_id, 0, "def");
@@ -1161,6 +1263,32 @@ fn redact_type3_run_falls_back_to_whole_removal() {
     let text = page_text(&saved.doc_id, 0);
     assert!(!text.contains("def") && !text.contains("abc"), "{text:?}");
     assert!(text.contains("Helvetica stays"));
+}
+
+/// v0.3 verification round 2: PDFium's content generator cannot write Type3 text at all, so
+/// redacting a word anywhere else on the page used to delete the Type3 run with it, silently.
+/// The page-wide post-condition refuses instead: nothing changes, the preview says why.
+#[test]
+fn redact_refuses_when_the_regeneration_would_drop_unmarked_text() {
+    let doc = type3_doc();
+    let before = page_text(&doc.doc_id, 0);
+    let g = generation(&doc.doc_id);
+    let mark = word_rect(&doc.doc_id, 0, "Helvetica");
+    let err = apply(&doc.doc_id, 0, vec![mark], [0, 0, 0]).expect_err("refused");
+    assert_eq!(err.code, ErrorCode::VerifyFailed, "{err:?}");
+    assert!(
+        err.message.contains("abc"),
+        "the message names the text: {err:?}"
+    );
+    assert_eq!(generation(&doc.doc_id), g, "nothing happened");
+    assert_eq!(page_text(&doc.doc_id, 0), before);
+    let doc_id = doc.doc_id.clone();
+    let checked = with_state(move |st| redact::preview_checked(st, &doc_id, 0, &[mark]));
+    assert_eq!(
+        checked.expect_err("the dry run refuses too").code,
+        ErrorCode::VerifyFailed
+    );
+    assert_eq!(generation(&doc.doc_id), g, "the dry run changed nothing");
 }
 
 // --- R4: groups (Form XObjects) ---------------------------------------------------------

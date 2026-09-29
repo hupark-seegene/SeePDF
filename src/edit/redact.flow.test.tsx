@@ -186,6 +186,15 @@ describe("편집 · 영역 표시", () => {
     expect(marks().map((m) => m.page)).toEqual([0, 1]);
   });
 
+  it("v0.3: a page the engine's dry run refuses says why in the preview", async () => {
+    const { ctxs, surfaces, panel } = await setup();
+    vi.spyOn(mock, "redactPreview").mockRejectedValue({ code: "verifyFailed", message: "3 character(s) outside the marks would be lost" });
+    drag(surfaces[0], ctxs[0], [60, 745], [400, 720]);
+    const note = await panel.findByTestId("redact-preview-0");
+    await waitFor(() => expect(note.textContent).toContain("표시하지 않은 글자도 사라지므로"));
+    expect(useEditStore.getState().previews[0]).toMatchObject({ status: "error", refused: true });
+  });
+
   it("cancel at the confirm keeps every mark and writes nothing", async () => {
     const { ctxs, surfaces } = await setup();
     const apply = vi.spyOn(mock, "applyRedactionsBatch");

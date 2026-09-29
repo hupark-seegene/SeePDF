@@ -4,8 +4,10 @@
 //! re-encodes the characters through the font's own `/ToUnicode` map (the same reverse lookup
 //! the in-place text edit uses), and `FPDFText_SetPositions` pins every glyph where it was.
 //! After `set_text` PDFium's content generator writes the object as a `TJ` whose kerning comes
-//! from those positions, so the survivors keep their exact places through a save — kerning,
-//! `Tc` / `Tw` justification and all (measured: `tests/redact.rs`).
+//! from those positions, so the survivors keep their places through a save. The generator does
+//! not write `Tc` / `Tw`, though (it takes them out of the adjustments): a justified run moves
+//! once regenerated, which `survivors.rs` puts right after the regeneration and `spacing.rs`
+//! writes back as `Tc` / `Tw` (verification round 2, `tests/redact_split_regressions.rs`).
 //!
 //! For each text object the marks cover only partly:
 //!
@@ -33,9 +35,12 @@
 //! without a usable `/ToUnicode` (the characters read back as raw codes), vertical or
 //! out-of-baseline runs, text whose characters come from `/ActualText` rather than its
 //! glyphs, and any run that fails its read-back — for a glyph the font cannot re-encode from
-//! its Unicode value, for instance (a TeX hyphen reported as U+0002). `mod.rs` runs the same
-//! rewrite and read-back on a throw-away parse in the preview, so a fallback is named there
-//! before the confirm, not discovered after the destructive step.
+//! its Unicode value, for instance (a TeX hyphen reported as U+0002). A run that reads back in
+//! memory but not after the save — a space the font cannot encode, written as code 0 — is split
+//! again without its spaces ([`Run::without_spaces`]), then removed whole. `mod.rs` runs the same
+//! rewrite and read-back on a throw-away parse in the static preview, and the whole apply as a
+//! dry run on a throw-away copy in `preview_checked`, so a fallback is named before the
+//! confirm, not discovered after the destructive step.
 
 use super::raw::{self, HandleKey, RawChar, TextPage};
 use crate::engine::raw::object::Matrix;
@@ -65,6 +70,14 @@ impl Run {
             .iter()
             .map(|c| char::from_u32(c.unicode).unwrap_or('\u{fffd}'))
             .collect()
+    }
+
+    /// The same run without its whitespace characters (glyphs keep their origins): for a
+    /// font that cannot re-encode a space (`mod.rs`, `Fallback::NoSpaces`).
+    pub fn without_spaces(self) -> Run {
+        Run {
+            chars: self.chars.into_iter().filter(|c| !is_space(c)).collect(),
+        }
     }
 
     /// The run as the glyphs that drew it: consecutive characters at one origin with one box
@@ -111,7 +124,7 @@ const LINE_END_HYPHEN: char = '\u{2}';
 
 /// The same character for the read-back: a hyphen written back may or may not end its line
 /// any more, so U+0002, U+002D and the soft hyphen U+00AD all read as one.
-fn same_char(a: u32, b: u32) -> bool {
+pub(super) fn same_char(a: u32, b: u32) -> bool {
     let norm = |c: u32| if c == 0x02 || c == 0xAD { 0x2D } else { c };
     norm(a) == norm(b)
 }
@@ -139,7 +152,7 @@ fn is_space(c: &RawChar) -> bool {
 }
 
 /// A character the read-back compares: drawn by the object and not whitespace.
-fn visible(c: &RawChar) -> bool {
+pub(super) fn visible(c: &RawChar) -> bool {
     !c.generated && !is_space(c)
 }
 
@@ -300,6 +313,39 @@ pub fn rewrite(
     raw::set_positions(bindings, handle, &positions)
 }
 
+/// Pins the glyphs of the text object at `index` of `page` to the origins of `run` — the
+/// characters that object already draws, in order — **without** re-encoding them: its char
+/// codes stay as they are, only the matrix origin (moved to the first glyph) and the glyph
+/// positions change. What `survivors::repair` uses on a re-parsed object that the generator
+/// moved (dropped `Tc` / `Tw`); it works for fonts `set_text` cannot write back (raw codes,
+/// no `/ToUnicode`). Fails — changing nothing — when PDFium counts another number of glyphs
+/// in the object than `run` has.
+pub fn pin(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    index: usize,
+    run: &Run,
+) -> Result<(), EngineError> {
+    let handle = raw::object_at(bindings, page, index)?;
+    let m = raw::matrix(bindings, handle);
+    let origins: Vec<(f32, f32)> = run.glyphs().into_iter().map(|(_, o)| o).collect();
+    let first = *origins
+        .first()
+        .ok_or_else(|| EngineError::invalid("empty run"))?;
+    let mut positions = Vec::with_capacity(origins.len().saturating_sub(1));
+    for &origin in &origins[1..] {
+        let (tx, ty) = text_space_delta(m, first, origin)
+            .ok_or_else(|| EngineError::invalid("singular text matrix"))?;
+        if ty.abs() * scale_of(m) > TOLERANCE {
+            return Err(EngineError::invalid("not a horizontal run"));
+        }
+        positions.push(tx);
+    }
+    // Positions first: when PDFium refuses them (another glyph count) nothing has changed.
+    raw::set_positions(bindings, handle, &positions)?;
+    raw::set_matrix(bindings, handle, [m[0], m[1], m[2], m[3], first.0, first.1])
+}
+
 /// Does `page` (in memory) draw every visible character of `run` through the object
 /// `handle`, in order, at the same tight boxes? `chars` = a fresh text page's characters.
 /// Whitespace is not compared (module docs).
@@ -331,7 +377,7 @@ pub fn survives(chars: &[RawChar], runs: &[Run]) -> bool {
         })
 }
 
-fn same_box(a: &Rect, b: &Rect) -> bool {
+pub(super) fn same_box(a: &Rect, b: &Rect) -> bool {
     (a.l - b.l).abs() <= TOLERANCE
         && (a.b - b.b).abs() <= TOLERANCE
         && (a.r - b.r).abs() <= TOLERANCE

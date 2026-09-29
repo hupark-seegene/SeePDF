@@ -306,8 +306,8 @@ function PagePreview({ page, state }: { page: PageIndex; state: RedactPreviewSta
   }
   if (state.status === "error") {
     return (
-      <p className="redact-page text-sm dim">
-        {t("redact.pageLabel", { page: page + 1 })} · {t("redact.previewFailed")}
+      <p className={state.refused ? "redact-page redact-collateral-note text-sm" : "redact-page text-sm dim"} data-testid={`redact-preview-${page}`}>
+        {t("redact.pageLabel", { page: page + 1 })} · {t(state.refused ? "redact.previewRefused" : "redact.previewFailed")}
       </p>
     );
   }

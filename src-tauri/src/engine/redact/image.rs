@@ -9,7 +9,14 @@
 //! * a `/DCTDecode` (or `/JPXDecode`) original is re-encoded as JPEG (quality
 //!   [`JPEG_QUALITY`]) and swapped in with `FPDFImageObj_LoadJpegFileInline`, the way
 //!   `compress.rs` does, so a scan does not grow tenfold as Flate;
-//! * anything else goes through `FPDFImageObj_SetBitmap` (PDFium writes `/FlateDecode`).
+//! * anything else goes through `FPDFImageObj_SetBitmap` (PDFium writes `/FlateDecode`);
+//! * a **stencil mask** (`/ImageMask true`: a 1-bit scan painted in the fill colour, often
+//!   `/JBIG2Decode` or `/CCITTFaxDecode`) has no pixels of its own to blank. It is written
+//!   back as what it draws — its rasterisation, one pixel per mask sample, in the fill colour
+//!   where it paints and transparent where it does not — with the marked pixels opaque black
+//!   (`SetBitmap` with alpha writes an RGB image plus an `/SMask`). The page looks the same,
+//!   anything drawn under the scan still shows through, and the mask stream is gone. Larger
+//!   than the 1-bit original (Flate, not JBIG2), which is the price of keeping the page.
 //!
 //! **Which pixels.** The image matrix maps the unit square onto the page; pixel `(x, y)` of a
 //! `w × h` image (row 0 at the top) covers `[x/w, (x+1)/w] × [1-(y+1)/h, 1-y/h]` of it. A
@@ -35,8 +42,8 @@
 //!
 //! **Not blanked, removed whole** (`RedactImageObject.blank == false`): images with
 //! transparency (an `/SMask` would be dropped by `SetBitmap` and the image repainted opaque),
-//! stencil masks and 1-bit images that are not gray, palette (`/Indexed`), `/Separation`,
-//! `/DeviceN` and pattern images, and bitmaps PDFium cannot hand back.
+//! 1-bit images that are not gray, palette (`/Indexed`), `/Separation`, `/DeviceN` and
+//! pattern images, and bitmaps PDFium cannot hand back.
 
 use super::raw::{self, RawBitmap};
 use crate::engine::raw::object::Matrix;
@@ -68,6 +75,16 @@ fn gray_colour_space(cs: i32) -> bool {
     matches!(cs, 1 | 4)
 }
 
+/// A stencil mask (`/ImageMask true`): one bit per sample and no colour space of its own —
+/// PDFium reports `FPDF_COLORSPACE_UNKNOWN`.
+fn is_stencil(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    handle: FPDF_PAGEOBJECT,
+) -> bool {
+    raw::image_metadata(bindings, page, handle) == Some((1, 0))
+}
+
 /// Can this image be blanked in place (vs. removed whole)? Static checks only — the preview
 /// uses it, so it never mutates.
 ///
@@ -85,6 +102,12 @@ pub fn can_blank(
     let Some((bpp, cs)) = raw::image_metadata(bindings, page, handle) else {
         return false;
     };
+    if is_stencil(bindings, page, handle) {
+        // Blanked through its rasterisation ([`blank_stencil`]): that must come back whole.
+        return raw::image_bitmap(bindings, handle).is_some_and(|b| {
+            processed(bindings, document, page, handle, b.width, b.height).is_some()
+        });
+    }
     if !plain_colour_space(cs) {
         return false;
     }
@@ -155,6 +178,17 @@ pub fn blank(
     let Some(mut bitmap) = raw::image_bitmap(bindings, handle) else {
         return Ok(Blanked::Unfaithful);
     };
+    if is_stencil(bindings, page, handle) {
+        return blank_stencil(
+            bindings,
+            document,
+            page,
+            index,
+            rects,
+            bitmap.width,
+            bitmap.height,
+        );
+    }
     let bpp = bitmap.bpp();
     if bpp == 0 {
         return Ok(Blanked::Unfaithful);
@@ -206,6 +240,73 @@ pub fn blank(
         if changed as f64 > allowed {
             return Ok(Blanked::Unfaithful);
         }
+    }
+    Ok(Blanked::Done)
+}
+
+/// [`blank`] for a stencil mask (module docs): the mask is replaced by its own
+/// rasterisation with the marked pixels opaque black, and verified the same two ways.
+fn blank_stencil(
+    bindings: &dyn PdfiumLibraryBindings,
+    document: &PdfDocument<'_>,
+    page: &PdfPage<'_>,
+    index: usize,
+    rects: &[Rect],
+    w: usize,
+    h: usize,
+) -> Result<Blanked, EngineError> {
+    let handle = raw::object_at(bindings, page, index)?;
+    let covered = covered_pixels(raw::matrix(bindings, handle), w, h, rects);
+    if covered.is_empty() {
+        return Ok(Blanked::Nothing);
+    }
+    let Some(before) = processed(bindings, document, page, handle, w, h) else {
+        return Ok(Blanked::Unfaithful);
+    };
+    let mut data = before.clone();
+    for &(x, y) in &covered {
+        let o = (y * w + x) * 4;
+        data[o..o + 4].copy_from_slice(&[0, 0, 0, 255]);
+    }
+    let mut bitmap = RawBitmap {
+        width: w,
+        height: h,
+        stride: w * 4,
+        // FPDFBitmap_BGRA: PDFium writes the alpha as an `/SMask`.
+        format: 4,
+        data,
+    };
+    raw::set_bitmap(bindings, page, handle, &mut bitmap)?;
+
+    let handle = raw::object_at(bindings, page, index)?;
+    let Some(back) = raw::image_bitmap(bindings, handle) else {
+        return Err(verify_failed("the blanked image could not be read back"));
+    };
+    if back.width != w || back.height != h || back.bpp() == 0 {
+        return Err(verify_failed("the blanked image changed size"));
+    }
+    check_black(&back, &covered, false)?;
+    let Some(after) = processed(bindings, document, page, handle, w, h) else {
+        return Ok(Blanked::Unfaithful);
+    };
+    // Opaque black under the marks, what the mask drew everywhere else.
+    let changed = before
+        .chunks_exact(4)
+        .zip(after.chunks_exact(4))
+        .filter(|(p, q)| (0..4).any(|k| p[k].abs_diff(q[k]) > CHANGED))
+        .count();
+    let allowed = covered.len() as f64 * CHANGED_FACTOR + (w * h) as f64 * CHANGED_SLACK;
+    let dark = covered.iter().all(|&(x, y)| {
+        let p = &after[(y * w + x) * 4..(y * w + x) * 4 + 4];
+        p[..3].iter().all(|&v| v < 16) && p[3] >= 250
+    });
+    if !dark {
+        return Err(verify_failed(
+            "stencil pixels under the marks are not blank",
+        ));
+    }
+    if changed as f64 > allowed {
+        return Ok(Blanked::Unfaithful);
     }
     Ok(Blanked::Done)
 }

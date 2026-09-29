@@ -843,22 +843,27 @@ redacted. Any failure — `verifyFailed` on a later page included — restores t
 a page out of range → `invalidArgument`.
 Owner (a) for redaction, (b) for the metadata and security file rewrites. Features F-22, P1-1, P1-2, P1-3.
 
-**v0.3 (pkg1) redaction** (`engine/redact/`: `mod.rs`, `split.rs`, `image.rs`, `raw.rs`). A character is
+**v0.3 (pkg1) redaction** (`engine/redact/`: `mod.rs`, `split.rs`, `image.rs`, `raw.rs`; round 2:
+`survivors.rs`, `contents.rs`, `spacing.rs`). A character is
 *marked* when its tight box overlaps a mark with positive area (every step uses this one rule).
 * **Text (R2)** — a text object the marks cover only partly is **split**: its characters are read from a
   text page (`FPDFText_GetTextObject`), cut into runs of unmarked characters; the object is rewritten to the
   first run (`set_text` through the font's own `/ToUnicode`, origin moved to the run's first glyph, every
-  glyph pinned with `FPDFText_SetPositions`, which PDFium then writes as a `TJ` — kerning and `Tc` / `Tw`
-  spacing survive the save) and keeps its place in the stream; each further run is a copy moved out of a
+  glyph pinned with `FPDFText_SetPositions`, which PDFium then writes as a `TJ`) and keeps its place in the
+  stream; each further run is a copy moved out of a
   second parse of the page (clip path, colours, marks kept), inserted right after it. Runs are trimmed of
   leading / trailing whitespace; a ligature PDFium reports as several characters at one origin and box
   ("fi") is written back as its presentation form (U+FB01), and a line-end hyphen (reported as U+0002) as
   `-`. Every run must read back from a fresh text page with the same visible (non-whitespace) characters at
   the same tight boxes (± 0.5 pt) before the content is regenerated, and again from a re-parse after it; a
-  run that fails afterwards makes the whole batch roll back and retry once with that object removed whole
-  (its text then in `collateral`). **The preview runs the same rewrite and read-back on a throw-away parse**
-  (dropped unregenerated), so `split: true` is reported only when it holds and a fallback is in the
-  preview's `collateral` before the confirm. `split: false` (whole-run removal, `collateral` named first)
+  run that fails afterwards makes the whole batch roll back and retry with that object split without its
+  spaces (a font with no `/ToUnicode` entry for U+0020 has `set_text` write the space as code 0, which moves
+  the rest of the run once saved), then removed whole (its text then in `collateral`).
+  **`redact_preview` is a dry run of the apply** (v0.3 round 2): the static plan, then the whole apply —
+  split, regeneration, re-parse, every post-condition, the retries — on a throw-away second open copy of the
+  document (groups ungrouped as after the UI's confirm, image pixels untouched), closed again. So
+  `split: true` is reported only when it survives the save, every fallback is in `collateral` before the
+  confirm, and a page the apply would refuse makes the preview fail with the same `verifyFailed`. `split: false` (whole-run removal, `collateral` named first)
   for Type3 fonts (no font program — PDFium's writer drops Type3 text), fonts without a usable
   `/ToUnicode`, text carrying `/ActualText` (extraction reads the replacement, not the glyphs), runs not on
   one baseline, and runs that fail the trial (a glyph the font cannot re-encode from its Unicode value).
@@ -876,8 +881,8 @@ Owner (a) for redaction, (b) for the metadata and security file rewrites. Featur
   image alone (mask applied, one pixel per image pixel) before and after may differ in about as many pixels
   as were blanked; more ⇒ PDFium handed back palette indices or an inverted `/Decode`, and the image is
   removed whole instead. `blank: false` (removed whole) for images with an `/SMask` / `/Mask` (found through
-  that rasterisation's alpha — `FPDFPageObj_HasTransparency` does not see an image's own mask), stencil
-  masks, 1-bit images that are not gray, `/Indexed`, `/Separation`, `/DeviceN` and pattern images. The old
+  that rasterisation's alpha — `FPDFPageObj_HasTransparency` does not see an image's own mask), 1-bit
+  images that are not gray, `/Indexed`, `/Separation`, `/DeviceN` and pattern images. The old
   stream is not written to the saved file.
 * **Paths** — entirely inside: removed; partly covered: removed when small (≥ ¼ of its box under the marks,
   or no side > 36 pt) or curved (outlined glyphs, logos); a large straight-segment path (table grid, frame,
@@ -886,6 +891,23 @@ Owner (a) for redaction, (b) for the metadata and security file rewrites. Featur
   `groups`. Without `options.ungroup` the apply refuses as before (`verifyFailed`, the stuck text named; detail
   `groups` when only images are inside); with it those groups are ungrouped first (§7.4c, lossy: a group's
   transparency is not a reason to refuse here), nested groups up to 8 levels, inside the same undo step.
+* **Everything else stays (round 2).** PDFium's content generator writes no `Tc` / `Tw` and computes the
+  `TJ` adjustments without them, so every justified or letter-spaced run of a regenerated stream moves
+  (untouched ones included). Each regeneration is therefore followed by a re-parse in which every text object
+  that no longer draws its characters at the boxes it had in memory is put back (glyph positions pinned on
+  its own char codes, else re-encoded; tried on a throw-away parse first) and the page regenerated again;
+  after a successful batch, the repeating adjustment of those `TJ`s is written back as `Tc` / `Tw` with
+  `lopdf` (only when the reopened file draws every character at the same box), so they also extract as
+  before. Then a **page-wide post-condition**: every visible character that was on the page, is not under a
+  mark and was not drawn by an object removed whole (`collateral`) must still be extractable at its box
+  (± 0.5 pt), else `verifyFailed` (detail `lost`, the text named) — e.g. a Type3 run elsewhere on the page,
+  which PDFium cannot write at all. A page whose `/Contents` streams break mid-object (`160F-2019.pdf`:
+  `…(que)]` ends one stream, `TJ ET EMC` starts the next — regenerating one leaves a dangling fragment that
+  breaks the rest of the page) has its streams joined into one with `lopdf` and the batch retried; the old
+  streams leave the file; undo returns the document as it was, its own streams included.
+* **Stencil masks (R1, round 2)** — a 1-bit `/ImageMask` scan is blanked in place too: it is replaced by
+  its own rasterisation (fill colour where it paints, transparent elsewhere → RGB + `/SMask`) with the
+  marked pixels opaque black, verified like the others; the mask stream leaves the file.
 * `removedObjects` counts objects removed, split or blanked.
 
 Stage 3 semantics (`docs/STAGE3_SECURITY_NOTES.md`):

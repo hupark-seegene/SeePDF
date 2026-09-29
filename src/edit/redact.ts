@@ -175,8 +175,9 @@ export async function runPreview(page: PageIndex): Promise<RedactPreview | null>
       useEditStore.getState().setPreview(page, { status: "ready", result });
     }
     return result;
-  } catch {
-    if (latest.get(page) === mine && marksOn(page).length) useEditStore.getState().setPreview(page, { status: "error" });
+  } catch (e) {
+    const refused = api.isSeePdfError(e) && e.code === "verifyFailed";
+    if (latest.get(page) === mine && marksOn(page).length) useEditStore.getState().setPreview(page, { status: "error", refused });
     return null;
   }
 }

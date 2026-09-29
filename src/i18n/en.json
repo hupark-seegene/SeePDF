@@ -350,6 +350,7 @@
   "redact.pageSummary": "Page {{page}} · {{text}} text · {{images}} images · {{annots}} annotations",
   "redact.previewLoading": "Checking…",
   "redact.previewFailed": "Could not load the preview",
+  "redact.previewRefused": "This page cannot be redacted without losing text outside the marks, so applying would be refused",
   "redact.collateral": "Text outside the marks will also be removed",
   "redact.collateralHint": "This text cannot be split and rewritten (a Type3 font, characters the font has no information for or cannot write back, or text with replacement text), so any text object a mark touches is removed whole.",
   "redact.formFields": "Areas with form fields cannot be redacted: {{names}}",

@@ -350,6 +350,7 @@
   "redact.pageSummary": "{{page}}쪽 · 텍스트 {{text}} · 이미지 {{images}} · 주석 {{annots}}",
   "redact.previewLoading": "확인하는 중…",
   "redact.previewFailed": "미리 보기를 불러오지 못했습니다",
+  "redact.previewRefused": "이 페이지는 표시한 곳만 지울 수 없습니다. 적용하면 표시하지 않은 글자도 사라지므로 적용되지 않습니다",
   "redact.collateral": "표시한 영역 밖의 텍스트도 함께 제거됩니다",
   "redact.collateralHint": "이 텍스트는 나눠서 다시 쓸 수 없어(Type3 글꼴, 글자 정보가 없거나 다시 쓸 수 없는 글자, 대체 텍스트(ActualText)가 붙은 텍스트 등), 표시한 영역에 걸친 텍스트 개체가 통째로 제거됩니다.",
   "redact.formFields": "양식 필드가 있는 영역은 적용할 수 없습니다: {{names}}",
