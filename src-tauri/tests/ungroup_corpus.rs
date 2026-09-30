@@ -12,7 +12,8 @@
 //!    what Korean office users produce — plain forms, Office/Hancom transparency groups, real
 //!    transparency, nested forms, shared forms, /Matrix + /BBox, Hangul CID fonts, tagged / OCG
 //!    content, whole-page forms, inline images / shadings, font resources that collide between
-//!    the page and a form. PNGs of every look change land in `png/`, saved outputs in `saved/`.
+//!    the page and a form, forms that take fonts / images from the page's resources, graphics
+//!    drawn over text, mirrored text. PNGs of every look change land in `png/`, saved outputs in `saved/`.
 //! 2. For every corpus file and every repo fixture page that has text inside a Form XObject,
 //!    `run_case` drives the **same call sequence the UI takes** (`src/edit/actions.ts`
 //!    `beginParagraphEdit` → `src/edit/ungroup.ts` `confirmUngroup` → re-probe → `commitParagraph`):
@@ -1120,6 +1121,186 @@ fn generate_corpus() -> Vec<Case> {
         ));
     }
 
+    // (13) v0.3.1 verification round 1: a form whose /Resources lacks a whole category —
+    // PDFium then looks the name up in the PAGE's resources (`FindResourceObj`)
+    {
+        let mut p = Pdf::new();
+        let desc = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "CIDFontType0", "BaseFont" => "HYGoThic-Medium",
+            "CIDSystemInfo" => dictionary! { "Registry" => Object::string_literal("Adobe"), "Ordering" => Object::string_literal("Korea1"), "Supplement" => 2 },
+            "FontDescriptor" => dictionary! { "Type" => "FontDescriptor", "FontName" => "HYGoThic-Medium", "Flags" => 6, "FontBBox" => vec![0.into(), (-200).into(), 1000.into(), 900.into()], "ItalicAngle" => 0, "Ascent" => 880, "Descent" => -120, "CapHeight" => 700, "StemV" => 80 },
+            "DW" => 1000,
+        });
+        let f0 = p.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "HYGoThic-Medium",
+            "Encoding" => "UniKS-UCS2-H", "DescendantFonts" => vec![desc.into()],
+        });
+        let hex = |s: &str| {
+            s.encode_utf16()
+                .map(|u| format!("{u:04X}"))
+                .collect::<String>()
+        };
+        let fm = p.form(
+            [0.0, 0.0, 480.0, 200.0],
+            dictionary! { "ProcSet" => vec!["PDF".into(), "Text".into()] },
+            dictionary! {},
+            &format!(
+                "BT /F0 14 Tf 0 0 0 rg 10 150 Td <{}> Tj ET",
+                hex("확인 그룹 안의 문장")
+            ),
+        );
+        p.page(
+            &format!(
+                "BT /F0 14 Tf 60 790 Td <{}> Tj ET q 1 0 0 1 60 600 cm /Fm0 Do Q",
+                hex("본문 텍스트")
+            ),
+            dictionary! { "Font" => dictionary! { "F0" => f0 }, "XObject" => dictionary! { "Fm0" => fm } },
+        );
+        cases.push(case(
+            "c13a-korean-partial-resources",
+            "form /Resources without /Font; its /F0 (Type0 HYGoThic-Medium UniKS-UCS2-H) is the page's",
+            p.finish(),
+            0,
+            [60.0 + 10.0 + 7.0, 600.0 + 150.0 + 5.0],
+            vec![],
+        ));
+    }
+    {
+        let mut p = Pdf::new();
+        let fonts = p.fonts();
+        let icon = p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+                "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8,
+            },
+            vec![255, 0, 0],
+        ));
+        let body = format!("{PARA} q 10 0 0 10 400 20 cm /Ic0 Do Q");
+        let fm = p.form(
+            [0.0, 0.0, 480.0, 200.0],
+            dictionary! { "Font" => fonts.clone() },
+            dictionary! {},
+            &body,
+        );
+        p.page(
+            &format!("{HEAD} q 1 0 0 1 60 600 cm /Fm0 Do Q"),
+            dictionary! { "Font" => fonts, "XObject" => dictionary! { "Fm0" => fm, "Ic0" => icon } },
+        );
+        cases.push(case(
+            "c13b-xobject-from-page-resources",
+            "form has /Font but no /XObject; a 10 pt red icon /Ic0 comes from the page's resources",
+            p.finish(),
+            0,
+            PARA_AT,
+            vec![],
+        ));
+    }
+    {
+        let mut p = Pdf::new();
+        let courier = p.doc.add_object(dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Courier", "Encoding" => "WinAnsiEncoding" });
+        let body = format!("{PARA} BT /F2 12 Tf 0 0 0 rg 10 100 Td (Ref 12) Tj ET");
+        let fm = p.form(
+            [0.0, 0.0, 480.0, 200.0],
+            dictionary! { "ProcSet" => vec!["PDF".into(), "Text".into()] },
+            dictionary! {},
+            &body,
+        );
+        p.page(
+            &format!("{HEAD} q 1 0 0 1 60 600 cm /Fm0 Do Q"),
+            dictionary! {
+                "Font" => dictionary! { "F1" => p.helv, "F2" => courier },
+                "XObject" => dictionary! { "Fm0" => fm },
+            },
+        );
+        cases.push(case(
+            "c13c-fonts-from-page-resources",
+            "form /Resources without /Font: /F1 (Helvetica) and /F2 (Courier 'Ref 12') are the page's",
+            p.finish(),
+            0,
+            PARA_AT,
+            vec![],
+        ));
+    }
+
+    // (14) text-only 그룹 해제 must keep the stacking: a white box drawn over "1234" in a
+    // transparency group — lifting the text above the group would show it
+    {
+        let mut p = Pdf::new();
+        let fonts = p.fonts();
+        let fm = p.form(
+            [0.0, 0.0, 595.0, 842.0],
+            dictionary! { "Font" => fonts.clone() },
+            extra_group(false, false),
+            "0.2 0.4 0.8 rg 300 600 120 120 re f 0.8 0.3 0.2 rg 360 640 110 110 re f \
+             BT /F1 12 Tf 0 0 0 rg 60 720 Td (Account number) Tj ET \
+             BT /F1 8 Tf 0 0 0 rg 160 699 Td (1234) Tj ET \
+             1 g 158 697 25 11 re f",
+        );
+        p.page(
+            "q /GH gs /Fm0 Do Q",
+            dictionary! {
+                "Font" => fonts,
+                "XObject" => dictionary! { "Fm0" => fm },
+                "ExtGState" => dictionary! { "GH" => dictionary! { "ca" => 0.5 } },
+            },
+        );
+        let mut c = case(
+            "c14-whiteout-text-only",
+            "transparency group under /ca 0.5: overlapping squares, text, and a white box over '1234'",
+            p.finish(),
+            0,
+            [90.0, 724.0],
+            vec![],
+        );
+        c.expect = Expect::LookChanged;
+        cases.push(c);
+    }
+
+    // (15) graphics drawn after the text: their pieces must not restate the text's font (a
+    // paragraph edit regenerates the text with PDFium's own font name and prunes the old one)
+    cases.push(case(
+        "c15-rect-after-text",
+        "gray background, one BT with four lines, then a black rectangle drawn after the text",
+        one_form(
+            dictionary! {},
+            "",
+            dictionary! {},
+            "0.9 g 0 0 480 200 re f BT /F1 10 Tf 12 TL 0 g 10 150 Td \
+             (First covered line of the paragraph) Tj T* (Second line of the paragraph) Tj T* \
+             (Third line of the paragraph) Tj T* (Fourth line under a black box) Tj ET \
+             0 g 10 108 150 10 re f",
+        ),
+        0,
+        [60.0 + 10.0 + 40.0, 600.0 + 150.0 + 3.0],
+        vec![],
+    ));
+
+    // (16) mirrored grouped text: refused (rotatedText) before any 그룹 해제
+    {
+        let mut p = Pdf::new();
+        let fonts = p.fonts();
+        let fm = p.form(
+            [0.0, 0.0, 595.0, 842.0],
+            dictionary! { "Font" => fonts.clone() },
+            dictionary! { "Matrix" => vec![(-1).into(), 0.into(), 0.into(), 1.into(), 595.into(), 0.into()] },
+            "BT /F1 12 Tf 0 0 0 rg 300 700 Td (Mirrored text line) Tj ET",
+        );
+        p.page(
+            &format!("{HEAD} q /Fm0 Do Q"),
+            dictionary! { "Font" => fonts, "XObject" => dictionary! { "Fm0" => fm } },
+        );
+        let mut c = case(
+            "c16-mirrored-matrix",
+            "form /Matrix [-1 0 0 1 595 0] draws a mirrored line",
+            p.finish(),
+            0,
+            [595.0 - 320.0, 704.0],
+            vec![],
+        );
+        c.expect = Expect::Refused(NotEditableReason::RotatedText);
+        cases.push(c);
+    }
+
     for c in &cases {
         std::fs::write(corpus_dir().join(format!("{}.pdf", c.name)), &c.bytes)
             .expect("write corpus pdf");
@@ -1329,6 +1510,93 @@ fn diff(a: &[u8], b: &[u8], masks: &[Rect], crop: Rect) -> (f64, f64) {
     (sum as f64 / (3 * n) as f64, off as f64 / n as f64)
 }
 
+/// Resource names the page's content streams use that its `/Resources` (inherited too) does not
+/// define — what a strict viewer or preflight flags ("cannot find font"). `"Font/SPf1"` …
+fn undefined_resources(bytes: &[u8], page: PageIndex) -> Vec<String> {
+    use seepdf_lib::engine::objects::inline::{tokenize, OperandKind};
+    let doc = Document::load_mem(bytes).expect("lopdf load");
+    let page_id = doc.get_pages()[&(page as u32 + 1)];
+    let deref = |o: &Object| -> Option<Dictionary> {
+        match o {
+            Object::Reference(id) => match doc.get_object(*id).ok()? {
+                Object::Dictionary(d) => Some(d.clone()),
+                Object::Stream(s) => Some(s.dict.clone()),
+                _ => None,
+            },
+            Object::Dictionary(d) => Some(d.clone()),
+            _ => None,
+        }
+    };
+    let mut node = doc.get_dictionary(page_id).ok().cloned();
+    let mut res = Dictionary::new();
+    while let Some(n) = node {
+        if let Ok(r) = n.get(b"Resources") {
+            res = deref(r).unwrap_or_default();
+            break;
+        }
+        node = n
+            .get(b"Parent")
+            .ok()
+            .and_then(|p| p.as_reference().ok())
+            .and_then(|id| doc.get_dictionary(id).ok().cloned());
+    }
+    let has = |cat: &str, name: &[u8]| {
+        res.get(cat.as_bytes())
+            .ok()
+            .and_then(deref)
+            .is_some_and(|d| d.has(name))
+    };
+    let mut out = Vec::new();
+    for id in doc.get_page_contents(page_id) {
+        let Ok(s) = doc.get_object(id).and_then(Object::as_stream) else {
+            continue;
+        };
+        let Ok(data) = s.decompressed_content().or_else(|_| {
+            if s.dict.has(b"Filter") {
+                Err(())
+            } else {
+                Ok(s.content.clone())
+            }
+        }) else {
+            continue;
+        };
+        let Ok(ops) = tokenize(&data) else { continue };
+        for op in ops {
+            let name_at = |k: usize| match op.operands.get(k).map(|o| &o.kind) {
+                Some(OperandKind::Name(n)) => Some(n.clone()),
+                _ => None,
+            };
+            let last = op.operands.len().saturating_sub(1);
+            let (cat, name) = match op.operator.as_str() {
+                "Tf" => ("Font", name_at(0)),
+                "Do" => ("XObject", name_at(last)),
+                "gs" => ("ExtGState", name_at(last)),
+                "sh" => ("Shading", name_at(last)),
+                "scn" | "SCN" => ("Pattern", name_at(last)),
+                "BDC" | "DP" => ("Properties", name_at(1)),
+                "cs" | "CS" => (
+                    "ColorSpace",
+                    name_at(last).filter(|n| {
+                        !matches!(
+                            n.as_slice(),
+                            b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"Pattern"
+                        )
+                    }),
+                ),
+                _ => continue,
+            };
+            if let Some(n) = name {
+                if !has(cat, &n) {
+                    out.push(format!("{cat}/{}", String::from_utf8_lossy(&n)));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn generation(doc_id: &str) -> DocGeneration {
     let doc_id = doc_id.to_string();
     with_state(move |st| Ok(st.doc(&doc_id)?.generation)).expect("generation")
@@ -1421,6 +1689,14 @@ fn check_after_ungroup(
         ));
     }
     let saved = save_bytes(id);
+    if undefined_resources(&c.bytes, page).is_empty() {
+        let undefined = undefined_resources(&saved, page);
+        if !undefined.is_empty() {
+            o.fail(format!(
+                "ungroup #{round} + save: the page uses resources it does not define: {undefined:?}"
+            ));
+        }
+    }
     let re = match open_bytes(saved) {
         Ok(d) => d,
         Err(e) => {
@@ -1817,6 +2093,14 @@ fn run_case(c: &Case) -> Outcome {
     let out = corpus_dir().join("saved").join(format!("{}.pdf", c.name));
     std::fs::create_dir_all(out.parent().unwrap()).ok();
     std::fs::write(&out, &saved).ok();
+    if undefined_resources(&c.bytes, page).is_empty() {
+        let undefined = undefined_resources(&saved, page);
+        if !undefined.is_empty() {
+            o.fail(format!(
+                "edit + save: the page uses resources it does not define: {undefined:?}"
+            ));
+        }
+    }
     let re = match open_bytes(saved) {
         Ok(d) => d,
         Err(e) => {
@@ -2041,6 +2325,12 @@ corpus_cases! {
     case_c12a_font_name_collision_page_vs_form => "c12a-font-name-collision-page-vs-form",
     case_c12b_font_name_collision_two_forms => "c12b-font-name-collision-two-forms",
     case_c12c_same_basefont_different_encoding => "c12c-same-basefont-different-encoding",
+    case_c13a_korean_partial_resources => "c13a-korean-partial-resources",
+    case_c13b_xobject_from_page_resources => "c13b-xobject-from-page-resources",
+    case_c13c_fonts_from_page_resources => "c13c-fonts-from-page-resources",
+    case_c14_whiteout_text_only => "c14-whiteout-text-only",
+    case_c15_rect_after_text => "c15-rect-after-text",
+    case_c16_mirrored_matrix => "c16-mirrored-matrix",
 }
 
 #[test]
@@ -2386,4 +2676,54 @@ fn fallback_when_the_content_cannot_be_read() {
     assert!(m < 0.35 && s < 0.0005, "mean {m:.3} share {s:.4}");
     let p = probe(&id, 0, PARA_AT).unwrap().expect("probe after");
     assert_eq!(p.strategy, TextEditStrategy::InPlace);
+}
+
+/// Verification round 1: a table-heavy Office group (2000 small `re f` cells, like table borders,
+/// plus text) used to come out as one content stream per path — ~2 000 streams and 65× the
+/// size. Consecutive paths now share a piece.
+#[test]
+fn many_paths_do_not_become_many_streams() {
+    let mut body =
+        String::from("BT /F1 12 Tf 0 0 0 rg 10 180 Td (Table heading line of the group) Tj ET ");
+    for k in 0..2000 {
+        let (x, y) = (10.0 + (k % 50) as f32 * 9.0, 10.0 + (k / 50) as f32 * 4.0);
+        let _ = write!(body, "0 g {x} {y} 8 0.5 re f ");
+    }
+    let bytes = one_form(extra_group(false, false), "", dictionary! {}, &body);
+    let original = bytes.len();
+    let doc = open_bytes(bytes).expect("open");
+    let id = doc.doc_id.clone();
+    let before = render(&id, 0);
+    let crop = crop_of(&doc, 0);
+    let at = [60.0 + 10.0 + 40.0, 600.0 + 180.0 + 4.0];
+    let p = probe(&id, 0, at).unwrap().expect("probe");
+    assert_eq!(p.reason, Some(NotEditableReason::InsideXObject));
+    let (d, gen, obj) = (id.clone(), p.doc_generation, p.group_object_id.unwrap());
+    let u = with_state(move |st| ungroup::ungroup(st, &d, 0, obj, gen, Some(at))).expect("ungroup");
+    assert!(!u.partial);
+    let (m, s) = diff(&before, &render(&id, 0), &[], crop);
+    assert!(m < 0.35 && s < 0.0005, "mean {m:.3} share {s:.4}");
+    let saved = save_bytes(&id);
+    let lo = Document::load_mem(&saved).unwrap();
+    let pid = *lo.get_pages().values().next().unwrap();
+    let streams = lo.get_page_contents(pid).len();
+    println!(
+        "{} paths: {original} B → {} B, {streams} content streams",
+        2000,
+        saved.len()
+    );
+    assert!(streams <= 40, "{streams} content streams");
+    assert!(
+        saved.len() < original * 4,
+        "{} B from {original} B",
+        saved.len()
+    );
+    // the heading is still its own piece: editable
+    let p = probe(&id, 0, at).unwrap().expect("probe after");
+    assert_eq!(
+        p.strategy,
+        TextEditStrategy::InPlace,
+        "{}",
+        probe_str(&Some(p.clone()))
+    );
 }

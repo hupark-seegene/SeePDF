@@ -17,12 +17,15 @@
 //!    `BaseFont`, the clip around the `Do`) is lost. `registry::mutate_bytes_checked`: one undo
 //!    step `undo.ungroup`, rolled back on any failure.
 //! 3. **Verified.** The page is rendered before, and the rewritten file's page after; the
-//!    ungroup only stands when they look the same ([`LOOK_MEAN`], [`LOOK_SHARE`]). An Office /
+//!    ungroup only stands when they look the same ([`LOOK_MEAN`], [`LOOK_SHARE`] over the page,
+//!    at most [`LOOK_REGION_OFF`] pixels inside the group's box) and the text layer reads the
+//!    same characters. An Office /
 //!    Hancom group (`/Group /S /Transparency` over opaque content) looks the same and passes; a
 //!    group whose look depends on it staying a group (an alpha, blend or soft mask applied to
 //!    the group as a whole) is tried again with only its **text** lifted out
-//!    ([`inline::Mode::TextOnly`]), and when that changes the look too the document is left as
-//!    it was: `unsupported`, detail `lookChanged`.
+//!    ([`inline::Mode::TextOnly`]) — unless something drawn after a text of the group covers
+//!    it (a white-out box): lifted above the group, that text would show — and when that
+//!    changes the look too the document is left as it was: `unsupported`, detail `lookChanged`.
 //! 4. **Fallback.** A page whose content cannot be read or rewritten (an encryption lopdf
 //!    cannot write back, a content stream it cannot decode, a `Do` it cannot locate) is
 //!    ungrouped the v0.3.0 way — PDFium's object API, [`ungroup_at`] — under the same render
@@ -51,6 +54,9 @@ pub const LOOK_MEAN: f64 = 0.35;
 /// Share of pixels whose largest channel difference exceeds [`LOOK_DIFF`].
 pub const LOOK_SHARE: f64 = 0.0003;
 pub const LOOK_DIFF: u8 = 40;
+/// Pixels off by more than [`LOOK_DIFF`] allowed inside the group's box — an absolute count,
+/// so a lost 10 pt icon or a glyph drawn in another font is caught however large the page.
+pub const LOOK_REGION_OFF: u64 = 48;
 /// Pixel budget of the comparison render.
 const LOOK_PIXELS: f32 = 3.0e6;
 
@@ -175,6 +181,31 @@ fn collect_owners(
             _ => {}
         }
     }
+}
+
+/// The hit text object's matrix in page space: its own (form-relative) matrix times every form
+/// on the way up to the page.
+pub fn hit_page_matrix(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+    hit: &GroupHit,
+) -> [f32; 6] {
+    let mut forms = Vec::with_capacity(hit.chain.len() + 1);
+    if let Ok(mut holder) = raw::object_at(bindings, page, hit.top) {
+        forms.push(holder);
+        for &ci in &hit.chain {
+            let Some(&child) = raw::form_children(bindings, holder).get(ci) else {
+                break;
+            };
+            forms.push(child);
+            holder = child;
+        }
+    }
+    let mut m = raw::matrix(bindings, hit.text).map(f64::from);
+    for &f in forms.iter().rev() {
+        m = inline::mul(&m, &raw::matrix(bindings, f).map(f64::from));
+    }
+    m.map(|v| v as f32)
 }
 
 /// Does the page have any text inside a group (cheap: no text page)?
@@ -321,6 +352,68 @@ pub fn look_diff(a: &Look, b: &Look) -> (f64, f64) {
     (sum as f64 / (3 * n) as f64, off as f64 / n as f64)
 }
 
+/// Pixels off by more than [`LOOK_DIFF`] within `(x0, y0, x1, y1)` (bitmap pixels).
+pub fn look_off_in(a: &Look, b: &Look, (x0, y0, x1, y1): (i32, i32, i32, i32)) -> u64 {
+    if a.width != b.width || a.height != b.height || a.pixels.len() != b.pixels.len() {
+        return u64::MAX;
+    }
+    let (x0, x1) = (x0.clamp(0, a.width), x1.clamp(0, a.width));
+    let (y0, y1) = (y0.clamp(0, a.height), y1.clamp(0, a.height));
+    let mut off = 0u64;
+    for y in y0..y1 {
+        let row = (y * a.width) as usize * 4;
+        for x in x0..x1 {
+            let k = row + x as usize * 4;
+            let worst = (0..3)
+                .map(|c| a.pixels[k + c].abs_diff(b.pixels[k + c]))
+                .max()
+                .unwrap_or(0);
+            if worst > LOOK_DIFF {
+                off += 1;
+            }
+        }
+    }
+    off
+}
+
+/// The bitmap pixels of a page-space box in a [`render_look`] at `scale`.
+fn pixel_box(page: &PdfPage<'_>, scale: f32, r: Rect) -> Option<(i32, i32, i32, i32)> {
+    let geom = crate::engine::registry::geom_from_page(0, page)?;
+    let m = crate::engine::render::geometry::page_to_device(&geom, 0, scale);
+    let pad = 2.0;
+    let (l, b, rr, t) = (
+        r.l.min(r.r) - pad,
+        r.b.min(r.t) - pad,
+        r.l.max(r.r) + pad,
+        r.b.max(r.t) + pad,
+    );
+    let pts = [(l, b), (rr, b), (rr, t), (l, t)]
+        .map(|(x, y)| (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]));
+    let x0 = pts.iter().map(|p| p.0).fold(f32::MAX, f32::min).floor() as i32;
+    let x1 = pts.iter().map(|p| p.0).fold(f32::MIN, f32::max).ceil() as i32;
+    let y0 = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min).floor() as i32;
+    let y1 = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max).ceil() as i32;
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1, y1))
+}
+
+/// The page's text as the text layer reads it: every (non-generated, non-space) character,
+/// sorted — the order may change (a text-only 그룹 해제 draws the text after the group), the
+/// characters may not.
+fn text_layer(
+    bindings: &dyn PdfiumLibraryBindings,
+    page: &PdfPage<'_>,
+) -> Result<Vec<u32>, EngineError> {
+    let tp = raw::TextPage::load(bindings, page)?;
+    let mut out: Vec<u32> = tp
+        .chars()
+        .into_iter()
+        .filter(|c| !c.generated && !char::from_u32(c.unicode).is_some_and(char::is_whitespace))
+        .map(|c| c.unicode)
+        .collect();
+    out.sort_unstable();
+    Ok(out)
+}
+
 pub fn looks_same(a: &Look, b: &Look) -> bool {
     let (mean, share) = look_diff(a, b);
     mean <= LOOK_MEAN && share <= LOOK_SHARE
@@ -382,6 +475,13 @@ struct Analysis {
     placements: Vec<Placement>,
     scale: f32,
     before: Look,
+    /// The group's box in the comparison render (pixels).
+    region: Option<(i32, i32, i32, i32)>,
+    /// The page's text layer ([`text_layer`]).
+    text: Vec<u32>,
+    /// A text-only 그룹 해제 would draw some of the holder's text above content that is drawn
+    /// after it and overlaps it (a white-out box, a filled cell): not tried.
+    lift_blocked: bool,
 }
 
 fn analyse(
@@ -433,11 +533,14 @@ fn analyse(
             holder = child;
         }
     }
-    let mixed = raw::form_children(bindings, holder)
-        .into_iter()
-        .any(|c| raw::object_type(bindings, c) != raw::OBJ_TEXT);
+    let children = raw::form_children(bindings, holder);
+    let mixed = children
+        .iter()
+        .any(|&c| raw::object_type(bindings, c) != raw::OBJ_TEXT);
+    let lift_blocked = covers_text(bindings, &children);
     let scale = look_scale(page);
     let before = render_look(page, scale)?;
+    let region = raw::bounds(bindings, form).and_then(|r| pixel_box(page, scale, r));
     Ok(Analysis {
         ordinal,
         matrix: raw::matrix(bindings, form).map(f64::from),
@@ -447,7 +550,33 @@ fn analyse(
         placements: placements(bindings, page),
         scale,
         before,
+        region,
+        text: text_layer(bindings, page)?,
+        lift_blocked,
     })
+}
+
+/// Is some text among `children` (one form's, in drawing order) overlapped by a non-text object
+/// drawn after it? A text-only 그룹 해제 draws all the text after the rest of the group, so that
+/// text would come out on top.
+fn covers_text(bindings: &dyn PdfiumLibraryBindings, children: &[FPDF_PAGEOBJECT]) -> bool {
+    let mut texts: Vec<Rect> = Vec::new();
+    for &c in children {
+        let Some(r) = raw::bounds(bindings, c) else {
+            continue;
+        };
+        if raw::object_type(bindings, c) == raw::OBJ_TEXT {
+            // a hair inside the loose box: a border that only touches it does not count
+            let pad = 0.1 * (r.t - r.b).abs().min(10.0);
+            texts.push(Rect::new(r.l + pad, r.b + pad, r.r - pad, r.t - pad));
+            continue;
+        }
+        let over = |t: &Rect| r.l < t.r && t.l < r.r && r.b < t.t && t.b < r.t;
+        if texts.iter().any(over) {
+            return true;
+        }
+    }
+    false
 }
 
 /// The rest of the page came through unchanged, and the page looks the same.
@@ -473,8 +602,10 @@ fn verify(
     }
     let after = render_look(page, a.scale)?;
     let (mean, share) = look_diff(&a.before, &after);
-    tracing::debug!(mean, share, partial, "ungroup look check");
-    if mean <= LOOK_MEAN && share <= LOOK_SHARE {
+    let off = a.region.map_or(0, |r| look_off_in(&a.before, &after, r));
+    let text_same = text_layer(bindings, page)? == a.text;
+    tracing::debug!(mean, share, off, text_same, partial, "ungroup look check");
+    if mean <= LOOK_MEAN && share <= LOOK_SHARE && off <= LOOK_REGION_OFF && text_same {
         Ok(())
     } else {
         Err(look_changed(partial))
@@ -553,7 +684,7 @@ pub fn ungroup(
     let a = analyse(st, doc_id, page_index, object_id, at)?;
     let index = object_id as usize;
     let deep = at.is_none();
-    let modes: &[Mode] = if a.mixed {
+    let modes: &[Mode] = if a.mixed && !a.lift_blocked {
         &[Mode::Full, Mode::TextOnly]
     } else {
         &[Mode::Full]

@@ -1068,8 +1068,8 @@ pub fn probe(
 /// v0.3.1: the text inside a group under `at` ([`ungroup::group_hit`]), as a refused probe:
 /// `insideXObject` with `groupObjectId` when 그룹 해제 would make it editable — or the reason it
 /// could not be edited even then (`noUnicode`, `invisible`: a run nobody can see, like an
-/// optional-content layer that is off), so the UI never offers a 그룹 해제 that cannot lead to
-/// an edit. `None` when no grouped text is there.
+/// optional-content layer that is off; `rotatedText`: mirrored or flipped), so the UI never
+/// offers a 그룹 해제 that cannot lead to an edit. `None` when no grouped text is there.
 fn grouped_probe(
     scratch: &mut ScratchPage<'_>,
     bindings: &'static dyn PdfiumLibraryBindings,
@@ -1095,10 +1095,20 @@ fn grouped_probe(
     };
     let height = (hit.rect.t - hit.rect.b).abs();
     let size = if sized && size > 0.0 { size } else { height };
+    // the same upright test the page-level probe makes (`classify`), in the text's own frame
+    // (a rotated paragraph is edited there): mirrored or flipped text cannot be edited even
+    // after a 그룹 해제, so it is not offered
+    let upright = {
+        let m = ungroup::hit_page_matrix(bindings, &scratch.page, &hit);
+        let f = Rot::of_matrix(m).matrix_to_frame(m);
+        f[0] > 0.0 && f[3] > 0.0 && f[1].abs() <= 0.02 * f[0]
+    };
     let mut reason = if matches!(mode, 3 | 7) {
         Some(NotEditableReason::Invisible)
     } else if !super::has_usable_unicode(&hit.chars) {
         Some(NotEditableReason::NoUnicode)
+    } else if !upright {
+        Some(NotEditableReason::RotatedText)
     } else {
         None
     };

@@ -228,6 +228,78 @@ describe("그룹 해제 → 편집: one at a time (the screenshot)", () => {
   });
 });
 
+describe("Inspector 그룹 해제: one at a time (verification round 1)", () => {
+  async function selectGroup() {
+    const view = await setup("select");
+    render(<EditPanel />);
+    fireEvent.pointerDown(view.surface, at(view.ctx, ...GROUPED));
+    fireEvent.pointerUp(view.surface, at(view.ctx, ...GROUPED));
+    await waitFor(() => expect(useEditStore.getState().selection).toEqual({ page: 0, ids: [0] }));
+    return view;
+  }
+
+  it("a double-click on the button sends one 그룹 해제 — no second call pinned to the same generation, no stale toast", async () => {
+    const { info } = await selectGroup();
+    const ungroup = vi.spyOn(mock, "ungroupObject");
+    const button = screen.getByRole("button", { name: "그룹 해제" });
+    fireEvent.click(button, { detail: 1 });
+    fireEvent.click(button, { detail: 2 });
+    await waitFor(() => expect(toasts().map((t) => t.messageKey)).toEqual(["edit.ungroup.done"]));
+    await act(async () => undefined);
+    expect(ungroup.mock.calls.map((c) => c[0].expectGeneration)).toEqual([info.docGeneration]);
+    expect((await api.getDocument({ docId: info.docId })).docGeneration).toBe(info.docGeneration + 1);
+  });
+
+  it("a second press while the first 그룹 해제 is still running gets the running answer", async () => {
+    const { info } = await selectGroup();
+    const original = mock.ungroupObject.bind(mock);
+    const slow = deferred();
+    const ungroup = vi.spyOn(mock, "ungroupObject").mockImplementation(async (a) => {
+      await slow.gate;
+      return original(a);
+    });
+    const { ungroupSelection } = await import("./ungroup");
+    const first = ungroupSelection();
+    const second = ungroupSelection();
+    await waitFor(() => expect(ungroup).toHaveBeenCalledTimes(1));
+    slow.open();
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+    expect(ungroup).toHaveBeenCalledTimes(1);
+    expect(toasts().map((t) => t.messageKey)).toEqual(["edit.ungroup.done"]);
+    expect((await api.getDocument({ docId: info.docId })).docGeneration).toBe(info.docGeneration + 1);
+  });
+
+  it("`stale` (the document moved on elsewhere): the page is listed again and the user is asked to press again — not told to click text", async () => {
+    await selectGroup();
+    vi.spyOn(mock, "ungroupObject").mockRejectedValueOnce(
+      new api.SeePdfError({ code: "stale", message: "expectGeneration 1 but the document is at 2; re-list the page objects" }),
+    );
+    const list = vi.spyOn(mock, "listPageObjects");
+    fireEvent.click(screen.getByRole("button", { name: "그룹 해제" }));
+    await waitFor(() => expect(toasts().map((t) => t.messageKey)).toEqual(["error.stale"]));
+    expect(list).toHaveBeenCalled();
+    expect(toasts()[0].detail).toBeUndefined();
+    // pressed again: it goes through
+    await waitFor(() => expect(screen.getByRole("button", { name: "그룹 해제" })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "그룹 해제" }));
+    await waitFor(() => expect(objects()[0]?.type).toBe("text"));
+  });
+
+  it("`stale` because the group was already ungrouped: listed again, nothing to say", async () => {
+    await selectGroup();
+    const original = mock.ungroupObject.bind(mock);
+    vi.spyOn(mock, "ungroupObject").mockImplementationOnce(async (a) => {
+      await original({ ...a }); // another 그룹 해제 landed first
+      throw new api.SeePdfError({ code: "stale", message: "generation moved on" });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "그룹 해제" }));
+    await waitFor(() => expect(objects()[0]?.type).toBe("text"));
+    await act(async () => undefined);
+    expect(toasts()).toHaveLength(0);
+  });
+});
+
 describe("그룹 해제 → 편집: what the user is told", () => {
   const failures: [string, api.SeePdfError, string][] = [
     ["the page would look different (transparency)", new api.SeePdfError({ code: "unsupported", message: "ungrouping this group would change how the page looks; the group was left as it was", detail: "lookChanged" }), "edit.ungroup.failed.lookChanged"],

@@ -13,7 +13,10 @@
  * `stale` (the document moved on between the probe and the 그룹 해제 — a second click, an undo) is
  * recovered, not reported: the text is probed again at the same point, and if it is still inside a
  * group that group is ungrouped without asking again (the user already said yes); if someone else
- * already ungrouped it, the editor simply opens.
+ * already ungrouped it, the editor simply opens. The Inspector's button has no point to probe: the
+ * page is listed again, and the user is asked to press it again (`error.stale`) — or nothing is
+ * said when the group is gone (already ungrouped). The button runs one 그룹 해제 at a time: a
+ * second press while one is running gets the running answer.
  */
 import * as api from "../ipc/api";
 import type { DocGeneration, ObjectId, PageIndex, ParagraphProbe, Point, UngroupResult } from "../ipc/types";
@@ -77,6 +80,16 @@ function stored(page: PageIndex, result: UngroupResult): void {
   if (result.partial) toast("edit.ungroup.partial");
 }
 
+/** The page's objects again (after `stale`); `loadPage` without importing the actions module. */
+async function relist(docId: string, page: PageIndex): Promise<void> {
+  try {
+    const result = await api.listPageObjects({ docId, page });
+    if (useEditStore.getState().docId === docId) useEditStore.getState().setPage(page, result);
+  } catch {
+    // the next render lists it
+  }
+}
+
 /**
  * `ungroup_object` with one recovery: on `stale` the text at `at` is probed again (see the module
  * docs). Without `at` (the Inspector) a `stale` re-lists the page and says so.
@@ -89,8 +102,14 @@ async function ungroup(
     stored(page, result);
     return { kind: "ungrouped", result };
   } catch (e) {
-    if (!(api.isSeePdfError(e) && e.code === "stale") || !at) {
+    if (!(api.isSeePdfError(e) && e.code === "stale")) {
       fail(e);
+      return NONE;
+    }
+    if (!at) {
+      await relist(docId, page);
+      const still = useEditStore.getState().pages[page]?.objects.some((o) => o.objectId === objectId && o.type === "form");
+      if (still) toast("error.stale", undefined, { tone: "danger" });
       return NONE;
     }
   }
@@ -165,8 +184,21 @@ export async function undoUngroup(docId: string, result: UngroupResult): Promise
   else await api.undo({ docId }).catch(() => undefined);
 }
 
-/** Inspector 그룹 해제: the selected group — and the groups inside it that hold text — become their objects. */
-export async function ungroupSelection(): Promise<boolean> {
+let selecting: Promise<boolean> | null = null;
+
+/**
+ * Inspector 그룹 해제: the selected group — and the groups inside it that hold text — become their
+ * objects. One at a time: a second press while one runs (a double-click on the button) would be
+ * pinned to the same generation and come back `stale`.
+ */
+export function ungroupSelection(): Promise<boolean> {
+  selecting ??= ungroupSelected().finally(() => {
+    selecting = null;
+  });
+  return selecting;
+}
+
+async function ungroupSelected(): Promise<boolean> {
   const store = useEditStore.getState();
   const sel = store.selection;
   const docId = store.docId ?? useDocStore.getState().info?.docId;

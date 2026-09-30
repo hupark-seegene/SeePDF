@@ -47,6 +47,7 @@ export function EditPanel() {
 function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
   const t = useT();
   const [lockOverride, setLockOverride] = useState<boolean | null>(null);
+  const [ungrouping, setUngrouping] = useState(false);
   const selection = useEditStore((s) => s.selection);
   const objects = useEditStore((s) => (s.selection ? s.pages[s.selection.page]?.objects ?? NONE : NONE));
   const chosen = selection ? objects.filter((o) => selection.ids.includes(o.objectId)) : NONE;
@@ -80,7 +81,13 @@ function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
             <button
               type="button"
               className="btn"
-              onClick={() => void import("../../edit/ungroup").then((m) => m.ungroupSelection())}
+              disabled={ungrouping}
+              onClick={() => {
+                setUngrouping(true);
+                void import("../../edit/ungroup")
+                  .then((m) => m.ungroupSelection())
+                  .finally(() => setUngrouping(false));
+              }}
             >
               {t("edit.ungroup.button")}
             </button>

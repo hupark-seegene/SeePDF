@@ -10,7 +10,9 @@
 //! content itself keeps all of that:
 //!
 //! * the form's operators are copied verbatim; only the **names** of its resources are
-//!   rewritten, to fresh names in the page's `/Resources` that point at the same objects
+//!   rewritten, to fresh names in the page's `/Resources` that point at the same objects (a
+//!   name the form takes from the page's resources, as PDFium does when the form's
+//!   `/Resources` lacks that category, keeps its page name)
 //!   (`/Font`, `/XObject`, `/ExtGState`, `/ColorSpace`, `/Pattern`, `/Shading`,
 //!   `/Properties`, and an inline image's `/CS`). A pattern is re-anchored: its space is the
 //!   form's space, which after inlining is the page's, so a copy gets `/Matrix` × the form's
@@ -25,10 +27,12 @@
 //! hold the paragraph (`raw::page::rewrite_set`). A regenerated stream is wrapped in `q … Q`
 //! and writes each object whole, so it no longer leaves any state behind — a colour, font or
 //! clip that the rest of the inlined content relied on would be gone. So the inlined content is
-//! cut into pieces — one per text object (`BT … ET`) and one per graphic (path, image,
-//! shading, nested group) — and **every piece restates the whole graphics state it starts with** (one `q` per open
-//! level with the operators that level set: `cm`, clips, `gs`, colours, text and line state;
-//! then the open marked-content sequences) and closes everything it opened. No piece depends
+//! cut into pieces — one per text object (`BT … ET`), one per image, shading, nested group or
+//! marked point, and one per run of consecutive paths (a table's borders; PDFium writes paths
+//! back losslessly) — and **every piece restates the whole graphics state it starts with** (one
+//! `q` per open level with the operators that level set: `cm`, clips, `gs`, colours, line
+//! state, and — only in a piece that draws text — the text state; then the open marked-content
+//! sequences) and closes everything it opened. No piece depends
 //! on another, so regenerating one (the edited paragraph's) leaves the others exactly as they
 //! were, including their `Tc` / `Tw`, inline images and marks. The page stream holding the
 //! `Do` is split the same way: the part before closes every open level, the part after
@@ -518,6 +522,10 @@ impl Frame {
 const SINGLES: [&str; 14] = [
     "Tf", "Tc", "Tw", "Tz", "TL", "Ts", "Tr", "w", "J", "j", "M", "d", "ri", "i",
 ];
+/// The text state: restated only in a piece that holds a text object.
+const TEXT_STATE: [&str; 7] = ["Tf", "Tc", "Tw", "Tz", "TL", "Ts", "Tr"];
+/// At most this many painted paths share one piece.
+const PIECE_PATHS: usize = 256;
 const PATH_CONSTRUCTION: [&str; 7] = ["m", "l", "c", "v", "y", "h", "re"];
 const PATH_PAINT: [&str; 10] = ["S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n"];
 const TEXT_SHOW: [&str; 4] = ["Tj", "TJ", "'", "\""];
@@ -681,13 +689,17 @@ impl State {
         }
     }
 
-    /// Reopens every level and every marked-content sequence from the initial state.
-    fn restate(&self) -> Vec<u8> {
+    /// Reopens every level and every marked-content sequence from the initial state. `text`:
+    /// with the text state (`Tf` …) — only content that draws text gets it: a paragraph edit
+    /// makes PDFium write the text with its own font name and drop the old one from the page's
+    /// `/Font`, so a `Tf` restated in a piece without text would name an undefined font.
+    fn restate(&self, text: bool) -> Vec<u8> {
         let mut out = Vec::new();
         for (frame, _) in &self.frames {
             out.extend_from_slice(b"q\n");
-            for (_, bytes) in &frame.ops {
-                if !bytes.is_empty() {
+            for (cat, bytes) in &frame.ops {
+                let text_state = matches!(cat, Cat::Single(n) if TEXT_STATE.contains(n));
+                if !bytes.is_empty() && (text || !text_state) {
                     out.extend_from_slice(bytes);
                     out.push(b'\n');
                 }
@@ -716,54 +728,112 @@ impl State {
     }
 }
 
-/// Cuts the inlined content into self-contained pieces (module docs).
+/// Cuts the inlined content into self-contained pieces (module docs): one per text object,
+/// one per image / shading / nested group / marked point, and one per run of consecutive paths
+/// (at most [`PIECE_PATHS`]) — a table of thousands of cells would otherwise become thousands
+/// of content streams.
 struct Pieces {
     state: State,
     done: Vec<Vec<u8>>,
-    head: Vec<u8>,
+    /// The state the current piece starts from (restated at its head).
+    start: State,
     body: Vec<u8>,
     painted: bool,
+    /// The current piece holds a text object.
+    text: bool,
+    paths: usize,
+    /// Right after the last path painted in the current piece: the body length and the state
+    /// then (where the piece ends when something else than a path follows).
+    split: Option<(usize, State)>,
 }
 
 impl Pieces {
     fn new(state: State) -> Self {
-        let head = state.restate();
         Self {
+            start: state.clone(),
             state,
             done: Vec::new(),
-            head,
             body: Vec::new(),
             painted: false,
+            text: false,
+            paths: 0,
+            split: None,
         }
+    }
+
+    fn piece(&self, len: usize, end: &State) -> Vec<u8> {
+        let mut piece = self.start.restate(self.text);
+        piece.extend_from_slice(&self.body[..len]);
+        piece.extend_from_slice(&end.closers());
+        piece
+    }
+
+    fn reset(&mut self, start: State) {
+        self.start = start;
+        self.painted = false;
+        self.text = false;
+        self.paths = 0;
+        self.split = None;
     }
 
     fn cut(&mut self) {
         if self.painted {
-            let mut piece = std::mem::take(&mut self.head);
-            piece.append(&mut self.body);
-            piece.extend_from_slice(&self.state.closers());
+            let piece = self.piece(self.body.len(), &self.state);
             self.done.push(piece);
         }
         self.body.clear();
-        self.painted = false;
-        self.head = self.state.restate();
+        self.reset(self.state.clone());
+    }
+
+    /// Ends the current run of paths where its last path was painted; what came after it (the
+    /// set-up of the next object) starts the next piece.
+    fn end_paths(&mut self) {
+        let Some((len, at)) = self.split.take() else {
+            return;
+        };
+        let piece = self.piece(len, &at);
+        self.done.push(piece);
+        self.body.drain(..len);
+        self.reset(at);
     }
 
     fn emit(&mut self, v: VOp) {
-        if v.op == "BT" && !self.state.in_text {
+        let op = v.op.as_str();
+        let in_text = self.state.in_text;
+        let graphic = paints(op) && !in_text;
+        let path = graphic && PATH_PAINT.contains(&op);
+        if op == "BT" && !in_text {
+            self.end_paths();
             self.cut();
+        } else if graphic && !path {
+            self.end_paths();
         }
-        if paints(&v.op) {
+        if !in_text && TEXT_STATE.contains(&op) {
+            // outside a text object the text state only matters to the next one, whose piece
+            // restates it
+            self.state.feed(&v);
+            return;
+        }
+        if paints(op) {
             self.painted = true;
+        }
+        if op == "BT" {
+            self.text = true;
         }
         self.body.extend_from_slice(&v.bytes);
         self.body.push(b'\n');
-        let graphic = paints(&v.op) && !self.state.in_text;
         self.state.feed(&v);
-        // A text object is one piece, and so is every graphic: whatever a later edit makes
-        // PDFium regenerate, it regenerates nothing else with it.
-        if v.op == "ET" || graphic {
+        // Whatever a later edit makes PDFium regenerate, it regenerates nothing else with it
+        // that PDFium could not write back (paths it can).
+        if op == "ET" || (graphic && !path) {
             self.cut();
+        } else if path {
+            self.paths += 1;
+            if self.paths >= PIECE_PATHS {
+                self.cut();
+            } else {
+                self.split = Some((self.body.len(), self.state.clone()));
+            }
         }
     }
 
@@ -830,7 +900,10 @@ fn dict_of<'a>(doc: &'a Document, o: &'a Object) -> Option<&'a Dictionary> {
 /// changed).
 struct PageRes {
     dict: Dictionary,
-    /// (category, name in the form's scope id) → new name, per form.
+    /// The page's resources as they were before any name was added: what PDFium looks a name
+    /// up in when a form's `/Resources` lacks that whole category.
+    orig: Dictionary,
+    /// Numbering of the fresh names.
     counter: usize,
 }
 
@@ -869,11 +942,16 @@ impl PageRes {
                 dict.set(cat.key(), Object::Dictionary(copy));
             }
         }
-        Self { dict, counter: 0 }
+        Self {
+            orig: dict.clone(),
+            dict,
+            counter: 0,
+        }
     }
 
+    /// `name` in the page's own (original) resources.
     fn lookup(&self, cat: Res, name: &[u8]) -> Option<&Object> {
-        match self.dict.get(cat.key()) {
+        match self.orig.get(cat.key()) {
             Ok(Object::Dictionary(d)) => d.get(name).ok(),
             _ => None,
         }
@@ -900,6 +978,12 @@ impl PageRes {
 
 /// The resource names of one content stream: the page's (kept as they are) or a form's (each
 /// mapped to a fresh page name on first use).
+///
+/// A name is looked up the way PDFium does (`CPDF_StreamContentParser::FindResourceObj`): in the
+/// form's `/Resources` when it has that category's dictionary (a name missing there is
+/// undefined); in the **page's** resources when the form's `/Resources` lacks the whole
+/// category (Word / PowerPoint forms with `/ProcSet` only, fonts or icons that live on the
+/// page); a form without `/Resources` uses its parent's. What the page defines keeps its name.
 struct Scope {
     /// `None`: the page itself, or a form without `/Resources` (its names are its parent's).
     res: Option<Dictionary>,
@@ -919,6 +1003,19 @@ impl Scope {
         }
     }
 
+    /// Where `name` is defined for PDFium: in the form's own category dictionary (`Some(Some)`),
+    /// nowhere although the form has that category (`Some(None)`: undefined), or — the form's
+    /// `/Resources` lacks the category — in the page's resources (`None`).
+    fn own<'d>(
+        res: &'d Dictionary,
+        doc: &'d Document,
+        cat: Res,
+        name: &[u8],
+    ) -> Option<Option<&'d Object>> {
+        let category = res.get(cat.key()).ok().and_then(|o| dict_of(doc, o))?;
+        Some(category.get(name).ok())
+    }
+
     /// The object a name refers to in this scope (for `Do`: which XObject).
     fn resolve<'d>(
         &self,
@@ -928,12 +1025,10 @@ impl Scope {
         name: &[u8],
     ) -> Option<Object> {
         match &self.res {
-            Some(res) => res
-                .get(cat.key())
-                .ok()
-                .and_then(|o| dict_of(doc, o))
-                .and_then(|d| d.get(name).ok())
-                .cloned(),
+            Some(res) => match Self::own(res, doc, cat, name) {
+                Some(found) => found.cloned(),
+                None => page.lookup(cat, name).cloned(),
+            },
             None => match &self.parent {
                 Some(p) => p.resolve(doc, page, cat, name),
                 None => page.lookup(cat, name).cloned(),
@@ -952,21 +1047,23 @@ impl Scope {
         if let Some(n) = self.names.get(&(cat, name.to_vec())) {
             return n.clone();
         }
-        let value = self
-            .res
-            .as_ref()
-            .and_then(|r| r.get(cat.key()).ok())
-            .and_then(|o| dict_of(doc, o))
-            .and_then(|d| d.get(name).ok())
-            .cloned();
+        let (value, from_page) = match self.res.as_ref().and_then(|r| Self::own(r, doc, cat, name))
+        {
+            Some(found) => (found.cloned(), false),
+            None => (page.lookup(cat, name).cloned(), true),
+        };
         let new = match value {
-            // A name the form does not define stays undefined (never falls through to a page
-            // resource of the same name).
+            // A name PDFium does not find either stays undefined (never falls through to a
+            // page resource of the same name when the form has that category).
             None => format!("SPmissing{}", page.counter + 1).into_bytes(),
             Some(v) if cat == Res::Pattern && !is_identity(&self.space) => {
+                // a pattern's space is the space of the content that uses it, wherever the
+                // resource itself lives
                 let moved = reanchor_pattern(doc, &v, &self.space).unwrap_or(v);
                 page.add(cat, moved)
             }
+            // the page's own resource: after inlining, its name means the same object
+            Some(_) if from_page => name.to_vec(),
             Some(v) => page.add(cat, v),
         };
         if new.starts_with(b"SPmissing") {
@@ -1079,8 +1176,9 @@ fn form_bbox(d: &Dictionary) -> Option<[f64; 4]> {
     ])
 }
 
-/// Does a form draw text, itself or through a form it draws (bounded depth)?
-fn form_has_text(doc: &Document, form: &Form, depth: usize) -> bool {
+/// Does a form draw text, itself or through a form it draws (bounded depth)? `page`: the page's
+/// resources, where a form without an `/XObject` dictionary finds its forms (see [`Scope`]).
+fn form_has_text(doc: &Document, page: &PageRes, form: &Form, depth: usize) -> bool {
     let Ok(ops) = tokenize(&form.content) else {
         return false;
     };
@@ -1094,18 +1192,22 @@ fn form_has_text(doc: &Document, form: &Form, depth: usize) -> bool {
         .dict
         .get(b"Resources")
         .ok()
-        .and_then(|r| dict_of(doc, r))
+        .and_then(|r| dict_of(doc, r));
+    let own = res
         .and_then(|r| r.get(b"XObject").ok())
         .and_then(|x| dict_of(doc, x));
-    let Some(xobjects) = res else {
-        return false;
+    let lookup = |n: &[u8]| -> Option<Object> {
+        match own {
+            Some(x) => x.get(n).ok().cloned(),
+            None => page.lookup(Res::XObject, n).cloned(),
+        }
     };
     ops.iter()
         .filter(|o| o.operator == "Do")
         .filter_map(|o| o.operands.last().and_then(|n| n.name()))
-        .filter_map(|n| xobjects.get(n).ok())
-        .filter_map(|v| form_of(doc, v))
-        .any(|f| form_has_text(doc, &f, depth + 1))
+        .filter_map(lookup)
+        .filter_map(|v| form_of(doc, &v))
+        .any(|f| form_has_text(doc, page, &f, depth + 1))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1325,7 +1427,9 @@ fn expand(
                         return Err(not_located("nested form matrix"));
                     }
                 }
-                if on_chain || (!text_only && ctx.deep && form_has_text(ctx.doc, &child, 0)) {
+                if on_chain
+                    || (!text_only && ctx.deep && form_has_text(ctx.doc, &ctx.page, &child, 0))
+                {
                     let rest = if on_chain { &chain[1..] } else { &[][..] };
                     scope = expand(ctx, out, scope, &child, rest)?;
                     continue;
@@ -1473,7 +1577,8 @@ pub fn rewrite(bytes: &[u8], plan: &Plan) -> Result<Rewritten, EngineError> {
     before.extend_from_slice(&data[bounds[si].start..do_span.start]);
     before.push(b'\n');
     before.extend_from_slice(&state.closers());
-    let mut after = state.restate();
+    let text_after = ops[k + 1..].iter().any(|o| o.operator == "BT");
+    let mut after = state.restate(text_after);
     after.extend_from_slice(&data[do_span.end..bounds[si].end]);
     after.push(b'\n');
 
@@ -1580,7 +1685,7 @@ mod tests {
             op: "BDC".into(),
             nums: vec![],
         });
-        let r = String::from_utf8(st.restate()).unwrap();
+        let r = String::from_utf8(st.restate(true)).unwrap();
         assert_eq!(
             r,
             "q\n1 0 0 rg\nq\n2 0 0 2 10 10 cm\n0 0 10 10 re\nW n\n/F1 12 Tf\n0.5 Tc\n/OC /oc1 BDC\n"
@@ -1590,7 +1695,7 @@ mod tests {
         // a later colour of the same kind replaces the earlier one
         st.feed(&VOp::synth("/F2 9 Tf"));
         st.feed(&VOp::synth("0 g"));
-        let r = String::from_utf8(st.restate()).unwrap();
+        let r = String::from_utf8(st.restate(true)).unwrap();
         assert!(!r.contains("/F1 12 Tf") && r.contains("/F2 9 Tf") && r.contains("0 g"));
     }
 
@@ -1626,6 +1731,59 @@ mod tests {
             let big_q = p.matches("Q\n").count();
             assert_eq!(q, big_q, "balanced: {p}");
         }
+    }
+
+    fn pieces_of(ops: &[&str]) -> Vec<String> {
+        let mut p = Pieces::new(State::new());
+        for t in ops {
+            p.emit(VOp::synth(t));
+        }
+        p.finish()
+            .into_iter()
+            .map(|b| String::from_utf8(b).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn consecutive_paths_share_a_piece_and_only_text_gets_the_text_state() {
+        let pieces = pieces_of(&[
+            "/F1 9 Tf",
+            "0 0 1 1 re",
+            "f",
+            "1 1 1 1 re",
+            "f",
+            "BT",
+            "(a) Tj",
+            "ET",
+            "2 2 1 1 re",
+            "f",
+            "q",
+            "10 0 0 10 0 0 cm",
+            "/Im0 Do",
+            "Q",
+            "3 3 1 1 re",
+            "S",
+        ]);
+        assert_eq!(pieces.len(), 5, "{pieces:#?}");
+        assert!(pieces[0].contains("0 0 1 1 re") && pieces[0].contains("1 1 1 1 re"));
+        assert!(pieces[1].contains("/F1 9 Tf") && pieces[1].contains("(a) Tj"));
+        assert!(pieces[2].contains("2 2 1 1 re") && !pieces[2].contains("cm"));
+        assert!(pieces[3].contains("10 0 0 10 0 0 cm\n/Im0 Do"));
+        assert!(pieces[4].contains("3 3 1 1 re"));
+        for (k, p) in pieces.iter().enumerate() {
+            assert_eq!(p.contains("Tf"), k == 1, "text state only with text: {p}");
+            assert_eq!(
+                p.matches("q\n").count(),
+                p.matches("Q\n").count(),
+                "balanced: {p}"
+            );
+        }
+        // a long run of paths is cut every PIECE_PATHS paths
+        let many: Vec<String> = (0..PIECE_PATHS * 2 + 1)
+            .flat_map(|k| [format!("{k} 0 1 1 re"), "f".to_string()])
+            .collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(pieces_of(&refs).len(), 3);
     }
 
     #[test]
