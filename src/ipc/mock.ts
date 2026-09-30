@@ -1336,7 +1336,7 @@ export const mock = {
       let removedObjects = 0;
       for (const p of pages) {
         const rects = a.marks.filter((m) => m.page === p).flatMap((m) => m.rects);
-        for (const o of grouped(p, rects)) Object.assign(o, { editable: "full", reason: undefined });
+        for (const o of grouped(p, rects)) Object.assign(o, { type: "text", editable: "full", reason: undefined });
         d.redacted ??= new Map();
         d.redacted.set(p, [...(d.redacted.get(p) ?? []), ...structuredClone(rects)]);
         const list = pageObjects(d, p);
@@ -1347,17 +1347,18 @@ export const mock = {
       return () => ({ removedObjects, verified: true, docGeneration: d.info.docGeneration, pages });
     })();
   },
-  // v0.3 pkg1 (R4) 그룹 해제: the read-only "inside a Form XObject" run becomes an ordinary one
-  async ungroupObject(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration }): Promise<import("./types").UngroupResult> {
+  // v0.3 pkg1 (R4) 그룹 해제: the group (a read-only `form` object) becomes the ordinary text run inside it
+  async ungroupObject(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration; at?: Point }): Promise<import("./types").UngroupResult> {
     const d = doc(a.docId);
     checkGeneration(d, a.expectGeneration);
     const o = pageObjects(d, a.page)[a.objectId];
     if (!o) throw err("notFound", `object ${a.objectId}`);
-    if (o.reason !== "insideXObject") throw err("invalidArgument", "not a group", { detail: "notAGroup" });
+    if (o.type !== "form") throw err("invalidArgument", "not a group", { detail: "notAGroup" });
+    // the listing is taken after the generation moved (like the engine's relist)
     return mutate(d, { reason: "edit", pages: [a.page], undoLabel: "undo.ungroup" }, () => {
-      Object.assign(o, { editable: "full", reason: undefined });
-      return { ...listObjects(d, a.page), newObjectIds: [a.objectId] };
-    });
+      Object.assign(o, { type: "text", editable: "full", reason: undefined });
+      return () => ({ ...listObjects(d, a.page), newObjectIds: [a.objectId] });
+    })();
   },
   // both write a copy to `outPath`; the open document is untouched
   async removePassword(a: { docId: DocId; outPath: string }): Promise<{ bytes: number }> {
@@ -2114,7 +2115,7 @@ export const mock = {
   // --- v0.3 pkg5-app-shell-release-diagnostics ---
   async appInfo(): Promise<AppInfo> {
     return {
-      version: "0.3.0", os: "macos", arch: "aarch64", debug: false,
+      version: "0.3.1", os: "macos", arch: "aarch64", debug: false,
       pdfiumVersion: "155.0.8057.0", pdfiumDir: "/Applications/SeePDF.app/Contents/Resources/resources/pdfium",
       locale: settings.locale, theme: settings.theme,
     };
@@ -2122,7 +2123,7 @@ export const mock = {
   async problemReport(): Promise<ProblemReport> {
     const path = "/mock/logs/problem-report.txt";
     writtenFiles.add(path);
-    return { text: "SeePDF 0.3.0\nOS: macos / aarch64\nPDFium: 155.0.8057.0\nLog lines (0):\n", path };
+    return { text: "SeePDF 0.3.1\nOS: macos / aarch64\nPDFium: 155.0.8057.0\nLog lines (0):\n", path };
   },
   async openLogFolder(): Promise<string> {
     return "/mock/logs";
@@ -3025,6 +3026,35 @@ function planParagraphEdit(d: MockDoc, page: PageIndex, edit: ParagraphEdit, fon
   };
 }
 
+/**
+ * v0.3.1: the text inside a group under the point, as the engine answers it — refused `insideXObject`
+ * with the group to ungroup (`groupObjectId`).
+ */
+function groupedProbe(d: MockDoc, page: PageIndex, [x, y]: Point): ParagraphProbe | null {
+  const groups = pageObjects(d, page).map((o, id) => ({ o, id })).filter((e) => e.o.type === "form" && e.o.text);
+  const hit = groups.reverse().find((e) => x >= e.o.rect.l - 1 && x <= e.o.rect.r + 1 && y >= e.o.rect.b - 1 && y <= e.o.rect.t + 1);
+  if (!hit) return null;
+  const size = hit.o.fontSizePt ?? 11;
+  return {
+    objectIds: [hit.id],
+    rect: hit.o.rect,
+    text: hit.o.text ?? "",
+    fontName: "",
+    fontSizePt: size,
+    color: hit.o.color ?? [0, 0, 0],
+    mixedStyles: false,
+    lineHeightPt: size * 1.2,
+    align: "left",
+    firstLineIndentPt: 0,
+    lines: 1,
+    strategy: "refused",
+    reason: "insideXObject",
+    docGeneration: d.info.docGeneration,
+    groupObjectId: hit.id,
+    groupDepth: 1,
+  };
+}
+
 /** The live object list of a page, seeded from the fake text layer (one text object per line). */
 function pageObjects(d: MockDoc, page: PageIndex): MockObj[] {
   let list = d.objects.get(page);
@@ -3041,9 +3071,11 @@ function pageObjects(d: MockDoc, page: PageIndex): MockObj[] {
         fontName: [...text].filter((ch) => HANGUL.test(ch)).length * 2 > text.length ? "NotoSansKR" : "Helvetica",
         fontSizePt: tp.chars[l.firstChar]?.fontSizePt ?? 11,
         color: [26, 28, 31],
-        // the title sits inside a Form XObject, so one run always shows the read-only badge
+        // the title sits inside a Form XObject: like the engine, the page lists the group — one
+        // read-only `form` object carrying its text — not the run inside it
         editable: i === 0 ? "readOnly" : "full",
         reason: i === 0 ? "insideXObject" : undefined,
+        ...(i === 0 ? { type: "form" as const } : null),
       };
     });
     d.objects.set(page, list);
@@ -3066,7 +3098,7 @@ function mockParagraph(d: MockDoc, page: PageIndex, [x, y]: Point): ParagraphPro
   const all = pageObjects(d, page).map((o, id) => ({ o, id })).filter((e) => e.o.type === "text");
   const lines = all.sort((a, b) => b.o.matrix[5] - a.o.matrix[5]);
   const hit = lines.findIndex((e) => x >= e.o.rect.l - 1 && x <= e.o.rect.r + 1 && y >= e.o.rect.b - 1 && y <= e.o.rect.t + 1);
-  if (hit < 0) return null;
+  if (hit < 0) return groupedProbe(d, page, [x, y]);
   const size = lines[hit].o.fontSizePt ?? 11;
   const joins = (upper: MockObj, lower: MockObj, leading: number | null) => {
     const gap = upper.matrix[5] - lower.matrix[5];

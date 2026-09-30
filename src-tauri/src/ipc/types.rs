@@ -1252,6 +1252,13 @@ pub struct ParagraphProbe {
     pub reason: Option<NotEditableReason>,
     /// Additive to the Stage 7 contract: the generation the `objectIds` belong to.
     pub doc_generation: DocGeneration,
+    /// v0.3.1: with `reason: insideXObject`, the top-level group (page object id) that holds the
+    /// text under the point — what `ungroup_object` takes (with the same `at`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub group_object_id: Option<ObjectId>,
+    /// v0.3.1: how many groups deep that text is (1 = directly in `groupObjectId`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub group_depth: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1457,6 +1464,10 @@ pub struct UngroupResult {
     pub doc_generation: DocGeneration,
     pub objects: Vec<PageObject>,
     pub new_object_ids: Vec<ObjectId>,
+    /// v0.3.1: only the group's text came out; its graphics stay a group (`newObjectIds[0]`),
+    /// because taking them out would have changed how the page looks (transparency).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3033,6 +3044,8 @@ mod tests {
             substitute_font: None,
             reason: Some(NotEditableReason::RotatedText),
             doc_generation: 7,
+            group_object_id: None,
+            group_depth: None,
         };
         let v = serde_json::to_value(&probe).unwrap();
         assert_eq!(v["objectIds"], json!([3, 4]));

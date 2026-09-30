@@ -5,6 +5,47 @@ SeePDF의 사용자에게 보이는 변경 사항입니다. 버전 번호는 [Se
 
 User-facing changes, Korean first. Each release on GitHub carries its section of this file as its notes.
 
+## [0.3.1]
+
+그룹(Form XObject) 안의 텍스트 편집을 고쳤습니다. v0.3.0에서 "그룹 해제가 안돼"라는 보고가 있었습니다. 그룹 해제가
+한 번은 되었는데도 '문제가 발생했습니다 · expectGeneration 3 but the document is at 4…' 오류가 두 번 뜨고 편집기가
+열리지 않았습니다. Word·한글·PowerPoint에서 만든 PDF에서 흔히 생기던 문제입니다.
+
+### 편집
+- **그룹 해제 후 바로 편집:** 그룹 안의 텍스트를 텍스트 수정으로 클릭하거나 선택 도구로 더블클릭하면
+  '그룹 해제 후 편집할까요?'라고 한 번 묻습니다. 그룹을 해제하면 클릭한 문단의 편집기가 열립니다. 그룹이 여러 겹이어도
+  한 번만 묻고, 실행 취소도 한 번에 됩니다.
+- **클릭을 두 번 해도 안전:** 묻는 창이 떠 있거나 그룹 해제가 진행 중일 때 다시 클릭해도 두 번 묻거나 오류를 내지
+  않습니다. 그 사이에 문서가 바뀌었으면 텍스트를 다시 찾아 자동으로 이어서 합니다.
+- **Office·한글 문서의 그룹도 해제됩니다.** 투명도 그룹 표시가 붙어 있어도 실제로 투명한 부분이 없으면 이제 거절하지
+  않습니다. 해제하기 전과 후의 페이지를 그려서 비교하고, 모양이 같을 때만 해제합니다. 투명 효과 때문에 모양이
+  달라지는 그룹은 텍스트만 꺼내거나, 그것도 안 되면 그룹을 그대로 두고 이유를 알려 줍니다.
+- **해제해도 모양이 그대로입니다.** 자간·어간·장평(Tc/Tw/Tz)이 적용된 줄, 그룹 안의 인라인 이미지, 숨긴 레이어,
+  그룹 둘레의 잘라내기 영역, 한글 CID 글꼴, 이름만 같은 두 글꼴이 모두 원래대로 유지됩니다. 해제한 뒤 문단을 편집해도
+  같은 그룹에 있던 다른 줄은 다시 쓰지 않습니다. ICC 색상을 쓴 그림도 문단을 밀어낼 때 검게 변하지 않습니다.
+- **클릭한 그룹을 정확히 해제:** 페이지 테두리나 머리글 그룹이 겹쳐 있어도 클릭한 텍스트가 든 그룹을 해제합니다.
+  같은 그룹을 쓰는 다른 페이지나 다른 위치는 바뀌지 않습니다.
+- **편집할 수 없는 텍스트는 먼저 알려 줍니다.** 문자 정보(ToUnicode)가 없는 글꼴이나 보이지 않는 텍스트는 그룹을
+  해제하기 전에 이유를 보여 줍니다. 해제한 뒤에도 편집할 수 없으면 그룹 해제를 되돌립니다.
+- **속성 패널의 '그룹 해제' 단추:** 그룹을 선택하면 속성 패널에서 바로 해제할 수 있고, 꺼낸 개체가 선택됩니다.
+- 그룹 배지는 '그룹 · 그룹 안의 텍스트 — 더블클릭하거나 텍스트 수정으로 클릭하면 그룹을 해제하고 편집합니다'라고
+  안내합니다(예전에는 '읽기 전용 · 수정할 수 없습니다'였습니다).
+- 오류는 이유와 할 일을 한국어로 알려 줍니다. 엔진의 영어 문장만 보여 주는 일은 없습니다.
+
+### English
+- **Ungroup to edit works on real-world groups.** In v0.3.0, clicking text inside a group could ungroup it
+  and then fail with "expectGeneration 3 but the document is at 4" and no editor. A probe could overtake the
+  queued ungroup, and the UI accepted a second click while the first was still running. Both are fixed. A
+  `stale` answer is now recovered, not reported.
+- Office, Hancom and PowerPoint transparency groups over opaque content are ungrouped. Every ungroup is
+  verified by rendering the page before and after. A group whose look depends on staying a group has only
+  its text taken out. When even that would change the page, the group is left as it was and the toast says why.
+- Ungrouping now works on the content stream and keeps everything the old object move lost: `Tc`/`Tw`/`Tz`,
+  inline images, optional-content layers, the clip around the group, and distinct fonts that share a name.
+  Nested groups come out in one step, and other pages that use the same group are not changed.
+- The 선택 tool's double-click on a group and the Inspector's new 그룹 해제 button also ungroup. The badge
+  tells you how to edit the text inside a group.
+
 ## [0.3.0]
 
 v0.2.0 이후에 찾은 미구현·부분 구현 기능 83개 중 75개를 구현했습니다(`docs/BACKLOG_v0.3.md`, 처음에 제외했던

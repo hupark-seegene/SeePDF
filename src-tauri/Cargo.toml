@@ -1,6 +1,6 @@
 [package]
 name = "seepdf"
-version = "0.3.0"
+version = "0.3.1"
 description = "SeePDF - lightweight, powerful PDF editor with OCR"
 authors = ["hwpark"]
 edition = "2021"

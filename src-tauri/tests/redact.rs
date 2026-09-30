@@ -1360,7 +1360,7 @@ fn ungroup_object_keeps_the_page_identical() {
     let result = {
         let doc_id = doc.doc_id.clone();
         with_state(move |st| {
-            seepdf_lib::engine::objects::ungroup::ungroup(st, &doc_id, 0, 0, generation)
+            seepdf_lib::engine::objects::ungroup::ungroup(st, &doc_id, 0, 0, generation, None)
         })
         .expect("ungroup")
     };
@@ -1399,14 +1399,16 @@ fn ungroup_object_keeps_the_page_identical() {
     // Refused on something that is not a group, and on a stale generation.
     let doc_id = doc.doc_id.clone();
     let g = generation + 1;
-    let err =
-        with_state(move |st| seepdf_lib::engine::objects::ungroup::ungroup(st, &doc_id, 0, 0, g))
-            .expect_err("object 0 is now a path");
+    let err = with_state(move |st| {
+        seepdf_lib::engine::objects::ungroup::ungroup(st, &doc_id, 0, 0, g, None)
+    })
+    .expect_err("object 0 is now a path");
     assert_eq!(err.code, ErrorCode::InvalidArgument);
     let doc_id = doc.doc_id.clone();
-    let err =
-        with_state(move |st| seepdf_lib::engine::objects::ungroup::ungroup(st, &doc_id, 0, 0, 0))
-            .expect_err("stale");
+    let err = with_state(move |st| {
+        seepdf_lib::engine::objects::ungroup::ungroup(st, &doc_id, 0, 0, 0, None)
+    })
+    .expect_err("stale");
     assert_eq!(err.code, ErrorCode::Stale);
 
     // One undo restores the group.

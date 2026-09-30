@@ -280,6 +280,9 @@ struct Placement {
     font_size: f32,
     /// The clip: how many paths, how many segments in all, and the bounds of their points.
     clip: (c_int, c_int, [f32; 4]),
+    /// v0.3.1: fill and stroke colour as PDFium reports them (RGBA; `None` when it cannot,
+    /// e.g. a pattern).
+    colours: [Option<[u32; 4]>; 2],
 }
 
 impl Placement {
@@ -314,6 +317,7 @@ unsafe fn placements(bindings: &dyn PdfiumLibraryBindings, page: FPDF_PAGE) -> V
                     matrix: [0.0; 6],
                     font_size: 0.0,
                     clip: (0, 0, [0.0; 4]),
+                    colours: [None, None],
                 };
             }
             let kind = bindings.FPDFPageObj_GetType(object);
@@ -365,11 +369,24 @@ unsafe fn placements(bindings: &dyn PdfiumLibraryBindings, page: FPDF_PAGE) -> V
             if clip.1 == 0 {
                 clip.2 = [0.0; 4];
             }
+            let mut colours = [None, None];
+            let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
+            if bindings
+                .is_true(bindings.FPDFPageObj_GetFillColor(object, &mut r, &mut g, &mut b, &mut a))
+            {
+                colours[0] = Some([r, g, b, a]);
+            }
+            if bindings.is_true(
+                bindings.FPDFPageObj_GetStrokeColor(object, &mut r, &mut g, &mut b, &mut a),
+            ) {
+                colours[1] = Some([r, g, b, a]);
+            }
             Placement {
                 kind,
                 matrix: [m.a, m.b, m.c, m.d, m.e, m.f],
                 font_size,
                 clip,
+                colours,
             }
         })
         .collect()
@@ -391,6 +408,10 @@ pub struct Rehearsal {
     pub disturbed: Vec<usize>,
     /// How many top-level objects the page has.
     pub objects: usize,
+    /// v0.3.1: objects that come back in another colour — PDFium's content generator writes
+    /// only DeviceRGB / DeviceGray colours and drops an ICC, `/CalRGB` or `/Separation` one
+    /// (the object turns black). Re-setting their colour as RGB before the write keeps it.
+    pub recolour: Vec<usize>,
 }
 
 impl Rehearsal {
@@ -487,6 +508,8 @@ pub fn rehearse_rewrite(
         if j < after.len() && before[i].same_place(&after[j]) {
             if !before[i].same_clip(&after[j]) {
                 out.disturbed.push(i);
+            } else if before[i].colours != after[j].colours {
+                out.recolour.push(i);
             }
             i += 1;
             j += 1;
@@ -510,10 +533,20 @@ pub fn rehearse_rewrite(
 /// regenerates the whole page instead.
 const REWRITE_ROUNDS: usize = 2;
 
+/// What a rewrite of some objects must do besides (see [`rewrite_set`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Rewrite {
+    /// Objects to regenerate as well (disjoint from `dirty`, ascending; usually empty).
+    pub extra: Vec<usize>,
+    /// Objects the rewrite regenerates whose colour must be re-set as RGB first
+    /// ([`Rehearsal::recolour`]; indices of the page as it is).
+    pub recolour: Vec<usize>,
+}
+
 /// The objects whose content streams a rewrite of `dirty` must regenerate as well, so that
-/// nothing it keeps is lost, moved or clipped away (see [`rehearse_rewrite`]): `Some(extra)`
-/// (disjoint from `dirty`, ascending; usually empty), or `None` when no rewrite keeps the page
-/// intact — an inline image or a shading would be lost.
+/// nothing it keeps is lost, moved or clipped away (see [`rehearse_rewrite`]), and the ones
+/// whose colour it would drop; `None` when no rewrite keeps the page intact — an inline image
+/// or a shading would be lost.
 ///
 /// A disturbed or dropped object is rewritten too (its own stream then writes it whole); when
 /// that does not settle it — the pieces of the page share state all along, like 160F's — every
@@ -523,7 +556,7 @@ pub fn rewrite_set(
     doc: &PdfDocument<'_>,
     page_index: u16,
     dirty: &[usize],
-) -> Result<Option<Vec<usize>>, EngineError> {
+) -> Result<Option<Rewrite>, EngineError> {
     let own: std::collections::HashSet<usize> = dirty.iter().copied().collect();
     let extra = |set: &std::collections::BTreeSet<usize>| -> Vec<usize> {
         set.iter().copied().filter(|i| !own.contains(i)).collect()
@@ -537,7 +570,10 @@ pub fn rewrite_set(
             return Ok(None);
         }
         if r.clean() {
-            return Ok(Some(extra(&set)));
+            return Ok(Some(Rewrite {
+                extra: extra(&set),
+                recolour: r.recolour,
+            }));
         }
         objects = r.objects;
         set.extend(r.dropped);
@@ -546,5 +582,32 @@ pub fn rewrite_set(
     let whole: std::collections::BTreeSet<usize> = (0..objects).collect();
     let all: Vec<usize> = whole.iter().copied().collect();
     let r = rehearse_rewrite(bindings, doc, page_index, &all)?;
-    Ok(r.clean().then(|| extra(&whole)))
+    Ok(r.clean().then(|| Rewrite {
+        extra: extra(&whole),
+        recolour: r.recolour,
+    }))
+}
+
+/// Re-sets an object's fill and stroke colour to the RGB value PDFium reports for them, so its
+/// content generator writes them (it drops any colour space but DeviceRGB / DeviceGray).
+pub fn normalise_colours(bindings: &dyn PdfiumLibraryBindings, page: &PdfPage<'_>, index: usize) {
+    // SAFETY: `page` is live; the handle is fetched by index and used at once; the out-params
+    // outlive the calls.
+    unsafe {
+        let object = bindings.FPDFPage_GetObject(page.raw_handle(), index as c_int);
+        if object.is_null() {
+            return;
+        }
+        let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
+        if bindings
+            .is_true(bindings.FPDFPageObj_GetFillColor(object, &mut r, &mut g, &mut b, &mut a))
+        {
+            bindings.FPDFPageObj_SetFillColor(object, r, g, b, a);
+        }
+        if bindings
+            .is_true(bindings.FPDFPageObj_GetStrokeColor(object, &mut r, &mut g, &mut b, &mut a))
+        {
+            bindings.FPDFPageObj_SetStrokeColor(object, r, g, b, a);
+        }
+    }
 }

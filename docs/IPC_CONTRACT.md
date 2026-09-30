@@ -716,6 +716,9 @@ export interface ParagraphProbe {
   reason?: PageObject['reason'] | 'glyphsMissing' | 'rotatedText'
     | 'unwritableContent';        // Stage 9: the edit would drop an inline image / shading PDFium cannot write back
   docGeneration: DocGeneration;   // additive: the generation objectIds belong to (use as expectGeneration)
+  groupObjectId?: ObjectId;       // v0.3.1, with reason 'insideXObject': the top-level group holding the text
+                                  // under `at` — what ungroup_object takes, with the same `at` (§7.4c)
+  groupDepth?: number;            // v0.3.1: how many groups deep that text is (1 = directly in groupObjectId)
 }
 probe_paragraph(a: { docId: DocId; page: PageIndex; at: Point }): Promise<ParagraphProbe | null>   // null = no text there
 
@@ -762,9 +765,18 @@ Engine: `engine/objects/paragraph.rs`. Detection: upright visible text objects (
 x-range; a short left-flush line whose successor's first word would have fitted ends it; a line indented
 by > 0.5·size starts a new one (not when centred, or flush right with an inset > 3·size). Alignment from edge
 variance (justify needs ≥ 3 lines). A click on rotated text → `refused/rotatedText` (v0.3: probed in its
-own frame instead, see below), on a Form XObject with text → `refused/insideXObject` (v0.3: the UI offers
-`ungroup_object`, §7.4c), on the invisible OCR layer → `refused/invisible`; a `noUnicode` run refuses
-the paragraph. SeePDF's own stamps (`SeePDF:Stamp`: headers, footers, watermarks) never join a paragraph —
+own frame instead, see below), on the invisible OCR layer → `refused/invisible`; a `noUnicode` run refuses
+the paragraph. **Text inside a group** (v0.3.1): when no page-level line is hit, the text page's characters
+under `at` (nearest box within ½ its height, ≥ 2 pt; the topmost when several) whose object is a child of a
+Form XObject — at any nesting depth — decide: that run is classified first (`noUnicode`, render mode
+invisible, or not visible at all — rendered with and without it on the scratch page, e.g. an optional-content
+layer that is off → `refused/invisible`), and only an editable run answers `refused/insideXObject` with
+`groupObjectId` (its top-level group) and `groupDepth`; `objectIds` = `[groupObjectId]`, `rect` = the run's
+box. A group's bounds alone never answer (v0.3.0 took the first form whose box held the point — a page
+border form drawn first was ungrouped instead of the clicked text's). `probe_paragraph` runs on `Lane::Edit`
+(v0.3.1), FIFO with the mutations: its `docGeneration` is what the next mutation is pinned to, so it must not
+overtake a queued one (on `Lane::Interactive` a second click's probe overtook a queued `ungroup_object` and
+its 그룹 해제 then failed `stale`). SeePDF's own stamps (`SeePDF:Stamp`: headers, footers, watermarks) never join a paragraph —
 a header 4 pt above a first line used to be folded into it and deleted by the edit — and an edit naming a
 stamp's object is `invalidArgument`. Coverage + advance widths come from one **trial object** in the candidate font (every distinct
 glyph, read back through a fresh text page, placed off-page — PDFium's fake-bold filter drops a repeated
@@ -964,27 +976,59 @@ already the stamp *annotation*; the wire shape is the one above). One `mutate` =
   missing → `notFound`; undecodable image → `invalidArgument`; Hangul outside the bundled subset →
   `fontCoverage`. Encrypted documents are stamped like any edit (the password survives the save).
 
-### 7.4c Groups — `ungroup_object` (v0.3, pkg1 R4)
+### 7.4c Groups — `ungroup_object` (v0.3, pkg1 R4; reworked in v0.3.1)
 
 ```ts
-export interface UngroupResult { docGeneration: DocGeneration; objects: PageObject[]; newObjectIds: ObjectId[] }
-ungroup_object(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration }):
-  Promise<UngroupResult>
+export interface UngroupResult {
+  docGeneration: DocGeneration; objects: PageObject[]; newObjectIds: ObjectId[];
+  partial?: boolean;              // v0.3.1: only the text came out; the graphics stay a group (newObjectIds[0])
+}
+ungroup_object(a: { docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration;
+  at?: Point }): Promise<UngroupResult>   // v0.3.1: at = the click (the probe's `at`)
 ```
 
-Engine: `engine/objects/ungroup.rs`. Replaces the Form XObject `objectId` (a top-level `type: 'form'` object)
-by its children, in place: each child is detached (`FPDFFormObj_RemoveObject`), transformed by the form
-matrix (form ∘ child, clip path included), its fill / stroke colour re-set as RGB (PDFium's content writer
-only writes DeviceRGB / DeviceGray colours and drops an ICC / `/CalRGB` / `/Separation` one, which would
-paint it black), and inserted at the form's index (`FPDFPage_InsertObjectAtIndex`); the emptied form object
-is removed and the page regenerated — one undo step `undo.ungroup`. `newObjectIds` = the children, in drawing
-order (`objectId … objectId + n − 1`). Errors: `stale` on generation mismatch; `notFound` for an index past
-the end; `invalidArgument` (detail `notAGroup`) for anything else; `unsupported` (detail
-`groupTransparency`) for a form drawn with transparency (group alpha, blend mode, soft mask), whose children
-would come out opaque. Not carried over (PDFium limits): the text-state operators `Tc` / `Tw` / `Tz` of the
-children (PDFium never writes them for text it did not create — a line justified by character spacing
-tightens; `TAMReview.pdf` p.2 has three) and a clip path set on the page before `/Form Do` (the form's
-`/BBox` clip is kept, it is part of every child's clip path).
+Engine: `engine/objects/ungroup.rs` + `engine/objects/inline.rs`. Replaces the Form XObject `objectId` (a
+top-level `type: 'form'` object, the probe's `groupObjectId`) by what it draws, in place — one undo step
+`undo.ungroup`:
+
+* **Which forms.** With `at`: down to the (nested) form that directly holds the text under `at` (the same
+  character hit as `probe_paragraph`) — every form on that path, in the one step, so a nested group asks once.
+  Without `at` (the Inspector's 그룹 해제): the form and every nested form that draws text.
+* **How (v0.3.1).** At the content-stream level, with `lopdf` (`registry::mutate_bytes_checked`): the `Do` is
+  replaced by the form's own operators, byte for byte. Only resource names are rewritten, to fresh names in
+  the page's own (copied) `/Resources` pointing at the same objects (`/Font` `/XObject` `/ExtGState`
+  `/ColorSpace` `/Pattern` `/Shading` `/Properties`, an inline image's `/CS`); a pattern gets a copy with
+  `/Matrix` × the form's transform; `/Matrix` becomes a `cm`, `/BBox` a clip, the form's `/OC` an
+  `/OC … BDC … EMC`. Everything PDFium's content generator could not write back is kept: inline images,
+  `Tc` / `Tw` / `Tz`, optional-content and tagged marks, the clip / colour / alpha in effect at the `Do`,
+  and each font's identity (two fonts with the same `BaseFont` used to be merged). The inlined content is
+  cut into **self-contained pieces** — one content stream per text object and per graphic, each restating
+  the whole graphics state it starts with and closing everything it opens; the page stream holding the `Do`
+  is split into a part that closes every open level and one that reopens them — so a later 문단 편집, which
+  lets PDFium regenerate the streams of the paragraph's objects, regenerates nothing else. The form
+  XObject itself is never changed: other pages and other placements of it stay as they were.
+* **Verified.** The page is rendered before and the rewritten file's page after (content only, ≤ 3 MP, at
+  most 2×); the rewrite stands only when the mean channel difference ≤ 0.35 / 255 and at most 0.03 % of the
+  pixels differ by more than 40 in any channel, and the page's other objects came through unchanged. An
+  Office / Hancom `/Group /S /Transparency` over opaque content looks the same and passes. When it does not
+  (an alpha, blend or soft mask applied to a transparency group as a whole) and the form draws more than
+  text, it is tried again with only the **text** lifted out (`partial: true`: the `Do` stays, pointing at a
+  new copy of the form without its text, and the text is inlined after it); when that changes the look too,
+  nothing changed: `unsupported`, detail `lookChanged`.
+* **Fallback.** A page whose content `lopdf` cannot read or rewrite (an undecodable stream, a `Do` that does
+  not match PDFium's form object, an encryption it cannot write back) is ungrouped the v0.3.0 way — PDFium
+  moves the children (`FPDFFormObj_RemoveObject`, form matrix incl. clip, colours re-set as RGB,
+  `FPDFPage_InsertObjectAtIndex`) — under the same render check.
+
+`newObjectIds` = the objects that came out, in drawing order (`objectId …`). Errors: `stale` on generation
+mismatch; `notFound` for an index past the end; `invalidArgument` (detail `notAGroup`) for anything else;
+`unsupported` (detail `lookChanged`) as above. (`groupTransparency` is no longer answered; the redaction's
+own ungroup, `ungroup_at`, still moves PDFium objects.)
+
+A write that lets PDFium regenerate objects (`edit_paragraph`, `transform_object`, `restack_objects`) first
+re-sets the colour of every object it regenerates as RGB (`raw::page::rewrite_set`'s rehearsal reports them):
+the generator writes only DeviceRGB / DeviceGray colours, so an ICC-coloured figure that came out of a
+group would otherwise turn black when the paragraph above it pushes it down.
 
 ### 7.5 Redaction and security
 

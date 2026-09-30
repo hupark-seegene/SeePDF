@@ -5,7 +5,8 @@
  *
  *   선택        hover outlines · click selects (⇧ adds) · drag moves · corner handles scale ·
  *               drag on empty space draws a marquee that selects the objects wholly inside it
- *               (⇧ adds) · double-click on text opens 문단 편집
+ *               (⇧ adds) · double-click on text opens 문단 편집 — on a group too (v0.3.1: through
+ *               그룹 해제 후 편집할까요?)
  *   텍스트 수정  click → `probe_paragraph` → the editing box
  *   텍스트 추가  click → an empty editing box
  *   이미지 추가  click or drag a box → file picker → `add_image_object`
@@ -25,7 +26,7 @@ import { useT } from "../i18n/useT";
 import { useAppStore } from "../store/appStore";
 import { useEditStore } from "./editStore";
 import {
-  addImageFlow, beginAddText, beginParagraphEdit, loadPage, moveObjects, reasonKey, resizeObject,
+  addImageFlow, badgeReason, beginAddText, beginParagraphEdit, loadPage, moveObjects, resizeObject,
 } from "./actions";
 import {
   CORNERS, cornerPoint, deltaToPage, hitObject, imageRectAt, objectsInside, rectFromPoints, resizeRect, type Corner,
@@ -140,8 +141,10 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
       setDrag({ kind: "marquee", start: at, end: at, x0: e.clientX, y0: e.clientY, moved: false, additive: e.shiftKey });
       return;
     }
-    if (e.detail >= 2 && hit.type === "text") {
-      void beginParagraphEdit(ctx.index, at);
+    // v0.3.1: a group (as the engine lists it: one `form` object) opens its text too, through
+    // 그룹 해제 후 편집할까요?
+    if (e.detail >= 2 && (hit.type === "text" || hit.type === "form")) {
+      void beginParagraphEdit(ctx.index, at, { onGroup: hit.type === "form" });
       return;
     }
     let ids = selected;
@@ -164,7 +167,7 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
       if (tool === "select" || tool === "editText" || tool === "redact") {
         const [x, y] = toPage(e);
         const hit = tool === "redact" && markAt(marks, x, y) ? null : hitObject(objects, x, y);
-        const next = hit && (tool === "select" || hit.type === "text") ? hit.objectId : null;
+        const next = hit && (tool === "select" || hit.type === "text" || (hit.type === "form" && hit.text)) ? hit.objectId : null;
         if (next !== hover) setHover(next);
       }
       return;
@@ -261,7 +264,7 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
           />
         );
       })}
-      {(tool === "editText" || tool === "redact") && hovered?.type === "text" && (
+      {(tool === "editText" || tool === "redact") && (hovered?.type === "text" || (hovered?.type === "form" && hovered.text)) && (
         <Outline ctx={ctx} rect={hovered.rect} state="hover" />
       )}
       {preview?.status === "ready" &&
@@ -324,11 +327,11 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
               key={`badge-${o.objectId}`}
               className="edit-badge text-xs"
               data-editable={o.editable}
-              title={t(reasonKey(o.reason))}
+              title={t(badgeReason(o))}
               style={{ left: box.x, top: Math.max(0, box.y - 20) }}
             >
-              {t(o.editable === "readOnly" ? "edit.badge.readOnly" : "edit.badge.moveOnly")}
-              {o.reason && <span className="edit-badge-reason"> · {t(reasonKey(o.reason))}</span>}
+              {t(o.type === "form" ? "edit.badge.group" : o.editable === "readOnly" ? "edit.badge.readOnly" : "edit.badge.moveOnly")}
+              {(o.reason || o.type === "form") && <span className="edit-badge-reason"> · {t(badgeReason(o))}</span>}
             </span>
           );
         })}

@@ -86,9 +86,11 @@ export function errorKey(e: unknown): string {
     // v0.3 pkg5 (H4)
     case "engineCrashed":
       return "error.engineCrashed";
+    // v0.3.1: the document moved on under the request — say so in words, not the engine's
+    case "stale":
+      return "error.stale";
     case "unsupported":
     case "invalidArgument":
-    case "stale":
     case "cancelled":
     case "fontCoverage":
     case "pdfium":
@@ -538,9 +540,14 @@ export function applyRedactionsBatch(
 
 // v0.3 pkg1-redaction-and-text-objects ------------------------------------------------------
 
-/** R4 그룹 해제: the Form XObject `objectId` becomes its children, in place — one undo step. */
+/**
+ * R4 그룹 해제: the Form XObject `objectId` becomes its children, in place — one undo step. v0.3.1:
+ * `at` (the click) ungroups down to the nested group holding the text there; without it, the group
+ * and the groups inside it that hold text. Verified by rendering: `unsupported` / `lookChanged` when
+ * the page would look different (nothing changed); `partial` when only the text came out.
+ */
 export function ungroupObject(a: {
-  docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration;
+  docId: DocId; page: PageIndex; objectId: ObjectId; expectGeneration: DocGeneration; at?: Point;
 }): Promise<import("./types").UngroupResult> {
   return call("ungroup_object", a, (mock) => mock.ungroupObject(a));
 }

@@ -42,9 +42,11 @@ pub mod flow;
 pub mod paragraph;
 // v0.3 pkg1-redaction-and-text-objects (R4): 그룹 해제.
 pub mod ungroup;
+// v0.3.1: 그룹 해제 at the content-stream level.
+pub mod inline;
 
 /// Line spacing of a multi-line `add_text_object`, as a multiple of the font size.
-const LINE_HEIGHT: f32 = 1.2;
+pub(crate) const LINE_HEIGHT: f32 = 1.2;
 
 // ---------------------------------------------------------------------------------------
 // Listing
@@ -144,12 +146,26 @@ fn describe(
             out.editable = Editability::ReadOnly;
             out.reason = Some(NotEditableReason::InsideXObject);
             if let Some(form) = object.as_x_object_form_object() {
-                let mut inner = String::new();
-                for child in form.iter() {
-                    if let Some(t) = child.as_text_object() {
-                        inner.push_str(&text_page.for_object(t));
+                // v0.3.1: the text of nested groups too (a group whose text is one level down
+                // is still a group with text: the badge and the Inspector's 그룹 해제 say so).
+                fn gather(
+                    form: &PdfPageXObjectFormObject<'_>,
+                    text_page: &PdfPageText<'_>,
+                    depth: usize,
+                    out: &mut String,
+                ) {
+                    for child in form.iter() {
+                        if let Some(t) = child.as_text_object() {
+                            out.push_str(&text_page.for_object(t));
+                        } else if let Some(inner) = child.as_x_object_form_object() {
+                            if depth < 16 {
+                                gather(inner, text_page, depth + 1, out);
+                            }
+                        }
                     }
                 }
+                let mut inner = String::new();
+                gather(form, text_page, 0, &mut inner);
                 if !inner.is_empty() {
                     out.text = Some(inner);
                 }
@@ -193,7 +209,7 @@ fn text_editability(
 
 /// A run is usable when its characters are real text, not raw glyph indices leaking through a
 /// missing `/ToUnicode`.
-fn has_usable_unicode(text: &str) -> bool {
+pub(crate) fn has_usable_unicode(text: &str) -> bool {
     // PDFium reports a hyphen at the end of a line as U+0002: a word fragment `re\u{2}` is
     // real text, not a raw char code.
     let text = match text.trim_end().strip_suffix('\u{2}') {
@@ -848,7 +864,15 @@ pub fn transform(
             .page(page_index)
             .coalesced(),
         |doc| {
+            let bindings = doc.bindings();
             let mut scratch = ScratchPage::open(doc, page_index)?;
+            // v0.3.1: the moved object is written anew by PDFium, which drops any colour space
+            // but DeviceRGB / DeviceGray (an ungrouped ICC figure would turn black).
+            crate::engine::raw::page::normalise_colours(
+                bindings,
+                &scratch.page,
+                object_id as usize,
+            );
             {
                 let mut object = object_at(&scratch.page, object_id)?;
                 let anchor = object.bounds().ctx("read bounds")?.to_rect();
@@ -1213,6 +1237,10 @@ pub fn restack(
         |doc| {
             let bindings = doc.bindings();
             let mut scratch = ScratchPage::open(doc, page_index)?;
+            // v0.3.1: written anew — keep their colours (see `transform`)
+            for &i in &ids {
+                crate::engine::raw::page::normalise_colours(bindings, &scratch.page, i);
+            }
             restack_raw(bindings, &scratch.page, &ids, to_front)?;
             scratch
                 .page

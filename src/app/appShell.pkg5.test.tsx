@@ -63,9 +63,9 @@ afterEach(() => {
 describe("H1: version and help reachable everywhere", () => {
   it("Welcome shows the running version from app_info, not a hard-coded one", async () => {
     await useAppStore.getState().bootstrap();
-    expect(useAppStore.getState().appInfo?.version).toBe("0.3.0");
+    expect(useAppStore.getState().appInfo?.version).toBe("0.3.1");
     render(<Welcome />);
-    expect(screen.getByText("버전 0.3.0")).toBeInTheDocument();
+    expect(screen.getByText("버전 0.3.1")).toBeInTheDocument();
     expect(screen.queryByText("버전 0.1.0")).toBeNull();
   });
 
@@ -139,7 +139,7 @@ describe("H1: version and help reachable everywhere", () => {
 describe("H11: open-source licences", () => {
   it("the About dialog shows the build and opens the notices in a scrollable pane", async () => {
     render(<AboutDialog onClose={() => undefined} />);
-    expect(await screen.findByText("버전 0.3.0")).toBeInTheDocument();
+    expect(await screen.findByText("버전 0.3.1")).toBeInTheDocument();
     expect(screen.getByText("PDFium 155.0.8057.0")).toBeInTheDocument();
     expect(screen.getByText("macos / aarch64")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "오픈 소스 라이선스" }));

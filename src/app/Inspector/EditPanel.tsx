@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useT } from "../../i18n/useT";
 import type { PageObject } from "../../ipc/types";
 import { useEditStore } from "../../edit/editStore";
-import { deleteSelection, reasonKey, restyleText, setSelectionGeometry } from "../../edit/actions";
+import { badgeReason, deleteSelection, restyleText, setSelectionGeometry } from "../../edit/actions";
 // v0.3 pkg4-annotations-stamps-objects (E1 이미지 바꾸기, A6 비율 고정 / 맨 앞으로 / 맨 뒤로)
 import { lockedSize, replaceSelectedImage, restackSelection } from "../../edit/actions";
 import { unionRects } from "../../edit/geometry";
@@ -69,8 +69,23 @@ function ObjectPanel({ hideEmpty }: { hideEmpty: boolean }) {
         </h3>
         {one && one.editable !== "full" && (
           <p className="text-sm dim">
-            {t(one.editable === "readOnly" ? "edit.badge.readOnly" : "edit.badge.moveOnly")} · {t(reasonKey(one.reason))}
+            {t(one.type === "form" ? "edit.badge.group" : one.editable === "readOnly" ? "edit.badge.readOnly" : "edit.badge.moveOnly")}
+            {" · "}
+            {t(badgeReason(one))}
           </p>
+        )}
+        {/* v0.3.1: 그룹 해제 — the group (and the groups inside it that hold text) become their objects */}
+        {one?.type === "form" && (
+          <>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void import("../../edit/ungroup").then((m) => m.ungroupSelection())}
+            >
+              {t("edit.ungroup.button")}
+            </button>
+            <p className="text-xs dim">{t("edit.ungroup.hint")}</p>
+          </>
         )}
         {one?.type === "text" && (
           <>

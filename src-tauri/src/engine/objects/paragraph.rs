@@ -27,7 +27,9 @@
 //! then written one object per word, with a synthetic space. Justified lines are always one
 //! object per word; everything else is one object per line.
 
-use super::{check_font_size, check_generation, flow, not_editable, object_at, relist, rgb_of};
+use super::{
+    check_font_size, check_generation, flow, not_editable, object_at, relist, rgb_of, ungroup,
+};
 use crate::engine::annot::ScratchPage;
 use crate::engine::registry::{self, MutateOpts, OpenDoc};
 use crate::engine::types::EngineState;
@@ -274,24 +276,8 @@ fn classify(
     rot: Rot,
 ) -> Classified {
     let bounds = bounds_in(object, rot);
-    if object.object_type() == PdfPageObjectType::XObjectForm {
-        let has_text = object
-            .as_x_object_form_object()
-            .map(|f| f.iter().any(|c| c.object_type() == PdfPageObjectType::Text))
-            .unwrap_or(false);
-        if !has_text {
-            return Classified::Skip;
-        }
-        return Classified::Obstacle(Obstacle {
-            index,
-            bounds,
-            reason: NotEditableReason::InsideXObject,
-            text: String::new(),
-            font: String::new(),
-            size: 0.0,
-            color: [0, 0, 0],
-        });
-    }
+    // v0.3.1: text inside a group is found by the text under the point, not by the group's
+    // bounds (`grouped_probe`).
     let Some(t) = object.as_text_object() else {
         return Classified::Skip;
     };
@@ -1004,6 +990,10 @@ pub fn probe(
         }
     }
     let Some(hit) = hit else {
+        // v0.3.1: text inside a group (nested groups too) under the point.
+        if let Some(p) = grouped_probe(&mut scratch, doc.bindings(), at, generation)? {
+            return Ok(Some(p));
+        }
         return Ok(obstacles
             .iter()
             .find(|o| inside(&o.bounds))
@@ -1070,7 +1060,99 @@ pub fn probe(
         substitute_font,
         reason,
         doc_generation: generation,
+        group_object_id: None,
+        group_depth: None,
     }))
+}
+
+/// v0.3.1: the text inside a group under `at` ([`ungroup::group_hit`]), as a refused probe:
+/// `insideXObject` with `groupObjectId` when 그룹 해제 would make it editable — or the reason it
+/// could not be edited even then (`noUnicode`, `invisible`: a run nobody can see, like an
+/// optional-content layer that is off), so the UI never offers a 그룹 해제 that cannot lead to
+/// an edit. `None` when no grouped text is there.
+fn grouped_probe(
+    scratch: &mut ScratchPage<'_>,
+    bindings: &'static dyn PdfiumLibraryBindings,
+    at: Point,
+    generation: DocGeneration,
+) -> Result<Option<ParagraphProbe>, EngineError> {
+    if !ungroup::has_grouped_text(bindings, &scratch.page) {
+        return Ok(None);
+    }
+    let Some(hit) = ungroup::group_hit(bindings, &scratch.page, at, None)? else {
+        return Ok(None);
+    };
+    let (mut size, mut r, mut g, mut b, mut a) = (0f32, 0u32, 0u32, 0u32, 0u32);
+    // SAFETY: `hit.text` is a live text object of the scratch page; out-params outlive the calls.
+    let (mode, sized, coloured) = unsafe {
+        (
+            bindings.FPDFTextObj_GetTextRenderMode(hit.text) as i64,
+            bindings.is_true(bindings.FPDFTextObj_GetFontSize(hit.text, &mut size)),
+            bindings.is_true(
+                bindings.FPDFPageObj_GetFillColor(hit.text, &mut r, &mut g, &mut b, &mut a),
+            ),
+        )
+    };
+    let height = (hit.rect.t - hit.rect.b).abs();
+    let size = if sized && size > 0.0 { size } else { height };
+    let mut reason = if matches!(mode, 3 | 7) {
+        Some(NotEditableReason::Invisible)
+    } else if !super::has_usable_unicode(&hit.chars) {
+        Some(NotEditableReason::NoUnicode)
+    } else {
+        None
+    };
+    if reason.is_none() && !visible(scratch, bindings, &hit)? {
+        reason = Some(NotEditableReason::Invisible);
+    }
+    let editable = reason.is_none();
+    Ok(Some(ParagraphProbe {
+        object_ids: vec![hit.top as ObjectId],
+        rect: hit.rect,
+        text: collapse_ws(&hit.chars).trim().to_string(),
+        font_name: String::new(),
+        font_size_pt: size,
+        color: if coloured {
+            [r as u8, g as u8, b as u8]
+        } else {
+            [0, 0, 0]
+        },
+        mixed_styles: false,
+        line_height_pt: size * super::LINE_HEIGHT,
+        align: ParagraphAlign::Left,
+        first_line_indent_pt: 0.0,
+        lines: 1,
+        strategy: TextEditStrategy::Refused,
+        substitute_font: None,
+        reason: Some(reason.unwrap_or(NotEditableReason::InsideXObject)),
+        doc_generation: generation,
+        group_object_id: editable.then_some(hit.top as ObjectId),
+        group_depth: editable.then_some(hit.chain.len() as u32 + 1),
+    }))
+}
+
+/// Does the grouped run show on the page at all? Rendered with it and without it (taken out of
+/// its form on the scratch page, which is never written back): no pixel changes when it is
+/// hidden — an optional-content layer that is off, white on white, covered by an image.
+fn visible(
+    scratch: &mut ScratchPage<'_>,
+    bindings: &'static dyn PdfiumLibraryBindings,
+    hit: &ungroup::GroupHit,
+) -> Result<bool, EngineError> {
+    let scale = (1.5e6 / (scratch.page.width().value * scratch.page.height().value).max(1.0))
+        .sqrt()
+        .min(1.5);
+    let with = ungroup::render_look(&scratch.page, scale)?;
+    // SAFETY: both handles belong to the live scratch page; the removed object is ours to free.
+    let removed = unsafe { bindings.FPDFFormObj_RemoveObject(hit.parent, hit.text) };
+    if !bindings.is_true(removed) {
+        return Ok(true);
+    }
+    // SAFETY: removed above, so unowned.
+    unsafe { bindings.FPDFPageObj_Destroy(hit.text) };
+    let without = ungroup::render_look(&scratch.page, scale)?;
+    let (mean, share) = ungroup::look_diff(&with, &without);
+    Ok(mean > 0.0 || share > 0.0)
 }
 
 fn obstacle_probe(o: &Obstacle, generation: DocGeneration) -> ParagraphProbe {
@@ -1090,6 +1172,8 @@ fn obstacle_probe(o: &Obstacle, generation: DocGeneration) -> ParagraphProbe {
         substitute_font: None,
         reason: Some(o.reason),
         doc_generation: generation,
+        group_object_id: None,
+        group_depth: None,
     }
 }
 
@@ -1741,20 +1825,22 @@ fn run<'p>(
     if is_moving(&decision, &plan) {
         dirty.extend(plan.movable.iter().copied());
     }
-    let extra = match raw::page::rewrite_set(bindings, doc.pdf(), page_index, &dirty)? {
-        Some(extra) => extra,
+    let rewrite = match raw::page::rewrite_set(bindings, doc.pdf(), page_index, &dirty)? {
+        Some(rewrite) => rewrite,
         None if dirty.len() > own.len() => {
             // What follows sits in a stream PDFium cannot rewrite (an inline image or a shading
             // shares it): it stays where it is and is in the paragraph's way.
-            let Some(extra) = raw::page::rewrite_set(bindings, doc.pdf(), page_index, &own)? else {
+            let Some(rewrite) = raw::page::rewrite_set(bindings, doc.pdf(), page_index, &own)?
+            else {
                 return Err(unwritable(page_index));
             };
             plan = plan.frozen();
             decision = flow::decide(&plan, job.flow, growth, reach);
-            extra
+            rewrite
         }
         None => return Err(unwritable(page_index)),
     };
+    let extra = rewrite.extra;
     let moving = is_moving(&decision, &plan);
     let dy = -decision.shift;
     let moved: &[usize] = if moving { &plan.movable } else { &[] };
@@ -1773,6 +1859,11 @@ fn run<'p>(
         // An identity transform marks an object dirty: its stream is regenerated with it whole.
         for &index in &extra {
             raw::object::translate(bindings, &scratch.page, index, 0.0, 0.0)?;
+        }
+        // v0.3.1: an ICC / calibrated / separation colour of an object the write regenerates
+        // would come back black (an ungrouped figure's colours) — re-set it as RGB first.
+        for &index in &rewrite.recolour {
+            raw::page::normalise_colours(bindings, &scratch.page, index);
         }
         let added = built.len();
         // v0.3 (R5): a placeholder where the paragraph starts, in its content stream.

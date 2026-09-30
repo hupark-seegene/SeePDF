@@ -324,6 +324,10 @@ export interface ParagraphProbe {
   // shading, which PDFium cannot write back — refused rather than lose it
   reason?: PageObject['reason'] | 'glyphsMissing' | 'rotatedText' | 'unwritableContent';
   docGeneration?: DocGeneration;  // the generation `objectIds` belong to (the engine sends it; optional here)
+  // v0.3.1: with reason 'insideXObject', the top-level group holding the text under the point — what
+  // `ungroup_object` takes (with the same `at`) — and how many groups deep that text is (1 = directly)
+  groupObjectId?: ObjectId;
+  groupDepth?: number;
 }
 /**
  * Stage 9: what happens to the content below a paragraph whose height changed.
@@ -381,7 +385,10 @@ export interface RedactPreview {
   groups?: ObjectId[];               // v0.3 (R4): Form XObjects under the marks — apply needs { ungroup: true }
 }
 /** v0.3 pkg1 (R4) `ungroup_object`: the page after the group became its children. */
-export interface UngroupResult { docGeneration: DocGeneration; objects: PageObject[]; newObjectIds: ObjectId[] }
+export interface UngroupResult {
+  docGeneration: DocGeneration; objects: PageObject[]; newObjectIds: ObjectId[];
+  partial?: boolean;                 // v0.3.1: only the text came out; the graphics stay a group (transparency)
+}
 
 // ---------------------------------------------------------------------------
 // 7.5b Stamp (P1-4 워터마크 / 머리글·바닥글) and compress (P1-5 압축) — Stage 4 contract

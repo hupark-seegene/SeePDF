@@ -1,5 +1,8 @@
-//! 그룹 해제 → 편집 reproduction corpus (not a regression gate: it REPORTS, it does not assert
-//! per case). Run:
+//! 그룹 해제 → 편집 corpus (v0.3.1). Every case is a test of its own (`case_*`): the UI's call
+//! sequence must end in an edited, saved and reopened page — or, where the case says so, in a
+//! refusal that names the reason **before** anything was ungrouped, or in a 그룹 해제 that is
+//! refused because the page would look different (and then changed nothing). The whole corpus
+//! with a report:
 //!
 //! ```sh
 //! cd src-tauri && cargo test --release --test ungroup_corpus -- --nocapture --test-threads=1
@@ -18,8 +21,10 @@
 //!    `edit_paragraph` dry run `push` (→ `overlap` when unwritable) → real write → save → reopen →
 //!    text extractable + render diff outside the edited paragraph, and the other pages sharing
 //!    the form.
-//! 3. `lane_overtake_makes_ungroup_stale` reproduces the user's
-//!    "expectGeneration 3 but the document is at 4" with the real engine thread.
+//! 3. `probe_after_a_queued_ungroup_sees_it` is the user's "expectGeneration 3 but the
+//!    document is at 4" with the real engine thread: a probe sent after a queued 그룹 해제 used
+//!    to overtake it (`Lane::Interactive` before `Lane::Edit`); on `Lane::Edit` it no longer can.
+//! 4. `inspector_ungroup_on_every_case`: the Inspector's 그룹 해제 (no click point) on every case.
 //!
 //! The report goes to stdout and `fixtures/out/ungroup-corpus/report.txt`.
 
@@ -251,6 +256,20 @@ struct Case {
     /// Pages that draw the same form (checked unchanged after save).
     shared: Vec<PageIndex>,
     source: String,
+    expect: Expect,
+}
+
+/// How a case must end.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Expect {
+    /// One 그룹 해제, then the paragraph is edited, saved and reopened intact.
+    Edit,
+    /// The same, with only the group's text taken out (`UngroupResult.partial`).
+    EditPartial,
+    /// Refused with this reason before anything is ungrouped.
+    Refused(NotEditableReason),
+    /// 그룹 해제 refused (`lookChanged`), the document untouched.
+    LookChanged,
 }
 
 /// Two text lines of one paragraph at form-space (10, 150) / (10, 135.6), plus a filled rect.
@@ -278,6 +297,7 @@ fn case(
         at,
         shared,
         source: "corpus".into(),
+        expect: Expect::Edit,
     }
 }
 
@@ -497,14 +517,17 @@ fn generate_corpus() -> Vec<Case> {
                 } },
             },
         );
-        cases.push(case(
+        // PDFium applies the soft mask to the form as a whole: only the text comes out
+        let mut c = case(
             "c03c-smask",
             "form drawn under a luminosity /SMask",
             p.finish(),
             0,
             PARA_AT,
             vec![],
-        ));
+        );
+        c.expect = Expect::EditPartial;
+        cases.push(c);
     }
     cases.push(case(
         "c03d-isolated-knockout",
@@ -537,6 +560,49 @@ fn generate_corpus() -> Vec<Case> {
             PARA_AT,
             vec![],
         ));
+    }
+
+    {
+        // real transparency that the group's compositing matters for: two overlapping
+        // rectangles under /ca 0.5 (ungrouped, the overlap would be darker); the text is
+        // beside them → only the text comes out
+        let body = "0.2 0.4 0.8 rg 300 20 120 120 re f 0.8 0.3 0.2 rg 360 60 110 110 re f \
+            BT /F1 12 Tf 14.4 TL 0 0 0 rg 10 150 Td (Grouped paragraph line one of the form) Tj T* \
+            (and its second line in the same paragraph) Tj ET";
+        let mut c = case(
+            "c03f-alpha-overlap-text-apart",
+            "transparency group under /ca 0.5 with two overlapping rectangles, the text beside them",
+            one_form(
+                extra_group(false, false),
+                "/GS0 gs",
+                dictionary! { "GS0" => dictionary! { "ca" => 0.5, "CA" => 0.5 } },
+                body,
+            ),
+            0,
+            PARA_AT,
+            vec![],
+        );
+        c.expect = Expect::EditPartial;
+        cases.push(c);
+        // …and with the text over a dark rectangle: neither way keeps the look
+        let body = "0.2 0.4 0.8 rg 0 100 300 80 re f 0.8 0.3 0.2 rg 150 80 200 80 re f \
+            BT /F1 12 Tf 14.4 TL 0 0 0 rg 10 150 Td (Grouped paragraph line one of the form) Tj T* \
+            (and its second line in the same paragraph) Tj ET";
+        let mut c = case(
+            "c03g-alpha-text-over-graphics",
+            "transparency group under /ca 0.5, the text over overlapping dark rectangles",
+            one_form(
+                extra_group(false, false),
+                "/GS0 gs",
+                dictionary! { "GS0" => dictionary! { "ca" => 0.5, "CA" => 0.5 } },
+                body,
+            ),
+            0,
+            PARA_AT,
+            vec![],
+        );
+        c.expect = Expect::LookChanged;
+        cases.push(c);
     }
 
     // (4) nested forms
@@ -852,7 +918,9 @@ fn generate_corpus() -> Vec<Case> {
             &format!("{HEAD} q 1 0 0 1 60 400 cm /Fm0 Do Q"),
             dictionary! { "Font" => fonts, "XObject" => dictionary! { "Fm0" => fm } },
         );
-        cases.push(case("c08d-hidden-form-oc-off", "form XObject with /OC of an OFF layer (invisible); the user clicks where nothing is visible", p.finish(), 0, [60.0 + 10.0 + 60.0, 400.0 + 100.0 + 10.0], vec![]));
+        let mut c = case("c08d-hidden-form-oc-off", "form XObject with /OC of an OFF layer (invisible); the user clicks where nothing is visible", p.finish(), 0, [60.0 + 10.0 + 60.0, 400.0 + 100.0 + 10.0], vec![]);
+        c.expect = Expect::Refused(NotEditableReason::Invisible);
+        cases.push(c);
     }
 
     // (9) whole page in one form
@@ -1182,6 +1250,8 @@ fn fixture_cases(summary: &mut String) -> Vec<Case> {
                     "fixtures/{}",
                     path.strip_prefix(fixture("")).unwrap().display()
                 ),
+                // decided by what the engine finds: see `fixture_cases_edit_or_refuse_first`
+                expect: Expect::Edit,
             });
         }
     }
@@ -1315,34 +1385,6 @@ fn tokens(s: &str) -> Vec<String> {
     s.split_whitespace().map(|t| t.to_string()).collect()
 }
 
-/// `ungroup::ungroup` with `lossy = true` (the redaction's path): what a 그룹 해제 of a
-/// transparency group would produce.
-fn lossy_ungroup(
-    st: &mut seepdf_lib::engine::EngineState<'_>,
-    doc_id: &str,
-    page: PageIndex,
-    object_id: ObjectId,
-) -> Result<usize, EngineError> {
-    use seepdf_lib::engine::annot::ScratchPage;
-    use seepdf_lib::engine::registry::MutateOpts;
-    use seepdf_lib::ipc::types::ChangeReason;
-    registry::mutate(
-        st,
-        doc_id,
-        MutateOpts::new("undo.ungroup", ChangeReason::Edit).page(page),
-        |doc| {
-            let bindings = doc.bindings();
-            let mut scratch = ScratchPage::open(doc, page)?;
-            let n = ungroup::ungroup_at(bindings, &scratch.page, object_id as usize, true)?;
-            scratch.page.regenerate_content().map_err(|e| {
-                EngineError::new(seepdf_lib::ipc::ErrorCode::Pdfium, format!("{e:?}"))
-            })?;
-            let _ = &mut scratch;
-            Ok(n)
-        },
-    )
-}
-
 fn write_png(buf: &[u8], path: &std::path::Path) {
     let (w, h) = dims(buf);
     if let Some(img) = image::RgbaImage::from_raw(w, h, buf[32..].to_vec()) {
@@ -1470,6 +1512,14 @@ fn forms_at(doc_id: &str, page: PageIndex, at: [f32; 2]) -> Vec<(usize, usize, u
 struct Outcome {
     lines: Vec<String>,
     failures: Vec<String>,
+    ungroups: usize,
+    /// Refused before any 그룹 해제, with this reason.
+    refused: Option<NotEditableReason>,
+    /// 그룹 해제 refused because the page would look different.
+    look_changed: bool,
+    /// Only the text came out.
+    partial: bool,
+    edited: bool,
 }
 
 impl Outcome {
@@ -1592,18 +1642,30 @@ fn run_case(c: &Case) -> Outcome {
             break;
         }
         if p.reason != Some(NotEditableReason::InsideXObject) {
-            o.fail(format!(
-                "refused {:?} after {ungroups} ungroup(s) → toast only, no editor",
-                p.reason
-            ));
+            if ungroups == 0 {
+                o.refused = p.reason;
+                o.log(format!(
+                    "  refused {:?} before any 그룹 해제 → the UI says why; nothing changed",
+                    p.reason
+                ));
+            } else {
+                o.fail(format!(
+                    "refused {:?} after {ungroups} ungroup(s) → the user paid for a 그룹 해제 that leads to no edit",
+                    p.reason
+                ));
+            }
+            o.ungroups = ungroups;
             return o;
+        }
+        if p.group_object_id.is_none() {
+            o.fail("insideXObject probe without groupObjectId");
         }
         if round == 3 {
             o.fail("still insideXObject after 3 ungroups");
             return o;
         }
         // confirmUngroup: objectId = probe.objectIds[0], expectGeneration = probe.docGeneration
-        let obj = p.object_ids.first().copied();
+        let obj = p.group_object_id.or(p.object_ids.first().copied());
         let Some(obj) = obj else {
             o.fail("refused probe has no objectIds → confirmUngroup returns false silently");
             return o;
@@ -1632,41 +1694,46 @@ fn run_case(c: &Case) -> Outcome {
         o.log(format!("  probe.objectIds[0] = #{obj}: {what}"));
         let gen = p.doc_generation;
         let d = id.clone();
-        let r = with_state(move |st| ungroup::ungroup(st, &d, page, obj, gen));
+        let at = c.at;
+        let r = with_state(move |st| ungroup::ungroup(st, &d, page, obj, gen, Some(at)));
         match r {
             Ok(u) => {
                 ungroups += 1;
+                o.partial |= u.partial;
                 o.log(format!(
-                    "  ungroup_object(#{obj}, expect {gen}) → gen {} moved {} objects",
+                    "  ungroup_object(#{obj}, expect {gen}) → gen {} moved {} objects{}",
                     u.doc_generation,
-                    u.new_object_ids.len()
+                    u.new_object_ids.len(),
+                    if u.partial { " (text only)" } else { "" }
                 ));
                 check_after_ungroup(&mut o, c, &id, &before, &text_before, crop, ungroups);
+                undo_redo_check(&mut o, &id, page, &before, crop);
             }
-            Err(e) => {
-                o.fail(format!(
-                    "ungroup_object → {} (UI: toast 문제가 발생했습니다 + raw English detail; 그룹 해제 impossible)",
+            Err(e) if e.detail.as_deref() == Some("lookChanged") => {
+                o.look_changed = true;
+                o.ungroups = ungroups;
+                o.log(format!(
+                    "  ungroup_object → {} (the UI says why)",
                     err_str(&e)
                 ));
-                if e.detail.as_deref() != Some("groupTransparency") || ungroups > 0 {
-                    return o;
+                if generation(&id) != gen {
+                    o.fail("a refused 그룹 해제 changed the generation");
                 }
-                // what-if: the same ungroup with lossy = true (what the redaction does)
-                let d = id.clone();
-                match with_state(move |st| lossy_ungroup(st, &d, page, obj)) {
-                    Ok(n) => {
-                        ungroups += 1;
-                        o.log(format!("  [what-if lossy ungroup_at] moved {n} objects"));
-                        check_after_ungroup(&mut o, c, &id, &before, &text_before, crop, ungroups);
-                    }
-                    Err(e) => {
-                        o.fail(format!("[what-if lossy] ungroup_at: {}", err_str(&e)));
-                        return o;
-                    }
+                let (m, s) = diff(&before, &render(&id, page), &[], crop);
+                if s > 0.0 || m > 0.001 {
+                    o.fail(format!(
+                        "a refused 그룹 해제 changed the page: mean {m:.3} share {s:.4}"
+                    ));
                 }
+                return o;
+            }
+            Err(e) => {
+                o.fail(format!("ungroup_object → {}", err_str(&e)));
+                return o;
             }
         }
     }
+    o.ungroups = ungroups;
     if ungroups > 1 {
         o.fail(format!("the user had to confirm 그룹 해제 {ungroups} times for one click (first objectIds[0] was not the form holding the clicked text, or nesting)"));
     }
@@ -1806,8 +1873,12 @@ fn run_case(c: &Case) -> Outcome {
     let (m, s) = diff(&before, &after, &masks, crop);
     if s > 0.003 {
         o.fail(format!(
-            "saved page differs OUTSIDE the edited paragraph: mean {m:.3} share {s:.4}"
+            "saved page differs OUTSIDE the edited paragraph: mean {m:.3} share {s:.4} masks {masks:?}"
         ));
+        let png = corpus_dir().join("png");
+        std::fs::create_dir_all(&png).ok();
+        write_png(&before, &png.join(format!("{}-before.png", c.name)));
+        write_png(&after, &png.join(format!("{}-edited-saved.png", c.name)));
     } else {
         o.log(format!(
             "  saved render outside the paragraph: mean {m:.3} share {s:.4}"
@@ -1826,7 +1897,254 @@ fn run_case(c: &Case) -> Outcome {
         }
     }
     let _ = generation(&id);
+    o.edited = true;
     o
+}
+
+/// One undo puts the page back exactly as it was; redo brings the 그룹 해제 back.
+fn undo_redo_check(o: &mut Outcome, id: &str, page: PageIndex, before: &[u8], crop: Rect) {
+    let ungrouped = render(id, page);
+    let d = id.to_string();
+    let info = with_state(move |st| registry::undo(st, &d, false));
+    match info {
+        Ok(_) => {
+            let (m, s) = diff(before, &render(id, page), &[], crop);
+            if m > 0.0 || s > 0.0 {
+                o.fail(format!(
+                    "undo of 그룹 해제 does not restore the page: mean {m:.3} share {s:.4}"
+                ));
+            } else {
+                o.log("  undo: page identical to the original; redo");
+            }
+        }
+        Err(e) => o.fail(format!("undo: {}", err_str(&e))),
+    }
+    let d = id.to_string();
+    if let Err(e) = with_state(move |st| registry::undo(st, &d, true)) {
+        o.fail(format!("redo: {}", err_str(&e)));
+    }
+    let (m, s) = diff(&ungrouped, &render(id, page), &[], crop);
+    if m > 0.0 || s > 0.0 {
+        o.fail(format!(
+            "redo does not bring the 그룹 해제 back: mean {m:.3} share {s:.4}"
+        ));
+    }
+}
+
+/// Checks an outcome against the case's expectation.
+fn judge(c: &Case, o: &Outcome) -> Vec<String> {
+    let mut problems = o.failures.clone();
+    // a repo fixture may be refused with its reason, as long as nothing was ungrouped first
+    if c.source != "corpus" && o.refused.is_some() && o.ungroups == 0 {
+        return problems;
+    }
+    match c.expect {
+        Expect::Edit | Expect::EditPartial => {
+            if !o.edited {
+                problems.push(format!(
+                    "expected an edit, got {:?} / lookChanged {}",
+                    o.refused, o.look_changed
+                ));
+            }
+            if o.ungroups != 1 {
+                problems.push(format!(
+                    "expected exactly one 그룹 해제, got {}",
+                    o.ungroups
+                ));
+            }
+            let partial = c.expect == Expect::EditPartial;
+            if o.partial != partial {
+                problems.push(format!("expected partial = {partial}, got {}", o.partial));
+            }
+        }
+        Expect::Refused(reason) => {
+            if o.refused != Some(reason) || o.ungroups != 0 {
+                problems.push(format!(
+                    "expected a refusal {reason:?} before any 그룹 해제, got {:?} after {}",
+                    o.refused, o.ungroups
+                ));
+            }
+        }
+        Expect::LookChanged => {
+            if !o.look_changed || o.ungroups != 0 {
+                problems.push(format!(
+                    "expected 그룹 해제 refused (lookChanged), got lookChanged {} after {} ungroups",
+                    o.look_changed, o.ungroups
+                ));
+            }
+        }
+    }
+    problems
+}
+
+fn corpus_case(name: &str) {
+    let cases = generate_corpus();
+    let c = cases
+        .iter()
+        .find(|c| c.name == name)
+        .unwrap_or_else(|| panic!("no corpus case {name}"));
+    let o = run_case(c);
+    let problems = judge(c, &o);
+    assert!(
+        problems.is_empty(),
+        "{name}: {problems:#?}\n{}",
+        o.lines.join("\n")
+    );
+}
+
+macro_rules! corpus_cases {
+    ($($test:ident => $name:literal,)*) => {
+        $(
+            #[test]
+            fn $test() {
+                corpus_case($name);
+            }
+        )*
+        const CASE_NAMES: &[&str] = &[$($name),*];
+    };
+}
+
+corpus_cases! {
+    case_c01_plain => "c01-plain",
+    case_c02a_office_group_opaque => "c02a-office-group-opaque",
+    case_c02b_office_group_isolated_opaque => "c02b-office-group-isolated-opaque",
+    case_c02c_page_group_plain_form => "c02c-page-group-plain-form",
+    case_c03a_alpha => "c03a-alpha-ca-0.5",
+    case_c03b_blend_multiply => "c03b-blend-multiply",
+    case_c03c_smask => "c03c-smask",
+    case_c03d_isolated_knockout => "c03d-isolated-knockout",
+    case_c03e_child_alpha_inside_form => "c03e-child-alpha-inside-form",
+    case_c03f_alpha_overlap_text_apart => "c03f-alpha-overlap-text-apart",
+    case_c03g_alpha_text_over_graphics => "c03g-alpha-text-over-graphics",
+    case_c04a_nested_2 => "c04a-nested-2",
+    case_c04b_nested_3_outer_group => "c04b-nested-3-outer-group",
+    case_c04c_nested_text_both_levels => "c04c-nested-text-both-levels",
+    case_c05_shared_form => "c05-shared-form",
+    case_c06a_matrix_scale_bbox_clip => "c06a-matrix-scale-bbox-clip",
+    case_c06b_rotated_90 => "c06b-rotated-90",
+    case_c06c_matrix_rotate_30 => "c06c-matrix-rotate-30",
+    case_c06d_page_clip_around_do => "c06d-page-clip-around-do",
+    case_c07a_hangul_cid_whole_page_form => "c07a-hangul-embedded-cid-whole-page-form",
+    case_c07b_hangul_cid_office_group => "c07b-hangul-embedded-cid-office-group",
+    case_c07c_hangul_nonembedded_uniks => "c07c-hangul-nonembedded-uniks",
+    case_c08a_tagged_mcid => "c08a-tagged-mcid",
+    case_c08b_ocg_on_inside_form => "c08b-ocg-on-inside-form",
+    case_c08c_ocg_off_line_inside_form => "c08c-ocg-off-line-inside-form",
+    case_c08d_hidden_form_oc_off => "c08d-hidden-form-oc-off",
+    case_c09a_whole_page_form => "c09a-whole-page-form",
+    case_c09b_whole_page_form_office_group => "c09b-whole-page-form-office-group",
+    case_c09c_tracemonkey_p1_wrapped => "c09c-tracemonkey-p1-wrapped",
+    case_c10a_inline_image => "c10a-inline-image",
+    case_c10b_shading_sh => "c10b-shading-sh",
+    case_c10c_tc_tw_tz => "c10c-tc-tw-tz",
+    case_c11_overlapping_forms_border_first => "c11-overlapping-forms-border-first",
+    case_c12a_font_name_collision_page_vs_form => "c12a-font-name-collision-page-vs-form",
+    case_c12b_font_name_collision_two_forms => "c12b-font-name-collision-two-forms",
+    case_c12c_same_basefont_different_encoding => "c12c-same-basefont-different-encoding",
+}
+
+#[test]
+fn every_corpus_case_has_a_test() {
+    let names: Vec<String> = generate_corpus().into_iter().map(|c| c.name).collect();
+    for n in &names {
+        assert!(
+            CASE_NAMES.contains(&n.as_str()),
+            "corpus case {n} has no test"
+        );
+    }
+    assert_eq!(names.len(), CASE_NAMES.len());
+}
+
+/// The repo fixtures with text inside a group (TAMReview.pdf, tracemonkey.pdf): the click is
+/// edited after one 그룹 해제, or refused — with the reason — before anything is ungrouped
+/// (TAMReview's text has no `/ToUnicode`: it could never be edited, so 그룹 해제 is not offered).
+#[test]
+fn fixture_cases_edit_or_refuse_first() {
+    let mut summary = String::new();
+    let cases = fixture_cases(&mut summary);
+    assert!(cases.len() >= 10, "{summary}");
+    let mut edited = 0;
+    for c in &cases {
+        let o = run_case(c);
+        assert!(
+            o.failures.is_empty() && !o.look_changed,
+            "{}: {:#?}\n{}",
+            c.name,
+            o.failures,
+            o.lines.join("\n")
+        );
+        if o.edited {
+            assert_eq!(o.ungroups, 1, "{}: one 그룹 해제 per click", c.name);
+            edited += 1;
+        } else {
+            assert_eq!(o.ungroups, 0, "{}", c.name);
+            assert!(o.refused.is_some(), "{}", c.name);
+        }
+        if c.name.contains("tracemonkey") {
+            assert!(
+                o.edited,
+                "{}: tracemonkey's grouped text is editable",
+                c.name
+            );
+        }
+    }
+    assert!(edited >= 6, "{edited} edited");
+}
+
+/// The Inspector's 그룹 해제 (no click point): the group and its nested groups that draw text come
+/// out, the page looks the same, and no group with text is left where the group was.
+#[test]
+fn inspector_ungroup_on_every_case() {
+    for c in generate_corpus() {
+        let doc = open_bytes(c.bytes.clone()).expect("open");
+        let id = doc.doc_id.clone();
+        let page = c.page;
+        let crop = crop_of(&doc, page);
+        let before = render(&id, page);
+        let top = {
+            let (d, at) = (id.clone(), c.at);
+            let bindings_hit = with_doc(&d, move |doc| {
+                let bindings = doc.bindings();
+                let pg = doc.page(page)?;
+                ungroup::group_hit(bindings, pg, at, None).map(|h| h.map(|h| h.top))
+            })
+            .expect("hit");
+            match bindings_hit {
+                Some(t) => t as ObjectId,
+                None => continue, // c08d: a hidden group; nothing to click
+            }
+        };
+        let gen = generation(&id);
+        let d = id.clone();
+        let r = with_state(move |st| ungroup::ungroup(st, &d, page, top, gen, None));
+        match (c.expect, r) {
+            (Expect::LookChanged, Err(e)) => {
+                assert_eq!(e.detail.as_deref(), Some("lookChanged"), "{}", c.name);
+                assert_eq!(generation(&id), gen, "{}", c.name);
+            }
+            (_, Ok(u)) => {
+                let (m, s) = diff(&before, &render(&id, page), &[], crop);
+                assert!(
+                    m <= 0.35 && s <= 0.0005,
+                    "{}: mean {m:.3} share {s:.4}",
+                    c.name
+                );
+                for &n in &u.new_object_ids {
+                    let o = &u.objects[n as usize];
+                    assert!(
+                        !(o.object_type == PageObjectType::Form && o.text.is_some()) || u.partial,
+                        "{}: object {n} is still a group with text",
+                        c.name
+                    );
+                }
+            }
+            (e, r) => panic!(
+                "{}: expected {e:?}, got {:?}",
+                c.name,
+                r.map(|u| u.partial).map_err(|e| err_str(&e))
+            ),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1844,12 +2162,9 @@ fn ungroup_corpus_report() {
     for c in &cases {
         let t0 = Instant::now();
         let o = run_case(c);
-        let status = if o.failures.is_empty() {
-            "PASS"
-        } else {
-            "FAIL"
-        };
-        if !o.failures.is_empty() {
+        let problems = judge(c, &o);
+        let status = if problems.is_empty() { "PASS" } else { "FAIL" };
+        if !problems.is_empty() {
             failed += 1;
         }
         let _ = writeln!(
@@ -1866,6 +2181,9 @@ fn ungroup_corpus_report() {
         for l in &o.lines {
             let _ = writeln!(report, "    {l}");
         }
+        for p in problems.iter().filter(|p| !o.failures.contains(p)) {
+            let _ = writeln!(report, "    FAIL: {p}");
+        }
     }
     let _ = writeln!(report, "\n{failed} of {} cases failed", cases.len());
     println!("{report}");
@@ -1873,18 +2191,21 @@ fn ungroup_corpus_report() {
 }
 
 /// The user's screenshot: "expectGeneration 3 but the document is at 4; re-list the page
-/// objects" after a 그룹 해제 went through. The engine runs `Lane::Interactive` (probe_paragraph,
-/// list_page_objects, tiles) before `Lane::Edit` (ungroup_object), so a second click while the
-/// first ungroup is still queued is probed at the OLD generation, is refused `insideXObject`
-/// again, and its 그룹 해제 is sent pinned to that old generation.
+/// objects" after a 그룹 해제 went through. The engine used to run `probe_paragraph` on
+/// `Lane::Interactive`, before the queued `ungroup_object` (`Lane::Edit`): a second click while
+/// the first 그룹 해제 was still queued was probed at the OLD generation, refused `insideXObject`
+/// again, and its 그룹 해제 was pinned to that old generation. v0.3.1 runs the probe on
+/// `Lane::Edit` (`commands::objects::probe_paragraph`), FIFO with the mutations: the second
+/// probe sees the ungrouped page and the paragraph is simply editable.
 #[test]
-fn lane_overtake_makes_ungroup_stale() {
+fn probe_after_a_queued_ungroup_sees_it() {
     let bytes = one_form(dictionary! {}, "", dictionary! {}, PARA);
     let doc = open_bytes(bytes).expect("open");
     let id = doc.doc_id.clone();
     let g0 = generation(&id);
     let p1 = probe(&id, 0, PARA_AT).unwrap().expect("probe 1");
     assert_eq!(p1.reason, Some(NotEditableReason::InsideXObject));
+    assert_eq!(p1.group_object_id, Some(1));
     let order = Arc::new(Mutex::new(Vec::<String>::new()));
 
     // The engine is busy (a render in flight — the page repaints when the confirm dialog closes).
@@ -1901,16 +2222,19 @@ fn lane_overtake_makes_ungroup_stale() {
         }
     });
     std::thread::sleep(Duration::from_millis(50));
-    // 1st click's 그룹 해제 (answered 그룹 해제): queued on Lane::Edit
+    // 1st click's 그룹 해제: queued on Lane::Edit
     let first = std::thread::spawn({
         let (id, order, obj, gen) = (
             id.clone(),
             order.clone(),
-            p1.object_ids[0],
+            p1.group_object_id.unwrap(),
             p1.doc_generation,
         );
         move || {
-            let r = with_state(move |st| ungroup::ungroup(st, &id, 0, obj, gen));
+            let d = id.clone();
+            let r = engine().call_blocking(Lane::Edit, "ungroup_object", move |st| {
+                ungroup::ungroup(st, &d, 0, obj, gen, Some(PARA_AT))
+            });
             order.lock().unwrap().push(format!(
                 "ungroup #1 → {:?}",
                 r.as_ref().map(|u| u.doc_generation).map_err(err_str)
@@ -1919,13 +2243,13 @@ fn lane_overtake_makes_ungroup_stale() {
         }
     });
     std::thread::sleep(Duration::from_millis(50));
-    // 2nd click (the page did not change yet, so the user clicks the text again): probe_paragraph on Lane::Interactive
+    // 2nd click: probe_paragraph, on the lane the command now uses
     let second = std::thread::spawn({
         let (id, order) = (id.clone(), order.clone());
         move || {
             let d = id.clone();
             let r = engine()
-                .call_blocking(Lane::Interactive, "probe_paragraph", move |st| {
+                .call_blocking(Lane::Edit, "probe_paragraph", move |st| {
                     let doc = st.doc_mut(&d)?;
                     paragraph::probe(doc, 0, PARA_AT)
                 })
@@ -1940,31 +2264,17 @@ fn lane_overtake_makes_ungroup_stale() {
     busy.join().unwrap();
     let u1 = first.join().unwrap().expect("ungroup #1 succeeds");
     let p2 = second.join().unwrap().expect("probe #2");
-    println!("order: {:#?}", order.lock().unwrap());
-    println!(
-        "g0 {g0}, ungroup #1 → {}, probe #2 gen {} reason {:?}",
-        u1.doc_generation, p2.doc_generation, p2.reason
+    let order = order.lock().unwrap().clone();
+    println!("order: {order:#?}");
+    assert!(
+        order.iter().position(|l| l.starts_with("ungroup #1"))
+            < order.iter().position(|l| l.starts_with("probe #2")),
+        "{order:?}"
     );
-    // the second dialog's 그룹 해제
-    let (d, obj, gen) = (id.clone(), p2.object_ids[0], p2.doc_generation);
-    let r2 = with_state(move |st| ungroup::ungroup(st, &d, 0, obj, gen));
-    println!(
-        "ungroup #2 (from probe #2) → {:?}",
-        r2.as_ref().map(|u| u.doc_generation).map_err(err_str)
-    );
-    assert_eq!(
-        p2.doc_generation, g0,
-        "probe #2 ran before ungroup #1 although it was sent after it"
-    );
-    assert_eq!(p2.reason, Some(NotEditableReason::InsideXObject));
-    let e = r2.expect_err("stale");
-    assert_eq!(
-        e.message,
-        format!(
-            "expectGeneration {g0} but the document is at {}; re-list the page objects",
-            g0 + 1
-        )
-    );
+    assert_eq!(u1.doc_generation, g0 + 1);
+    assert_eq!(p2.doc_generation, g0 + 1, "the probe ran after the ungroup");
+    assert_eq!(p2.strategy, TextEditStrategy::InPlace);
+    assert_eq!(p2.reason, None);
 }
 
 /// Evidence for the font mix-up after a second ungroup on tracemonkey.pdf p.6: every font
@@ -2038,4 +2348,42 @@ fn fonts_of_tracemonkey_p6() {
     for id in ids {
         walk(&doc, doc.get_dictionary(id).unwrap(), "page", 0);
     }
+}
+
+/// A page whose content lopdf-level inlining cannot read (a stray `}` PDFium skips) is
+/// ungrouped the v0.3.0 way — PDFium moves the objects — under the same render check, and
+/// the paragraph is editable afterwards.
+#[test]
+fn fallback_when_the_content_cannot_be_read() {
+    let bytes = one_form(dictionary! {}, "", dictionary! {}, PARA);
+    let mut doc = Document::load_mem(&bytes).unwrap();
+    let page_id = *doc.get_pages().values().next().unwrap();
+    let content_id = doc.get_page_contents(page_id)[0];
+    let stream = doc
+        .get_object_mut(content_id)
+        .and_then(Object::as_stream_mut)
+        .unwrap();
+    let mut data = b"} ".to_vec();
+    data.extend_from_slice(&stream.content);
+    stream.set_plain_content(data);
+    let mut out = Vec::new();
+    doc.save_to(&mut out).unwrap();
+    let doc = open_bytes(out).expect("open");
+    let id = doc.doc_id.clone();
+    let before = render(&id, 0);
+    let crop = crop_of(&doc, 0);
+    let p = probe(&id, 0, PARA_AT).unwrap().expect("probe");
+    assert_eq!(p.group_object_id, Some(1));
+    let (d, gen) = (id.clone(), p.doc_generation);
+    let u =
+        with_state(move |st| ungroup::ungroup(st, &d, 0, 1, gen, Some(PARA_AT))).expect("ungroup");
+    assert!(!u.partial);
+    assert!(u
+        .objects
+        .iter()
+        .all(|o| o.object_type != PageObjectType::Form));
+    let (m, s) = diff(&before, &render(&id, 0), &[], crop);
+    assert!(m < 0.35 && s < 0.0005, "mean {m:.3} share {s:.4}");
+    let p = probe(&id, 0, PARA_AT).unwrap().expect("probe after");
+    assert_eq!(p.strategy, TextEditStrategy::InPlace);
 }

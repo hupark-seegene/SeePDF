@@ -195,6 +195,11 @@ pub async fn duplicate_objects(
 }
 
 /// Stage 7: the paragraph under `at` (PDF points on the page); `null` when there is no text.
+///
+/// v0.3.1: on `Lane::Edit`, FIFO with the mutations. A probe's `docGeneration` is what the
+/// next mutation is pinned to, so a probe sent after a mutation (a second click while
+/// 그룹 해제 is still queued) must not overtake it — on `Lane::Interactive` it did, came back at
+/// the old generation, and the 그룹 해제 it led to failed `stale`.
 #[tauri::command]
 pub async fn probe_paragraph(
     engine: State<'_, EngineHandle>,
@@ -203,7 +208,7 @@ pub async fn probe_paragraph(
     at: Point,
 ) -> Result<Option<ParagraphProbe>, EngineError> {
     engine
-        .call(Lane::Interactive, "probe_paragraph", move |st| {
+        .call(Lane::Edit, "probe_paragraph", move |st| {
             let doc = st.doc_mut(&doc_id)?;
             objects::paragraph::probe(doc, page, at)
         })
@@ -239,8 +244,10 @@ pub async fn edit_paragraph(
 // v0.3 pkg1-redaction-and-text-objects -----------------------------------------------------
 
 /// R4 그룹 해제: replaces the Form XObject `objectId` by its children, in place — one undo step
-/// `undo.ungroup`. `unsupported` (detail `groupTransparency`) for a group drawn with
-/// transparency; `invalidArgument` (detail `notAGroup`) for any other object.
+/// `undo.ungroup`. v0.3.1: with `at`, down to the (nested) group holding the text under that
+/// point; without, the group and its nested groups that draw text. Verified by rendering:
+/// `unsupported` (detail `lookChanged`) when the page would look different;
+/// `invalidArgument` (detail `notAGroup`) for any other object.
 #[tauri::command]
 pub async fn ungroup_object(
     engine: State<'_, EngineHandle>,
@@ -248,10 +255,11 @@ pub async fn ungroup_object(
     page: PageIndex,
     object_id: ObjectId,
     expect_generation: DocGeneration,
+    at: Option<Point>,
 ) -> Result<crate::ipc::types::UngroupResult, EngineError> {
     engine
         .call(Lane::Edit, "ungroup_object", move |st| {
-            objects::ungroup::ungroup(st, &doc_id, page, object_id, expect_generation)
+            objects::ungroup::ungroup(st, &doc_id, page, object_id, expect_generation, at)
         })
         .await
 }

@@ -214,11 +214,12 @@ describe("편집 · ⌘C / ⌘V / ⌘D", () => {
   it("a read-only selection is not copied: its reason is shown", async () => {
     await setup();
     const dup = vi.spyOn(mock, "duplicateObjects");
-    select([lines()[0].objectId]);
+    // the mock's title is a group (a read-only `form` object, as the engine lists one)
+    select([objects().find((o) => o.type === "form")!.objectId]);
     fireEvent.keyDown(window, { key: "d", metaKey: true });
     await act(async () => undefined);
     expect(dup).not.toHaveBeenCalled();
-    expect(toastKeys()).toContain("edit.readOnly.xobject");
+    expect(toastKeys()).toContain("edit.group.locked");
   });
 });
 

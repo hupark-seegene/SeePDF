@@ -113,20 +113,23 @@ describe("편집 · 선택", () => {
     expect(objects().some((o) => o.text?.startsWith("Lightweight"))).toBe(false);
   });
 
-  it("a read-only object shows its badge and refuses move and delete", async () => {
+  it("a group shows its badge — how to edit its text — and refuses move and delete", async () => {
     const { ctx, surface } = await setup();
     const transform = vi.spyOn(mock, "transformObject");
     const del = vi.spyOn(mock, "deleteObjects");
     fireEvent.pointerDown(surface, at(ctx, 100, 765));
     expect(useEditStore.getState().selection?.ids).toEqual([0]);
-    expect(screen.getByText("읽기 전용")).toBeInTheDocument();
+    expect(screen.getByText("그룹")).toBeInTheDocument();
+    // v0.3.1: the badge says how to edit the text, not that it cannot be edited
+    expect(screen.getByText(/더블클릭하거나 텍스트 수정으로 클릭하면 그룹을 해제하고 편집합니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/수정할 수 없습니다/)).toBeNull();
     fireEvent.pointerMove(surface, { ...at(ctx, 100, 765), clientX: 300 });
     fireEvent.pointerUp(surface, at(ctx, 100, 765));
     fireEvent.keyDown(window, { key: "Delete" });
     await act(async () => undefined);
     expect(transform).not.toHaveBeenCalled();
     expect(del).not.toHaveBeenCalled();
-    expect(toastKeys()).toContain("edit.readOnly.xobject");
+    expect(toastKeys()).toContain("edit.group.locked");
   });
 });
 
@@ -218,10 +221,10 @@ describe("편집 · 텍스트 수정", () => {
     act(() => confirmTop()!(true));
     await waitFor(() => expect(useEditStore.getState().session?.kind).toBe("paragraph"));
     expect(ungroup).toHaveBeenCalledTimes(1);
-    expect(ungroup.mock.calls[0][0]).toMatchObject({ page: 0, objectId: 0 });
+    expect(ungroup.mock.calls[0][0]).toMatchObject({ page: 0, objectId: 0, at: [100, 765] });
     const info = await api.getDocument({ docId: useDocStore.getState().info!.docId });
     expect(info.undoLabel).toBe("undo.ungroup");
-    expect(objects()[0].editable).toBe("full");
+    expect(objects()[0]).toMatchObject({ type: "text", editable: "full" });
   });
 });
 

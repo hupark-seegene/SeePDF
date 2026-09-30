@@ -9,7 +9,7 @@
 import * as api from "../ipc/api";
 import type {
   DocGeneration, DocId, ObjectId, PageIndex, PageObject, ParagraphEdit, ParagraphEditResult, ParagraphFlow, ParagraphProbe,
-  Point, Rect, Rgb,
+  Point, Rect, Rgb, UngroupResult,
 } from "../ipc/types";
 import { toast, type ToastAction } from "../app/toastStore";
 import { askChoice, askConfirm } from "../dialogs/dialogState";
@@ -107,6 +107,16 @@ export function reasonKey(reason: string | undefined): string {
   }
 }
 
+/**
+ * v0.3.1: the reason a badge / the Inspector shows for an object. A group says how to edit what is
+ * inside it (double-click, or 텍스트 수정 → 그룹 해제), not that it cannot be edited; a group without
+ * text points at the Inspector's 그룹 해제.
+ */
+export function badgeReason(o: PageObject): string {
+  if (o.type === "form") return o.text ? "edit.readOnly.xobject" : "edit.group.noText";
+  return reasonKey(o.reason);
+}
+
 // ---------------------------------------------------------------------------
 // 선택: move / scale / delete
 // ---------------------------------------------------------------------------
@@ -196,7 +206,7 @@ export async function deleteSelection(): Promise<boolean> {
   const objects = objectsOn(sel.page).filter((o) => sel.ids.includes(o.objectId));
   const locked = objects.find((o) => o.editable === "readOnly");
   if (locked) {
-    toast(reasonKey(locked.reason), undefined, { tone: "danger" });
+    toast(locked.type === "form" ? "edit.group.locked" : reasonKey(locked.reason), undefined, { tone: "danger" });
     return false;
   }
   try {
@@ -257,7 +267,8 @@ function copyableSelection(): { page: PageIndex; objects: PageObject[] } | null 
   if (!chosen) return null;
   const usable = chosen.objects.filter((o) => o.editable !== "readOnly");
   if (usable.length === 0) {
-    toast(reasonKey(chosen.objects[0].reason), undefined, { tone: "danger" });
+    const first = chosen.objects[0];
+    toast(first.type === "form" ? "edit.group.locked" : reasonKey(first.reason), undefined, { tone: "danger" });
     return null;
   }
   return { page: chosen.page, objects: usable };
@@ -445,8 +456,33 @@ async function settledSessionText(): Promise<string> {
   return readText ? readText() : early;
 }
 
-/** Click with 텍스트 수정: probe the paragraph under `at` and open the editor on it. */
-export async function beginParagraphEdit(page: PageIndex, at: Point): Promise<boolean> {
+let beginning: Promise<boolean> | null = null;
+
+/**
+ * Click with 텍스트 수정 (or a double-click with 선택): probe the paragraph under `at` and open the
+ * editor on it.
+ *
+ * v0.3.1: one at a time. The second press of a double-click, or a click while 그룹 해제 후 편집할까요?
+ * is open or its 그룹 해제 is running, gets the running call's answer instead of a probe of its own —
+ * a second probe would ask again and pin a second 그룹 해제 to a generation the first one is about to
+ * move past (the v0.3.0 "expectGeneration 3 but the document is at 4").
+ */
+export function beginParagraphEdit(page: PageIndex, at: Point, opts: { onGroup?: boolean } = {}): Promise<boolean> {
+  if (beginning) return beginning;
+  const job = startParagraphEdit(page, at, null, opts.onGroup ?? false).finally(() => {
+    if (beginning === job) beginning = null;
+  });
+  beginning = job;
+  return job;
+}
+
+/**
+ * `ungrouped`: the 그룹 해제 this probe follows (it is taken back when the text still cannot be edited).
+ * `onGroup`: a double-click on a group — no text there gets a hint instead of silence.
+ */
+async function startParagraphEdit(
+  page: PageIndex, at: Point, ungrouped: UngroupResult | null, onGroup = false,
+): Promise<boolean> {
   const doc = docId();
   if (!doc) return false;
   let probe;
@@ -456,14 +492,26 @@ export async function beginParagraphEdit(page: PageIndex, at: Point): Promise<bo
     fail(e, page);
     return false;
   }
-  if (!probe) return false;
+  if (!probe) {
+    if (ungrouped) toast("edit.ungroup.lost", undefined, { tone: "danger" });
+    else if (onGroup) toast("edit.ungroup.noText");
+    return false;
+  }
   if (probe.strategy === "refused") {
     // v0.3 pkg1 (R4): text inside a group — 그룹 해제 후 편집할까요? → ungroup, then probe again
-    if (probe.reason === "insideXObject") {
+    if (probe.reason === "insideXObject" && !ungrouped) {
       const { confirmUngroup } = await import("./ungroup");
-      return (await confirmUngroup(doc, page, probe)) ? beginParagraphEdit(page, at) : false;
+      const outcome = await confirmUngroup(doc, page, probe, at);
+      if (outcome.kind === "ungrouped") return startParagraphEdit(page, at, outcome.result);
+      if (outcome.kind === "editable") return startParagraphEdit(page, at, null);
+      return false;
     }
-    toast(reasonKey(probe.reason), undefined, { tone: "danger" });
+    if (ungrouped) {
+      // v0.3.1: the 그룹 해제 did not make it editable after all — take it back, then say why
+      const { undoUngroup } = await import("./ungroup");
+      await undoUngroup(doc, ungrouped);
+    }
+    toast(probe.reason === "insideXObject" ? "edit.ungroup.failed.generic" : reasonKey(probe.reason), undefined, { tone: "danger" });
     return false;
   }
   useEditStore.getState().openSession({
