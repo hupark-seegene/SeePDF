@@ -258,6 +258,8 @@ struct Case {
     shared: Vec<PageIndex>,
     source: String,
     expect: Expect,
+    /// The 그룹 해제 may fall back to moving objects (content lopdf cannot read).
+    may_move: bool,
 }
 
 /// How a case must end.
@@ -299,6 +301,7 @@ fn case(
         shared,
         source: "corpus".into(),
         expect: Expect::Edit,
+        may_move: false,
     }
 }
 
@@ -1301,6 +1304,250 @@ fn generate_corpus() -> Vec<Case> {
         cases.push(c);
     }
 
+    // (17) verification round 2: a form /Matrix other than identity. PDFium reports the CTM at
+    // the `Do` as the form object's matrix (the /Matrix is applied inside the form), so the
+    // content-level rewrite must locate the `Do` by that — it used to multiply the /Matrix in,
+    // miss, and fall back to moving objects, which drops Tc / Tw, inline images and patterns
+    // (refused lookChanged).
+    const TCTW: &str = "BT /F1 12 Tf 14.4 TL 0 0 0 rg 2 Tc 6 Tw 10 150 Td \
+        (Justified spaced words in a group) Tj T* (and a second line with the same spacing) Tj ET";
+    let matrix = |m: [f32; 6]| -> Dictionary {
+        let mut d = extra_group(false, false);
+        d.set(
+            "Matrix",
+            m.iter().map(|&v| Object::Real(v)).collect::<Vec<_>>(),
+        );
+        d
+    };
+    cases.push(case(
+        "c17a-matrix-translate-tc-tw",
+        "Office group, /Matrix [1 0 0 1 10 10], text with Tc / Tw",
+        one_form(
+            matrix([1.0, 0.0, 0.0, 1.0, 10.0, 10.0]),
+            "",
+            dictionary! {},
+            TCTW,
+        ),
+        0,
+        [60.0 + 10.0 + 10.0 + 40.0, 600.0 + 150.0 + 10.0 + 4.0],
+        vec![],
+    ));
+    cases.push(case(
+        "c17b-matrix-scale-tc-tw",
+        "Office group, /Matrix [0.5 0 0 0.5 0 0], text with Tc / Tw",
+        one_form(
+            matrix([0.5, 0.0, 0.0, 0.5, 0.0, 0.0]),
+            "",
+            dictionary! {},
+            TCTW,
+        ),
+        0,
+        [60.0 + 5.0 + 12.0, 600.0 + 75.0 + 2.0],
+        vec![],
+    ));
+    cases.push(case(
+        "c17c-matrix-flip-tc-tw",
+        "Office group, /Matrix [1 0 0 -1 0 200] (Chrome-style flip), text Tm flips back, Tc / Tw",
+        one_form(
+            matrix([1.0, 0.0, 0.0, -1.0, 0.0, 200.0]),
+            "",
+            dictionary! {},
+            "BT /F1 12 Tf 14.4 TL 0 0 0 rg 2 Tc 6 Tw 1 0 0 -1 10 50 Tm \
+             (Flipped form with upright words) Tj T* (and a second line below the first) Tj ET",
+        ),
+        0,
+        [60.0 + 10.0 + 40.0, 600.0 + 200.0 - 50.0 + 4.0],
+        vec![],
+    ));
+    cases.push(case(
+        "c17d-matrix-translate-inline-image",
+        "Office group, /Matrix [1 0 0 1 0 -20], text with Tc / Tw beside an inline image",
+        one_form(
+            matrix([1.0, 0.0, 0.0, 1.0, 0.0, -20.0]),
+            "",
+            dictionary! {},
+            &format!("{TCTW} q 60 0 0 40 400 20 cm BI /W 2 /H 2 /CS /RGB /BPC 8 /F /AHx ID 0000FFFF000000FF00FFFF00> EI Q"),
+        ),
+        0,
+        [60.0 + 10.0 + 40.0, 600.0 + 150.0 - 20.0 + 4.0],
+        vec![],
+    ));
+    {
+        // Hancom-like: the inner group has its own /Matrix
+        let mut p = Pdf::new();
+        let fonts = p.fonts();
+        let mut inner_extra = dictionary! {};
+        inner_extra.set(
+            "Matrix",
+            vec![
+                1.into(),
+                0.into(),
+                0.into(),
+                1.into(),
+                0.into(),
+                (-100).into(),
+            ],
+        );
+        let inner = p.form(
+            [0.0, 0.0, 480.0, 300.0],
+            dictionary! { "Font" => fonts.clone() },
+            inner_extra,
+            TCTW,
+        );
+        let outer = p.form(
+            [0.0, 0.0, 595.0, 842.0],
+            dictionary! { "XObject" => dictionary! { "Fm1" => inner } },
+            matrix([1.0, 0.0, 0.0, 1.0, 0.0, 10.0]),
+            "0.9 g 40 480 520 240 re f q 1 0 0 1 60 600 cm /Fm1 Do Q",
+        );
+        p.page(
+            &format!("{HEAD} q /Fm0 Do Q"),
+            dictionary! { "Font" => fonts, "XObject" => dictionary! { "Fm0" => outer } },
+        );
+        cases.push(case(
+            "c17e-nested-inner-matrix",
+            "outer Office group /Matrix translate 10, inner group /Matrix [1 0 0 1 0 -100], Tc / Tw",
+            p.finish(),
+            0,
+            [60.0 + 10.0 + 40.0, 10.0 + 600.0 - 100.0 + 150.0 + 4.0],
+            vec![],
+        ));
+    }
+    {
+        let mut p = Pdf::new();
+        let fonts = p.fonts();
+        let tile = p.doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "Pattern", "PatternType" => 1, "PaintType" => 1, "TilingType" => 1,
+                "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+                "XStep" => 10, "YStep" => 10, "Resources" => dictionary! {},
+            },
+            b"1 0 0 rg 0 0 5 5 re f 0 0 1 rg 5 5 5 5 re f".to_vec(),
+        ));
+        let fm = p.form(
+            [0.0, 0.0, 480.0, 200.0],
+            dictionary! { "Font" => fonts.clone(), "Pattern" => dictionary! { "P0" => tile } },
+            matrix([1.5, 0.0, 0.0, 1.5, 0.0, 0.0]),
+            "/Pattern cs /P0 scn 10 10 200 40 re f \
+             BT 0 g /F1 12 Tf 10 150 Td (Caption above the patterned fill) Tj ET",
+        );
+        p.page(
+            &format!("{HEAD} q 1 0 0 1 20 400 cm /Fm0 Do Q"),
+            dictionary! { "Font" => fonts, "XObject" => dictionary! { "Fm0" => fm } },
+        );
+        cases.push(case(
+            "c17f-matrix-scale-tiling-pattern",
+            "Office group, /Matrix [1.5 0 0 1.5 0 0], a tiling-pattern fill and a caption",
+            p.finish(),
+            0,
+            [20.0 + 15.0 + 40.0, 400.0 + 225.0 + 5.0],
+            vec![],
+        ));
+    }
+
+    // (18) verification round 2: a stray `Q` (more `Q` than `q`) before the group's `Do` — PDFium
+    // ignores it; it used to pop the rewrite's leading `q`, so the page's later `cm` applied
+    // twice to the inlined content (refused lookChanged). Also one after the `Do`, and one in an
+    // earlier content stream.
+    {
+        let mut p = Pdf::new();
+        let fonts = p.fonts();
+        let fm = p.form(
+            [0.0, 0.0, 480.0, 200.0],
+            dictionary! { "Font" => fonts.clone() },
+            dictionary! {},
+            PARA,
+        );
+        p.page(
+            &format!(
+                "{HEAD} q 0 g Q Q 1 0 0 1 60 600 cm /Fm0 Do Q \
+                 BT /F1 10 Tf 10 -40 Td (After the group, past one more stray Q) Tj ET"
+            ),
+            dictionary! { "Font" => fonts, "XObject" => dictionary! { "Fm0" => fm } },
+        );
+        cases.push(case(
+            "c18a-stray-q-before-and-after",
+            "page content 'q 0 g Q Q 1 0 0 1 60 600 cm /Fm0 Do Q …': unbalanced Q around the Do",
+            p.finish(),
+            0,
+            PARA_AT,
+            vec![],
+        ));
+        let bytes = cases.last().unwrap().bytes.clone();
+        // the same, split so the stray Q sits in the first of two content streams
+        let mut doc = Document::load_mem(&bytes).unwrap();
+        let pid = *doc.get_pages().values().next().unwrap();
+        let first = doc.add_object(Stream::new(
+            dictionary! {},
+            format!("{HEAD} q 0 g Q Q 1 0 0 1 60 600 cm").into_bytes(),
+        ));
+        let second = doc.add_object(Stream::new(
+            dictionary! {},
+            b"/Fm0 Do Q BT /F1 10 Tf 10 -40 Td (After the group, past one more stray Q) Tj ET"
+                .to_vec(),
+        ));
+        doc.get_object_mut(pid)
+            .and_then(Object::as_dict_mut)
+            .unwrap()
+            .set("Contents", vec![Object::from(first), Object::from(second)]);
+        let mut out = Vec::new();
+        doc.save_to(&mut out).unwrap();
+        cases.push(case(
+            "c18b-stray-q-in-an-earlier-stream",
+            "same, the stray Q in the first content stream and the Do in the second",
+            out,
+            0,
+            PARA_AT,
+            vec![],
+        ));
+    }
+
+    // (19) verification round 2: the clicked group's content has /Filter /Fl (PDFium reads it,
+    // lopdf cannot) and a wrapper group with the same placement follows. The undecodable form
+    // still counts among the page's forms, so the wrapper is never inlined in its place; the
+    // 그룹 해제 falls back to moving the clicked group's objects.
+    {
+        let mut p = Pdf::new();
+        let fonts = p.fonts();
+        let mut a = Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+                "Resources" => dictionary! { "Font" => fonts.clone() },
+            },
+            b"BT /F1 12 Tf 0 0 0 rg 70 700 Td (Text in a group lopdf cannot decode) Tj ET".to_vec(),
+        );
+        a.compress().unwrap();
+        a.dict.set("Filter", "Fl");
+        let a = p.doc.add_object(a);
+        let c = p.form(
+            [0.0, 0.0, 595.0, 842.0],
+            dictionary! { "Font" => fonts.clone() },
+            dictionary! {},
+            "BT /F1 12 Tf 0 0 0 rg 70 500 Td (Nested text in the wrapper group) Tj ET",
+        );
+        let b = p.form(
+            [0.0, 0.0, 595.0, 842.0],
+            dictionary! { "XObject" => dictionary! { "Fc" => c } },
+            dictionary! {},
+            "/Fc Do",
+        );
+        p.page(
+            &format!("{HEAD} /Fa Do /Fb Do"),
+            dictionary! { "Font" => fonts, "XObject" => dictionary! { "Fa" => a, "Fb" => b } },
+        );
+        let mut c = case(
+            "c19-fl-filter-before-wrapper",
+            "clicked group /Filter /Fl (lopdf cannot decode), then a wrapper group at the same place",
+            p.finish(),
+            0,
+            [70.0 + 40.0, 704.0],
+            vec![],
+        );
+        c.may_move = true;
+        cases.push(c);
+    }
+
     for c in &cases {
         std::fs::write(corpus_dir().join(format!("{}.pdf", c.name)), &c.bytes)
             .expect("write corpus pdf");
@@ -1433,6 +1680,7 @@ fn fixture_cases(summary: &mut String) -> Vec<Case> {
                 ),
                 // decided by what the engine finds: see `fixture_cases_edit_or_refuse_first`
                 expect: Expect::Edit,
+                may_move: true,
             });
         }
     }
@@ -1796,6 +2044,8 @@ struct Outcome {
     /// Only the text came out.
     partial: bool,
     edited: bool,
+    /// A 그룹 해제 fell back to moving PDFium's objects (lossy: `Tc` / `Tw`, inline images …).
+    moved: bool,
 }
 
 impl Outcome {
@@ -1971,13 +2221,14 @@ fn run_case(c: &Case) -> Outcome {
         let gen = p.doc_generation;
         let d = id.clone();
         let at = c.at;
-        let r = with_state(move |st| ungroup::ungroup(st, &d, page, obj, gen, Some(at)));
+        let r = with_state(move |st| ungroup::ungroup_routed(st, &d, page, obj, gen, Some(at)));
         match r {
-            Ok(u) => {
+            Ok((u, route)) => {
                 ungroups += 1;
                 o.partial |= u.partial;
+                o.moved |= route == ungroup::Route::Moved;
                 o.log(format!(
-                    "  ungroup_object(#{obj}, expect {gen}) → gen {} moved {} objects{}",
+                    "  ungroup_object(#{obj}, expect {gen}) → gen {} moved {} objects{} via {route:?}",
                     u.doc_generation,
                     u.new_object_ids.len(),
                     if u.partial { " (text only)" } else { "" }
@@ -2240,6 +2491,15 @@ fn judge(c: &Case, o: &Outcome) -> Vec<String> {
             if o.partial != partial {
                 problems.push(format!("expected partial = {partial}, got {}", o.partial));
             }
+            // verification round 2: a generated case goes through the content-level rewrite —
+            // the object move is only for content lopdf cannot read or rewrite
+            if c.source == "corpus" && o.moved && !c.may_move {
+                problems.push(
+                    "그룹 해제 fell back to moving objects (the content-level rewrite did not \
+                     locate the group)"
+                        .into(),
+                );
+            }
         }
         Expect::Refused(reason) => {
             if o.refused != Some(reason) || o.ungroups != 0 {
@@ -2331,6 +2591,15 @@ corpus_cases! {
     case_c14_whiteout_text_only => "c14-whiteout-text-only",
     case_c15_rect_after_text => "c15-rect-after-text",
     case_c16_mirrored_matrix => "c16-mirrored-matrix",
+    case_c17a_matrix_translate_tc_tw => "c17a-matrix-translate-tc-tw",
+    case_c17b_matrix_scale_tc_tw => "c17b-matrix-scale-tc-tw",
+    case_c17c_matrix_flip_tc_tw => "c17c-matrix-flip-tc-tw",
+    case_c17d_matrix_translate_inline_image => "c17d-matrix-translate-inline-image",
+    case_c17e_nested_inner_matrix => "c17e-nested-inner-matrix",
+    case_c17f_matrix_scale_tiling_pattern => "c17f-matrix-scale-tiling-pattern",
+    case_c18a_stray_q_before_and_after => "c18a-stray-q-before-and-after",
+    case_c18b_stray_q_in_an_earlier_stream => "c18b-stray-q-in-an-earlier-stream",
+    case_c19_fl_filter_before_wrapper => "c19-fl-filter-before-wrapper",
 }
 
 #[test]

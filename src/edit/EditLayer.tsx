@@ -167,7 +167,12 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
       if (tool === "select" || tool === "editText" || tool === "redact") {
         const [x, y] = toPage(e);
         const hit = tool === "redact" && markAt(marks, x, y) ? null : hitObject(objects, x, y);
-        const next = hit && (tool === "select" || hit.type === "text" || (hit.type === "form" && hit.text)) ? hit.objectId : null;
+        // a group holding text is a target for 텍스트 수정 only (a click there ungroups it); 영역 표시 marks
+        // text runs, and a group's run is never one
+        const next =
+          hit && (tool === "select" || hit.type === "text" || (tool === "editText" && hit.type === "form" && hit.text))
+            ? hit.objectId
+            : null;
         if (next !== hover) setHover(next);
       }
       return;
@@ -233,6 +238,13 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
   // ------------------------------------------------------------------ render
   const selectedObjects = objects.filter((o) => selected.includes(o.objectId));
   const hovered = hover !== null && !selected.includes(hover) ? objects.find((o) => o.objectId === hover) : undefined;
+  // 텍스트 수정 / 영역 표시 outline text runs; a group holding text only for 텍스트 수정 (see onPointerMove)
+  const textHover =
+    hovered &&
+    ((hovered.type === "text" && (tool === "editText" || tool === "redact")) ||
+      (tool === "editText" && hovered.type === "form" && hovered.text))
+      ? hovered
+      : undefined;
   const moveOffset = drag?.kind === "move" && drag.moved ? { x: drag.dx, y: drag.dy } : { x: 0, y: 0 };
   const single = selectedObjects.length === 1 && !drag ? selectedObjects[0] : null;
   const marquee = drag?.kind === "marquee" && drag.moved ? rectFromPoints(drag.start, drag.end) : null;
@@ -264,9 +276,7 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
           />
         );
       })}
-      {(tool === "editText" || tool === "redact") && (hovered?.type === "text" || (hovered?.type === "form" && hovered.text)) && (
-        <Outline ctx={ctx} rect={hovered.rect} state="hover" />
-      )}
+      {textHover && <Outline ctx={ctx} rect={textHover.rect} state="hover" />}
       {preview?.status === "ready" &&
         preview.result.textObjects
           .filter((o) => !o.fullyInside && !o.split) // v0.3 (R2): a split run loses nothing outside the marks

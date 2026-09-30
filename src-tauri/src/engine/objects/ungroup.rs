@@ -674,6 +674,28 @@ pub fn ungroup(
     expect_generation: DocGeneration,
     at: Option<Point>,
 ) -> Result<UngroupResult, EngineError> {
+    ungroup_routed(st, doc_id, page_index, object_id, expect_generation, at).map(|(r, _)| r)
+}
+
+/// Which way a 그룹 해제 went (for tests: the content-level rewrite is the lossless one; the
+/// object move is the fallback that loses `Tc` / `Tw`, inline images, patterns …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// The content-level rewrite ([`inline::rewrite`]), with this mode.
+    Content(Mode),
+    /// The v0.3.0 object move ([`move_objects`]).
+    Moved,
+}
+
+/// [`ungroup`], also saying which [`Route`] it took.
+pub fn ungroup_routed(
+    st: &mut EngineState<'_>,
+    doc_id: &str,
+    page_index: PageIndex,
+    object_id: ObjectId,
+    expect_generation: DocGeneration,
+    at: Option<Point>,
+) -> Result<(UngroupResult, Route), EngineError> {
     check_generation(st.doc(doc_id)?, expect_generation)?;
     st.doc(doc_id)?.geom(page_index)?;
     let before_count = {
@@ -733,20 +755,25 @@ pub fn ungroup(
             Err(e) => return Err(e),
         }
     }
+    let mut route = done.map(Route::Content);
     if done.is_none() && fallback {
         move_objects(st, doc_id, page_index, index, &a, deep)?;
         done = Some(Mode::Full);
+        route = Some(Route::Moved);
     }
-    let Some(mode) = done else {
+    let (Some(mode), Some(route)) = (done, route) else {
         return Err(last.unwrap_or_else(|| look_changed(false)));
     };
     let list = relist(st, doc_id, page_index)?;
     let after_count = list.objects.len();
     let end = (after_count + index + 1).saturating_sub(before_count);
-    Ok(UngroupResult {
-        doc_generation: list.doc_generation,
-        new_object_ids: (object_id..end.max(index) as ObjectId).collect(),
-        objects: list.objects,
-        partial: mode == Mode::TextOnly,
-    })
+    Ok((
+        UngroupResult {
+            doc_generation: list.doc_generation,
+            new_object_ids: (object_id..end.max(index) as ObjectId).collect(),
+            objects: list.objects,
+            partial: mode == Mode::TextOnly,
+        },
+        route,
+    ))
 }

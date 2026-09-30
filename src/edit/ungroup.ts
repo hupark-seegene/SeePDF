@@ -14,12 +14,13 @@
  * recovered, not reported: the text is probed again at the same point, and if it is still inside a
  * group that group is ungrouped without asking again (the user already said yes); if someone else
  * already ungrouped it, the editor simply opens. The Inspector's button has no point to probe: the
- * page is listed again, and the user is asked to press it again (`error.stale`) — or nothing is
- * said when the group is gone (already ungrouped). The button runs one 그룹 해제 at a time: a
+ * page is listed again and the same group (same id and box) is ungrouped at the new generation; only
+ * a second `stale` asks the user to press again (`error.stale`, the group still selected) — and
+ * nothing is said when the group is gone (already ungrouped). The button runs one 그룹 해제 at a time: a
  * second press while one is running gets the running answer.
  */
 import * as api from "../ipc/api";
-import type { DocGeneration, ObjectId, PageIndex, ParagraphProbe, Point, UngroupResult } from "../ipc/types";
+import type { DocGeneration, ObjectId, PageIndex, ParagraphProbe, Point, Rect, UngroupResult } from "../ipc/types";
 import { toast } from "../app/toastStore";
 import { askConfirm } from "../dialogs/dialogState";
 import { useDocStore } from "../store/docStore";
@@ -106,12 +107,7 @@ async function ungroup(
       fail(e);
       return NONE;
     }
-    if (!at) {
-      await relist(docId, page);
-      const still = useEditStore.getState().pages[page]?.objects.some((o) => o.objectId === objectId && o.type === "form");
-      if (still) toast("error.stale", undefined, { tone: "danger" });
-      return NONE;
-    }
+    if (!at) return ungroupAgain(docId, page, objectId);
   }
   // stale: where is the text now?
   let probe: ParagraphProbe | null;
@@ -138,6 +134,44 @@ async function ungroup(
     return { kind: "ungrouped", result };
   } catch (e) {
     fail(e);
+    return NONE;
+  }
+}
+
+/** Same place, same size: the listing still shows the same group under that id. */
+function sameRect(a: Rect, b: Rect): boolean {
+  const near = (x: number, y: number) => Math.abs(x - y) <= 0.5;
+  return near(a.l, b.l) && near(a.b, b.b) && near(a.r, b.r) && near(a.t, b.t);
+}
+
+/**
+ * The Inspector's 그룹 해제 came back `stale`: the page is listed again and, when the same group is
+ * still there (same id, same box — the document moved on elsewhere), it is ungrouped once more at
+ * the new generation without a word. A second `stale` keeps the group selected and says to press
+ * again; a group that is gone (someone else ungrouped it) says nothing.
+ */
+async function ungroupAgain(docId: string, page: PageIndex, objectId: ObjectId): Promise<UngroupOutcome> {
+  const before = useEditStore.getState().pages[page]?.objects.find((o) => o.objectId === objectId);
+  await relist(docId, page);
+  const listing = useEditStore.getState().pages[page];
+  const now = listing?.objects.find((o) => o.objectId === objectId);
+  if (!listing || !now || now.type !== "form" || (before && !sameRect(before.rect, now.rect))) return NONE;
+  try {
+    const result = await api.ungroupObject({ docId, page, objectId, expectGeneration: newest(page) });
+    stored(page, result);
+    return { kind: "ungrouped", result };
+  } catch (e) {
+    if (!(api.isSeePdfError(e) && e.code === "stale")) {
+      fail(e);
+      return NONE;
+    }
+    await relist(docId, page);
+    // still the same group: keep it selected, so pressing again really works
+    const again = useEditStore.getState().pages[page]?.objects.find((o) => o.objectId === objectId);
+    if (again?.type === "form" && sameRect(now.rect, again.rect)) {
+      useEditStore.getState().select(page, [objectId]);
+      toast("error.stale", undefined, { tone: "danger" });
+    }
     return NONE;
   }
 }
@@ -206,8 +240,9 @@ async function ungroupSelected(): Promise<boolean> {
   const page = sel.page;
   const object = store.pages[page]?.objects.find((o) => o.objectId === sel.ids[0]);
   if (!object || object.type !== "form") return false;
-  const generation = store.pages[page]?.docGeneration ?? newest(page);
-  const outcome = await ungroup(docId, page, object.objectId, generation);
+  // the newest generation, like every other object action (`actions.generationFor`): the page's
+  // listing may be older than the document (an edit on another page) with its objects unchanged
+  const outcome = await ungroup(docId, page, object.objectId, newest(page));
   if (outcome.kind !== "ungrouped") return false;
   const ids = outcome.result.newObjectIds;
   if (ids.length) useEditStore.getState().select(page, ids);

@@ -270,20 +270,52 @@ describe("Inspector 그룹 해제: one at a time (verification round 1)", () => 
     expect((await api.getDocument({ docId: info.docId })).docGeneration).toBe(info.docGeneration + 1);
   });
 
-  it("`stale` (the document moved on elsewhere): the page is listed again and the user is asked to press again — not told to click text", async () => {
-    await selectGroup();
-    vi.spyOn(mock, "ungroupObject").mockRejectedValueOnce(
+  it("`stale` (the document moved on elsewhere): the page is listed again and the same group is ungrouped at the new generation — no toast to press again", async () => {
+    const { info } = await selectGroup();
+    const ungroup = vi.spyOn(mock, "ungroupObject").mockRejectedValueOnce(
       new api.SeePdfError({ code: "stale", message: "expectGeneration 1 but the document is at 2; re-list the page objects" }),
     );
     const list = vi.spyOn(mock, "listPageObjects");
     fireEvent.click(screen.getByRole("button", { name: "그룹 해제" }));
-    await waitFor(() => expect(toasts().map((t) => t.messageKey)).toEqual(["error.stale"]));
+    await waitFor(() => expect(toasts().map((t) => t.messageKey)).toEqual(["edit.ungroup.done"]));
     expect(list).toHaveBeenCalled();
+    expect(ungroup).toHaveBeenCalledTimes(2);
+    expect(objects()[0]?.type).toBe("text");
+    expect((await api.getDocument({ docId: info.docId })).undoLabel).toBe("undo.ungroup");
+  });
+
+  it("`stale` twice: the group stays selected and the user is asked to press again — and pressing again really works", async () => {
+    await selectGroup();
+    const stale = new api.SeePdfError({ code: "stale", message: "expectGeneration 1 but the document is at 2; re-list the page objects" });
+    vi.spyOn(mock, "ungroupObject").mockRejectedValueOnce(stale).mockRejectedValueOnce(stale);
+    fireEvent.click(screen.getByRole("button", { name: "그룹 해제" }));
+    await waitFor(() => expect(toasts().map((t) => t.messageKey)).toEqual(["error.stale"]));
     expect(toasts()[0].detail).toBeUndefined();
-    // pressed again: it goes through
+    expect(useEditStore.getState().selection).toEqual({ page: 0, ids: [0] });
     await waitFor(() => expect(screen.getByRole("button", { name: "그룹 해제" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "그룹 해제" }));
     await waitFor(() => expect(objects()[0]?.type).toBe("text"));
+  });
+
+  it("an edit on another page (the page-0 listing older than the document): 그룹 해제 is pinned to the newest generation and goes through (round 2)", async () => {
+    const { info } = await selectGroup();
+    const added = await api.addTextObject({
+      docId: info.docId, page: 1, rect: { l: 72, b: 700, r: 300, t: 720 }, text: "elsewhere", fontSizePt: 12,
+      color: [0, 0, 0], align: "left",
+    });
+    const now = await api.getDocument({ docId: info.docId });
+    expect(now.docGeneration).toBe(info.docGeneration + 1);
+    act(() => useDocStore.getState().applyDocChanged({
+      docId: info.docId, docGeneration: now.docGeneration, changedPages: [1], structure: false, dirty: true,
+      reason: "edit", canUndo: true, canRedo: false,
+    }));
+    expect(added).toBeTruthy();
+    expect(useEditStore.getState().pages[0]?.docGeneration).toBe(info.docGeneration); // the listing is behind
+    const ungroup = vi.spyOn(mock, "ungroupObject");
+    fireEvent.click(screen.getByRole("button", { name: "그룹 해제" }));
+    await waitFor(() => expect(toasts().map((t) => t.messageKey)).toEqual(["edit.ungroup.done"]));
+    expect(ungroup.mock.calls.map((c) => c[0].expectGeneration)).toEqual([now.docGeneration]);
+    expect(objects()[0]?.type).toBe("text");
   });
 
   it("`stale` because the group was already ungrouped: listed again, nothing to say", async () => {
@@ -378,5 +410,30 @@ describe("그룹 해제 → 편집: what the user is told", () => {
 
   it("`stale` from any other edit is told in words (error.stale), not 문제가 발생했습니다 + English", () => {
     expect(api.errorKey(new api.SeePdfError({ code: "stale", message: "expectGeneration 3 but the document is at 4; re-list the page objects" }))).toBe("error.stale");
+  });
+});
+
+describe("영역 표시 over a group (verification round 2)", () => {
+  it("hovering grouped text shows no outline and no 텍스트 수정 badge — a click there marks nothing; an ordinary line still outlines and marks", async () => {
+    const { ctx, surface, container } = await setup("redact");
+    const hoverOutlines = () => container.querySelectorAll(".edit-outline[data-state=hover]").length;
+    fireEvent.pointerMove(surface, at(ctx, ...GROUPED));
+    expect(hoverOutlines()).toBe(0);
+    expect(container.querySelector(".edit-badge")).toBeNull();
+    fireEvent.pointerDown(surface, at(ctx, ...GROUPED));
+    fireEvent.pointerUp(surface, at(ctx, ...GROUPED));
+    expect(useEditStore.getState().marks).toHaveLength(0);
+    // the control: an ordinary text line
+    fireEvent.pointerMove(surface, at(ctx, 100, 730));
+    expect(hoverOutlines()).toBe(1);
+    fireEvent.pointerDown(surface, at(ctx, 100, 730));
+    fireEvent.pointerUp(surface, at(ctx, 100, 730));
+    expect(useEditStore.getState().marks).toHaveLength(1);
+  });
+
+  it("텍스트 수정 keeps the group's hover outline (a click there ungroups it)", async () => {
+    const { ctx, surface, container } = await setup("editText");
+    fireEvent.pointerMove(surface, at(ctx, ...GROUPED));
+    expect(container.querySelectorAll(".edit-outline[data-state=hover]").length).toBe(1);
   });
 });

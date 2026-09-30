@@ -1127,21 +1127,41 @@ struct Form {
     content: Vec<u8>,
 }
 
-fn form_of(doc: &Document, value: &Object) -> Option<Form> {
+/// What a `Do` draws, as far as counting PDFium's form objects goes.
+enum Drawn {
+    /// Not a form (an image, a missing name): PDFium makes no form object of it.
+    Other,
+    /// A form whose content lopdf cannot decode (an abbreviated `/Filter /Fl`, a filter lopdf
+    /// lacks) — PDFium may well draw it, so it still counts as a form object.
+    Opaque,
+    Form(Form),
+}
+
+fn drawn(doc: &Document, value: &Object) -> Drawn {
     let Object::Stream(s) = deref(doc, value) else {
-        return None;
+        return Drawn::Other;
     };
     if s.dict.get(b"Subtype").and_then(Object::as_name).ok() != Some(b"Form".as_slice()) {
-        return None;
+        return Drawn::Other;
     }
     let content = s
         .decompressed_content()
         .ok()
-        .or_else(|| s.dict.get(b"Filter").is_err().then(|| s.content.clone()))?;
-    Some(Form {
-        dict: s.dict.clone(),
-        content,
-    })
+        .or_else(|| s.dict.get(b"Filter").is_err().then(|| s.content.clone()));
+    match content {
+        Some(content) => Drawn::Form(Form {
+            dict: s.dict.clone(),
+            content,
+        }),
+        None => Drawn::Opaque,
+    }
+}
+
+fn form_of(doc: &Document, value: &Object) -> Option<Form> {
+    match drawn(doc, value) {
+        Drawn::Form(f) => Some(f),
+        _ => None,
+    }
 }
 
 fn form_matrix(d: &Dictionary) -> Mat {
@@ -1228,10 +1248,12 @@ pub struct Plan {
     pub page_index: u16,
     /// The form's place among the page's form `Do`s (PDFium's form objects, in order).
     pub ordinal: usize,
-    /// PDFium's matrix of that form object — the `Do` must match it.
+    /// PDFium's matrix of that form object — the CTM at its `Do` (PDFium applies the form's
+    /// own `/Matrix` inside the form, to its children); the `Do` must match it.
     pub matrix: Mat,
     /// Nested forms down to the one holding the clicked text: each form's place among its
-    /// parent's form `Do`s and PDFium's (parent-relative) matrix of it.
+    /// parent's form `Do`s (every `/Subtype /Form`, readable or not) and PDFium's matrix of it —
+    /// the CTM at its `Do` in the parent's space *with* the parent's `/Matrix`, without its own.
     pub chain: Vec<(usize, Mat)>,
     pub mode: Mode,
     /// Also inline every nested form that draws text (the Inspector's 그룹 해제).
@@ -1360,6 +1382,10 @@ fn expand(
         });
     }
 
+    // The CTM at this form's `Do`, before its `/Matrix`: PDFium applies a form's `/Matrix`
+    // inside the form's own parse, so the matrix it reports for a nested form is relative to
+    // this space (it includes this form's `/Matrix`, and not the nested form's own).
+    let do_ctm = out.state.ctm();
     out.emit(VOp::synth("q"));
     let m = form_matrix(&form.dict);
     if !is_identity(&m) {
@@ -1402,7 +1428,6 @@ fn expand(
         space: out.state.ctm(),
         names: HashMap::new(),
     };
-    let space = out.state.ctm();
     let ops = tokenize(&form.content)?;
     let mut ordinal = 0usize;
     for op in &ops {
@@ -1413,15 +1438,23 @@ fn expand(
                 .last()
                 .and_then(|o| o.name())
                 .and_then(|n| scope.resolve(ctx.doc, &ctx.page, Res::XObject, n))
-                .and_then(|v| form_of(ctx.doc, &v));
-            if let Some(child) = child {
-                let here = ordinal;
+                .map_or(Drawn::Other, |v| drawn(ctx.doc, &v));
+            // every form counts toward the ordinal, readable or not (PDFium's form objects)
+            let here = ordinal;
+            if !matches!(child, Drawn::Other) {
                 ordinal += 1;
-                let on_chain = chain.first().is_some_and(|(k, _)| *k == here);
+            }
+            let on_chain =
+                !matches!(child, Drawn::Other) && chain.first().is_some_and(|(k, _)| *k == here);
+            if on_chain && matches!(child, Drawn::Opaque) {
+                return Err(not_located("nested form content cannot be decoded"));
+            }
+            if let Drawn::Form(child) = child {
                 if on_chain {
-                    // PDFium's matrix of a nested form is relative to its parent's space.
-                    let rel = invert(&space)
-                        .map(|inv| mul(&mul(&form_matrix(&child.dict), &out.state.ctm()), &inv))
+                    // PDFium's matrix of a nested form: the CTM at its `Do` relative to the
+                    // parent's space before the parent's `/Matrix` (see `do_ctm`)
+                    let rel = invert(&do_ctm)
+                        .map(|inv| mul(&out.state.ctm(), &inv))
                         .unwrap_or(IDENTITY);
                     if !close(&rel, &chain[0].1) {
                         return Err(not_located("nested form matrix"));
@@ -1484,6 +1517,38 @@ fn strip_text(content: &[u8]) -> Result<Vec<u8>, EngineError> {
     Ok(out)
 }
 
+/// The spans of the `Q` operators PDFium ignores: those with no `q` to restore (the graphics
+/// state stack is empty — PDFium reads all of a page's streams as one).
+fn stray_restores(ops: &[Op]) -> Vec<Range<usize>> {
+    let mut depth = 0usize;
+    let mut out = Vec::new();
+    for op in ops {
+        match op.operator.as_str() {
+            "q" => depth += 1,
+            "Q" if depth == 0 => out.push(op.span.clone()),
+            "Q" => depth -= 1,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `data[range]` without the `skip` spans inside it.
+fn without(data: &[u8], range: Range<usize>, skip: &[Range<usize>]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(range.len());
+    let mut at = range.start;
+    for r in skip
+        .iter()
+        .filter(|r| r.start >= range.start && r.end <= range.end)
+    {
+        out.extend_from_slice(&data[at..r.start]);
+        out.push(b' ');
+        at = r.end;
+    }
+    out.extend_from_slice(&data[at..range.end]);
+    out
+}
+
 /// Rewrites page `plan.page_index` of `bytes` with the planned `Do` inlined (module docs).
 pub fn rewrite(bytes: &[u8], plan: &Plan) -> Result<Rewritten, EngineError> {
     let mut doc = Document::load_mem(bytes).map_err(|e| lopdf_error("parse", e))?;
@@ -1512,6 +1577,7 @@ pub fn rewrite(bytes: &[u8], plan: &Plan) -> Result<Rewritten, EngineError> {
         data.push(b'\n');
     }
     let ops = tokenize(&data)?;
+    let strays = stray_restores(&ops);
     let page = PageRes::load(&doc, page_id);
     let mut ctx = Ctx {
         doc: &mut doc,
@@ -1528,22 +1594,27 @@ pub fn rewrite(bytes: &[u8], plan: &Plan) -> Result<Rewritten, EngineError> {
     let mut target: Option<(usize, Form)> = None;
     for (k, op) in ops.iter().enumerate() {
         if op.operator == "Do" {
-            let form = op
+            let what = op
                 .operands
                 .last()
                 .and_then(|o| o.name())
                 .and_then(|n| page_scope.resolve(ctx.doc, &ctx.page, Res::XObject, n))
-                .and_then(|v| form_of(ctx.doc, &v));
-            if let Some(form) = form {
-                if ordinal == plan.ordinal {
-                    let m = mul(&form_matrix(&form.dict), &state.ctm());
-                    if !close(&m, &plan.matrix) {
+                .map_or(Drawn::Other, |v| drawn(ctx.doc, &v));
+            // Every form `Do` is one of PDFium's form objects, whether lopdf can read its
+            // content or not — skipping one would shift the ordinal onto the next group.
+            match what {
+                Drawn::Other => {}
+                _ if ordinal != plan.ordinal => ordinal += 1,
+                Drawn::Opaque => return Err(not_located("the group's content cannot be decoded")),
+                Drawn::Form(form) => {
+                    // PDFium's matrix of a form object is the CTM at its `Do`; the form's
+                    // `/Matrix` is applied inside the form (to its children).
+                    if !close(&state.ctm(), &plan.matrix) {
                         return Err(not_located("form matrix"));
                     }
                     target = Some((k, form));
                     break;
                 }
-                ordinal += 1;
             }
         }
         state.feed(&VOp {
@@ -1570,16 +1641,18 @@ pub fn rewrite(bytes: &[u8], plan: &Plan) -> Result<Rewritten, EngineError> {
     let page_res = ctx.page;
 
     // The stream holding the `Do`: before (closing every level) | pieces | after (reopening).
+    // A `Q` with nothing to restore (more `Q` than `q` so far) is ignored by PDFium but would
+    // pop the leading `q` or a level the pieces restate, so it is left out wherever it is.
     let mut before = Vec::new();
     if si == 0 {
         before.extend_from_slice(b"q\n");
     }
-    before.extend_from_slice(&data[bounds[si].start..do_span.start]);
+    before.extend_from_slice(&without(&data, bounds[si].start..do_span.start, &strays));
     before.push(b'\n');
     before.extend_from_slice(&state.closers());
     let text_after = ops[k + 1..].iter().any(|o| o.operator == "BT");
     let mut after = state.restate(text_after);
-    after.extend_from_slice(&data[do_span.end..bounds[si].end]);
+    after.extend_from_slice(&without(&data, do_span.end..bounds[si].end, &strays));
     after.push(b'\n');
 
     let mut new_stream = |content: Vec<u8>| -> ObjectId {
@@ -1593,7 +1666,16 @@ pub fn rewrite(bytes: &[u8], plan: &Plan) -> Result<Rewritten, EngineError> {
     }
     for (i, id) in stream_ids.iter().enumerate() {
         if i != si {
-            contents.push(Object::Reference(*id));
+            let b = &bounds[i];
+            if strays.iter().any(|r| b.contains(&r.start)) {
+                contents.push(Object::Reference(new_stream(without(
+                    &data,
+                    b.clone(),
+                    &strays,
+                ))));
+            } else {
+                contents.push(Object::Reference(*id));
+            }
             continue;
         }
         contents.push(Object::Reference(new_stream(before.clone())));
