@@ -52,8 +52,20 @@ const BASELINE_TOL: f32 = 0.25;
 const SPLIT_GAP: f32 = 1.0;
 /// A gap wider than this (× size) between two runs of a line is a word space.
 const WORD_GAP: f32 = 0.15;
+/// …and before closing punctuation (`,` `:` `)` …) a gap has to be this wide (× size).
+const PUNCT_WORD_GAP: f32 = 0.3;
+/// A run whose ink starts this far (× size) right of its origin starts with an offset (a leading
+/// `TJ` number), not a side bearing: its gap is measured from its ink.
+const LEADING_OFFSET: f32 = 0.2;
 /// Font sizes within ±8 % are the same paragraph.
 const SIZE_TOL: f32 = 0.08;
+/// A path at most this thick (pt) and [`RULE_MIN_ASPECT`] times as long is a horizontal rule — a
+/// table's row border, a separator line…
+const RULE_MAX_THICKNESS: f32 = 2.0;
+const RULE_MIN_ASPECT: f32 = 4.0;
+/// …and between two lines when it is lower than this (× size) under the upper baseline, where an
+/// underline never is, and above the lower line's ink, where a strikethrough never is.
+const RULE_BELOW_BASELINE: f32 = 0.3;
 /// Leading within ±20 % of the first leading.
 const LEADING_TOL: f32 = 0.2;
 /// Leading larger than this (× size) is a blank line.
@@ -516,8 +528,48 @@ fn starts_paragraph(line: &Line, lo: f32, hi: f32, ragged_left: bool, tol: f32) 
     !(flush_right && (ragged_left || line.left - lo > INDENT_MAX * size))
 }
 
+/// The one colour all of a line's text is drawn in, if there is one.
+fn line_color(runs: &[Run], line: &Line) -> Option<Rgb> {
+    let mut colors = line
+        .runs
+        .iter()
+        .map(|&i| &runs[i])
+        .filter(|r| r.weight > 0)
+        .map(|r| r.color);
+    let first = colors.next()?;
+    colors.all(|c| c == first).then_some(first)
+}
+
+/// v0.3.1: `upper` and `lower` belong to different paragraphs whatever their spacing says — each is
+/// drawn in one colour and the colours differ (a Word document's red "변경" line above a black
+/// one), or a horizontal rule runs between them across both (a table's row border: the cells of
+/// one column are not a paragraph). Merged, an edit reflowed the whole column across the rows, or
+/// turned the red line black and slid the strikethrough under other words (v0.3.1 QA).
+fn separated(runs: &[Run], rules: &[Rect], upper: &Line, lower: &Line) -> bool {
+    if let (Some(a), Some(b)) = (line_color(runs, upper), line_color(runs, lower)) {
+        if a != b {
+            return true;
+        }
+    }
+    let (l, r) = (upper.left.max(lower.left), upper.right.min(lower.right));
+    let (l, r) = (l.min(r), l.max(r));
+    rules.iter().any(|rule| {
+        let y = 0.5 * (rule.b + rule.t);
+        y < upper.baseline - RULE_BELOW_BASELINE * upper.size
+            && y > lower.bounds.t
+            && rule.l <= l + 1.0
+            && rule.r >= r - 1.0
+    })
+}
+
+/// A thin horizontal path: a rule that can separate two lines (`separated`).
+fn is_rule(bounds: &Rect) -> bool {
+    let (w, h) = (bounds.r - bounds.l, bounds.t - bounds.b);
+    h <= RULE_MAX_THICKNESS && w >= RULE_MIN_ASPECT * h.max(1.0)
+}
+
 /// The lines of the paragraph around `hit`, top to bottom.
-fn grow(runs: &[Run], lines: &[Line], hit: usize) -> Vec<usize> {
+fn grow(runs: &[Run], lines: &[Line], rules: &[Rect], hit: usize) -> Vec<usize> {
     let size = lines[hit].size;
     let tol = align_tol(size);
     let same_size = |l: &Line| (l.size - size).abs() <= SIZE_TOL * size;
@@ -542,7 +594,7 @@ fn grow(runs: &[Run], lines: &[Line], hit: usize) -> Vec<usize> {
         };
         let next = &lines[n];
         let gap = last.baseline - next.baseline;
-        if !same_size(next) || !leading_ok(gap, leading) {
+        if !same_size(next) || !leading_ok(gap, leading) || separated(runs, rules, last, next) {
             break;
         }
         let (left, right) = (lo.min(next.left), hi.max(next.right));
@@ -564,7 +616,7 @@ fn grow(runs: &[Run], lines: &[Line], hit: usize) -> Vec<usize> {
         };
         let prev = &lines[p];
         let gap = prev.baseline - top.baseline;
-        if !same_size(prev) || !leading_ok(gap, leading) {
+        if !same_size(prev) || !leading_ok(gap, leading) || separated(runs, rules, prev, top) {
             break;
         }
         let (left, right) = (lo.min(prev.left), hi.max(prev.right));
@@ -635,6 +687,12 @@ fn collapse_ws(text: &str) -> String {
     out
 }
 
+/// Closing punctuation: a space before it is not how Korean (or English) is written.
+fn starts_with_closing_punct(piece: &str) -> bool {
+    const CLOSING: &str = ",.:;!?)]}%、。，．：；！？）」』》〉’”";
+    piece.chars().next().is_some_and(|c| CLOSING.contains(c))
+}
+
 fn line_text(runs: &[Run], line: &Line) -> String {
     let mut out = String::new();
     let mut right: Option<f32> = None;
@@ -642,9 +700,22 @@ fn line_text(runs: &[Run], line: &Line) -> String {
         let r = &runs[i];
         let piece = collapse_ws(&r.text);
         if let Some(prev) = right {
-            if r.bounds.l - prev > WORD_GAP * line.size
-                && !out.ends_with(' ')
-                && !piece.starts_with(' ')
+            // v0.3.1: from the previous run's ink to this run's first glyph **origin** — a left
+            // side bearing is not a space. Word / LibreOffice write the Latin between Hangul words
+            // as runs of their own (another font), and measured ink to ink "저장되며, 접근" and
+            // "2026년" read back as "저장되며 , 접근" and "2026 년": a paragraph edit wrote those
+            // stray spaces into the page (v0.3.1 QA).
+            let start = if r.bounds.l - r.x > LEADING_OFFSET * line.size {
+                r.bounds.l
+            } else {
+                r.x
+            };
+            let word_gap = if starts_with_closing_punct(&piece) {
+                PUNCT_WORD_GAP
+            } else {
+                WORD_GAP
+            };
+            if start - prev > word_gap * line.size && !out.ends_with(' ') && !piece.starts_with(' ')
             {
                 out.push(' ');
             }
@@ -927,23 +998,31 @@ pub fn probe(
     let stamps: HashSet<usize> = stamp::stamp_indices(doc.bindings(), &scratch.page, None)
         .into_iter()
         .collect();
-    let collect =
-        |page: &PdfPage<'_>, rot: Rot| -> Result<(Vec<Run>, Vec<Obstacle>), EngineError> {
-            let text_page = page.text().ctx("load text page")?;
-            let mut runs = Vec::new();
-            let mut obstacles = Vec::new();
-            for (index, object) in page.objects().iter().enumerate() {
-                if stamps.contains(&index) {
-                    continue;
-                }
-                match classify(index, &object, &text_page, rot) {
-                    Classified::Run(r) => runs.push(r),
-                    Classified::Obstacle(o) => obstacles.push(o),
-                    Classified::Skip => {}
-                }
+    type Collected = (Vec<Run>, Vec<Obstacle>, Vec<Rect>);
+    let collect = |page: &PdfPage<'_>, rot: Rot| -> Result<Collected, EngineError> {
+        let text_page = page.text().ctx("load text page")?;
+        let mut runs = Vec::new();
+        let mut obstacles = Vec::new();
+        let mut rules = Vec::new();
+        for (index, object) in page.objects().iter().enumerate() {
+            if stamps.contains(&index) {
+                continue;
             }
-            Ok((runs, obstacles))
-        };
+            if object.object_type() == PdfPageObjectType::Path {
+                let bounds = bounds_in(&object, rot);
+                if is_rule(&bounds) {
+                    rules.push(bounds);
+                }
+                continue;
+            }
+            match classify(index, &object, &text_page, rot) {
+                Classified::Run(r) => runs.push(r),
+                Classified::Obstacle(o) => obstacles.push(o),
+                Classified::Skip => {}
+            }
+        }
+        Ok((runs, obstacles, rules))
+    };
     let hit_line = |lines: &[Line], (px, py): (f32, f32)| {
         lines
             .iter()
@@ -961,7 +1040,7 @@ pub fn probe(
             })
             .map(|(i, _)| i)
     };
-    let (mut runs, obstacles) = collect(&scratch.page, Rot::UPRIGHT)?;
+    let (mut runs, obstacles, mut rules) = collect(&scratch.page, Rot::UPRIGHT)?;
     let [px, py] = at;
     let mut rot = Rot::UPRIGHT;
     let mut lines = build_lines(&runs, true);
@@ -979,11 +1058,12 @@ pub fn probe(
             .map(Rot::of_matrix)
             .filter(|r| !r.upright());
         if let Some(frame) = rotated {
-            let (frame_runs, _) = collect(&scratch.page, frame)?;
+            let (frame_runs, _, frame_rules) = collect(&scratch.page, frame)?;
             let frame_lines = build_lines(&frame_runs, true);
             if let Some(h) = hit_line(&frame_lines, frame.to_frame((px, py))) {
                 rot = frame;
                 runs = frame_runs;
+                rules = frame_rules;
                 lines = frame_lines;
                 hit = Some(h);
             }
@@ -1000,7 +1080,7 @@ pub fn probe(
             .map(|o| obstacle_probe(o, generation)));
     };
 
-    let para = grow(&runs, &lines, hit);
+    let para = grow(&runs, &lines, &rules, hit);
     let para_lines: Vec<&Line> = para.iter().map(|&i| &lines[i]).collect();
     let info = analyze(&runs, &para_lines);
     let dominant = &runs[info.dominant];

@@ -124,6 +124,20 @@ describe("그룹 해제 → 편집: every way in", () => {
     expect(objects()[0]).toMatchObject({ type: "text", editable: "full" });
   });
 
+  it("선택: the same double-click in WebView2 (Windows), whose pointerdown reports no click count, asks and opens the editor", async () => {
+    const { ctx, surface } = await setup("select");
+    const probe = vi.spyOn(mock, "probeParagraph");
+    for (let i = 0; i < 2; i++) {
+      fireEvent.pointerDown(surface, at(ctx, ...GROUPED, 0));
+      fireEvent.pointerUp(surface, at(ctx, ...GROUPED, 0));
+    }
+    await answerUngroup();
+    await editorOpen();
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(confirms()).toBe(0);
+    expect(toasts()).toHaveLength(0);
+  });
+
   it("선택: a double-click on a group where it holds no text says where 그룹 해제 is", async () => {
     const { ctx, surface } = await setup("select");
     vi.spyOn(mock, "probeParagraph").mockResolvedValue(null);

@@ -66,6 +66,7 @@ import { DRAWING_TOOLS } from "../tools/ToolController";
 import { PageA11yText } from "./text/PageA11yText";
 import { useCaretStore } from "./text/caret";
 import { useCaretKeys } from "./text/caretKeys";
+import { createPressCounter } from "./pressCount";
 
 /** How far the scroll offset may drift before the mounted set is recomputed. */
 const SCROLL_COMMIT_PX = 96;
@@ -109,6 +110,9 @@ export interface ScrollerProps {
   /** 분할 보기 (V3, v0.3): the pane's share of the split (its flex), set by the divider */
   paneStyle?: CSSProperties;
 }
+
+/** Word / line selection by double / triple click (see `pressCount`: WebView2 reports no count). */
+const pressCount = createPressCounter();
 
 export function Scroller({
   info,
@@ -727,6 +731,8 @@ export function Scroller({
     (e: React.PointerEvent<HTMLDivElement>) => {
       const el = elRef.current;
       if (!el) return;
+      // every left press counts, so the one after it knows whether it is a double-click
+      const clicks = e.button === 0 ? pressCount(e) : 0;
       // `preventDefault` below stops the browser's own focus handling, and the canvas must have
       // focus for ⌘A / ⌘C / the tool keys (UI_SPEC §13 `canvas` context).
       el.focus({ preventScroll: true });
@@ -750,7 +756,6 @@ export function Scroller({
         setSelection(null);
         return;
       }
-      const clicks = e.detail;
       if (clicks >= 3) {
         const [from, to] = layer.lineRange(hit.char);
         selecting.current = { page: at.page, offset: from, mode: "line" };

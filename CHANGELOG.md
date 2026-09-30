@@ -31,6 +31,13 @@ User-facing changes, Korean first. Each release on GitHub carries its section of
 - 그룹 배지는 '그룹 · 그룹 안의 텍스트 — 더블클릭하거나 텍스트 수정으로 클릭하면 그룹을 해제하고 편집합니다'라고
   안내합니다(예전에는 '읽기 전용 · 수정할 수 없습니다'였습니다).
 - 오류는 이유와 할 일을 한국어로 알려 줍니다. 엔진의 영어 문장만 보여 주는 일은 없습니다.
+- **Windows에서 더블클릭:** 선택 도구로 텍스트를 더블클릭해도 편집기가 열리지 않던 문제를 고쳤습니다. 읽기 모드에서
+  더블클릭·세 번 클릭으로 단어·줄을 선택하는 것도 이제 Windows에서 됩니다.
+- **Word 문서처럼 편집:** 빨간 줄 아래의 검은 줄(취소선)이나 표의 같은 열에 있는 칸을 한 문단으로 묶지 않습니다.
+  빨간 줄을 고쳐도 빨간색이 유지되고, 표 칸 하나를 고쳐도 표가 흐트러지지 않습니다. "저장되며, 접근"이나 "2026년"이
+  "저장되며 , 접근", "2026 년"처럼 공백이 끼어 저장되지 않습니다.
+- 문단 편집기의 색상 칸이 작은 점으로 보이던 문제와 글자 크기 칸이 "10."로 잘리던 문제를 고쳤습니다.
+- 탭이 하나일 때 ⌘W / Ctrl+W로 창이 닫힙니다.
 
 ### English
 - **Ungroup to edit works on real-world groups.** In v0.3.0, clicking text inside a group could ungroup it
@@ -45,6 +52,13 @@ User-facing changes, Korean first. Each release on GitHub carries its section of
   Nested groups come out in one step, and other pages that use the same group are not changed.
 - The 선택 tool's double-click on a group and the Inspector's new 그룹 해제 button also ungroup. The badge
   tells you how to edit the text inside a group.
+- Windows: a double-click with 선택 opens the text editor (WebView2 reports no click count on
+  `pointerdown`), and double / triple click select a word / line in 읽기.
+- Paragraphs of Word-like documents: a red line and the black line under it, or the cells of one table
+  column, are no longer merged into one paragraph, and no stray space is read (and written back) between a
+  word and the next run in another font ("저장되며 , 접근", "2026 년").
+- The text editor's colour swatches and font-size field have a usable size; ⌘W / Ctrl+W closes the window on
+  the last tab.
 
 ## [0.3.0]
 

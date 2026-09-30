@@ -607,6 +607,7 @@ are **unverified inside a Tauri window** — the OCR module's first task is a `t
 
 Capabilities (`capabilities/default.json`, windows `["main", "doc-*"]`): `core:default`,
 `core:window:allow-start-dragging`, `core:window:allow-set-title`, `core:window:allow-create`,
+`core:window:allow-close` (⌘W / Ctrl+W on the last tab closes the window through its close gate),
 `core:webview:allow-print`, `dialog:default`, `store:default`, `window-state:default`, `opener:default`.
 The `fs:*` permissions from the spike are **removed**: the engine reads and writes every file, and the
 dialog plugin extends its own scope for picked paths. No network permission is granted anywhere; OCR,

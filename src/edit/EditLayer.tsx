@@ -38,6 +38,7 @@ import type { Annot } from "../ipc/types";
 import { useAnnotStore } from "../store/annotStore";
 import { createLink, MIN_LINK_PT, useLinkStore } from "./linkActions";
 import { LinkTargetForm } from "./LinkTargetForm";
+import { createPressCounter } from "../viewer/pressCount";
 import { selectionRectsForPage } from "../annot/selectionQuads";
 
 const EMPTY: ObjectId[] = [];
@@ -52,6 +53,9 @@ type Drag =
   | { kind: "resize"; id: ObjectId; corner: Corner; from: Rect; to: Rect; x0: number; y0: number }
   | { kind: "image" | "mark" | "link"; start: Point; end: Point; x0: number; y0: number; moved: boolean }
   | { kind: "marquee"; start: Point; end: Point; x0: number; y0: number; moved: boolean; additive: boolean };
+
+/** 선택's double-click: WebView2 reports no click count on `pointerdown` (see `pressCount`). */
+const pressCount = createPressCounter();
 
 export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
   const t = useT();
@@ -93,6 +97,7 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
+    const clicks = pressCount(e);
     e.stopPropagation();
     e.preventDefault();
     (e.currentTarget.closest(".canvas") as HTMLElement | null)?.focus({ preventScroll: true });
@@ -143,7 +148,7 @@ export function EditLayer({ ctx }: { ctx: PageLayerContext }) {
     }
     // v0.3.1: a group (as the engine lists it: one `form` object) opens its text too, through
     // 그룹 해제 후 편집할까요?
-    if (e.detail >= 2 && (hit.type === "text" || hit.type === "form")) {
+    if (clicks >= 2 && (hit.type === "text" || hit.type === "form")) {
       void beginParagraphEdit(ctx.index, at, { onGroup: hit.type === "form" });
       return;
     }

@@ -121,8 +121,10 @@
   white-space: nowrap;
 }
 
-.edit-bar .swatches { flex-wrap: nowrap; }
-.edit-bar-size input { width: 56px; height: 26px; }
+/* The bar is a flex row: a grid of 1fr columns there has no width to share, and the swatches
+   collapsed to 2 px dots (v0.3.1 QA). Give each of the 8 colours + the custom well its own size. */
+.edit-bar .swatches { grid-template-columns: repeat(9, 18px); }
+.edit-bar-size input { width: 68px; height: 26px; } /* "10.5" and the spinner */
 .edit-bar-align { display: flex; gap: 2px; }
 
 /* Stage 9: the original paragraph's bottom, once the text grows past it (above the paper textarea) */

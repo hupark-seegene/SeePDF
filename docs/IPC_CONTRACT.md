@@ -763,7 +763,14 @@ Engine: `engine/objects/paragraph.rs`. Detection: upright visible text objects (
 → lines (baseline ± 0.25·size, split at gaps > 1·size; superscript/subscript bands fold into their line)
 → paragraph around the hit: same size ± 8 %, leading ≤ 2.2·size and ± 20 % of the first leading, overlapping
 x-range; a short left-flush line whose successor's first word would have fitted ends it; a line indented
-by > 0.5·size starts a new one (not when centred, or flush right with an inset > 3·size). Alignment from edge
+by > 0.5·size starts a new one (not when centred, or flush right with an inset > 3·size). v0.3.1: two lines
+each drawn in one colour, the colours different, are two paragraphs (Word's red line above a black one), and
+so are two lines with a horizontal rule between them across both (a path ≤ 2 pt thick, ≥ 4× as long, more than
+0.3·size under the upper baseline and above the lower line's ink: a table's row border — never an underline
+or a strikethrough). Runs of a line are joined with a space when the gap from the previous run's ink to the
+next run's glyph origin (its ink when that starts > 0.2·size right of the origin) is > 0.15·size, > 0.3·size
+before closing punctuation (v0.3.1: measured ink to ink, "저장되며, 접근" / "2026년" in Word's mixed Hangul /
+Latin runs read — and were written back — as "저장되며 , 접근" / "2026 년"). Alignment from edge
 variance (justify needs ≥ 3 lines). A click on rotated text → `refused/rotatedText` (v0.3: probed in its
 own frame instead, see below), on the invisible OCR layer → `refused/invisible`; a `noUnicode` run refuses
 the paragraph. **Text inside a group** (v0.3.1): when no page-level line is hit, the text page's characters
