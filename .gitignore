@@ -39,3 +39,6 @@ public/ocr/
 
 # Generated licence notices (v0.3 pkg5: `node scripts/gen-notices.mjs`)
 src-tauri/resources/notices/THIRD_PARTY_NOTICES.txt
+
+# MIP SDK (Microsoft binaries, fetched by scripts/fetch-mip.mjs)
+src-tauri/vendor/mip-sdk/
